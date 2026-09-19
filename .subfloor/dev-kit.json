@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "hooks": {
+    "deps": { "argv": ["npm", "install"], "cwd": "." },
+    "test": { "argv": ["npm", "test"], "cwd": "." },
+    "lint": { "argv": ["npm", "run", "lint"], "cwd": "." }
+  }
+}
