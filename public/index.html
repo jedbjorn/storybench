@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Storybench</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <span class="mark">S</span>
+        <div><strong>Storybench</strong><small>Local story studio</small></div>
+      </div>
+      <div id="saveState" class="pill">Ready</div>
+    </header>
+    <main>
+      <aside>
+        <div class="aside-head">
+          <span>Episodes</span><button id="newEpisode" class="icon">＋</button>
+        </div>
+        <nav id="episodes"></nav>
+        <div class="privacy">
+          <b>Private workspace</b
+          ><span>Media stays in your selected local folder.</span>
+        </div>
+      </aside>
+      <section class="workspace">
+        <div id="empty" class="empty">
+          <div class="empty-art">◫</div>
+          <h1>Shape footage into a story</h1>
+          <p>
+            Create an episode, import completed media, and assemble a clean
+            first cut.
+          </p>
+          <button id="firstEpisode" class="primary">Create an episode</button>
+        </div>
+        <div id="editor" hidden>
+          <div class="title-row">
+            <div>
+              <input
+                id="episodeTitle"
+                class="title"
+                aria-label="Episode title"
+              /><textarea
+                id="episodeNotes"
+                placeholder="Story direction, audience, and missing material…"
+              ></textarea>
+            </div>
+            <div class="actions">
+              <button id="undo">↶ Undo</button
+              ><button id="preview">Preview</button
+              ><button id="export" class="primary">Export MP4</button>
+            </div>
+          </div>
+          <div class="tabs">
+            <button data-tab="story" class="active">Storyboard</button
+            ><button data-tab="media">Media library</button
+            ><button data-tab="exports">
+              Renders <span id="jobCount"></span>
+            </button>
+          </div>
+          <div id="storyPanel">
+            <div class="panel-heading">
+              <div>
+                <h2>Story cards</h2>
+                <p>Each card becomes one scene in the finished video.</p>
+              </div>
+              <button id="addCard">＋ Add card</button>
+            </div>
+            <div id="cards"></div>
+          </div>
+          <div id="mediaPanel" hidden>
+            <div class="import-box">
+              <h2>Import completed media</h2>
+              <p>
+                Enter the absolute path to a finished local file. Storybench
+                copies it; your original is never changed.
+              </p>
+              <form id="importForm">
+                <input
+                  id="importPath"
+                  placeholder="/absolute/path/to/recording.mp4"
+                  required
+                /><button class="primary">Import</button>
+              </form>
+              <div id="importError" class="error"></div>
+            </div>
+            <div id="assets" class="asset-grid"></div>
+          </div>
+          <div id="exportsPanel" hidden>
+            <div class="panel-heading">
+              <div>
+                <h2>Renders</h2>
+                <p>Preview and export use the same timing plan.</p>
+              </div>
+            </div>
+            <div id="jobs"></div>
+          </div>
+        </div>
+      </section>
+      <aside class="chat">
+        <div class="chat-head">
+          <div>
+            <b>Story assistant</b
+            ><span id="chatStatus">Ready when you are</span>
+          </div>
+          <span class="spark">✦</span>
+        </div>
+        <div id="messages">
+          <div class="welcome">
+            Ask for help shaping the arc, renaming cards, or reorganizing the
+            storyboard. Your message and project context are sent to your
+            configured Codex provider.
+          </div>
+        </div>
+        <form id="chatForm">
+          <textarea
+            id="chatText"
+            placeholder="How should this story flow?"
+          ></textarea>
+          <div>
+            <button id="stopChat" type="button" hidden>Stop</button
+            ><button class="primary">Send</button>
+          </div>
+        </form>
+      </aside>
+    </main>
+    <div id="toast" role="status"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
