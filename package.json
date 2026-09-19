@@ -1,0 +1,14 @@
+{
+  "name": "storybench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test",
+    "lint": "node --check src/server.js && node --check src/store.js && node --check src/media.js && node --check src/chat.js && node --check src/codex.js && node --check public/app.js"
+  }
+}
