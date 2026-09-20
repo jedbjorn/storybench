@@ -286,6 +286,19 @@ h2 {
   margin: 10px 0;
   box-shadow: 0 2px 8px #21342d09;
 }
+.card-group { margin: 14px 0 22px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: #f3f5f2; min-height: 72px; }
+.card-group-heading { display: flex; justify-content: space-between; align-items: center; padding: 2px 5px 7px; }
+.card-group-heading h3 { margin: 0; font: 600 18px Georgia; }
+.typed-card { background: white; }
+.card-primary { display: grid; grid-template-columns: 140px minmax(180px,1fr) 150px; gap: 8px; }
+.typed-card textarea { width: 100%; min-height: 58px; margin-top: 7px; border: 1px solid var(--line); border-radius: 7px; padding: 7px; }
+.card-preview { display: block; width: min(100%, 520px); max-height: 270px; margin: 9px 0; object-fit: contain; background: #edf1ee; border-radius: 8px; }
+.card-preview.missing { display: grid; place-items: center; min-height: 100px; color: #8b5b45; border: 1px dashed #d7b8a8; }
+.typed-card details { margin-top: 10px; }
+.typed-card summary { cursor: pointer; color: var(--deep); }
+.branding-template { display: flex; justify-content: space-between; gap: 15px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.branding-template > div { display: flex; gap: 8px; flex-direction: column; }
+.branding-template > div:last-child { flex-direction: row; }
 .drag {
   color: #a4aaa7;
   font-size: 20px;

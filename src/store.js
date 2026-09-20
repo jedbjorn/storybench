@@ -126,9 +126,20 @@ export function validateCards(cards) {
         : Number(card.duration);
     if (duration != null && (!Number.isFinite(duration) || duration <= 0))
       throw new StoreError("card duration must be positive");
+    const type = String(card.type || (card.visual && card.narration ? "Video/Audio" : card.visual ? "Video" : card.narration ? "Audio" : "Video"));
+    if (!["Video/Audio", "Video", "Audio", "Static Graphic", "Video Graphic"].includes(type))
+      throw new StoreError("card type is invalid");
+    const referenceItemIds = card.referenceItemIds == null ? [] : card.referenceItemIds;
+    if (!Array.isArray(referenceItemIds) || referenceItemIds.some((value) => typeof value !== "string"))
+      throw new StoreError("card referenceItemIds must be an array of strings");
+    const referenceUrls = card.referenceUrls == null ? [] : card.referenceUrls;
+    if (!Array.isArray(referenceUrls) || referenceUrls.some((value) => typeof value !== "string"))
+      throw new StoreError("card referenceUrls must be an array of strings");
     return {
       id: cardId,
       title: String(card.title ?? ""),
+      type,
+      prompt: String(card.prompt ?? ""),
       purpose: String(card.purpose ?? ""),
       notes: String(card.notes ?? ""),
       missing: String(card.missing ?? ""),
@@ -139,6 +150,22 @@ export function validateCards(cards) {
         card.sectionId == null || card.sectionId === ""
           ? null
           : String(card.sectionId),
+      order: Number.isFinite(card.order) ? Number(card.order) : 0,
+      itemId: card.itemId == null || card.itemId === "" ? null : String(card.itemId),
+      referenceItemIds: [...new Set(referenceItemIds)],
+      referenceUrls: [...new Set(referenceUrls)],
+      enabled: card.enabled !== false,
+      excluded: Boolean(card.excluded),
+      role: card.role == null ? null : String(card.role),
+      anchorVisualCardId: card.anchorVisualCardId == null || card.anchorVisualCardId === "" ? null : String(card.anchorVisualCardId),
+      in: card.in == null || card.in === "" ? null : Number(card.in),
+      out: card.out == null || card.out === "" ? null : Number(card.out),
+      offset: card.offset == null || card.offset === "" ? 0 : Number(card.offset),
+      gain: card.gain == null || card.gain === "" ? 1 : Number(card.gain),
+      fadeIn: card.fadeIn == null || card.fadeIn === "" ? 0 : Number(card.fadeIn),
+      fadeOut: card.fadeOut == null || card.fadeOut === "" ? 0 : Number(card.fadeOut),
+      intendedSectionTitle: card.intendedSectionTitle == null ? null : String(card.intendedSectionTitle),
+      brandingTemplateId: card.brandingTemplateId == null ? null : String(card.brandingTemplateId),
     };
   });
 }
@@ -239,7 +266,7 @@ export class Store {
   }
   migrate(existingDatabase) {
     const version = Number(this.db.prepare("PRAGMA user_version").get().user_version);
-    if (version >= 3) return;
+    if (version >= 4) return;
     const hadLegacySchema = this.db
       .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='episodes'")
       .get();
@@ -280,6 +307,12 @@ export class Store {
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS branding_templates (
+          id TEXT PRIMARY KEY,name TEXT NOT NULL,role TEXT,
+          source_episode_id TEXT NOT NULL,source_card_id TEXT NOT NULL,
+          card_snapshot TEXT NOT NULL,dependency_items TEXT NOT NULL,
+          created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+        );
       `);
       const columns = (table) =>
         new Set(this.db.prepare(`PRAGMA table_info('${table}')`).all().map((column) => column.name));
@@ -318,8 +351,13 @@ export class Store {
         id,episode_id,asset_id,category,label,source_kind,created_at,updated_at
       ) SELECT 'library_' || lower(hex(randomblob(16))),l.episode_id,l.asset_id,l.category,a.name,'file',l.created_at,l.created_at
         FROM episode_library l JOIN assets a ON a.id=l.asset_id`).run();
-      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(3,?)").run(stamp);
-      this.db.exec("PRAGMA user_version=3; COMMIT");
+      for (const row of this.db.prepare("SELECT id,cards FROM episodes").all()) {
+        const legacy = parse(row.cards, []);
+        if (!legacy.some((card) => !card.type)) continue;
+        this.db.prepare("UPDATE episodes SET cards=? WHERE id=?").run(JSON.stringify(this.normalizeLegacyCards(row.id, legacy)), row.id);
+      }
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(4,?)").run(stamp);
+      this.db.exec("PRAGMA user_version=4; COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
@@ -422,7 +460,12 @@ export class Store {
     }
     this.ensureEpisodeDirectories(episode.id);
     this.publishStory(episode.id);
-    return episode;
+    const standards = this.listBrandingTemplates().filter((value) => value.role);
+    if (standards.length)
+      this.saveStory(episode.id, 1, "# Overview\n\n# Hook\n\n# Sections\n\n## Intro\n\n## Outro\n", "branding-standard");
+    for (const template of standards)
+      this.applyBrandingTemplate(episode.id, template.id, { automatic: true });
+    return this.getEpisode(episode.id);
   }
   updateEpisode(
     episodeId,
@@ -463,6 +506,25 @@ export class Store {
     for (const card of cards)
       if (card.sectionId && !this.db.prepare("SELECT 1 FROM story_sections WHERE id=? AND episode_id=? AND retired_at IS NULL").get(card.sectionId, episodeId))
         throw new StoreError(`Story section not found for this episode: ${card.sectionId}`);
+    const libraryById = new Map(this.listEpisodeLibrary(episodeId).map((item) => [item.id, item]));
+    const cardIds = new Set(cards.map((card) => card.id));
+    for (const card of cards) {
+      for (const itemId of [card.itemId, ...card.referenceItemIds].filter(Boolean))
+        if (!libraryById.has(itemId)) throw new StoreError(`Library item not found for this episode: ${itemId}`);
+      if (card.type === "Audio" && card.anchorVisualCardId && !cardIds.has(card.anchorVisualCardId))
+        throw new StoreError(`Audio anchor card not found: ${card.anchorVisualCardId}`);
+      const selected = card.itemId ? libraryById.get(card.itemId) : null;
+      if (selected) {
+        const kind = selected.asset.kind;
+        if (card.type === "Static Graphic" && kind !== "image") throw new StoreError("Static Graphic requires an image library item");
+        if (["Video", "Video/Audio", "Video Graphic"].includes(card.type) && kind !== "video") throw new StoreError(`${card.type} requires a video library item`);
+        if (card.type === "Audio" && !(kind === "audio" || (kind === "video" && selected.asset.metadata?.hasAudio))) throw new StoreError("Audio requires an audio-bearing library item");
+      }
+      if (card.role && !["voiceover", "music", "sound effect", "other"].includes(card.role))
+        throw new StoreError("audio role is invalid");
+      for (const key of ["in", "out", "offset", "gain", "fadeIn", "fadeOut"])
+        if (card[key] != null && !Number.isFinite(card[key])) throw new StoreError(`${key} must be finite`);
+    }
     const next = {
       ...current,
       title: changes.title == null ? current.title : String(changes.title),
@@ -532,7 +594,7 @@ export class Store {
     return this.updateEpisode(
       episodeId,
       expectedRevision,
-      { title: prior.title, notes: prior.notes, cards: parse(prior.cards, []) },
+      { title: prior.title, notes: prior.notes, cards: this.normalizeLegacyCards(episodeId, parse(prior.cards, [])) },
       "undo",
       prior.parent_revision,
     );
@@ -552,6 +614,30 @@ export class Store {
       WHERE l.episode_id=? ORDER BY l.created_at,l.id`).all(episodeId).map((row) =>
         libraryItemRow({ ...row, id: row.id, created_at: row.created_at })
       );
+  }
+  normalizeLegacyCards(episodeId, cards) {
+    const findMembership = this.db.prepare("SELECT id FROM library_items WHERE episode_id=? AND asset_id=? ORDER BY created_at,id LIMIT 1");
+    const converted = [];
+    for (let order = 0; order < cards.length; order++) {
+      const card = cards[order];
+      if (card.type) { converted.push(card); continue; }
+      const common = { ...card, prompt: card.purpose || "", referenceItemIds: [], referenceUrls: [], enabled: true, excluded: false, order };
+      if (!card.visual && !card.narration) { converted.push({ ...common, type: "Video", itemId: null }); continue; }
+      if (card.visual) {
+        const asset = this.getAsset(card.visual.assetId);
+        converted.push({ ...common, type: asset?.kind === "image" ? "Static Graphic" : asset?.metadata?.hasAudio ? "Video/Audio" : "Video",
+          itemId: findMembership.get(episodeId, card.visual.assetId)?.id || null,
+          in: card.visual.in, out: card.visual.out, gain: card.visual.gain, offset: 0,
+          duration: card.duration ?? (asset?.kind === "image" ? card.visual.out - card.visual.in : null) });
+      }
+      if (card.narration) converted.push({ ...common, id: card.visual ? `${card.id}__audio` : card.id,
+        title: card.visual ? `${card.title || "Card"} audio` : card.title, type: "Audio",
+        itemId: findMembership.get(episodeId, card.narration.assetId)?.id || null,
+        role: "voiceover", anchorVisualCardId: card.visual ? card.id : null,
+        in: card.narration.in, out: card.narration.out, offset: card.narration.offset, gain: card.narration.gain,
+        duration: null, visual: null, narration: card.narration, order: order + 0.5 });
+    }
+    return converted;
   }
   getLibraryItem(episodeId, itemId) {
     if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
@@ -608,6 +694,86 @@ export class Store {
     if (!result.changes) throw new StoreError("Stale library revision", 409);
     return this.getLibraryItem(episodeId, itemId);
   }
+  listBrandingTemplates() {
+    return this.db.prepare("SELECT * FROM branding_templates ORDER BY created_at,id").all().map((row) => ({
+      id: row.id, name: row.name, role: row.role, sourceEpisodeId: row.source_episode_id,
+      sourceCardId: row.source_card_id, card: parse(row.card_snapshot, {}), dependencies: parse(row.dependency_items, []),
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    }));
+  }
+  getBrandingTemplate(templateId) {
+    return this.listBrandingTemplates().find((template) => template.id === templateId) || null;
+  }
+  promoteCard(episodeId, cardId, { name, role = null } = {}) {
+    const episode = this.getEpisode(episodeId);
+    if (!episode) throw new StoreError("Episode not found", 404);
+    const card = episode.cards.find((value) => value.id === cardId);
+    if (!card) throw new StoreError("Card not found", 404);
+    if (role != null && !["intro", "outro"].includes(role)) throw new StoreError("Branding role must be intro or outro");
+    const dependencies = [];
+    for (const itemId of [...new Set([card.itemId, ...(card.referenceItemIds || [])].filter(Boolean))]) {
+      const item = this.getLibraryItem(episodeId, itemId);
+      if (!item) throw new StoreError(`Library item not found for this episode: ${itemId}`);
+      const source = path.resolve(this.workspace, item.asset.path);
+      const workspaceReal = realpathSync(this.workspace), sourceReal = realpathSync(source);
+      if (!sourceReal.startsWith(workspaceReal + path.sep)) throw new StoreError("Branding dependency escapes the workspace", 403);
+      const destination = path.join(this.workspace, "branding", "assets", `${item.asset.hash}-${path.basename(item.asset.path)}`);
+      if (!existsSync(destination)) copyFileSync(source, destination);
+      const registered = path.relative(this.workspace, destination);
+      if (item.asset.path !== registered) this.db.prepare("UPDATE assets SET path=? WHERE id=?").run(registered, item.assetId);
+      dependencies.push({ sourceItemId: item.id, assetId: item.assetId, category: item.category, label: item.label });
+    }
+    const snapshot = { ...structuredClone(card), id: null,
+      anchorVisualCardId: card.type === "Audio" ? null : card.anchorVisualCardId,
+      intendedSectionTitle: role === "intro" ? "Intro" : role === "outro" ? "Outro" : card.intendedSectionTitle };
+    const stamp = now(), templateId = id("branding");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (role) this.db.prepare("UPDATE branding_templates SET role=NULL,updated_at=? WHERE role=?").run(stamp, role);
+      this.db.prepare("INSERT INTO branding_templates VALUES(?,?,?,?,?,?,?,?,?)")
+        .run(templateId, String(name || card.title || "Reusable card"), role, episodeId, cardId, JSON.stringify(snapshot), JSON.stringify(dependencies), stamp, stamp);
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    return this.getBrandingTemplate(templateId);
+  }
+  setBrandingRole(templateId, role) {
+    if (role != null && !["intro", "outro"].includes(role)) throw new StoreError("Branding role must be intro or outro");
+    if (!this.getBrandingTemplate(templateId)) throw new StoreError("Branding template not found", 404);
+    const stamp = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (role) this.db.prepare("UPDATE branding_templates SET role=NULL,updated_at=? WHERE role=?").run(stamp, role);
+      this.db.prepare("UPDATE branding_templates SET role=?,updated_at=? WHERE id=?").run(role, stamp, templateId);
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    return this.getBrandingTemplate(templateId);
+  }
+  applyBrandingTemplate(episodeId, templateId, { automatic = false } = {}) {
+    const template = this.getBrandingTemplate(templateId);
+    if (!template) throw new StoreError("Branding template not found", 404);
+    let episode = this.getEpisode(episodeId);
+    if (!episode) throw new StoreError("Episode not found", 404);
+    if (automatic && episode.cards.some((card) => card.brandingTemplateId === templateId)) return episode;
+    const createdItemIds = [], itemMap = new Map();
+    try {
+      for (const dependency of template.dependencies) {
+        const item = this.attachLibraryItem(episodeId, dependency.assetId, { category: dependency.category, label: dependency.label, sourceKind: "branding", provenance: { brandingTemplateId: templateId, sourceItemId: dependency.sourceItemId } });
+        createdItemIds.push(item.id); itemMap.set(dependency.sourceItemId, item.id);
+      }
+      const source = template.card;
+      const intendedSectionTitle = template.role === "intro" ? "Intro" : template.role === "outro" ? "Outro" : source.intendedSectionTitle;
+      const sectionId = intendedSectionTitle ? this.getStory(episodeId).sections.find((section) => section.title.trim().toLowerCase() === intendedSectionTitle.trim().toLowerCase())?.id || null : null;
+      const card = { ...structuredClone(source), id: id("card"), brandingTemplateId: templateId,
+        itemId: source.itemId ? itemMap.get(source.itemId) || null : null,
+        referenceItemIds: (source.referenceItemIds || []).map((value) => itemMap.get(value)).filter(Boolean),
+        anchorVisualCardId: null, sectionId, intendedSectionTitle };
+      episode = this.updateEpisode(episodeId, episode.revision, { cards: [...episode.cards, card] }, automatic ? "branding-standard" : "branding");
+      return episode;
+    } catch (error) {
+      for (const itemId of createdItemIds) this.db.prepare("DELETE FROM library_items WHERE id=? AND episode_id=?").run(itemId, episodeId);
+      throw error;
+    }
+  }
   getStory(episodeId) {
     if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
     const story = storyRow(this.db.prepare("SELECT * FROM stories WHERE episode_id=?").get(episodeId));
@@ -646,6 +812,13 @@ export class Store {
         }
         return card;
       });
+      let assignedStandardCards = false;
+      for (const card of cards) {
+        if (!card.sectionId && card.intendedSectionTitle) {
+          const section = normalized.sections.find((value) => value.title.trim().toLowerCase() === card.intendedSectionTitle.trim().toLowerCase());
+          if (section) { card.sectionId = section.id; assignedStandardCards = true; }
+        }
+      }
       this.db.prepare("UPDATE story_sections SET retired_at=? WHERE episode_id=? AND retired_at IS NULL").run(stamp, episodeId);
       if (normalized.retiredSectionIds.length) {
         const placeholders = normalized.retiredSectionIds.map(() => "?").join(",");
@@ -660,7 +833,7 @@ export class Store {
         WHERE episode_id=? AND revision=?`).run(normalized.source, nextRevision, JSON.stringify(normalized.sections), hash(normalized.source), stamp, episodeId, expectedStoryRevision);
       this.db.prepare("INSERT INTO story_history(episode_id,revision,source,sections,actor,created_at) VALUES(?,?,?,?,?,?)")
         .run(episodeId, nextRevision, normalized.source, JSON.stringify(normalized.sections), actor, stamp);
-      if (unassignedCardIds.length) {
+      if (unassignedCardIds.length || assignedStandardCards) {
         const boardRevision = episode.revision + 1;
         this.db.prepare("UPDATE episodes SET cards=?,revision=?,updated_at=? WHERE id=? AND revision=?")
           .run(JSON.stringify(cards), boardRevision, stamp, episodeId, episode.revision);

@@ -13,6 +13,7 @@
         <div><strong>Storybench</strong><small>Local story studio</small></div>
       </div>
       <div id="saveState" class="pill">Ready</div>
+      <button id="openBranding">Channel branding</button>
     </header>
     <main>
       <aside>
@@ -155,6 +156,8 @@
         <div class="modal-actions"><button type="button" data-library-close>Cancel</button><button class="primary">Save</button></div><div class="error" data-library-edit-error></div>
       </form>
     </dialog>
+    <dialog id="brandingModal" class="library-modal"><div class="modal-heading"><h2>Channel branding</h2><button type="button" data-branding-close>×</button></div><p>Reusable cards are copied into episodes with fresh card and library-item identities.</p><div id="brandingTemplates"></div><div class="modal-actions"><button type="button" data-branding-close>Close</button></div></dialog>
+    <dialog id="promoteCardModal" class="library-modal"><form id="promoteCardForm"><div class="modal-heading"><h2>Promote card</h2><button type="button" data-promote-close>×</button></div><label>Name <input name="name" required></label><label>Standard role <select name="role"><option value="">Reusable only</option><option value="intro">Standard intro</option><option value="outro">Standard outro</option></select></label><div class="modal-actions"><button type="button" data-promote-close>Cancel</button><button class="primary">Promote</button></div><div class="error" data-promote-error></div></form></dialog>
     <div id="toast" role="status"></div>
     <script type="module" src="/app.js?v=round2-editor"></script>
   </body>
