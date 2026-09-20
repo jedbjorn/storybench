@@ -54,8 +54,10 @@ test("final intent is exact, one-use and stale-safe while drafts need no grant",
   const completed = await waitFor(value.store, final.id);
   const output = path.join(value.workspace, completed.outputPath), before = await digest(output);
   const episode = value.episode();
-  value.store.updateEpisode(value.episodeId, episode.revision, { notes: "changed after final" });
+  let changed = value.store.updateEpisode(value.episodeId, episode.revision, { notes: "changed after final" });
   assert.equal(value.renders.getJob(value.episodeId, final.id).stale, true);
+  changed = value.store.updateEpisode(value.episodeId, changed.revision, { cards: changed.cards.map((card) => ({ ...card, excluded: true })) });
+  assert.equal(value.renders.getJob(value.episodeId, final.id).stale, true, "an invalid current plan cannot make an old output look current");
   assert.equal(await digest(output), before);
   assert.equal(await digest(value.source), createHash("sha256").update("source remains unchanged").digest("hex"));
 });
@@ -81,7 +83,10 @@ test("graphic output registers once and never overwrites a card changed during r
   t.after(async () => { await value.renders.close(); value.store.close(); await rm(value.workspace, { recursive: true, force: true }); });
   const recipe = value.renders.createGraphicRecipe(value.episodeId, { name: "Title", cardId: "visual",
     recipe: { kind: "still", width: 1280, height: 720, layers: [{ kind: "text", text: "Title" }] } });
-  const job = value.renders.enqueueGraphic({ episodeId: value.episodeId, recipeId: recipe.id, expectedRecipeRevision: 1 });
+  value.renders.updateGraphicRecipe(value.episodeId, recipe.id, 1, { recipe: { ...recipe.recipe, background: "#123456" } });
+  assert.equal(value.store.getGraphicRecipe(value.episodeId, recipe.id, 1).revision, 1);
+  assert.equal(value.store.getGraphicRecipe(value.episodeId, recipe.id).revision, 2);
+  const job = value.renders.enqueueGraphic({ episodeId: value.episodeId, recipeId: recipe.id, expectedRecipeRevision: 2 });
   const episode = value.episode();
   value.store.updateEpisode(value.episodeId, episode.revision, { cards: episode.cards.map((card) => ({ ...card, title: "User changed card" })) });
   release();

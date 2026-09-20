@@ -128,13 +128,13 @@ async function streamFile(req, res, file, contentType) {
   pipe({ start, end });
 }
 
-export async function createApp({ workspace, onListen, storeOptions } = {}) {
+export async function createApp({ workspace, onListen, storeOptions, renderOptions = {} } = {}) {
   const store = new Store(workspace, storeOptions);
   const listeners = new Map();
   const notify = (episodeId) => listeners.get(episodeId)?.forEach((fn) => fn());
   const chat = createChatService({ store, onChange: notify });
   const library = createLibraryService({ workspace, store });
-  const renders = createRenderService({ workspace, store, renderGraphic, validateGraphicRecipe });
+  const renders = createRenderService({ workspace, store, renderGraphic, validateGraphicRecipe, ...renderOptions });
   const eventStreams = new Set();
   let closing = false;
   let closePromise;

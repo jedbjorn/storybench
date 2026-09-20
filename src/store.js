@@ -273,7 +273,7 @@ export class Store {
     this.recoverPendingStories();
     this.db
       .prepare(
-        "UPDATE jobs SET state='failed', error='Render interrupted by server restart', updated_at=? WHERE state IN ('queued','running')",
+        "UPDATE jobs SET state='failed', error='Render interrupted by server restart', updated_at=? WHERE state IN ('queued','running','cancelling')",
       )
       .run(now());
   }
@@ -993,7 +993,7 @@ export class Store {
       ? this.db.prepare(`SELECT g.*,r.recipe FROM graphic_recipes g
           JOIN graphic_recipe_revisions r ON r.recipe_id=g.id AND r.revision=g.current_revision
           WHERE g.episode_id=? AND g.id=?`).get(episodeId, recipeId)
-      : this.db.prepare(`SELECT g.*,r.recipe,? AS current_revision FROM graphic_recipes g
+      : this.db.prepare(`SELECT g.id,g.episode_id,g.card_id,g.name,g.kind,? AS current_revision,g.created_at,g.updated_at,r.recipe FROM graphic_recipes g
           JOIN graphic_recipe_revisions r ON r.recipe_id=g.id AND r.revision=?
           WHERE g.episode_id=? AND g.id=?`).get(revision, revision, episodeId, recipeId);
     return graphicRecipeRow(row);

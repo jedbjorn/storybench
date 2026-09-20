@@ -77,7 +77,7 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
         const result = await renderCompositionImpl({
           workspace: root, outputPath, preview: job.outputClass === "draft", signal,
           plan: job.snapshot.composition, libraryItems: job.snapshot.libraryItems,
-          onProgress: (progress) => { current = store.saveJob({ ...current, state: "running", progress }); },
+          onProgress: (progress) => { current = store.saveJob({ ...current, state: "running", progress: Math.max(0, Math.min(1, Number(progress) || 0)) }); },
         });
         const relative = path.relative(root, inside(root, result.path || outputPath));
         store.saveJob({ ...current, state: "completed", progress: 1, outputPath: relative, error: null });
@@ -118,7 +118,9 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
   function cancelJob(episodeId, id) {
     const job = getJob(episodeId, id);
     if (!['queued', 'running'].includes(job.state)) throw new StoreError("Only queued or running jobs can be cancelled", 409);
-    if (!worker.cancel(id)) throw new StoreError("Job is no longer active", 409);
+    const cancelled = worker.cancel(id);
+    if (!cancelled) throw new StoreError("Job is no longer active", 409);
+    if (cancelled === "active") store.saveJob({ ...job, state: "cancelling", error: "Cancellation requested" });
     return getJob(episodeId, id);
   }
 
@@ -163,13 +165,15 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
           return inside(root, actual);
         };
         const result = await renderGraphic({ workspace: root, recipe: recipe.recipe, outputPath, resolveImage, signal,
-          onProgress: (progress) => { current = store.saveJob({ ...current, state: "running", progress }); } });
+          onProgress: (progress) => { current = store.saveJob({ ...current, state: "running", progress: Math.max(0, Math.min(1, Number(progress) || 0)) }); } });
         if (signal.aborted) throw signal.reason || new DOMException("Job cancelled", "AbortError");
         const bytes = await readFile(inside(root, result.path || outputPath));
         const hash = createHash("sha256").update(bytes).digest("hex");
         const asset = store.saveAsset({ name: `${recipe.name}.${extension}`, hash, kind: result.kind,
           path: path.relative(root, result.path || outputPath), width: result.width, height: result.height,
           duration: result.duration ?? null, metadata: { ...result.metadata, graphicRecipeId: recipe.id, graphicRecipeRevision: recipe.revision } });
+        if (path.resolve(root, asset.path) !== path.resolve(result.path || outputPath))
+          await rm(outputPath, { force: true });
         let item = store.listEpisodeLibrary(episodeId).find((candidate) => candidate.provenance?.recipeId === recipe.id && candidate.provenance?.recipeRevision === recipe.revision);
         if (!item) item = store.attachLibraryItem(episodeId, asset.id, { category: "Graphics", label: recipe.name,
           sourceKind: "graphic", provenance: { recipeId: recipe.id, recipeRevision: recipe.revision, jobId: value.id } });
