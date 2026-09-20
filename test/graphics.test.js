@@ -4,7 +4,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { GraphicValidationError, renderGraphic, validateGraphicRecipe } from '../src/graphics.js';
+import { DEFAULT_GRAPHIC_FONT, GraphicValidationError, renderGraphic, validateGraphicRecipe } from '../src/graphics.js';
 
 async function workspace(t) {
   const root = await mkdtemp(join(tmpdir(), 'storybench-graphics-'));
@@ -40,6 +40,11 @@ test('renders and decodes a composed PNG with registered bitmap input', async t 
   const bytes = await readFile(output); assert.deepEqual([...bytes.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
   const probe = ffprobe(output); assert.equal(probe.streams[0].width, 320); assert.equal(probe.streams[0].height, 180);
 });
+
+test('uses only the supported deterministic DejaVu Sans locations', () => assert.deepEqual(DEFAULT_GRAPHIC_FONT, {
+  family: 'DejaVu Sans',
+  paths: ['/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', '/usr/share/fonts/TTF/DejaVuSans.ttf'],
+}));
 
 test('renders a decoded 2-second 60-frame motion clip with distinct keyframes', async t => {
   const root = await workspace(t); const output = join(root, 'motion.mp4');

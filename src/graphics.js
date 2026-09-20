@@ -9,7 +9,13 @@ export const GRAPHIC_LIMITS = Object.freeze({
   maxImageBytes: 20 * 1024 * 1024, maxTotalImageBytes: 64 * 1024 * 1024,
   maxImagePixels: 16 * 1024 * 1024, maxTotalImagePixels: 32 * 1024 * 1024,
 });
-export const DEFAULT_GRAPHIC_FONT = Object.freeze({ family: 'DejaVu Sans', path: '/usr/share/fonts/TTF/DejaVuSans.ttf' });
+export const DEFAULT_GRAPHIC_FONT = Object.freeze({
+  family: 'DejaVu Sans',
+  paths: Object.freeze([
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    '/usr/share/fonts/TTF/DejaVuSans.ttf',
+  ]),
+});
 const KINDS = ['text', 'rectangle', 'ellipse', 'line', 'path', 'image'];
 const MOTION = ['x', 'y', 'scale', 'rotation', 'opacity'];
 const COMMON = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, z: 0 };
@@ -167,27 +173,31 @@ function svg(plan, images, time) {
   }).join('');
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${plan.width}" height="${plan.height}" viewBox="0 0 ${plan.width} ${plan.height}"><rect width="100%" height="100%" fill="${xml(plan.background)}"/>${body}</svg>`;
 }
-function raster(plan, images, time) { try { return new Resvg(svg(plan, images, time), { fitTo: { mode: 'original' }, font: { fontFiles: [DEFAULT_GRAPHIC_FONT.path], loadSystemFonts: false, defaultFontFamily: DEFAULT_GRAPHIC_FONT.family } }).render().asPng(); } catch (cause) { const error = new GraphicValidationError('RASTERIZE_FAILED', `Graphic rasterization failed: ${cause.message}`); error.cause = cause; throw error; } }
+async function resolveGraphicFontPath() {
+  for (const path of DEFAULT_GRAPHIC_FONT.paths) if (await access(path).then(() => true, () => false)) return path;
+  fail('FONT_UNAVAILABLE', `Fallback font is unavailable; checked: ${DEFAULT_GRAPHIC_FONT.paths.join(', ')}`, 'font');
+}
+function raster(plan, images, time, fontPath) { try { return new Resvg(svg(plan, images, time), { fitTo: { mode: 'original' }, font: { fontFiles: [fontPath], loadSystemFonts: false, defaultFontFamily: DEFAULT_GRAPHIC_FONT.family } }).render().asPng(); } catch (cause) { const error = new GraphicValidationError('RASTERIZE_FAILED', `Graphic rasterization failed: ${cause.message}`); error.cause = cause; throw error; } }
 const aborted = () => Object.assign(new Error('Graphic rendering cancelled'), { name: 'AbortError', code: 'ABORT_ERR' });
-async function motion(plan, images, target, signal, progress) {
+async function motion(plan, images, target, signal, progress, fontPath) {
   const child = spawn('ffmpeg', ['-v', 'error', '-threads', '2', '-f', 'image2pipe', '-framerate', String(plan.fps), '-vcodec', 'png', '-i', 'pipe:0', '-an', '-r', String(plan.fps), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-y', target], { stdio: ['pipe', 'ignore', 'pipe'] });
   let stderr = ''; child.stderr.setEncoding('utf8'); child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-16000); });
   const exit = new Promise((ok, bad) => { child.on('error', bad); child.on('close', code => code === 0 ? ok() : bad(new Error(`ffmpeg exited with code ${code}: ${stderr.trim() || 'no diagnostics'}`))); });
   const abort = () => child.kill('SIGTERM'); signal?.addEventListener('abort', abort, { once: true });
   const frames = Math.round(plan.duration * plan.fps);
-  try { for (let frame = 0; frame < frames; frame++) { if (signal?.aborted) throw aborted(); const png = raster(plan, images, frame / plan.fps); if (!child.stdin.write(png)) await new Promise((ok, bad) => { child.stdin.once('drain', ok); child.stdin.once('error', bad); }); progress?.((frame + 1) / frames); } child.stdin.end(); await exit; if (signal?.aborted) throw aborted(); return frames; }
+  try { for (let frame = 0; frame < frames; frame++) { if (signal?.aborted) throw aborted(); const png = raster(plan, images, frame / plan.fps, fontPath); if (!child.stdin.write(png)) await new Promise((ok, bad) => { child.stdin.once('drain', ok); child.stdin.once('error', bad); }); progress?.((frame + 1) / frames); } child.stdin.end(); await exit; if (signal?.aborted) throw aborted(); return frames; }
   catch (error) { child.stdin.destroy(); child.kill('SIGTERM'); await exit.catch(() => {}); if (signal?.aborted && error.name !== 'AbortError') throw aborted(); throw error; }
   finally { signal?.removeEventListener('abort', abort); }
 }
 
 export async function renderGraphic({ workspace, recipe, outputPath, resolveImage, signal, onProgress } = {}) {
   const plan = validateGraphicRecipe(recipe, { resolveImage }); if (signal?.aborted) throw aborted();
-  await access(DEFAULT_GRAPHIC_FONT.path).catch(() => fail('FONT_UNAVAILABLE', `Fallback font is unavailable: ${DEFAULT_GRAPHIC_FONT.path}`, 'font'));
+  const fontPath = await resolveGraphicFontPath();
   const { root, images } = await loadImages(plan, workspace, resolveImage); const output = resolve(outputPath); const parent = dirname(output);
   if (!within(root, output)) fail('OUTPUT_PATH_ESCAPE', 'outputPath must be inside workspace', 'outputPath'); await mkdir(parent, { recursive: true });
   if (!within(root, await realpath(parent))) fail('OUTPUT_PATH_ESCAPE', 'outputPath parent escapes workspace', 'outputPath');
   if (await lstat(output).catch(() => null)) fail('OUTPUT_EXISTS', 'outputPath already exists', 'outputPath');
   const temporary = resolve(parent, `.graphic-${randomUUID()}${plan.kind === 'still' ? '.png' : '.mp4'}`);
-  try { let frames = 1; if (plan.kind === 'still') { await writeFile(temporary, raster(plan, images, 0), { flag: 'wx', mode: 0o600 }); onProgress?.(1); } else frames = await motion(plan, images, temporary, signal, onProgress); if (signal?.aborted) throw aborted(); await link(temporary, output); await unlink(temporary); return { path: output, kind: plan.kind === 'still' ? 'image' : 'video', width: plan.width, height: plan.height, ...(plan.kind === 'motion' ? { duration: plan.duration } : {}), metadata: { frames, ...(plan.kind === 'motion' ? { fps: plan.fps } : {}), fontFallback: DEFAULT_GRAPHIC_FONT.family } }; }
+  try { let frames = 1; if (plan.kind === 'still') { await writeFile(temporary, raster(plan, images, 0, fontPath), { flag: 'wx', mode: 0o600 }); onProgress?.(1); } else frames = await motion(plan, images, temporary, signal, onProgress, fontPath); if (signal?.aborted) throw aborted(); await link(temporary, output); await unlink(temporary); return { path: output, kind: plan.kind === 'still' ? 'image' : 'video', width: plan.width, height: plan.height, ...(plan.kind === 'motion' ? { duration: plan.duration } : {}), metadata: { frames, ...(plan.kind === 'motion' ? { fps: plan.fps } : {}), fontFallback: DEFAULT_GRAPHIC_FONT.family } }; }
   finally { await unlink(temporary).catch(() => {}); }
 }
