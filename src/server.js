@@ -142,8 +142,9 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
   const enqueue = (episode, kind) => {
     const assets = store.listAssets();
     const libraryItems = store.listEpisodeLibrary(episode.id);
+    const story = store.getStory(episode.id);
     const composition = episode.cards.some((card) => card.type)
-      ? buildRenderPlan({ sections: store.getStory(episode.id).sections, cards: episode.cards, libraryItems })
+      ? buildRenderPlan({ sections: story.sections, cards: episode.cards, libraryItems })
       : null;
     let job = store.saveJob({
       episodeId: episode.id,
@@ -151,7 +152,7 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
       state: "queued",
       progress: 0,
       revision: episode.revision,
-      snapshot: { episode, assets, libraryItems, composition },
+      snapshot: { episode, story, assets, libraryItems, composition },
     });
     renderTail = renderTail
       .catch(() => {})
