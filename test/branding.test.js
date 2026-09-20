@@ -52,13 +52,14 @@ test("v3 migration splits legacy visual and narration into a valid anchored plan
   const videoItem = store.attachLibraryItem(episode.id, video.id, { category: "B-roll" });
   const audioItem = store.attachLibraryItem(episode.id, audio.id, { category: "Narration" });
   const legacy = [{ id: "legacy-card", title: "Legacy scene", purpose: "Keep timing", notes: "", missing: "", sectionId: story.sections[0].id, duration: null,
-    visual: { assetId: video.id, in: 0, out: 5, offset: 0, gain: 0.7 }, narration: { assetId: audio.id, in: 1, out: 3, offset: 1, gain: 0.4 } }];
+    visual: { assetId: video.id, in: 0, out: 5, offset: 0, gain: 0.7 }, narration: { assetId: audio.id, in: 1, out: 3, offset: 1, gain: 0.4 } },
+  { id: "planning-card", title: "Unfinished", purpose: "Preserve me", notes: "note", missing: "camera", sectionId: story.sections[0].id, visual: null, narration: null }];
   store.db.prepare("UPDATE episodes SET cards=? WHERE id=?").run(JSON.stringify(legacy), episode.id);
   store.db.exec("PRAGMA user_version=3");
   store.close();
   store = new Store(workspace);
   const migrated = store.getEpisode(episode.id).cards;
-  assert.equal(migrated.length, 2);
+  assert.equal(migrated.length, 3);
   assert.equal(migrated[0].id, "legacy-card");
   assert.equal(migrated[0].itemId, videoItem.id);
   assert.equal(migrated[1].id, "legacy-card__audio");
@@ -66,7 +67,9 @@ test("v3 migration splits legacy visual and narration into a valid anchored plan
   assert.equal(migrated[1].anchorVisualCardId, "legacy-card");
   assert.equal(migrated[1].offset, 1);
   assert.equal(migrated[1].gain, 0.4);
-  const plan = buildRenderPlan({ sections: store.getStory(episode.id).sections, cards: migrated, libraryItems: store.listEpisodeLibrary(episode.id) });
+  assert.deepEqual({ id: migrated[2].id, type: migrated[2].type, prompt: migrated[2].prompt, itemId: migrated[2].itemId, missing: migrated[2].missing },
+    { id: "planning-card", type: "Video", prompt: "Preserve me", itemId: null, missing: "camera" });
+  const plan = buildRenderPlan({ sections: store.getStory(episode.id).sections, cards: migrated.slice(0, 2), libraryItems: store.listEpisodeLibrary(episode.id) });
   assert.equal(plan.audioPlacements[0].startFrame, 30);
   assert.equal(plan.audioPlacements[0].sourceInFrame, 30);
 });

@@ -353,7 +353,7 @@ export class Store {
         FROM episode_library l JOIN assets a ON a.id=l.asset_id`).run();
       for (const row of this.db.prepare("SELECT id,cards FROM episodes").all()) {
         const legacy = parse(row.cards, []);
-        if (!legacy.some((card) => !card.type && (card.visual || card.narration))) continue;
+        if (!legacy.some((card) => !card.type)) continue;
         this.db.prepare("UPDATE episodes SET cards=? WHERE id=?").run(JSON.stringify(this.normalizeLegacyCards(row.id, legacy)), row.id);
       }
       this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(4,?)").run(stamp);
@@ -620,11 +620,12 @@ export class Store {
     const converted = [];
     for (let order = 0; order < cards.length; order++) {
       const card = cards[order];
-      if (card.type || (!card.visual && !card.narration)) { converted.push(card); continue; }
+      if (card.type) { converted.push(card); continue; }
       const common = { ...card, prompt: card.purpose || "", referenceItemIds: [], referenceUrls: [], enabled: true, excluded: false, order };
+      if (!card.visual && !card.narration) { converted.push({ ...common, type: "Video", itemId: null }); continue; }
       if (card.visual) {
         const asset = this.getAsset(card.visual.assetId);
-        converted.push({ ...common, type: asset?.kind === "image" ? "Static Graphic" : "Video/Audio",
+        converted.push({ ...common, type: asset?.kind === "image" ? "Static Graphic" : asset?.metadata?.hasAudio ? "Video/Audio" : "Video",
           itemId: findMembership.get(episodeId, card.visual.assetId)?.id || null,
           in: card.visual.in, out: card.visual.out, gain: card.visual.gain, offset: 0,
           duration: card.duration ?? (asset?.kind === "image" ? card.visual.out - card.visual.in : null) });
