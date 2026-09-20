@@ -25,9 +25,14 @@ const toolSpecs = [
   { type: 'function', name: 'create_final', description: 'Consume a human-created one-use grant for the exact render revision.', inputSchema: object(['expectedRenderRevision','finalGrantId'], { expectedRenderRevision: { type: 'string' }, finalGrantId: { type: 'string' } }) },
   { type: 'function', name: 'get_job', description: 'Read one render or graphic job in this episode.', inputSchema: object(['jobId'], { jobId: { type: 'string' } }) },
   { type: 'function', name: 'cancel_job', description: 'Cancel one active job in this episode.', inputSchema: object(['jobId'], { jobId: { type: 'string' } }) },
+  { type: 'function', name: 'list_graphic_recipes', description: 'List editable graphic recipes in this episode.', inputSchema: empty },
+  { type: 'function', name: 'get_graphic_recipe', description: 'Read one editable graphic recipe in this episode.', inputSchema: object(['recipeId'], { recipeId: { type: 'string' } }) },
   { type: 'function', name: 'create_graphic_recipe', description: 'Create a validated episode graphic recipe.', inputSchema: object(['name','recipe'], { name: { type: 'string' }, cardId: { type: 'string' }, recipe: { type: 'object' } }) },
   { type: 'function', name: 'update_graphic_recipe', description: 'Revision-check and update an episode graphic recipe.', inputSchema: object(['recipeId','expectedRevision','recipe'], { recipeId: { type: 'string' }, expectedRevision: { type: 'integer', minimum: 1 }, name: { type: 'string' }, cardId: { type: 'string' }, recipe: { type: 'object' } }) },
   { type: 'function', name: 'render_graphic', description: 'Render an exact graphic recipe revision.', inputSchema: object(['recipeId','expectedRecipeRevision'], { recipeId: { type: 'string' }, expectedRecipeRevision: { type: 'integer', minimum: 1 } }) },
+  { type: 'function', name: 'list_branding', description: 'List reusable channel branding templates.', inputSchema: empty },
+  { type: 'function', name: 'promote_card', description: 'Promote an episode card into reusable channel branding.', inputSchema: object(['cardId','name'], { cardId: { type: 'string' }, name: { type: 'string' }, role: { anyOf: [{ type: 'string', enum: ['intro','outro'] }, { type: 'null' }] } }) },
+  { type: 'function', name: 'apply_branding', description: 'Apply a reusable branding template to this episode.', inputSchema: object(['templateId'], { templateId: { type: 'string' } }) },
 ];
 
 const DISABLED_FEATURES = [
