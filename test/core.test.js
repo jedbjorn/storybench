@@ -180,6 +180,40 @@ test("HTTP shutdown closes SSE and completed job files cannot escape through sym
   ]);
 });
 
+test("missing static routes return 404 repeatedly without crashing the HTTP service", async (t) => {
+  const dir = await fixture(t);
+  const app = await createApp({ workspace: dir });
+  t.after(() => app.close());
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const episode = app.store.createEpisode({ title: "Recovery" });
+  const outputPath = path.join(dir, "exports", "known.mp4");
+  await writeFile(outputPath, "registered output");
+  const job = app.store.saveJob({
+    episodeId: episode.id,
+    kind: "export",
+    state: "completed",
+    progress: 1,
+    revision: episode.revision,
+    outputPath: "exports/known.mp4",
+  });
+
+  for (let attempt = 0; attempt < 5; attempt++)
+    assert.equal((await fetch(`${base}/favicon.ico`)).status, 404);
+  assert.equal((await fetch(`${base}/unknown-static-path`)).status, 404);
+  assert.equal((await fetch(`${base}/api/not-a-route`)).status, 404);
+
+  const [state, page, output] = await Promise.all([
+    fetch(`${base}/api/state`),
+    fetch(`${base}/`),
+    fetch(`${base}/api/jobs/${job.id}/file`),
+  ]);
+  assert.equal(state.status, 200);
+  assert.equal(page.status, 200);
+  assert.equal(output.status, 200);
+  assert.equal(await output.text(), "registered output");
+});
+
 test("shutdown leaves no queued or running render state", async (t) => {
   const dir = await fixture(t);
   const app = await createApp({ workspace: dir });

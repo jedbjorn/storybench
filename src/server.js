@@ -320,7 +320,7 @@ export async function createApp({ workspace, onListen } = {}) {
         contained(workspaceReal, path.relative(workspaceReal, actual));
         const sourceType =
           mime[path.extname(asset.metadata?.originPath || "").toLowerCase()];
-        return streamFile(
+        return await streamFile(
           req,
           res,
           actual,
@@ -339,7 +339,7 @@ export async function createApp({ workspace, onListen } = {}) {
         const workspaceReal = await realpath(workspace);
         const actual = await realpath(contained(workspace, job.outputPath));
         contained(workspaceReal, path.relative(workspaceReal, actual));
-        return streamFile(req, res, actual);
+        return await streamFile(req, res, actual);
       }
       if (!["GET", "HEAD"].includes(req.method))
         throw new StoreError("Route not found", 404);
@@ -347,7 +347,7 @@ export async function createApp({ workspace, onListen } = {}) {
         url.pathname === "/"
           ? "index.html"
           : decodeURIComponent(url.pathname.slice(1));
-      return streamFile(req, res, contained(publicDir, relative));
+      return await streamFile(req, res, contained(publicDir, relative));
     } catch (error) {
       if (!res.headersSent)
         send(res, error.statusCode || (error.code === "ENOENT" ? 404 : 500), {
