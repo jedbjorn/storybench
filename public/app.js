@@ -73,8 +73,13 @@ function render() {
   $("#jobs").innerHTML =
     jobs
       .map(
-        (j) =>
-          `<div class="job"><div><b>${esc(j.kind)}</b> · revision ${j.revision}${j.stale === true ? " · out of date" : ""}<br><span class="${j.state === "failed" ? "failed" : ""}">${esc(j.error || j.state)} ${j.state === "running" ? Math.round(j.progress * 100) + "%" : ""}</span>${j.state === "completed" && ["draft", "final"].includes(j.outputClass) ? `<video controls preload="metadata" src="/api/jobs/${j.id}/file" style="display:block;max-width:420px;width:100%;margin-top:8px"></video>` : ""}</div><div>${["queued", "running"].includes(j.state) ? `<button data-cancel-job="${j.id}">Cancel</button>` : ""}${j.state === "completed" ? `<a href="/api/jobs/${j.id}/file" target="_blank"><button>Open</button></a>` : ""}</div></div>`,
+        (j) => {
+          const completedOutput = j.state === "completed" && ["draft", "final"].includes(j.outputClass);
+          const title = completedOutput
+            ? `${j.outputClass === "final" ? "Final" : "Draft"} — ${new Date(j.createdAt).toLocaleString()}`
+            : j.kind;
+          return `<div class="job"><div><b>${esc(title)}</b> · revision ${j.revision}${j.stale === true ? " · out of date" : ""}<br><span class="${j.state === "failed" ? "failed" : ""}">${esc(j.error || j.state)} ${j.state === "running" ? Math.round(j.progress * 100) + "%" : ""}</span>${completedOutput ? `<video controls preload="metadata" src="/api/jobs/${j.id}/file" style="display:block;max-width:420px;width:100%;margin-top:8px"></video>` : ""}</div><div>${["queued", "running"].includes(j.state) ? `<button data-cancel-job="${j.id}">Cancel</button>` : ""}${j.state === "completed" ? `<a href="/api/jobs/${j.id}/file" target="_blank"><button>Open</button></a>` : ""}</div></div>`;
+        },
       )
       .join("") || "<p>No renders yet.</p>";
   if (!$("#storyPanel").hidden)
