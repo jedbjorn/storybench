@@ -104,6 +104,37 @@ test("URL references reject private destinations and revalidate redirects", asyn
   assert.equal(f.store.listEpisodeLibrary(f.episode.id).length, 0);
 });
 
+test("URL references reject private IPv4-mapped IPv6 before connecting", async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  let connected = false;
+  const service = createLibraryService({
+    workspace: f.workspace, store: f.store,
+    dnsLookup: async () => [{ address: "::ffff:a00:1", family: 6 }],
+    fetchImpl: async () => { connected = true; return new Response("never"); },
+  });
+  await assert.rejects(service.registerUrl({ episodeId: f.episode.id, url: "https://mapped.example" }), /forbidden destination/);
+  assert.equal(connected, false);
+});
+
+test("unreadable PDF and invalid UTF-8 preserve originals with unavailable extraction", async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  const service = createLibraryService({ workspace: f.workspace, store: f.store });
+  const pdfSource = Buffer.from("%PDF-1.7\nnot a complete PDF\n");
+  const pdf = await service.registerFile({ episodeId: f.episode.id, readable: Readable.from(pdfSource), fileName: "scan.pdf", contentType: "application/pdf", selectedCategory: "Reference" });
+  assert.equal(pdf.extractionStatus, "unavailable");
+  assert.match(pdf.provenance.extractionError, /PDF metadata unavailable/);
+  assert.deepEqual(await readFile(path.join(f.workspace, pdf.asset.path)), pdfSource);
+
+  const invalid = Buffer.from([0x66, 0x80, 0x67]);
+  const text = await service.registerFile({ episodeId: f.episode.id, readable: Readable.from(invalid), fileName: "invalid.txt", contentType: "text/plain", selectedCategory: "Reference" });
+  assert.equal(text.extractionStatus, "unavailable");
+  assert.equal(text.extractedText, "");
+  assert.match(text.provenance.extractionError, /valid UTF-8/);
+  assert.deepEqual(await readFile(path.join(f.workspace, text.asset.path)), invalid);
+});
+
 test("HTTP library routes scope previews to episode membership", async (t) => {
   const workspace = await mkdtemp(path.join(tmpdir(), "storybench-library-http-"));
   const app = await createApp({ workspace });

@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import dns from "node:dns/promises";
+import http from "node:http";
+import https from "node:https";
 import net from "node:net";
 import path from "node:path";
 import { createReadStream, createWriteStream } from "node:fs";
@@ -43,6 +45,16 @@ function isPrivate(address) {
       (a === 203 && b === 0 && c === 113);
   }
   const value = address.toLowerCase().split("%")[0];
+  if (value.startsWith("::ffff:")) {
+    const mapped = value.slice(7);
+    if (net.isIPv4(mapped)) return isPrivate(mapped);
+    const words = mapped.split(":");
+    if (words.length === 2) {
+      const high = Number.parseInt(words[0], 16), low = Number.parseInt(words[1], 16);
+      if (Number.isInteger(high) && Number.isInteger(low))
+        return isPrivate(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
+    }
+  }
   return value === "::" || value === "::1" || value.startsWith("fe80:") || value.startsWith("fc") ||
     value.startsWith("fd") || value.startsWith("ff") || value.startsWith("2001:db8:") || value.startsWith("::ffff:127.");
 }
@@ -58,33 +70,67 @@ async function validatePublicUrl(input, lookup = dns.lookup) {
   catch { throw new StoreError("Reference URL host could not be resolved", 422); }
   if (!addresses.length || addresses.some(({ address }) => isPrivate(address)))
     throw new StoreError("Reference URL resolves to a forbidden destination", 403);
-  return url;
+  return { url, addresses };
+}
+function requestPublic(url, addresses, signal) {
+  return new Promise((resolve, reject) => {
+    const client = url.protocol === "https:" ? https : http;
+    const request = client.request(url, {
+      method: "GET",
+      headers: { accept: "text/html,text/plain,application/pdf;q=0.9" },
+      lookup(_hostname, options, callback) {
+        if (options?.all) callback(null, addresses);
+        else callback(null, addresses[0].address, addresses[0].family);
+      },
+      signal,
+    }, (response) => resolve({
+      status: response.statusCode || 0,
+      ok: response.statusCode >= 200 && response.statusCode < 300,
+      headers: { get: (name) => response.headers[String(name).toLowerCase()] || null },
+      body: response,
+    }));
+    request.on("error", reject);
+    request.end();
+  });
+}
+function decodeUtf8(buffer) {
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(buffer); }
+  catch { return null; }
 }
 async function extractReference(file, name, contentType) {
   const extension = path.extname(name).toLowerCase();
   if (extension === ".pdf" || /^application\/pdf(?:;|$)/i.test(contentType || "")) {
-    const { stdout: info } = await execFileAsync("pdfinfo", [file], { maxBuffer: 1024 * 1024 });
+    let info;
+    try { ({ stdout: info } = await execFileAsync("pdfinfo", [file], { maxBuffer: 1024 * 1024 })); }
+    catch (error) { return { text: "", truncated: false, status: "unavailable", format: "pdf", error: `PDF metadata unavailable: ${error.message}` }; }
     const pages = Number(/^Pages:\s+(\d+)/mi.exec(info)?.[1] || 0);
-    if (!pages || pages > 100) throw new StoreError("PDF must contain at most 100 readable pages", 422);
-    const { stdout } = await execFileAsync("pdftotext", ["-layout", file, "-"], { maxBuffer: 2 * 1024 * 1024 });
+    if (pages > 100) throw new StoreError("PDF must contain at most 100 pages", 422);
+    if (!pages) return { text: "", truncated: false, status: "unavailable", format: "pdf", error: "PDF page count unavailable" };
+    let stdout;
+    try { ({ stdout } = await execFileAsync("pdftotext", ["-layout", file, "-"], { maxBuffer: 2 * 1024 * 1024 })); }
+    catch (error) { return { text: "", truncated: false, status: "unavailable", format: "pdf", pages, error: `PDF text unavailable: ${error.message}` }; }
     const extracted = boundedText(stdout);
-    return { ...extracted, status: extracted.truncated ? "truncated" : "complete", format: "pdf", pages };
+    return { ...extracted, status: extracted.truncated ? "truncated" : extracted.text.trim() ? "complete" : "unavailable", format: "pdf", pages,
+      ...(extracted.text.trim() ? {} : { error: "PDF contains no extractable text" }) };
   }
   if (extension === ".html" || extension === ".htm" || /text\/html/i.test(contentType || "")) {
-    const html = await readFile(file, "utf8");
+    const html = decodeUtf8(await readFile(file));
+    if (html == null) return { text: "", truncated: false, status: "unavailable", format: "html", error: "Reference is not valid UTF-8" };
     const dom = new JSDOM(html, { url: "https://storybench.invalid/reference" });
     const article = new Readability(dom.window.document).parse();
     const extracted = boundedText([article?.title, article?.textContent].filter(Boolean).join("\n\n"));
     return { ...extracted, status: extracted.truncated ? "truncated" : article ? "complete" : "unsupported", format: "html" };
   }
   if (extension === ".txt" || extension === ".md" || /^text\//i.test(contentType || "")) {
-    const extracted = boundedText(await readFile(file, "utf8"));
+    const decoded = decodeUtf8(await readFile(file));
+    if (decoded == null) return { text: "", truncated: false, status: "unavailable", format: extension.slice(1) || "text", error: "Reference is not valid UTF-8" };
+    const extracted = boundedText(decoded);
     return { ...extracted, status: extracted.truncated ? "truncated" : "complete", format: extension.slice(1) || "text" };
   }
   return { text: "", truncated: false, status: "unsupported", format: extension.slice(1) || "binary" };
 }
 
-export function createLibraryService({ workspace, store, fetchImpl = fetch, dnsLookup = dns.lookup } = {}) {
+export function createLibraryService({ workspace, store, fetchImpl = null, dnsLookup = dns.lookup } = {}) {
   let importTail = Promise.resolve();
   const serialized = (fn) => {
     const result = importTail.catch(() => {}).then(fn);
@@ -132,7 +178,7 @@ export function createLibraryService({ workspace, store, fetchImpl = fetch, dnsL
         return store.attachLibraryItem(episodeId, asset.id, {
           category: chosenCategory, label: name, sourceKind: "file",
           extractedText: extraction.text, extractionStatus: extraction.status,
-          provenance: { fileName: name, contentType: contentType || null, bytes, format: extraction.format, truncated: extraction.truncated, pages: extraction.pages || null },
+          provenance: { fileName: name, contentType: contentType || null, bytes, format: extraction.format, truncated: extraction.truncated, pages: extraction.pages || null, extractionError: extraction.error || null },
         });
       } finally { await rm(temporary, { force: true }); }
     });
@@ -156,15 +202,19 @@ export function createLibraryService({ workspace, store, fetchImpl = fetch, dnsL
     return serialized(async () => {
       if (!store.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
       store.ensureEpisodeDirectories(episodeId);
-      let current = await validatePublicUrl(input, dnsLookup);
+      let validated = await validatePublicUrl(input, dnsLookup);
+      let current = validated.url;
       let response;
       for (let redirects = 0; redirects <= 5; redirects++) {
-        response = await fetchImpl(current, { redirect: "manual", signal, headers: { accept: "text/html,text/plain,application/pdf;q=0.9" } });
+        response = fetchImpl
+          ? await fetchImpl(current, { redirect: "manual", signal, headers: { accept: "text/html,text/plain,application/pdf;q=0.9" }, validatedAddresses: validated.addresses })
+          : await requestPublic(current, validated.addresses, signal);
         if (![301, 302, 303, 307, 308].includes(response.status)) break;
         if (redirects === 5) throw new StoreError("Reference URL redirected too many times", 422);
         const location = response.headers.get("location");
         if (!location) throw new StoreError("Reference URL redirect has no destination", 422);
-        current = await validatePublicUrl(new URL(location, current).href, dnsLookup);
+        validated = await validatePublicUrl(new URL(location, current).href, dnsLookup);
+        current = validated.url;
       }
       if (!response.ok) throw new StoreError(`Reference URL returned HTTP ${response.status}`, 422);
       const declared = Number(response.headers.get("content-length") || 0);
@@ -180,7 +230,7 @@ export function createLibraryService({ workspace, store, fetchImpl = fetch, dnsL
         const registered = path.join(store.episodeDirectory(episodeId), "reference", `${hash.slice(0, 16)}-${name}`);
         try { await stat(registered); } catch { await copyFile(temporary, registered); }
         const asset = store.saveAsset({ name, hash, kind: "reference", path: path.relative(workspace, registered), metadata: { contentType, bytes, sourceUrl: current.href } });
-        return store.attachLibraryItem(episodeId, asset.id, { category: "Reference", label: name, sectionId, sourceKind: "url", sourceUrl: current.href, extractedText: extraction.text, extractionStatus: extraction.status, provenance: { requestedUrl: String(input), finalUrl: current.href, contentType, bytes, format: extraction.format, truncated: extraction.truncated, pages: extraction.pages || null } });
+        return store.attachLibraryItem(episodeId, asset.id, { category: "Reference", label: name, sectionId, sourceKind: "url", sourceUrl: current.href, extractedText: extraction.text, extractionStatus: extraction.status, provenance: { requestedUrl: String(input), finalUrl: current.href, contentType, bytes, format: extraction.format, truncated: extraction.truncated, pages: extraction.pages || null, extractionError: extraction.error || null } });
       } finally { await rm(temporary, { force: true }); }
     });
   }
