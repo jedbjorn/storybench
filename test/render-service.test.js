@@ -73,6 +73,18 @@ test("changed render inputs invalidate an unconsumed final grant", async (t) => 
     expectedRenderRevision: snapshot.renderRevision, finalGrantId: grant.id, requestId: "intent" }), /inputs changed/i);
 });
 
+test("closed worker rejects final enqueue before consuming intent or creating a job", async (t) => {
+  const value = await fixture();
+  t.after(async () => { value.store.close(); await rm(value.workspace, { recursive: true, force: true }); });
+  const snapshot = value.renders.getRenderSnapshot(value.episodeId);
+  const grant = value.renders.mintFinalGrant({ episodeId: value.episodeId, expectedRenderRevision: snapshot.renderRevision, requestId: "shutdown" });
+  await value.renders.close();
+  assert.throws(() => value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final",
+    expectedRenderRevision: snapshot.renderRevision, finalGrantId: grant.id, requestId: "shutdown" }), /worker is closed/i);
+  assert.equal(value.store.listJobs(value.episodeId).length, 0);
+  assert.equal(value.store.db.prepare("SELECT consumed_at FROM final_authorizations WHERE id=?").get(grant.id).consumed_at, null);
+});
+
 test("graphic output registers once and never overwrites a card changed during rendering", async (t) => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });

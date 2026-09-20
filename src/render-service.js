@@ -90,6 +90,7 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
   }
 
   function enqueueRender({ episodeId, outputClass, expectedRenderRevision, finalGrantId = null, conversationId = null, requestId = null }) {
+    worker.assertOpen();
     if (!["draft", "final"].includes(outputClass)) throw new StoreError("outputClass must be draft or final");
     const snapshot = getRenderSnapshot(episodeId);
     if (snapshot.renderRevision !== expectedRenderRevision)
@@ -139,6 +140,7 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
   }
 
   function enqueueGraphic({ episodeId, recipeId, expectedRecipeRevision }) {
+    worker.assertOpen();
     if (!renderGraphic) throw new StoreError("Graphics capability is unavailable", 503);
     const recipe = store.getGraphicRecipe(episodeId, recipeId);
     if (!recipe) throw new StoreError("Graphic recipe not found", 404);

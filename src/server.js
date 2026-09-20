@@ -128,13 +128,13 @@ async function streamFile(req, res, file, contentType) {
   pipe({ start, end });
 }
 
-export async function createApp({ workspace, onListen, storeOptions, renderOptions = {} } = {}) {
+export async function createApp({ workspace, onListen, storeOptions, renderOptions = {}, chatOptions = {} } = {}) {
   const store = new Store(workspace, storeOptions);
   const listeners = new Map();
   const notify = (episodeId) => listeners.get(episodeId)?.forEach((fn) => fn());
-  const chat = createChatService({ store, onChange: notify });
   const library = createLibraryService({ workspace, store });
   const renders = createRenderService({ workspace, store, renderGraphic, validateGraphicRecipe, ...renderOptions });
+  const chat = createChatService({ store, renders, onChange: notify, ...chatOptions });
   const eventStreams = new Set();
   let closing = false;
   let closePromise;
@@ -142,6 +142,7 @@ export async function createApp({ workspace, onListen, storeOptions, renderOptio
   const server = http.createServer(async (req, res) => {
     try {
       ensureLocal(req);
+      if (closing && !["GET", "HEAD"].includes(req.method)) throw new StoreError("Application is shutting down", 503);
       const url = new URL(req.url, `http://${req.headers.host}`);
       const parts = url.pathname.split("/").filter(Boolean);
       if (req.method === "GET" && url.pathname === "/api/state")
@@ -311,9 +312,31 @@ export async function createApp({ workspace, onListen, storeOptions, renderOptio
         if (parts[3] === "jobs" && parts[4] && parts[5] === "cancel" && req.method === "POST") {
           const value = renders.cancelJob(episodeId, parts[4]); notify(episodeId); return send(res, 200, value);
         }
+        if (parts[3] === "chats") {
+          if (parts.length === 4 && req.method === "GET") return send(res, 200, chat.list(episodeId));
+          if (parts.length === 4 && req.method === "POST") return send(res, 201, chat.create(episodeId, await jsonBody(req)));
+          const conversationId = parts[4];
+          if (conversationId && parts.length === 5 && req.method === "GET") return send(res, 200, chat.get(episodeId, conversationId));
+          if (conversationId && parts.length === 5 && req.method === "PUT") return send(res, 200, chat.update(episodeId, conversationId, await jsonBody(req)));
+          if (conversationId && parts[5] === "messages" && req.method === "POST") {
+            const body = await jsonBody(req); return send(res, 202, await chat.send(episodeId, conversationId, body.text));
+          }
+          if (conversationId && parts[5] === "interrupt" && req.method === "POST")
+            return send(res, 202, await chat.interrupt(episodeId, conversationId));
+          if (conversationId && parts[5] === "events" && req.method === "GET") {
+            res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+            eventStreams.add(res);
+            const emit = (event) => { if (!event || event.conversationId === conversationId) res.write(`data: ${JSON.stringify(event || chat.get(episodeId, conversationId))}\n\n`); };
+            emit();
+            const cleanup = chat.subscribe(episodeId, emit);
+            const keep = setInterval(() => res.write(": keepalive\n\n"), 20000);
+            req.on("close", () => { eventStreams.delete(res); clearInterval(keep); cleanup?.(); });
+            return;
+          }
+        }
         if (parts[3] === "chat") {
           if (parts.length === 4 && req.method === "GET")
-            return send(res, 200, await chat.get(episodeId));
+            return send(res, 200, chat.getLegacy(episodeId));
           if (parts.length === 4 && req.method === "POST") {
             const body = await jsonBody(req);
             if (!String(body.text || "").trim())
@@ -321,11 +344,11 @@ export async function createApp({ workspace, onListen, storeOptions, renderOptio
             return send(
               res,
               202,
-              await chat.send(episodeId, String(body.text)),
+              await chat.sendLegacy(episodeId, String(body.text)),
             );
           }
           if (parts[4] === "interrupt" && req.method === "POST")
-            return send(res, 202, await chat.interrupt(episodeId));
+            return send(res, 202, await chat.interruptLegacy(episodeId));
           if (
             parts[4] === "events" &&
             req.method === "GET" &&
@@ -339,7 +362,7 @@ export async function createApp({ workspace, onListen, storeOptions, renderOptio
             eventStreams.add(res);
             const emit = async () =>
               res.write(
-                `data: ${JSON.stringify(await chat.get(episodeId))}\n\n`,
+                `data: ${JSON.stringify(chat.getLegacy(episodeId))}\n\n`,
               );
             await emit();
             const cleanup = chat.subscribe(episodeId, emit);

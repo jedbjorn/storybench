@@ -110,32 +110,7 @@
           </div>
         </div>
       </section>
-      <aside class="chat">
-        <div class="chat-head">
-          <div>
-            <b>Story assistant</b
-            ><span id="chatStatus">Ready when you are</span>
-          </div>
-          <span class="spark">✦</span>
-        </div>
-        <div id="messages">
-          <div class="welcome">
-            Ask for help shaping the arc, renaming cards, or reorganizing the
-            storyboard. Your message and project context are sent to your
-            configured Codex provider.
-          </div>
-        </div>
-        <form id="chatForm">
-          <textarea
-            id="chatText"
-            placeholder="How should this story flow?"
-          ></textarea>
-          <div>
-            <button id="stopChat" type="button" hidden>Stop</button
-            ><button class="primary">Send</button>
-          </div>
-        </form>
-      </aside>
+      <aside class="chat" id="chatWorkspace" hidden></aside>
     </main>
     <dialog id="libraryImportModal" class="library-modal">
       <form method="dialog"><div class="modal-heading"><h2>Import to library</h2><button value="cancel" aria-label="Close">×</button></div></form>

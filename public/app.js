@@ -1,11 +1,11 @@
 import { StoryEditor } from "/story-editor.js?v=round2-editor";
 import { LibraryWorkspace, episodeNavigatorHTML } from "/library-workspace.js";
 import { setCardType } from "/card-workspace.js";
+import { ChatWorkspace } from "/chat-workspace.js";
 
 const $ = (s) => document.querySelector(s);
 let state = { episodes: [], assets: [], jobs: [] },
   episode = null,
-  chatTimer = null,
   fieldTimer,
   dirty = false,
   saveInFlight = null,
@@ -50,6 +50,7 @@ async function load(select) {
   else if (episode)
     episode = state.episodes.find((e) => e.id === episode.id) || null;
   render();
+  await syncChat();
 }
 function render() {
   const filter = $("#episodeFilter").value;
@@ -87,6 +88,12 @@ const storyEditor = new StoryEditor({
   toast,
 });
 const libraryWorkspace = new LibraryWorkspace({ api, toast, getEpisode: () => episode, refreshState: () => load(episode?.id) });
+const chatWorkspace = new ChatWorkspace({ root: $("#chatWorkspace"), api, toast, getEpisode: () => episode });
+async function syncChat() {
+  if (episode?.id === chatWorkspace.episodeId) return;
+  if (episode) await chatWorkspace.open();
+  else chatWorkspace.close();
+}
 
 async function leaveStory() {
   const choice = await storyEditor.requestLeave();
@@ -262,7 +269,7 @@ $("#episodes").onclick = async (e) => {
     await flushDraft();
     episode = state.episodes.find((x) => x.id === id);
     render();
-    refreshChat();
+    await chatWorkspace.open();
     if (!$("#mediaPanel").hidden) libraryWorkspace.open().catch((error) => toast(error.message));
   }
 };
@@ -391,16 +398,17 @@ async function renderJob(kind) {
   try {
     await flushDraft();
     const plan = await api(`/api/episodes/${episode.id}/render-plan`);
-    let finalGrantId = null, requestId = null;
+    let finalGrantId = null, requestId = null, conversationId = null;
     if (kind === "final") {
-      requestId = crypto.randomUUID();
+      conversationId = chatWorkspace.currentId;
+      if (!conversationId) requestId = crypto.randomUUID();
       const grant = await api(`/api/episodes/${episode.id}/final-authorizations`, { method: "POST",
-        body: JSON.stringify({ expectedRenderRevision: plan.renderRevision, requestId }) });
+        body: JSON.stringify({ expectedRenderRevision: plan.renderRevision, conversationId, requestId }) });
       finalGrantId = grant.id;
     }
     await api(`/api/episodes/${episode.id}/render`, {
       method: "POST",
-      body: JSON.stringify({ outputClass: kind, expectedRenderRevision: plan.renderRevision, finalGrantId, requestId }),
+      body: JSON.stringify({ outputClass: kind, expectedRenderRevision: plan.renderRevision, finalGrantId, conversationId, requestId }),
     });
     toast(`${kind === "final" ? "Final" : "Draft"} queued`);
     await load(episode.id);
@@ -454,64 +462,6 @@ setInterval(async () => {
       if (!$("#boardPanel").hidden) await loadBoardContext();
     } catch (error) { toast(error.message); }
 }, 1800);
-function drawChat(s) {
-  $("#chatStatus").textContent = s.error || s.state || "Ready";
-  $("#stopChat").hidden = !["queued", "running", "interrupting"].includes(
-    s.state,
-  );
-  const msgs = s.messages || [];
-  $("#messages").innerHTML =
-    '<div class="welcome">Ask for help shaping the arc, renaming cards, or reorganizing the storyboard. Your message and project context are sent to your configured Codex provider.</div>' +
-    msgs
-      .map(
-        (m) =>
-          `<div class="message ${esc(m.role)}">${esc(m.text || m.content || "")}</div>`,
-      )
-      .join("");
-  $("#messages").scrollTop = $("#messages").scrollHeight;
-}
-async function refreshChat() {
-  if (!episode) return;
-  const target = episode.id;
-  try {
-    const s = await api(`/api/episodes/${target}/chat`);
-    if (episode?.id !== target) return;
-    drawChat(s);
-    if (["queued", "running", "interrupting"].includes(s.state)) {
-      clearTimeout(chatTimer);
-      chatTimer = setTimeout(refreshChat, 900);
-    } else await load(target);
-  } catch (e) {
-    $("#chatStatus").textContent = e.message;
-  }
-}
-$("#chatForm").onsubmit = async (e) => {
-  e.preventDefault();
-  const text = $("#chatText").value.trim();
-  if (!text || !episode) return;
-  $("#chatText").value = "";
-  try {
-    await flushDraft();
-    drawChat(
-      await api(`/api/episodes/${episode.id}/chat`, {
-        method: "POST",
-        body: JSON.stringify({ text }),
-      }),
-    );
-    refreshChat();
-  } catch (e) {
-    toast(e.message);
-  }
-};
-$("#stopChat").onclick = async () => {
-  if (episode)
-    drawChat(
-      await api(`/api/episodes/${episode.id}/chat/interrupt`, {
-        method: "POST",
-        body: "{}",
-      }),
-    );
-};
 window.addEventListener("beforeunload", (event) => {
   if (storyEditor.isDirty()) event.preventDefault();
 });

@@ -19,8 +19,12 @@ export class HeavyJobQueue {
     this.draining = null;
   }
 
-  enqueue(id, run, onCancel = () => {}, onError = () => {}) {
+  assertOpen() {
     if (this.closed) throw new Error("Heavy job worker is closed");
+  }
+
+  enqueue(id, run, onCancel = () => {}, onError = () => {}) {
+    this.assertOpen();
     if (this.active?.id === id || this.pending.some((item) => item.id === id))
       throw new Error(`Heavy job already queued: ${id}`);
     let settle;
