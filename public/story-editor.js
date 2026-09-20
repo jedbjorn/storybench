@@ -29712,7 +29712,7 @@ _defineProperty(MarkdownIt, "ParserInline", ParserInline);
 _defineProperty(MarkdownIt, "StateInline", StateInline);
 var MarkdownItCallable = callable(MarkdownIt);
 
-// src/story-editor.js
+// src/story-markdown.js
 var STARTER_STORY = `# Overview
 
 # Hook
@@ -29725,6 +29725,13 @@ var STARTER_STORY = `# Overview
 
 ## Outro
 `;
+var storyMarkdown = new MarkdownItCallable({
+  html: false,
+  linkify: false,
+  typographer: false
+});
+
+// src/story-editor.js
 function mappingChangeSummary(mappingChanges) {
   const sections = mappingChanges?.retiredSectionIds?.length || 0;
   const cards = mappingChanges?.unassignedCardIds?.length || 0;

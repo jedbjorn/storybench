@@ -3,19 +3,9 @@ import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown, markdownKeymap } from "@codemirror/lang-markdown";
 import MarkdownIt from "markdown-it";
+import { STARTER_STORY } from "./story-markdown.js";
 
-export const STARTER_STORY = `# Overview
-
-# Hook
-
-# Sections
-
-## Intro
-
-## Beat
-
-## Outro
-`;
+export { STARTER_STORY } from "./story-markdown.js";
 
 export function mappingChangeSummary(mappingChanges) {
   const sections = mappingChanges?.retiredSectionIds?.length || 0;

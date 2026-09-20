@@ -98,7 +98,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     return { itemId, offset: start, text: text.slice(start, start + size), truncated: start + size < text.length };
   };
   const librarySummary = (episodeId) => store.listEpisodeLibrary(episodeId).map((item) => ({ id: item.id, revision: item.revision, label: item.label,
-    category: item.category, sectionId: item.sectionId, sourceKind: item.sourceKind, extractionStatus: item.extractionStatus,
+    category: item.category, sourceKind: item.sourceKind, extractionStatus: item.extractionStatus,
     asset: item.asset && { id: item.asset.id, name: item.asset.name, kind: item.asset.kind, duration: item.asset.duration, width: item.asset.width, height: item.asset.height } }));
   const bootText = (value) => { const currentEpisode = episode(value.episode_id), story = store.getStory(value.episode_id);
     return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires the user's one-use Storybench authorization.`; };

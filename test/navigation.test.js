@@ -10,3 +10,11 @@ test("episode navigation exposes the five accepted workspace tabs in order", asy
   for (const tab of ["board", "story", "media", "drafts", "final"]) assert.ok(dom.window.document.querySelector(`#${tab}Panel`));
   dom.window.close();
 });
+
+test("library import offers file and folder pickers without media-level story assignment", async () => {
+  const dom = new JSDOM(await readFile(new URL("../public/index.html", import.meta.url), "utf8"));
+  assert.ok(dom.window.document.querySelector("#libraryFiles[multiple]"));
+  assert.ok(dom.window.document.querySelector("#libraryFolder[webkitdirectory]"));
+  assert.equal(dom.window.document.querySelector('#libraryEditForm [name="sectionId"]'), null);
+  dom.window.close();
+});
