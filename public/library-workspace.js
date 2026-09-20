@@ -2,11 +2,12 @@ const categories = ["Reference", "B-roll", "Narration", "Graphics"];
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
 
 export class LibraryWorkspace {
-  constructor({ api, toast, getEpisode, refreshState }) {
+  constructor({ api, toast, getEpisode, refreshState, onMutation = () => {} }) {
     this.api = api;
     this.toast = toast;
     this.getEpisode = getEpisode;
     this.refreshState = refreshState;
+    this.onMutation = onMutation;
     this.items = [];
     this.sections = [];
     this.importQueue = Promise.resolve();
@@ -109,6 +110,7 @@ export class LibraryWorkspace {
       if (this.importController === controller) this.importController = null;
       document.querySelector("#libraryImportQueue").innerHTML = "";
       await this.refreshState?.();
+      await this.onMutation();
       if (this.getEpisode()?.id === episodeId) await this.open();
       const failures = rows.filter((row) => row.state.startsWith("Failed") || row.state === "Cancelled");
       this.toast(failures.length ? `${rows.length - failures.length} imported; ${failures.length} failed or cancelled` : `${rows.length} imported`);
@@ -131,7 +133,7 @@ export class LibraryWorkspace {
   async addReference(kind, body) {
     try {
       await this.api(`/api/episodes/${this.getEpisode().id}/library/${kind}`, { method: "POST", body: JSON.stringify(body) });
-      this.importModal.close(); await this.open(); this.toast("Reference added");
+      this.importModal.close(); await this.open(); await this.onMutation(); this.toast("Reference added");
     } catch (error) { this.showImportError(error.message); }
   }
   showImportError(message) { document.querySelector("#libraryImportError").textContent = message; }
@@ -153,13 +155,13 @@ export class LibraryWorkspace {
     const body = { expectedRevision: this.editing.revision, label: form.elements.label.value, category: form.elements.category.value, tags: form.elements.tags.value.split(",").map((tag) => tag.trim()).filter(Boolean), notes: form.elements.notes.value, sectionId: form.elements.sectionId.value || null };
     try {
       await this.api(`/api/episodes/${this.getEpisode().id}/library/${this.editing.id}`, { method: "PUT", body: JSON.stringify(body) });
-      this.editModal.close(); await this.open(); this.toast("Library item saved");
+      this.editModal.close(); await this.open(); await this.onMutation(); this.toast("Library item saved");
     } catch (error) { form.querySelector("[data-library-edit-error]").textContent = error.message; }
   }
   async move(id, category) {
     const item = this.items.find((candidate) => candidate.id === id);
     if (!item || item.category === category) return;
-    try { await this.api(`/api/episodes/${item.episodeId}/library/${id}`, { method: "PUT", body: JSON.stringify({ expectedRevision: item.revision, category }) }); await this.open(); }
+    try { await this.api(`/api/episodes/${item.episodeId}/library/${id}`, { method: "PUT", body: JSON.stringify({ expectedRevision: item.revision, category }) }); await this.open(); await this.onMutation(); }
     catch (error) { this.toast(error.message); }
   }
 }

@@ -2,6 +2,7 @@ import { StoryEditor } from "/story-editor.js?v=round2-editor";
 import { LibraryWorkspace, episodeNavigatorHTML } from "/library-workspace.js";
 import { setCardType } from "/card-workspace.js";
 import { ChatWorkspace } from "/chat-workspace.js";
+import { refreshJobStatus } from "/job-status.js";
 
 const $ = (s) => document.querySelector(s);
 let state = { episodes: [], assets: [], jobs: [] },
@@ -10,6 +11,7 @@ let state = { episodes: [], assets: [], jobs: [] },
   dirty = false,
   saveInFlight = null,
   saveRequested = false,
+  jobRefreshInFlight = null,
   boardSections = [],
   boardItems = [];
 const api = async (url, opt = {}) => {
@@ -63,12 +65,18 @@ function render() {
   if (!episode) return;
   $("#episodeTitle").value = episode.title;
   $("#episodeNotes").value = episode.notes;
+  renderCards();
+  renderJobs();
+  if (!$("#storyPanel").hidden)
+    storyEditor.open(episode.id).catch((error) => toast(error.message));
+}
+function renderJobs() {
+  if (!episode) return;
   $("#jobCount").textContent =
     state.jobs.filter(
       (j) =>
         j.episodeId === episode.id && ["queued", "running"].includes(j.state),
     ).length || "";
-  renderCards();
   const jobs = state.jobs.filter((j) => j.episodeId === episode.id);
   $("#jobs").innerHTML =
     jobs
@@ -82,8 +90,16 @@ function render() {
         },
       )
       .join("") || "<p>No renders yet.</p>";
-  if (!$("#storyPanel").hidden)
-    storyEditor.open(episode.id).catch((error) => toast(error.message));
+}
+
+async function refreshJobs(target = episode?.id) {
+  if (!jobRefreshInFlight) {
+    jobRefreshInFlight = refreshJobStatus(api, () => state)
+      .then((next) => { state = next; })
+      .finally(() => { jobRefreshInFlight = null; });
+  }
+  await jobRefreshInFlight;
+  if (episode?.id === target) renderJobs();
 }
 
 const storyEditor = new StoryEditor({
@@ -91,8 +107,9 @@ const storyEditor = new StoryEditor({
   api,
   setStatus: (text) => { $("#saveState").textContent = text; },
   toast,
+  onSaved: () => refreshJobs().catch((error) => toast(error.message)),
 });
-const libraryWorkspace = new LibraryWorkspace({ api, toast, getEpisode: () => episode, refreshState: () => load(episode?.id) });
+const libraryWorkspace = new LibraryWorkspace({ api, toast, getEpisode: () => episode, refreshState: () => load(episode?.id), onMutation: () => refreshJobs().catch((error) => toast(error.message)) });
 const chatWorkspace = new ChatWorkspace({ root: $("#chatWorkspace"), api, toast, getEpisode: () => episode });
 async function syncChat() {
   if (episode?.id === chatWorkspace.episodeId) return;
@@ -242,6 +259,7 @@ async function save(changes = {}) {
   } catch {
     saved = false;
   }
+  if (saved) await refreshJobs(target).catch((error) => toast(error.message));
   if (saved && (dirty || saveRequested) && episode?.id === target)
     return save();
 }
@@ -455,17 +473,16 @@ $("#graphicForm").onsubmit = async (event) => {
   } catch (error) { form.querySelector("[data-graphic-error]").textContent = error.message; }
 };
 setInterval(async () => {
-  if (
-    episode &&
-    !["INPUT", "TEXTAREA", "SELECT"].includes(
-      document.activeElement?.tagName,
-    ) &&
-    state.jobs.some((j) => ["queued", "running"].includes(j.state))
-  )
-    try {
+  if (!episode) return;
+  try {
+    if (
+      !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName) &&
+      state.jobs.some((j) => ["queued", "running"].includes(j.state))
+    ) {
       await load(episode.id);
       if (!$("#boardPanel").hidden) await loadBoardContext();
-    } catch (error) { toast(error.message); }
+    } else await refreshJobs(episode.id);
+  } catch (error) { toast(error.message); }
 }, 1800);
 window.addEventListener("beforeunload", (event) => {
   if (storyEditor.isDirty()) event.preventDefault();
