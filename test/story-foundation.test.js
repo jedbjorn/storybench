@@ -124,6 +124,22 @@ test("invalid section identities and stale writes leave story and board unchange
   assert.deepEqual(store.getEpisode(two.id), boardBefore);
 });
 
+test("marker insertion cannot grow accepted source beyond the 1 MiB bound", (t) => {
+  const root = workspace(t);
+  const store = new Store(root);
+  t.after(() => store.close());
+  const episode = store.createEpisode();
+  const prefix = "# Sections\n## Beat\n";
+  const source = prefix + "x".repeat(1024 * 1024 - Buffer.byteLength(prefix));
+  const before = store.getStory(episode.id);
+  assert.throws(
+    () => store.saveStory(episode.id, before.storyRevision, source),
+    (error) => error.statusCode === 413,
+  );
+  assert.deepEqual(store.getStory(episode.id), before);
+  assert.equal(readFileSync(path.join(root, "episodes", episode.id, "story.md"), "utf8"), "");
+});
+
 test("section parsing follows fence closers and Setext heading structure", (t) => {
   const store = new Store(workspace(t));
   t.after(() => store.close());

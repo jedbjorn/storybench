@@ -72,8 +72,11 @@ function normalizeStory(source, existingSections = []) {
     sections.push({ id: sectionId, title: heading.title, order: sections.length });
   }
   for (const insertion of missing.reverse()) lines.splice(insertion.line, 0, insertion.marker);
+  const acceptedSource = lines.join(newline);
+  if (Buffer.byteLength(acceptedSource, "utf8") > STORY_LIMIT)
+    throw new StoreError("Accepted story source exceeds the 1 MiB UTF-8 limit after section IDs are added", 413);
   return {
-    source: lines.join(newline),
+    source: acceptedSource,
     sections,
     retiredSectionIds: [...known.keys()].filter((sectionId) => !seen.has(sectionId)),
   };
