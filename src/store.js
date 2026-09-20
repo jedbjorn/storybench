@@ -984,6 +984,17 @@ export class Store {
       );
     return this.getAsset(value.id);
   }
+  repairReferenceAssetAsMedia(assetId, detected) {
+    const current = this.getAsset(assetId);
+    if (!current) throw new StoreError("Asset not found", 404);
+    if (current.kind !== "reference" || current.hash !== detected.hash || !["image", "video", "audio"].includes(detected.kind))
+      throw new StoreError("Only a matching reference asset can be repaired as detected media", 409);
+    this.db.prepare(`UPDATE assets SET name=?,kind=?,path=?,duration=?,width=?,height=?,metadata=?,thumbnail_path=? WHERE id=? AND hash=? AND kind='reference'`)
+      .run(detected.name || current.name, detected.kind, detected.path, detected.duration ?? null,
+        detected.width ?? null, detected.height ?? null, JSON.stringify(detected.metadata || {}),
+        detected.thumbnailPath ?? null, assetId, detected.hash);
+    return this.getAsset(assetId);
+  }
   publishGraphicOutput(episodeId, candidate, { recipeId, recipeRevision, jobId, label, targetCard = null, expectedEpisodeRevision }) {
     const episode = this.getEpisode(episodeId);
     if (!episode) throw new StoreError("Episode not found", 404);

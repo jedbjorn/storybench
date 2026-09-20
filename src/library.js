@@ -12,7 +12,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Readability } from "@mozilla/readability";
 import { JSDOM } from "jsdom";
-import { importMedia } from "./media.js";
+import { importMedia, probeMedia } from "./media.js";
 import { StoreError } from "./store.js";
 
 const execFileAsync = promisify(execFile);
@@ -161,11 +161,23 @@ export function createLibraryService({ workspace, store, fetchImpl = null, dnsLo
       await mkdir(temporaryDir, { recursive: true });
       const temporary = path.join(temporaryDir, `.library-${crypto.randomUUID()}.tmp`);
       try {
-        const limit = chosenCategory === "Reference" ? REFERENCE_BYTES : MEDIA_BYTES;
-        const bytes = await writeIncoming(readable, temporary, limit, signal);
+        const bytes = await writeIncoming(readable, temporary, MEDIA_BYTES, signal);
         let extraction = { text: "", status: "not-applicable", truncated: false, format: null };
         let asset;
-        if (chosenCategory === "Reference") {
+        let mediaProbe = null;
+        try { mediaProbe = await probeMedia(temporary, { signal }); }
+        catch (error) { if (error.name === "AbortError") throw error; }
+        if (mediaProbe) {
+          const imported = await importMedia({ workspace, sourcePath: temporary });
+          imported.name = name;
+          imported.metadata = { ...imported.metadata, contentType, importedForCategory: chosenCategory };
+          const existing = store.getAssetByHash(imported.hash);
+          asset = existing?.kind === "reference"
+            ? store.repairReferenceAssetAsMedia(existing.id, imported)
+            : store.saveAsset(imported);
+          extraction.format = mediaProbe.kind;
+        } else if (chosenCategory === "Reference") {
+          if (bytes > REFERENCE_BYTES) throw new StoreError("Reference input exceeds the 20 MiB limit", 413);
           extraction = await extractReference(temporary, name, contentType);
           const hash = crypto.createHash("sha256").update(await readFile(temporary)).digest("hex");
           asset = store.getAssetByHash(hash);
@@ -176,12 +188,7 @@ export function createLibraryService({ workspace, store, fetchImpl = null, dnsLo
             try { await stat(registered); } catch { await rename(temporary, registered); }
             asset = store.saveAsset({ name, hash, kind: "reference", path: path.relative(workspace, registered), metadata: { contentType, bytes } });
           }
-        } else {
-          const imported = await importMedia({ workspace, sourcePath: temporary });
-          imported.name = name;
-          imported.metadata = { ...imported.metadata, contentType, importedForCategory: chosenCategory };
-          asset = store.saveAsset(imported);
-        }
+        } else throw new StoreError("File contains no supported audio, video, or image streams", 422);
         return store.attachLibraryItem(episodeId, asset.id, {
           category: chosenCategory, label: String(label || name), sectionId, sourceKind: "file",
           extractedText: extraction.text, extractionStatus: extraction.status,
