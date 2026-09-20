@@ -9,6 +9,9 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test",
-    "lint": "node --check src/server.js && node --check src/store.js && node --check src/media.js && node --check src/chat.js && node --check src/codex.js && node --check public/app.js"
+    "lint": "node --check src/server.js && node --check src/store.js && node --check src/story-markdown.js && node --check src/media.js && node --check src/chat.js && node --check src/codex.js && node --check public/app.js"
+  },
+  "dependencies": {
+    "markdown-it": "15.0.2"
   }
 }
