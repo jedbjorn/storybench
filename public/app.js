@@ -1,3 +1,5 @@
+import { StoryEditor } from "/story-editor.js";
+
 const $ = (s) => document.querySelector(s);
 let state = { episodes: [], assets: [], jobs: [] },
   episode = null,
@@ -12,7 +14,11 @@ const api = async (url, opt = {}) => {
     ...opt,
   });
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
+  if (!r.ok) {
+    const error = new Error(data.error || `Request failed (${r.status})`);
+    Object.assign(error, data, { status: r.status });
+    throw error;
+  }
   return data;
 };
 const toast = (text) => {
@@ -76,6 +82,20 @@ function render() {
           `<div class="job"><div><b>${esc(j.kind)}</b> · revision ${j.revision}<br><span class="${j.state === "failed" ? "failed" : ""}">${esc(j.error || j.state)} ${j.state === "running" ? Math.round(j.progress * 100) + "%" : ""}</span>${j.state === "completed" ? `<video controls preload="metadata" src="/api/jobs/${j.id}/file" style="display:block;max-width:420px;width:100%;margin-top:8px"></video>` : ""}</div>${j.state === "completed" ? `<a href="/api/jobs/${j.id}/file" target="_blank"><button>Open</button></a>` : ""}</div>`,
       )
       .join("") || "<p>No renders yet.</p>";
+  if (!$("#storyPanel").hidden)
+    storyEditor.open(episode.id).catch((error) => toast(error.message));
+}
+
+const storyEditor = new StoryEditor({
+  root: $("#storyPanel"),
+  api,
+  setStatus: (text) => { $("#saveState").textContent = text; },
+  toast,
+});
+
+async function leaveStory() {
+  const choice = await storyEditor.requestLeave();
+  return choice !== "stay";
 }
 function opts(kind, selected) {
   return (
@@ -182,6 +202,7 @@ async function flushDraft() {
   }
 }
 async function create() {
+  if (!(await leaveStory())) return;
   await flushDraft();
   const e = await api("/api/episodes", {
     method: "POST",
@@ -191,7 +212,7 @@ async function create() {
 }
 $("#episodes").onclick = async (e) => {
   const id = e.target.closest("[data-id]")?.dataset.id;
-  if (id) {
+  if (id && id !== episode?.id && (await leaveStory())) {
     await flushDraft();
     episode = state.episodes.find((x) => x.id === id);
     render();
@@ -278,15 +299,18 @@ $("#undo").onclick = async () => {
     toast(e.message);
   }
 };
-document.querySelectorAll(".tabs button").forEach(
+document.querySelectorAll(".tabs > button").forEach(
   (b) =>
-    (b.onclick = () => {
+    (b.onclick = async () => {
+      if (b.dataset.tab !== "story" && !(await leaveStory())) return;
       document
-        .querySelectorAll(".tabs button")
+        .querySelectorAll(".tabs > button")
         .forEach((x) => x.classList.toggle("active", x === b));
-      ["story", "media", "exports"].forEach(
+      ["story", "board", "media", "exports"].forEach(
         (x) => ($(`#${x}Panel`).hidden = b.dataset.tab !== x),
       );
+      if (b.dataset.tab === "story" && episode)
+        storyEditor.open(episode.id).catch((error) => toast(error.message));
     }),
 );
 $("#importForm").onsubmit = async (e) => {
@@ -394,4 +418,7 @@ $("#stopChat").onclick = async () => {
       }),
     );
 };
+window.addEventListener("beforeunload", (event) => {
+  if (storyEditor.isDirty()) event.preventDefault();
+});
 load().catch((e) => toast(e.message));

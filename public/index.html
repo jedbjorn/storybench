@@ -54,13 +54,32 @@
             </div>
           </div>
           <div class="tabs">
-            <button data-tab="story" class="active">Storyboard</button
+            <button data-tab="story" class="active">Story</button
+            ><button data-tab="board">Storyboard</button
             ><button data-tab="media">Media library</button
             ><button data-tab="exports">
               Renders <span id="jobCount"></span>
             </button>
           </div>
-          <div id="storyPanel">
+          <div id="storyPanel" class="story-surface">
+            <div data-story-reading>
+              <div class="panel-heading"><div><h2>Story</h2><p>The saved Markdown used by Storybench and episode chats.</p></div><div><button data-story-start>Start with outline</button> <button data-story-edit>Edit story</button></div></div>
+              <article class="story-rendered" data-story-read></article>
+            </div>
+            <div data-story-editing hidden>
+              <div class="story-toolbar"><div class="story-mode"><button data-story-write class="active">Write</button><button data-story-preview>Preview</button></div><div><button data-story-cancel>Cancel</button> <button data-story-save class="primary">Save</button></div></div>
+              <p class="story-metadata-note">Section identity comments are managed by Storybench. Keep them with their headings when moving sections.</p>
+              <div class="story-codemirror" data-story-editor></div>
+              <article class="story-rendered" data-story-draft-preview hidden></article>
+              <section class="story-conflict" data-story-conflict hidden>
+                <h3>Someone saved a newer story</h3><p data-story-conflict-message></p>
+                <label>Latest saved source<textarea data-story-current readonly></textarea></label>
+                <div><button data-story-copy>Copy draft</button> <button data-story-latest>Use latest</button> <button data-story-reconcile class="primary">Reconcile manually</button></div>
+              </section>
+              <div class="story-leave" data-story-leave hidden><strong>Save story changes before leaving?</strong><div><button data-leave-stay>Stay</button><button data-leave-discard>Discard</button><button data-leave-save class="primary">Save</button></div></div>
+            </div>
+          </div>
+          <div id="boardPanel" hidden>
             <div class="panel-heading">
               <div>
                 <h2>Story cards</h2>
