@@ -1,4 +1,5 @@
 import { StoryEditor } from "/story-editor.js?v=round2-editor";
+import { LibraryWorkspace, episodeNavigatorHTML } from "/library-workspace.js";
 
 const $ = (s) => document.querySelector(s);
 let state = { episodes: [], assets: [], jobs: [] },
@@ -7,7 +8,9 @@ let state = { episodes: [], assets: [], jobs: [] },
   fieldTimer,
   dirty = false,
   saveInFlight = null,
-  saveRequested = false;
+  saveRequested = false,
+  boardSections = [],
+  boardItems = [];
 const api = async (url, opt = {}) => {
   const r = await fetch(url, {
     headers: { "content-type": "application/json" },
@@ -48,12 +51,11 @@ async function load(select) {
   render();
 }
 function render() {
-  $("#episodes").innerHTML = state.episodes
-    .map(
-      (e) =>
-        `<button data-id="${e.id}" class="${episode?.id === e.id ? "active" : ""}">${esc(e.title)}</button>`,
-    )
-    .join("");
+  const filter = $("#episodeFilter").value;
+  $("#episodes").innerHTML = episodeNavigatorHTML(state.episodes, filter, episode?.id);
+  const selectedHidden = episode && filter !== "All" && episode.state !== filter;
+  $("#filteredEpisodeNotice").hidden = !selectedHidden;
+  $("#filteredEpisodeNotice").innerHTML = selectedHidden ? `Current episode is in ${esc(episode.state)}. <button data-reveal-episode>Show it</button>` : "";
   $("#empty").hidden = !!episode;
   $("#editor").hidden = !episode;
   if (!episode) return;
@@ -64,16 +66,7 @@ function render() {
       (j) =>
         j.episodeId === episode.id && ["queued", "running"].includes(j.state),
     ).length || "";
-  $("#cards").innerHTML =
-    episode.cards.map((c, i) => cardHTML(c, i)).join("") ||
-    '<div class="welcome">No cards yet. Add a card to begin planning—even before media arrives.</div>';
-  $("#assets").innerHTML =
-    state.assets
-      .map(
-        (a) =>
-          `<article class="asset">${a.thumbnailPath ? `<img src="/api/assets/${a.id}/thumbnail">` : '<div style="aspect-ratio:16/9;display:grid;place-items:center;font-size:28px">♪</div>'}<div><b>${esc(a.name)}</b><span>${a.kind} · ${a.duration ? Number(a.duration).toFixed(1) + "s" : "still"}</span><a href="/api/assets/${a.id}/file" target="_blank">Inspect source</a></div></article>`,
-      )
-      .join("") || "<p>No media imported yet.</p>";
+  renderCards();
   const jobs = state.jobs.filter((j) => j.episodeId === episode.id);
   $("#jobs").innerHTML =
     jobs
@@ -92,34 +85,84 @@ const storyEditor = new StoryEditor({
   setStatus: (text) => { $("#saveState").textContent = text; },
   toast,
 });
+const libraryWorkspace = new LibraryWorkspace({ api, toast, getEpisode: () => episode, refreshState: () => load(episode?.id) });
 
 async function leaveStory() {
   const choice = await storyEditor.requestLeave();
   return choice !== "stay";
 }
-function opts(kind, selected) {
-  return (
-    `<option value="">No source</option>` +
-    state.assets
-      .filter((a) =>
-        kind === "visual"
-          ? ["video", "image"].includes(a.kind)
-          : ["video", "audio"].includes(a.kind) && a.metadata?.hasAudio,
-      )
-      .map(
-        (a) =>
-          `<option value="${a.id}" ${a.id === selected ? "selected" : ""}>${esc(a.name)}</option>`,
-      )
-      .join("")
-  );
+const cardTypes = ["Video/Audio", "Video", "Audio", "Static Graphic", "Video Graphic"];
+function renderCards() {
+  if (!episode) return;
+  const groups = [...boardSections.map((section) => ({ id: section.id, title: section.title })), { id: "", title: "Unassigned planning" }];
+  $("#cards").innerHTML = groups.map((group) => {
+    const cards = episode.cards.map((card, index) => ({ card, index })).filter(({ card }) => (card.sectionId || "") === group.id).sort((a, b) => (a.card.order || 0) - (b.card.order || 0));
+    return `<section class="card-group" data-card-section="${group.id}"><div class="card-group-heading"><h3>${esc(group.title)}</h3><span>${cards.length}</span></div>${cards.map(({ card, index }) => cardHTML(card, index)).join("") || '<p class="library-empty">Drop a card here.</p>'}</section>`;
+  }).join("");
 }
-function place(p, kind) {
-  const v = p || { assetId: "", in: 0, out: 5, offset: 0, gain: 1 };
-  return `<div class="placement"><label>${kind === "visual" ? "Picture + source audio" : "Narration layer"}</label><select data-place="${kind}" data-key="assetId">${opts(kind, v.assetId)}</select><div class="timing"><label><span>In</span><input type="number" min="0" step=".033" value="${v.in}" data-place="${kind}" data-key="in"></label><label><span>Out</span><input type="number" min="0" step=".033" value="${v.out}" data-place="${kind}" data-key="out"></label><label><span>Offset</span><input type="number" min="0" step=".033" value="${v.offset}" data-place="${kind}" data-key="offset" ${kind === "visual" ? "disabled" : ""}></label><label><span>Gain</span><input type="number" min="0" max="8" step=".1" value="${v.gain}" data-place="${kind}" data-key="gain"></label></div></div>`;
+function itemOptions(card) {
+  return `<option value="">Missing / choose media</option>${boardItems.map((item) => `<option value="${item.id}" ${item.id === card.itemId ? "selected" : ""}>${esc(item.label)} · ${esc(item.asset.kind)}</option>`).join("")}`;
+}
+function sectionOptions(card) { return `<option value="">Unassigned</option>${boardSections.map((section) => `<option value="${section.id}" ${section.id === card.sectionId ? "selected" : ""}>${esc(section.title)}</option>`).join("")}`; }
+function preview(card) {
+  const item = boardItems.find((value) => value.id === card.itemId);
+  if (!item) return '<div class="card-preview missing">Missing media</div>';
+  const source = `/api/episodes/${episode.id}/library/${item.id}/file`;
+  if (item.asset.kind === "image") return `<img class="card-preview" src="${source}" alt="">`;
+  if (item.asset.kind === "video") return `<video class="card-preview" src="${source}" controls preload="metadata"></video>`;
+  if (item.asset.kind === "audio") return `<audio class="card-preview" src="${source}" controls preload="metadata"></audio>`;
+  return '<div class="card-preview missing">No media preview</div>';
 }
 function cardHTML(c, i) {
-  return `<article class="story-card" data-index="${i}"><div class="drag">⋮⋮</div><div class="card-main"><input class="card-title" data-key="title" value="${esc(c.title)}" placeholder="Scene title"><input class="card-purpose" data-key="purpose" value="${esc(c.purpose)}" placeholder="What does this scene accomplish?"><div class="timing" style="grid-template-columns:2fr 2fr 1fr"><label><span>Notes</span><input data-key="notes" value="${esc(c.notes)}" placeholder="Beat or transition"></label><label><span>Missing material</span><input data-key="missing" value="${esc(c.missing)}" placeholder="Optional pickup"></label><label><span>Duration</span><input data-key="duration" type="number" min=".033" step=".033" value="${c.duration ?? ""}" placeholder="auto"></label></div><div class="placements">${place(c.visual, "visual")}${place(c.narration, "narration")}</div></div><div class="card-tools"><button data-move="-1" title="Move up">↑</button><button data-move="1" title="Move down">↓</button><button data-delete title="Delete">×</button></div></article>`;
+  const visualCards = episode.cards.filter((value) => value.id !== c.id && value.type !== "Audio");
+  return `<article class="story-card typed-card" draggable="true" data-index="${i}" data-card-id="${c.id}"><div class="drag">⋮⋮</div><div class="card-main"><div class="card-primary"><select data-key="type">${cardTypes.map((type) => `<option ${type === c.type ? "selected" : ""}>${type}</option>`).join("")}</select><input class="card-title" data-key="title" value="${esc(c.title)}" placeholder="Card title"><select data-key="sectionId">${sectionOptions(c)}</select></div><textarea data-key="prompt" placeholder="What should this card accomplish?">${esc(c.prompt)}</textarea>${preview(c)}<label>Registered media<select data-key="itemId">${itemOptions(c)}</select></label><details><summary>Timing, references and notes</summary><div class="timing"><label><span>In</span><input data-key="in" type="number" min="0" step=".033" value="${c.in ?? ""}"></label><label><span>Out</span><input data-key="out" type="number" min="0" step=".033" value="${c.out ?? ""}"></label><label><span>Duration</span><input data-key="duration" type="number" min=".033" step=".033" value="${c.duration ?? ""}"></label><label><span>Gain</span><input data-key="gain" type="number" min="0" max="8" step=".1" value="${c.gain ?? 1}"></label></div>${c.type === "Audio" ? `<div class="timing"><label>Role<select data-key="role">${["voiceover", "music", "sound effect", "other"].map((role) => `<option ${role === c.role ? "selected" : ""}>${role}</option>`).join("")}</select></label><label>Anchor<select data-key="anchorVisualCardId"><option value="">Choose visual</option>${visualCards.map((card) => `<option value="${card.id}" ${card.id === c.anchorVisualCardId ? "selected" : ""}>${esc(card.title)}</option>`).join("")}</select></label><label>Offset<input data-key="offset" type="number" min="0" step=".033" value="${c.offset ?? 0}"></label></div>` : ""}<label>Reference items<select data-key="referenceItemIds" multiple>${boardItems.filter((item) => item.category === "Reference").map((item) => `<option value="${item.id}" ${(c.referenceItemIds || []).includes(item.id) ? "selected" : ""}>${esc(item.label)}</option>`).join("")}</select></label><label>Reference URLs<textarea data-key="referenceUrls" placeholder="One URL per line">${esc((c.referenceUrls || []).join("\n"))}</textarea></label><label>Notes<textarea data-key="notes">${esc(c.notes)}</textarea></label><label><input data-key="excluded" type="checkbox" ${c.excluded ? "checked" : ""}> Exclude from assembled cut</label></details></div><div class="card-tools"><button data-promote title="Promote to channel">☆</button><button data-move="-1" title="Move up">↑</button><button data-move="1" title="Move down">↓</button><button data-delete title="Delete">×</button></div></article>`;
 }
+async function loadBoardContext() {
+  if (!episode) return;
+  const id = episode.id;
+  const [story, items] = await Promise.all([api(`/api/episodes/${id}/story`), api(`/api/episodes/${id}/library`)]);
+  if (episode?.id !== id) return;
+  boardSections = story.sections || []; boardItems = items; renderCards();
+}
+let promotingCard = null;
+function openPromote(card) {
+  promotingCard = card;
+  const form = $("#promoteCardForm");
+  form.elements.name.value = card.title || "Reusable card";
+  form.elements.role.value = "";
+  form.querySelector("[data-promote-error]").textContent = "";
+  $("#promoteCardModal").showModal();
+}
+$("#promoteCardForm").onsubmit = async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  try {
+    await flushDraft();
+    await api(`/api/episodes/${episode.id}/cards/${promotingCard.id}/promote`, { method: "POST", body: JSON.stringify({ name: form.elements.name.value, role: form.elements.role.value || null }) });
+    $("#promoteCardModal").close(); toast("Card promoted to channel branding");
+  } catch (error) { form.querySelector("[data-promote-error]").textContent = error.message; }
+};
+document.querySelectorAll("[data-promote-close]").forEach((button) => button.onclick = () => $("#promoteCardModal").close());
+document.querySelectorAll("[data-branding-close]").forEach((button) => button.onclick = () => $("#brandingModal").close());
+$("#openBranding").onclick = async () => {
+  try {
+    const templates = await api("/api/branding");
+    $("#brandingTemplates").innerHTML = templates.map((template) => `<article class="branding-template"><div><b>${esc(template.name)}</b><span>${template.role ? `Standard ${esc(template.role)}` : "Reusable"} · ${esc(template.card.type)}</span></div><div><select data-branding-role="${template.id}"><option value="" ${!template.role ? "selected" : ""}>Reusable</option><option value="intro" ${template.role === "intro" ? "selected" : ""}>Intro</option><option value="outro" ${template.role === "outro" ? "selected" : ""}>Outro</option></select><button data-branding-apply="${template.id}" ${episode ? "" : "disabled"}>Add to episode</button></div></article>`).join("") || "<p>No reusable cards yet. Promote one from the Storyboard.</p>";
+    $("#brandingModal").showModal();
+  } catch (error) { toast(error.message); }
+};
+$("#brandingTemplates").onchange = async (event) => {
+  const id = event.target.dataset.brandingRole;
+  if (!id) return;
+  try { await api(`/api/branding/${id}`, { method: "PUT", body: JSON.stringify({ role: event.target.value || null }) }); toast("Standard role updated"); }
+  catch (error) { toast(error.message); }
+};
+$("#brandingTemplates").onclick = async (event) => {
+  const id = event.target.closest("[data-branding-apply]")?.dataset.brandingApply;
+  if (!id || !episode) return;
+  try { await flushDraft(); episode = await api(`/api/episodes/${episode.id}/branding/${id}/apply`, { method: "POST", body: "{}" }); await load(episode.id); await loadBoardContext(); toast("Reusable card added"); }
+  catch (error) { toast(error.message); }
+};
 async function save(changes = {}) {
   if (!episode) return;
   clearTimeout(fieldTimer);
@@ -211,14 +254,44 @@ async function create() {
   await load(e.id);
 }
 $("#episodes").onclick = async (e) => {
+  if (!e.target.closest("[data-episode-select]")) return;
   const id = e.target.closest("[data-id]")?.dataset.id;
   if (id && id !== episode?.id && (await leaveStory())) {
     await flushDraft();
     episode = state.episodes.find((x) => x.id === id);
     render();
     refreshChat();
+    if (!$("#mediaPanel").hidden) libraryWorkspace.open().catch((error) => toast(error.message));
   }
 };
+$("#episodes").onchange = async (event) => {
+  if (!event.target.matches("[data-episode-state-select]")) return;
+  const row = event.target.closest("[data-id]");
+  await moveEpisodeState(row.dataset.id, event.target.value);
+};
+$("#episodes").ondragstart = (event) => {
+  const row = event.target.closest("[data-id]");
+  if (row) event.dataTransfer.setData("text/episode-id", row.dataset.id);
+};
+$("#episodes").ondragover = (event) => { if (event.target.closest("[data-episode-state]")) event.preventDefault(); };
+$("#episodes").ondrop = async (event) => {
+  const group = event.target.closest("[data-episode-state]");
+  const id = event.dataTransfer.getData("text/episode-id");
+  if (group && id) { event.preventDefault(); await moveEpisodeState(id, group.dataset.episodeState); }
+};
+async function moveEpisodeState(id, nextState) {
+  const target = state.episodes.find((candidate) => candidate.id === id);
+  if (!target || target.state === nextState) return;
+  try {
+    if (id === episode?.id) await flushDraft();
+    const updated = await api(`/api/episodes/${id}`, { method: "PUT", body: JSON.stringify({ expectedRevision: target.revision, state: nextState }) });
+    state.episodes = state.episodes.map((candidate) => candidate.id === id ? updated : candidate);
+    if (episode?.id === id) episode = updated;
+    render();
+  } catch (error) { toast(error.message); await load(episode?.id); }
+}
+$("#episodeFilter").onchange = render;
+$("#filteredEpisodeNotice").onclick = (event) => { if (event.target.closest("[data-reveal-episode]")) { $("#episodeFilter").value = "All"; render(); } };
 $("#newEpisode").onclick = $("#firstEpisode").onclick = create;
 $("#episodeTitle").oninput = $("#episodeNotes").oninput = () => {
   dirty = true;
@@ -230,12 +303,19 @@ $("#addCard").onclick = () => {
   episode.cards.push({
     id: crypto.randomUUID(),
     title: "New scene",
+    type: "Video",
+    prompt: "",
     purpose: "",
     notes: "",
     missing: "",
     visual: null,
     narration: null,
     duration: null,
+    sectionId: boardSections[0]?.id || null,
+    itemId: null,
+    referenceItemIds: [],
+    order: episode.cards.length,
+    enabled: true,
   });
   dirty = true;
   save();
@@ -245,32 +325,14 @@ $("#cards").onchange = (e) => {
     wrap = el.closest(".story-card");
   if (!wrap) return;
   const card = episode.cards[Number(wrap.dataset.index)];
-  if (el.dataset.place) {
-    const kind = el.dataset.place;
-    if (el.dataset.key === "assetId") {
-      if (!el.value) card[kind] = null;
-      else
-        card[kind] = {
-          assetId: el.value,
-          in: 0,
-          out: Math.min(
-            5,
-            state.assets.find((a) => a.id === el.value)?.duration || 5,
-          ),
-          offset: 0,
-          gain: 1,
-        };
-    } else {
-      card[kind] ??= { assetId: "", in: 0, out: 5, offset: 0, gain: 1 };
-      card[kind][el.dataset.key] = Number(el.value);
-    }
-  } else if (el.dataset.key)
-    card[el.dataset.key] =
-      el.dataset.key === "duration"
-        ? el.value === ""
-          ? null
-          : Number(el.value)
-        : el.value;
+  if (el.dataset.key) {
+    const key = el.dataset.key;
+    if (key === "referenceItemIds") card[key] = [...el.selectedOptions].map((option) => option.value);
+    else if (key === "referenceUrls") card[key] = el.value.split("\n").map((value) => value.trim()).filter(Boolean);
+    else if (key === "excluded") card[key] = el.checked;
+    else if (["duration", "in", "out", "offset", "gain", "fadeIn", "fadeOut"].includes(key)) card[key] = el.value === "" ? null : Number(el.value);
+    else card[key] = el.value || (["sectionId", "itemId", "anchorVisualCardId"].includes(key) ? null : "");
+  }
   dirty = true;
   save();
 };
@@ -278,15 +340,20 @@ $("#cards").onclick = (e) => {
   const wrap = e.target.closest(".story-card");
   if (!wrap) return;
   const i = Number(wrap.dataset.index);
+  if (e.target.closest("[data-promote]")) return openPromote(episode.cards[i]);
   if (e.target.closest("[data-delete]")) episode.cards.splice(i, 1);
   else if (e.target.closest("[data-move]")) {
-    const n = i + Number(e.target.closest("[data-move]").dataset.move);
-    if (n < 0 || n >= episode.cards.length) return;
-    [episode.cards[i], episode.cards[n]] = [episode.cards[n], episode.cards[i]];
+    const peers = episode.cards.map((card, index) => ({ card, index })).filter(({ card }) => card.sectionId === episode.cards[i].sectionId).sort((a, b) => (a.card.order || 0) - (b.card.order || 0));
+    const position = peers.findIndex((value) => value.index === i), next = position + Number(e.target.closest("[data-move]").dataset.move);
+    if (next < 0 || next >= peers.length) return;
+    [peers[position].card.order, peers[next].card.order] = [peers[next].card.order || next, peers[position].card.order || position];
   } else return;
   dirty = true;
   save();
 };
+$("#cards").ondragstart = (event) => { const card = event.target.closest("[data-card-id]"); if (card) event.dataTransfer.setData("text/card-id", card.dataset.cardId); };
+$("#cards").ondragover = (event) => { if (event.target.closest("[data-card-section]")) event.preventDefault(); };
+$("#cards").ondrop = (event) => { const group = event.target.closest("[data-card-section]"), id = event.dataTransfer.getData("text/card-id"); if (!group || !id) return; event.preventDefault(); const card = episode.cards.find((value) => value.id === id); if (card) { card.sectionId = group.dataset.cardSection || null; card.order = episode.cards.filter((value) => value.sectionId === card.sectionId).length; dirty = true; save(); } };
 $("#undo").onclick = async () => {
   try {
     await flushDraft();
@@ -311,30 +378,12 @@ document.querySelectorAll(".tabs > button").forEach(
       );
       if (b.dataset.tab === "story" && episode)
         storyEditor.open(episode.id).catch((error) => toast(error.message));
+      if (b.dataset.tab === "media" && episode)
+        libraryWorkspace.open().catch((error) => toast(error.message));
+      if (b.dataset.tab === "board" && episode)
+        loadBoardContext().catch((error) => toast(error.message));
     }),
 );
-$("#importForm").onsubmit = async (e) => {
-  e.preventDefault();
-  $("#importError").textContent = "";
-  const btn = e.submitter;
-  btn.disabled = true;
-  btn.textContent = "Importing…";
-  try {
-    await flushDraft();
-    await api("/api/import", {
-      method: "POST",
-      body: JSON.stringify({ path: $("#importPath").value }),
-    });
-    $("#importPath").value = "";
-    await load(episode.id);
-    toast("Media imported");
-  } catch (err) {
-    $("#importError").textContent = err.message;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "Import";
-  }
-};
 async function renderJob(kind) {
   try {
     await flushDraft();
