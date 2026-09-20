@@ -171,6 +171,44 @@ test("publication failure exposes committed pending state and startup recovery p
   store.close();
 });
 
+test("publication retry is revision-checked and creates no story history", async (t) => {
+  const root = workspace(t);
+  let fail = false;
+  const app = await createApp({ workspace: root, storeOptions: {
+    beforeStoryPublish() { if (fail) throw new Error("synthetic publication failure"); },
+  } });
+  t.after(() => app.close());
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const episode = app.store.createEpisode();
+  fail = true;
+  const put = await fetch(`${base}/api/episodes/${episode.id}/story`, {
+    method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expectedStoryRevision: 1, source: "# Sections\n## Intro" }),
+  });
+  assert.equal(put.status, 503);
+  const committed = (await put.json()).committed;
+  const count = () => app.store.db.prepare("SELECT COUNT(*) AS n FROM story_history WHERE episode_id=?").get(episode.id).n;
+  assert.equal(count(), 2);
+  let retry = await fetch(`${base}/api/episodes/${episode.id}/story/publication`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedStoryRevision: 1 }),
+  });
+  assert.equal(retry.status, 409);
+  assert.equal((await retry.json()).current.storyRevision, committed.storyRevision);
+  fail = false;
+  retry = await fetch(`${base}/api/episodes/${episode.id}/story/publication`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedStoryRevision: committed.storyRevision }),
+  });
+  assert.equal(retry.status, 200);
+  const published = await retry.json();
+  assert.equal(published.storyRevision, committed.storyRevision);
+  assert.equal(published.publicationPending, false);
+  assert.equal(count(), 2);
+  assert.equal((await fetch(`${base}/api/episodes/missing/story/publication`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedStoryRevision: 1 }),
+  })).status, 404);
+});
+
 test("startup recognizes a committed file after a crash between rename and publication acknowledgement", (t) => {
   const root = workspace(t);
   let store = new Store(root);

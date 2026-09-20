@@ -614,6 +614,12 @@ export class Store {
       .run(story.committedHash, episodeId, story.storyRevision);
     return this.getStory(episodeId);
   }
+  retryStoryPublication(episodeId, expectedStoryRevision) {
+    const current = this.getStory(episodeId);
+    if (!Number.isInteger(expectedStoryRevision) || expectedStoryRevision !== current.storyRevision)
+      throw new StoreError(`Stale story revision: expected ${current.storyRevision}`, 409, { current });
+    return current.publicationPending ? this.publishStory(episodeId) : current;
+  }
   recoverPendingStories() {
     if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='stories'").get()) return [];
     const outcomes = [];
