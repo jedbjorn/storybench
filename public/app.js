@@ -1,5 +1,6 @@
 import { StoryEditor } from "/story-editor.js?v=round2-editor";
 import { LibraryWorkspace, episodeNavigatorHTML } from "/library-workspace.js";
+import { setCardType } from "/card-workspace.js";
 
 const $ = (s) => document.querySelector(s);
 let state = { episodes: [], assets: [], jobs: [] },
@@ -327,7 +328,8 @@ $("#cards").onchange = (e) => {
   const card = episode.cards[Number(wrap.dataset.index)];
   if (el.dataset.key) {
     const key = el.dataset.key;
-    if (key === "referenceItemIds") card[key] = [...el.selectedOptions].map((option) => option.value);
+    if (key === "type") setCardType(card, el.value);
+    else if (key === "referenceItemIds") card[key] = [...el.selectedOptions].map((option) => option.value);
     else if (key === "referenceUrls") card[key] = el.value.split("\n").map((value) => value.trim()).filter(Boolean);
     else if (key === "excluded") card[key] = el.checked;
     else if (["duration", "in", "out", "offset", "gain", "fadeIn", "fadeOut"].includes(key)) card[key] = el.value === "" ? null : Number(el.value);
