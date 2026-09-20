@@ -241,6 +241,19 @@ function jobRow(row) {
     }
   );
 }
+function graphicRecipeRow(row) {
+  return row && {
+    id: row.id,
+    episodeId: row.episode_id,
+    cardId: row.card_id,
+    name: row.name,
+    kind: row.kind,
+    revision: row.current_revision,
+    recipe: parse(row.recipe),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
 
 export class Store {
   constructor(workspace, { afterMigrationCommit, beforeStoryPublish, afterStoryRename } = {}) {
@@ -266,7 +279,7 @@ export class Store {
   }
   migrate(existingDatabase) {
     const version = Number(this.db.prepare("PRAGMA user_version").get().user_version);
-    if (version >= 4) return;
+    if (version >= 5) return;
     const hadLegacySchema = this.db
       .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='episodes'")
       .get();
@@ -313,6 +326,21 @@ export class Store {
           card_snapshot TEXT NOT NULL,dependency_items TEXT NOT NULL,
           created_at TEXT NOT NULL,updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS graphic_recipes (
+          id TEXT PRIMARY KEY,episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+          card_id TEXT,name TEXT NOT NULL,kind TEXT NOT NULL,current_revision INTEGER NOT NULL,
+          created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS graphic_recipe_revisions (
+          recipe_id TEXT NOT NULL REFERENCES graphic_recipes(id) ON DELETE CASCADE,
+          revision INTEGER NOT NULL,recipe TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL,
+          PRIMARY KEY(recipe_id,revision)
+        );
+        CREATE TABLE IF NOT EXISTS final_authorizations (
+          id TEXT PRIMARY KEY,episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+          render_revision TEXT NOT NULL,conversation_id TEXT,request_id TEXT,
+          expires_at TEXT NOT NULL,consumed_at TEXT,created_at TEXT NOT NULL
+        );
       `);
       const columns = (table) =>
         new Set(this.db.prepare(`PRAGMA table_info('${table}')`).all().map((column) => column.name));
@@ -356,8 +384,8 @@ export class Store {
         if (!legacy.some((card) => !card.type)) continue;
         this.db.prepare("UPDATE episodes SET cards=? WHERE id=?").run(JSON.stringify(this.normalizeLegacyCards(row.id, legacy)), row.id);
       }
-      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(4,?)").run(stamp);
-      this.db.exec("PRAGMA user_version=4; COMMIT");
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(5,?)").run(stamp);
+      this.db.exec("PRAGMA user_version=5; COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
@@ -955,6 +983,115 @@ export class Store {
       );
     return this.getAsset(value.id);
   }
+  listGraphicRecipes(episodeId) {
+    return this.db.prepare(`SELECT g.*,r.recipe FROM graphic_recipes g
+      JOIN graphic_recipe_revisions r ON r.recipe_id=g.id AND r.revision=g.current_revision
+      WHERE g.episode_id=? ORDER BY g.created_at,g.id`).all(episodeId).map(graphicRecipeRow);
+  }
+  getGraphicRecipe(episodeId, recipeId, revision = null) {
+    const row = revision == null
+      ? this.db.prepare(`SELECT g.*,r.recipe FROM graphic_recipes g
+          JOIN graphic_recipe_revisions r ON r.recipe_id=g.id AND r.revision=g.current_revision
+          WHERE g.episode_id=? AND g.id=?`).get(episodeId, recipeId)
+      : this.db.prepare(`SELECT g.*,r.recipe,? AS current_revision FROM graphic_recipes g
+          JOIN graphic_recipe_revisions r ON r.recipe_id=g.id AND r.revision=?
+          WHERE g.episode_id=? AND g.id=?`).get(revision, revision, episodeId, recipeId);
+    return graphicRecipeRow(row);
+  }
+  createGraphicRecipe(episodeId, { name, kind, cardId = null, recipe }, actor = "user") {
+    if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
+    if (!name || !String(name).trim()) throw new StoreError("Graphic name is required");
+    if (!['still', 'motion'].includes(kind)) throw new StoreError("Graphic kind must be still or motion");
+    if (cardId && !this.getEpisode(episodeId).cards.some((card) => card.id === cardId))
+      throw new StoreError("Graphic card not found");
+    const recipeId = id("graphic");
+    const stamp = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("INSERT INTO graphic_recipes VALUES(?,?,?,?,?,?,?,?)")
+        .run(recipeId, episodeId, cardId, String(name).trim(), kind, 1, stamp, stamp);
+      this.db.prepare("INSERT INTO graphic_recipe_revisions VALUES(?,?,?,?,?)")
+        .run(recipeId, 1, JSON.stringify(recipe), actor, stamp);
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    return this.getGraphicRecipe(episodeId, recipeId);
+  }
+  updateGraphicRecipe(episodeId, recipeId, expectedRevision, { name, cardId, recipe }, actor = "user") {
+    const current = this.getGraphicRecipe(episodeId, recipeId);
+    if (!current) throw new StoreError("Graphic recipe not found", 404);
+    if (!Number.isInteger(expectedRevision) || expectedRevision !== current.revision)
+      throw new StoreError(`Stale graphic revision: expected ${current.revision}`, 409, { current });
+    const nextRevision = current.revision + 1;
+    const nextName = name == null ? current.name : String(name).trim();
+    const nextCardId = cardId === undefined ? current.cardId : cardId || null;
+    if (!nextName) throw new StoreError("Graphic name is required");
+    if (nextCardId && !this.getEpisode(episodeId).cards.some((card) => card.id === nextCardId))
+      throw new StoreError("Graphic card not found");
+    const stamp = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.db.prepare(`UPDATE graphic_recipes SET name=?,card_id=?,current_revision=?,updated_at=?
+        WHERE id=? AND episode_id=? AND current_revision=?`).run(nextName, nextCardId, nextRevision, stamp, recipeId, episodeId, expectedRevision);
+      if (!result.changes) throw new StoreError("Stale graphic revision", 409);
+      this.db.prepare("INSERT INTO graphic_recipe_revisions VALUES(?,?,?,?,?)")
+        .run(recipeId, nextRevision, JSON.stringify(recipe), actor, stamp);
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    return this.getGraphicRecipe(episodeId, recipeId);
+  }
+  createFinalAuthorization({ episodeId, renderRevision, conversationId = null, requestId = null, ttlMs = 5 * 60_000 }) {
+    if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
+    if (!/^[0-9a-f]{64}$/.test(renderRevision || "")) throw new StoreError("Valid render revision is required");
+    const createdAt = now();
+    const value = { id: id("final_auth"), episodeId, renderRevision, conversationId, requestId,
+      createdAt, expiresAt: new Date(Date.now() + ttlMs).toISOString() };
+    this.db.prepare(`INSERT INTO final_authorizations(
+      id,episode_id,render_revision,conversation_id,request_id,expires_at,consumed_at,created_at
+    ) VALUES(?,?,?,?,?,?,?,?)`)
+      .run(value.id, episodeId, renderRevision, conversationId, requestId, value.expiresAt, null, createdAt);
+    return value;
+  }
+  consumeFinalAuthorization(authorizationId, { episodeId, renderRevision, conversationId = null, requestId = null }) {
+    const stamp = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare("SELECT * FROM final_authorizations WHERE id=?").get(authorizationId);
+      if (!row) throw new StoreError("Final authorization is required", 403);
+      if (row.episode_id !== episodeId || row.render_revision !== renderRevision ||
+          (row.conversation_id ?? null) !== (conversationId ?? null) || (row.request_id ?? null) !== (requestId ?? null))
+        throw new StoreError("Final authorization does not match this render request", 403);
+      if (row.consumed_at) throw new StoreError("Final authorization was already used", 409);
+      if (row.expires_at <= stamp) throw new StoreError("Final authorization expired", 409);
+      const result = this.db.prepare("UPDATE final_authorizations SET consumed_at=? WHERE id=? AND consumed_at IS NULL")
+        .run(stamp, authorizationId);
+      if (!result.changes) throw new StoreError("Final authorization was already used", 409);
+      this.db.exec("COMMIT");
+      return { id: row.id, episodeId, renderRevision, consumedAt: stamp };
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+  saveAuthorizedFinalJob(authorizationId, scope, job) {
+    const { episodeId, renderRevision, conversationId = null, requestId = null } = scope;
+    const stamp = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare("SELECT * FROM final_authorizations WHERE id=?").get(authorizationId);
+      if (!row) throw new StoreError("Final authorization is required", 403);
+      if (row.episode_id !== episodeId || row.render_revision !== renderRevision ||
+          (row.conversation_id ?? null) !== (conversationId ?? null) || (row.request_id ?? null) !== (requestId ?? null))
+        throw new StoreError("Final authorization does not match this render request", 403);
+      if (row.consumed_at) throw new StoreError("Final authorization was already used", 409);
+      if (row.expires_at <= stamp) throw new StoreError("Final authorization expired", 409);
+      const consumed = this.db.prepare("UPDATE final_authorizations SET consumed_at=? WHERE id=? AND consumed_at IS NULL")
+        .run(stamp, authorizationId);
+      if (!consumed.changes) throw new StoreError("Final authorization was already used", 409);
+      this.db.prepare(`INSERT INTO jobs(id,episode_id,kind,state,progress,revision,output_path,error,snapshot,created_at,updated_at,output_class)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(job.id, episodeId, job.kind, job.state, job.progress ?? 0,
+        job.revision, job.outputPath ?? null, job.error ?? null, JSON.stringify(job.snapshot ?? null),
+        job.createdAt || stamp, stamp, job.outputClass || "final");
+      this.db.exec("COMMIT");
+      return this.getJob(job.id);
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
   listJobs(episodeId) {
     return (
       episodeId
@@ -971,6 +1108,7 @@ export class Store {
   }
   saveJob(job) {
     const old = job.id && this.getJob(job.id);
+    if (old?.state === "completed") throw new StoreError("Completed job records are immutable", 409);
     const value = {
       ...old,
       ...job,
@@ -980,7 +1118,7 @@ export class Store {
     };
     this.db
       .prepare(
-        `INSERT INTO jobs(id,episode_id,kind,state,progress,revision,output_path,error,snapshot,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,progress=excluded.progress,output_path=excluded.output_path,error=excluded.error,snapshot=excluded.snapshot,updated_at=excluded.updated_at`,
+        `INSERT INTO jobs(id,episode_id,kind,state,progress,revision,output_path,error,snapshot,created_at,updated_at,output_class) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,progress=excluded.progress,output_path=excluded.output_path,error=excluded.error,snapshot=excluded.snapshot,updated_at=excluded.updated_at,output_class=excluded.output_class`,
       )
       .run(
         value.id,
@@ -994,6 +1132,7 @@ export class Store {
         JSON.stringify(value.snapshot ?? null),
         value.createdAt,
         value.updatedAt,
+        value.outputClass || "active",
       );
     return this.getJob(value.id);
   }

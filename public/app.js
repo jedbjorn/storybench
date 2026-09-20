@@ -73,7 +73,7 @@ function render() {
     jobs
       .map(
         (j) =>
-          `<div class="job"><div><b>${esc(j.kind)}</b> · revision ${j.revision}<br><span class="${j.state === "failed" ? "failed" : ""}">${esc(j.error || j.state)} ${j.state === "running" ? Math.round(j.progress * 100) + "%" : ""}</span>${j.state === "completed" ? `<video controls preload="metadata" src="/api/jobs/${j.id}/file" style="display:block;max-width:420px;width:100%;margin-top:8px"></video>` : ""}</div>${j.state === "completed" ? `<a href="/api/jobs/${j.id}/file" target="_blank"><button>Open</button></a>` : ""}</div>`,
+          `<div class="job"><div><b>${esc(j.kind)}</b> · revision ${j.revision}${j.stale === true ? " · out of date" : ""}<br><span class="${j.state === "failed" ? "failed" : ""}">${esc(j.error || j.state)} ${j.state === "running" ? Math.round(j.progress * 100) + "%" : ""}</span>${j.state === "completed" && ["draft", "final"].includes(j.outputClass) ? `<video controls preload="metadata" src="/api/jobs/${j.id}/file" style="display:block;max-width:420px;width:100%;margin-top:8px"></video>` : ""}</div><div>${["queued", "running"].includes(j.state) ? `<button data-cancel-job="${j.id}">Cancel</button>` : ""}${j.state === "completed" ? `<a href="/api/jobs/${j.id}/file" target="_blank"><button>Open</button></a>` : ""}</div></div>`,
       )
       .join("") || "<p>No renders yet.</p>";
   if (!$("#storyPanel").hidden)
@@ -144,6 +144,7 @@ $("#promoteCardForm").onsubmit = async (event) => {
   } catch (error) { form.querySelector("[data-promote-error]").textContent = error.message; }
 };
 document.querySelectorAll("[data-promote-close]").forEach((button) => button.onclick = () => $("#promoteCardModal").close());
+document.querySelectorAll("[data-graphic-close]").forEach((button) => button.onclick = () => $("#graphicModal").close());
 document.querySelectorAll("[data-branding-close]").forEach((button) => button.onclick = () => $("#brandingModal").close());
 $("#openBranding").onclick = async () => {
   try {
@@ -389,18 +390,57 @@ document.querySelectorAll(".tabs > button").forEach(
 async function renderJob(kind) {
   try {
     await flushDraft();
+    const plan = await api(`/api/episodes/${episode.id}/render-plan`);
+    let finalGrantId = null, requestId = null;
+    if (kind === "final") {
+      requestId = crypto.randomUUID();
+      const grant = await api(`/api/episodes/${episode.id}/final-authorizations`, { method: "POST",
+        body: JSON.stringify({ expectedRenderRevision: plan.renderRevision, requestId }) });
+      finalGrantId = grant.id;
+    }
     await api(`/api/episodes/${episode.id}/render`, {
       method: "POST",
-      body: JSON.stringify({ kind }),
+      body: JSON.stringify({ outputClass: kind, expectedRenderRevision: plan.renderRevision, finalGrantId, requestId }),
     });
-    toast(`${kind} queued`);
+    toast(`${kind === "final" ? "Final" : "Draft"} queued`);
     await load(episode.id);
   } catch (e) {
     toast(e.message);
   }
 }
-$("#preview").onclick = () => renderJob("preview");
-$("#export").onclick = () => renderJob("export");
+$("#preview").onclick = () => renderJob("draft");
+$("#export").onclick = () => renderJob("final");
+$("#jobs").onclick = async (event) => {
+  const id = event.target.closest("[data-cancel-job]")?.dataset.cancelJob;
+  if (!id || !episode) return;
+  try { await api(`/api/episodes/${episode.id}/jobs/${id}/cancel`, { method: "POST", body: "{}" }); await load(episode.id); }
+  catch (error) { toast(error.message); }
+};
+$("#openGraphic").onclick = () => {
+  if (!episode) return;
+  const form = $("#graphicForm");
+  form.elements.cardId.innerHTML = `<option value="">Library only</option>${episode.cards.map((card) => `<option value="${card.id}">${esc(card.title || card.type)}</option>`).join("")}`;
+  form.querySelector("[data-graphic-error]").textContent = "";
+  $("#graphicModal").showModal();
+};
+$("#graphicForm").onsubmit = async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget, kind = form.elements.kind.value;
+  const duration = Number(form.elements.duration.value);
+  const layer = { kind: "text", text: form.elements.text.value, x: 640, y: 360, fontSize: 64,
+    fill: form.elements.fill.value, opacity: 1, z: 0,
+    ...(kind === "motion" ? { keyframes: { opacity: [{ time: 0, value: 0, easing: "linear" }, { time: duration, value: 1, easing: "linear" }] } } : {}) };
+  const recipe = { kind, width: 1280, height: 720, background: form.elements.background.value, layers: [layer],
+    ...(kind === "motion" ? { duration, fps: 30 } : {}) };
+  try {
+    await flushDraft();
+    const graphic = await api(`/api/episodes/${episode.id}/graphics`, { method: "POST", body: JSON.stringify({
+      name: form.elements.name.value, cardId: form.elements.cardId.value || null, recipe }) });
+    await api(`/api/episodes/${episode.id}/graphics/${graphic.id}/render`, { method: "POST",
+      body: JSON.stringify({ expectedRecipeRevision: graphic.revision }) });
+    $("#graphicModal").close(); toast("Graphic queued"); await load(episode.id);
+  } catch (error) { form.querySelector("[data-graphic-error]").textContent = error.message; }
+};
 setInterval(() => {
   if (
     episode &&
