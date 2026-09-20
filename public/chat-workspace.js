@@ -8,6 +8,7 @@ export class ChatWorkspace {
     this.currentId = null;
     this.generation = 0;
     this.draftChain = Promise.resolve();
+    this.historyOpen = false;
   }
 
   async open() {
@@ -20,7 +21,8 @@ export class ChatWorkspace {
     this.conversations = [];
     if (!episodeId) return this.clear();
     this.root.hidden = false;
-    this.root.innerHTML = `<div class="chat-switcher"><select data-chat-select aria-label="Conversation"></select><button data-chat-new type="button">New</button><button data-chat-rename type="button">Rename</button></div><div data-chat-status role="status"></div><div data-chat-messages></div><textarea data-chat-draft aria-label="Message" placeholder="Ask the episode assistant"></textarea><div><button data-chat-send type="button">Send</button><button data-chat-stop type="button" hidden>Stop</button></div>`;
+    this.root.innerHTML = `<div class="chat-toolbar"><button class="chat-history-toggle" data-chat-history-toggle type="button" aria-label="Open chat history" aria-controls="chatHistoryDrawer" aria-expanded="false">‹</button><div class="chat-identity"><b data-chat-title>Episode assistant</b><span data-chat-status role="status"></span></div></div><div class="chat-history-backdrop" data-chat-history-backdrop hidden></div><section id="chatHistoryDrawer" class="chat-history-drawer" data-chat-history-drawer aria-label="Chat history" hidden><div class="chat-history-heading"><strong>Chat history</strong><button data-chat-rename type="button">Rename</button></div><div class="chat-history-list" data-chat-history-list></div></section><div data-chat-messages></div><div class="chat-composer"><textarea data-chat-draft aria-label="Message" placeholder="Ask the episode assistant" rows="3"></textarea><div class="chat-composer-actions"><button class="visually-hidden" data-chat-send type="button">Send message</button><button class="chat-icon" data-chat-new type="button" aria-label="New chat" title="New chat">＋</button><button class="chat-icon danger" data-chat-stop type="button" aria-label="Stop active response" title="Stop active response" hidden>×</button></div><small>Enter to send · Shift+Enter for a new line</small></div>`;
+    this.setHistoryOpen(false);
     this.bind(generation, episodeId);
     await this.refreshList(generation, episodeId);
     if (!this.isCurrent(generation, episodeId)) return;
@@ -38,12 +40,31 @@ export class ChatWorkspace {
   }
 
   clear() { this.root.hidden = true; this.root.innerHTML = ""; }
-  stopTimers() { clearInterval(this.pollTimer); clearTimeout(this.draftTimer); this.pollTimer = null; this.draftTimer = null; }
+  stopTimers() {
+    clearInterval(this.pollTimer); clearTimeout(this.draftTimer);
+    this.pollTimer = null; this.draftTimer = null;
+    if (this.outsideClick) this.root.ownerDocument.removeEventListener("click", this.outsideClick);
+    if (this.escapeKey) this.root.ownerDocument.removeEventListener("keydown", this.escapeKey);
+    this.outsideClick = null; this.escapeKey = null;
+  }
   isCurrent(generation, episodeId, conversationId) {
     return generation === this.generation && episodeId === this.episodeId && (conversationId === undefined || conversationId === this.currentId);
   }
   itemUrl(episodeId = this.episodeId, conversationId = this.currentId) { return `/api/episodes/${episodeId}/chats/${conversationId}`; }
   draftField() { return this.root.querySelector("[data-chat-draft]"); }
+
+  setHistoryOpen(open) {
+    this.historyOpen = Boolean(open);
+    const drawer = this.root.querySelector("[data-chat-history-drawer]");
+    const backdrop = this.root.querySelector("[data-chat-history-backdrop]");
+    const toggle = this.root.querySelector("[data-chat-history-toggle]");
+    if (drawer) drawer.hidden = !this.historyOpen;
+    if (backdrop) backdrop.hidden = !this.historyOpen;
+    if (toggle) {
+      toggle.setAttribute("aria-expanded", String(this.historyOpen));
+      toggle.setAttribute("aria-label", this.historyOpen ? "Close chat history" : "Open chat history");
+    }
+  }
 
   queueDraft({ episodeId = this.episodeId, conversationId = this.currentId, value = this.draftField()?.value ?? "" } = {}) {
     if (!episodeId || !conversationId) return this.draftChain;
@@ -62,12 +83,22 @@ export class ChatWorkspace {
   }
 
   bind(generation, episodeId) {
-    this.root.querySelector("[data-chat-select]").onchange = async (event) => {
-      const next = event.target.value;
+    const toggle = this.root.querySelector("[data-chat-history-toggle]");
+    const drawer = this.root.querySelector("[data-chat-history-drawer]");
+    toggle.onclick = () => this.setHistoryOpen(!this.historyOpen);
+    this.root.querySelector("[data-chat-history-list]").onclick = async (event) => {
+      const button = event.target.closest("[data-chat-id]");
+      if (!button) return;
+      const next = button.dataset.chatId;
+      if (next === this.currentId) return this.setHistoryOpen(false);
       await this.flushDraft();
       if (!this.isCurrent(generation, episodeId)) return;
       this.currentId = next;
       await this.refresh(generation, episodeId, next);
+      if (this.isCurrent(generation, episodeId, next)) {
+        this.paintConversationList();
+        this.setHistoryOpen(false);
+      }
     };
     this.root.querySelector("[data-chat-new]").onclick = async () => {
       await this.flushDraft();
@@ -91,9 +122,10 @@ export class ChatWorkspace {
       const conversationId = this.currentId, value = draft.value;
       this.draftTimer = setTimeout(() => this.queueDraft({ episodeId, conversationId, value }).catch(() => {}), 250);
     };
-    this.root.querySelector("[data-chat-send]").onclick = async () => {
+    const send = this.root.querySelector("[data-chat-send]");
+    send.onclick = async () => {
       const conversationId = this.currentId, text = draft.value;
-      if (!text.trim()) return;
+      if (!text.trim() || send.disabled) return;
       try {
         await this.flushDraft();
         await this.api(`${this.itemUrl(episodeId, conversationId)}/messages`, { method: "POST", body: JSON.stringify({ text }) });
@@ -102,11 +134,32 @@ export class ChatWorkspace {
         await this.refreshList(generation, episodeId, { preserveSelection: true });
       } catch (cause) { this.toast(cause.message); }
     };
+    draft.onkeydown = (event) => {
+      if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+      event.preventDefault();
+      send.click();
+    };
     this.root.querySelector("[data-chat-stop]").onclick = async () => {
       const conversationId = this.currentId;
       try { await this.api(`${this.itemUrl(episodeId, conversationId)}/interrupt`, { method: "POST", body: "{}" }); if (this.isCurrent(generation, episodeId, conversationId)) await this.refresh(generation, episodeId, conversationId); }
       catch (cause) { this.toast(cause.message); }
     };
+    this.outsideClick = (event) => {
+      if (!this.historyOpen || drawer.contains(event.target) || toggle.contains(event.target)) return;
+      this.setHistoryOpen(false);
+    };
+    this.escapeKey = (event) => { if (event.key === "Escape" && this.historyOpen) this.setHistoryOpen(false); };
+    this.root.ownerDocument.addEventListener("click", this.outsideClick);
+    this.root.ownerDocument.addEventListener("keydown", this.escapeKey);
+  }
+
+  paintConversationList() {
+    const list = this.root.querySelector("[data-chat-history-list]");
+    if (!list) return;
+    list.innerHTML = this.conversations.map((value) => `<button class="chat-history-item ${value.id === this.currentId ? "selected" : ""}" data-chat-id="${escapeHtml(value.id)}" type="button" aria-current="${value.id === this.currentId ? "true" : "false"}"><b>${escapeHtml(value.name)}</b><span>${working(value.state) ? "working" : escapeHtml(value.state || "idle")}</span></button>`).join("");
+    const current = this.conversations.find((value) => value.id === this.currentId);
+    this.root.querySelector("[data-chat-title]").textContent = current?.name || "Episode assistant";
+    this.root.querySelector("[data-chat-rename]").disabled = !current;
   }
 
   async refreshList(generation, episodeId, { preserveSelection = false } = {}) {
@@ -116,7 +169,7 @@ export class ChatWorkspace {
     if (!this.isCurrent(generation, episodeId)) return;
     this.conversations = conversations;
     if (!preserveSelection || !conversations.some((value) => value.id === this.currentId)) this.currentId = conversations[0].id;
-    this.root.querySelector("[data-chat-select]").innerHTML = conversations.map((value) => `<option value="${escapeHtml(value.id)}" ${value.id === this.currentId ? "selected" : ""}>${escapeHtml(value.name)}${working(value.state) ? " • working" : ""}</option>`).join("");
+    this.paintConversationList();
     await this.refresh(generation, episodeId, this.currentId);
   }
 
