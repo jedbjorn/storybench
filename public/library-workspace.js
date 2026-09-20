@@ -1,6 +1,49 @@
 const categories = ["Reference", "B-roll", "Narration", "Graphics"];
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
 
+async function readDirectoryEntries(directory) {
+  const reader = directory.createReader();
+  const entries = [];
+  while (true) {
+    const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+    if (!batch.length) return entries;
+    entries.push(...batch);
+  }
+}
+
+async function filesFromEntry(entry) {
+  if (entry.isFile)
+    return [await new Promise((resolve, reject) => entry.file(resolve, reject))];
+  if (!entry.isDirectory) return [];
+  const entries = await readDirectoryEntries(entry);
+  return (await Promise.all(entries.map(filesFromEntry))).flat();
+}
+
+export async function filesFromDataTransfer(dataTransfer) {
+  const entries = [...(dataTransfer.items || [])]
+    .map((item) => item.webkitGetAsEntry?.())
+    .filter(Boolean);
+  if (!entries.length) return [...(dataTransfer.files || [])];
+  return (await Promise.all(entries.map(filesFromEntry))).flat();
+}
+
+export async function uploadLibraryFile({ episodeId, file, label = file.name, category, signal }) {
+  const response = await fetch(`/api/episodes/${episodeId}/library/files`, {
+    method: "POST",
+    headers: {
+      "x-file-name": encodeURIComponent(file.name),
+      "x-library-label": encodeURIComponent(label),
+      "x-library-category": category,
+      "content-type": file.type || "application/octet-stream",
+    },
+    body: file,
+    signal,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Import failed (${response.status})`);
+  return data;
+}
+
 export class LibraryWorkspace {
   constructor({ api, toast, getEpisode, refreshState, onMutation = () => {} }) {
     this.api = api;
@@ -9,7 +52,6 @@ export class LibraryWorkspace {
     this.refreshState = refreshState;
     this.onMutation = onMutation;
     this.items = [];
-    this.sections = [];
     this.importQueue = Promise.resolve();
     this.groups = document.querySelector("#libraryGroups");
     this.progress = document.querySelector("#libraryProgress");
@@ -20,11 +62,17 @@ export class LibraryWorkspace {
   bind() {
     document.querySelector("#openLibraryImport").onclick = () => { document.querySelector("#libraryImportError").textContent = ""; this.importModal.showModal(); };
     document.querySelector("#pickLibraryFiles").onclick = () => document.querySelector("#libraryFiles").click();
-    document.querySelector("#libraryFiles").onchange = (event) => this.queueFiles([...event.target.files]);
+    document.querySelector("#pickLibraryFolder").onclick = () => document.querySelector("#libraryFolder").click();
+    for (const input of [document.querySelector("#libraryFiles"), document.querySelector("#libraryFolder")])
+      input.onchange = (event) => { this.queueFiles([...event.target.files]); event.target.value = ""; };
     const dropzone = document.querySelector("#libraryDropzone");
     dropzone.ondragover = (event) => { event.preventDefault(); dropzone.classList.add("drag-over"); };
     dropzone.ondragleave = () => dropzone.classList.remove("drag-over");
-    dropzone.ondrop = (event) => { event.preventDefault(); dropzone.classList.remove("drag-over"); this.queueFiles([...event.dataTransfer.files]); };
+    dropzone.ondrop = async (event) => {
+      event.preventDefault(); dropzone.classList.remove("drag-over");
+      try { this.queueFiles(await filesFromDataTransfer(event.dataTransfer)); }
+      catch (error) { this.showImportError(`Could not read the dropped folder: ${error.message}`); }
+    };
     dropzone.onkeydown = (event) => { if (["Enter", " "].includes(event.key)) document.querySelector("#libraryFiles").click(); };
     document.querySelector("#importLibraryText").onclick = () => this.addText();
     document.querySelector("#importLibraryUrl").onclick = () => this.addUrl();
@@ -53,10 +101,9 @@ export class LibraryWorkspace {
     const episode = this.getEpisode();
     if (!episode) return;
     const identity = episode.id;
-    const [items, story] = await Promise.all([this.api(`/api/episodes/${identity}/library`), this.api(`/api/episodes/${identity}/story`)]);
+    const items = await this.api(`/api/episodes/${identity}/library`);
     if (this.getEpisode()?.id !== identity) return;
     this.items = items;
-    this.sections = story.sections || [];
     this.render();
   }
   render() {
@@ -72,15 +119,15 @@ export class LibraryWorkspace {
     else if (item.asset.kind === "video") preview = `<video src="${base}/file" preload="metadata" muted></video>`;
     else if (item.asset.kind === "audio") preview = `<audio src="${base}/file" controls preload="metadata"></audio>`;
     const extraction = item.category === "Reference" ? `<span class="extraction ${item.extractionStatus}">${esc(item.extractionStatus)}</span>` : "";
-    return `<article class="asset library-item" draggable="true" data-library-item="${item.id}">${preview}<div><b>${esc(item.label)}</b><span>${esc(item.asset.kind)} ${extraction}</span>${item.sectionId ? `<span>Story section: ${esc(this.sections.find((section) => section.id === item.sectionId)?.title || "Unavailable")}</span>` : ""}<div class="library-card-actions"><a href="${base}/file" target="_blank">Open</a><button data-library-edit="${item.id}">Edit</button></div></div></article>`;
+    return `<article class="asset library-item" draggable="true" data-library-item="${item.id}">${preview}<div><b>${esc(item.label)}</b><span>${esc(item.asset.kind)} ${extraction}</span><div class="library-card-actions"><a href="${base}/file" target="_blank">Open</a><button data-library-edit="${item.id}">Edit</button></div></div></article>`;
   }
   queueFiles(files) {
     if (!files.length) return;
     if (this.importController) return this.showImportError("Wait for the current import or cancel it first.");
     const category = document.querySelector("#libraryImportCategory").value;
-    this.pendingRows = files.map((file, index) => ({ file, index, label: file.name, category, sectionId: "", state: "Waiting" }));
-    const sectionOptions = `<option value="">No story section</option>${this.sections.map((section) => `<option value="${section.id}">${esc(section.title)}</option>`).join("")}`;
-    document.querySelector("#libraryImportQueue").innerHTML = this.pendingRows.map((row) => `<fieldset data-import-row="${row.index}"><legend>${esc(row.file.name)}</legend><label>Label <input data-import-label value="${esc(row.label)}"></label><label>Category <select data-import-category>${categories.map((value) => `<option ${value === row.category ? "selected" : ""}>${value}</option>`).join("")}</select></label><label>Story section <select data-import-section>${sectionOptions}</select></label></fieldset>`).join("");
+    const pending = this.pendingRows || [];
+    this.pendingRows = [...pending, ...files.map((file, offset) => ({ file, index: pending.length + offset, label: file.name, category, state: "Waiting" }))];
+    document.querySelector("#libraryImportQueue").innerHTML = this.pendingRows.map((row) => `<fieldset data-import-row="${row.index}"><legend>${esc(row.file.webkitRelativePath || row.file.name)}</legend><label>Label <input data-import-label value="${esc(row.label)}"></label><label>Category <select data-import-category>${categories.map((value) => `<option ${value === row.category ? "selected" : ""}>${value}</option>`).join("")}</select></label></fieldset>`).join("");
     document.querySelector("#startLibraryFiles").hidden = false;
   }
   startFiles() {
@@ -91,7 +138,6 @@ export class LibraryWorkspace {
       const row = this.pendingRows[Number(element.dataset.importRow)];
       row.label = element.querySelector("[data-import-label]").value;
       row.category = element.querySelector("[data-import-category]").value;
-      row.sectionId = element.querySelector("[data-import-section]").value;
     }
     const rows = this.pendingRows;
     this.pendingRows = null;
@@ -101,11 +147,7 @@ export class LibraryWorkspace {
     document.querySelector("#cancelLibraryFiles").hidden = false;
     this.showProgress(rows);
     this.importQueue = this.importQueue.catch(() => {}).then(async () => {
-      await runImportBatch({ rows, episodeId, signal: controller.signal, onChange: () => this.showProgress(rows), upload: async (row, signal) => {
-        const response = await fetch(`/api/episodes/${episodeId}/library/files`, { method: "POST", headers: { "x-file-name": encodeURIComponent(row.file.name), "x-library-label": encodeURIComponent(row.label), "x-library-category": row.category, "x-story-section-id": row.sectionId, "content-type": row.file.type || "application/octet-stream" }, body: row.file, signal });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.error || `Import failed (${response.status})`);
-      }});
+      await runImportBatch({ rows, episodeId, signal: controller.signal, onChange: () => this.showProgress(rows), upload: (row, signal) => uploadLibraryFile({ episodeId, file: row.file, label: row.label, category: row.category, signal }) });
       document.querySelector("#cancelLibraryFiles").hidden = true;
       if (this.importController === controller) this.importController = null;
       document.querySelector("#libraryImportQueue").innerHTML = "";
@@ -146,13 +188,12 @@ export class LibraryWorkspace {
     form.elements.category.value = item.category;
     form.elements.tags.value = item.tags.join(", ");
     form.elements.notes.value = item.notes;
-    form.elements.sectionId.innerHTML = `<option value="">No story section</option>${this.sections.map((section) => `<option value="${section.id}" ${section.id === item.sectionId ? "selected" : ""}>${esc(section.title)}</option>`).join("")}`;
     form.querySelector("[data-library-edit-error]").textContent = "";
     this.editModal.showModal();
   }
   async saveEdit() {
     const form = document.querySelector("#libraryEditForm");
-    const body = { expectedRevision: this.editing.revision, label: form.elements.label.value, category: form.elements.category.value, tags: form.elements.tags.value.split(",").map((tag) => tag.trim()).filter(Boolean), notes: form.elements.notes.value, sectionId: form.elements.sectionId.value || null };
+    const body = { expectedRevision: this.editing.revision, label: form.elements.label.value, category: form.elements.category.value, tags: form.elements.tags.value.split(",").map((tag) => tag.trim()).filter(Boolean), notes: form.elements.notes.value };
     try {
       await this.api(`/api/episodes/${this.getEpisode().id}/library/${this.editing.id}`, { method: "PUT", body: JSON.stringify(body) });
       this.editModal.close(); await this.open(); await this.onMutation(); this.toast("Library item saved");

@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { storySectionHeadings } from "./story-markdown.js";
+import { STARTER_STORY, storySectionHeadings } from "./story-markdown.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix) => `${prefix}_${crypto.randomUUID()}`;
@@ -438,6 +438,7 @@ export class Store {
     );
   }
   createEpisode({ title = "Untitled episode", notes = "" } = {}) {
+    const initialStory = normalizeStory(STARTER_STORY);
     const episode = {
       id: id("episode"),
       title: String(title).trim() || "Untitled episode",
@@ -478,10 +479,13 @@ export class Store {
         );
       this.db
         .prepare("INSERT INTO stories(episode_id,source,revision,sections,publication_pending,committed_hash,published_hash,updated_at) VALUES(?,?,?,?,?,?,?,?)")
-        .run(episode.id, "", 1, "[]", 1, hash(""), null, episode.createdAt);
+        .run(episode.id, initialStory.source, 1, JSON.stringify(initialStory.sections), 1, hash(initialStory.source), null, episode.createdAt);
       this.db
         .prepare("INSERT INTO story_history(episode_id,revision,source,sections,actor,created_at) VALUES(?,?,?,?,?,?)")
-        .run(episode.id, 1, "", "[]", "human", episode.createdAt);
+        .run(episode.id, 1, initialStory.source, JSON.stringify(initialStory.sections), "human", episode.createdAt);
+      const insertSection = this.db.prepare("INSERT INTO story_sections(id,episode_id,title,sort_order,retired_at) VALUES(?,?,?,?,NULL)");
+      for (const section of initialStory.sections)
+        insertSection.run(section.id, episode.id, section.title, section.order);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -490,8 +494,6 @@ export class Store {
     this.ensureEpisodeDirectories(episode.id);
     this.publishStory(episode.id);
     const standards = this.listBrandingTemplates().filter((value) => value.role);
-    if (standards.length)
-      this.saveStory(episode.id, 1, "# Overview\n\n# Hook\n\n# Sections\n\n## Intro\n\n## Outro\n", "branding-standard");
     for (const template of standards)
       this.applyBrandingTemplate(episode.id, template.id, { automatic: true });
     return this.getEpisode(episode.id);
