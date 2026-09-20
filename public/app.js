@@ -1,4 +1,4 @@
-import { StoryEditor } from "/story-editor.js";
+import { StoryEditor } from "/story-editor.js?v=round2-editor";
 
 const $ = (s) => document.querySelector(s);
 let state = { episodes: [], assets: [], jobs: [] },

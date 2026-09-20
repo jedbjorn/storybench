@@ -83,13 +83,14 @@ async function streamFile(req, res, file, contentType) {
   const info = await stat(file);
   if (!info.isFile()) throw new StoreError("File not found", 404);
   const range = req.headers.range;
+  const selectedType =
+    contentType || mime[path.extname(file).toLowerCase()] || "application/octet-stream";
   const headers = {
-    "content-type":
-      contentType ||
-      mime[path.extname(file).toLowerCase()] ||
-      "application/octet-stream",
+    "content-type": selectedType,
     "accept-ranges": "bytes",
-    "cache-control": "private, max-age=3600",
+    "cache-control": /^(text\/html|text\/css|text\/javascript)/.test(selectedType)
+      ? "no-store"
+      : "private, max-age=3600",
   };
   const pipe = (opts) => {
     const stream = createReadStream(file, opts);
