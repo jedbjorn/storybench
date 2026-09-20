@@ -21,7 +21,7 @@ const id = (prefix) => `${prefix}_${crypto.randomUUID()}`;
 const parse = (value, fallback = null) =>
   value == null ? fallback : JSON.parse(value);
 const STORY_LIMIT = 1024 * 1024;
-const STORY_MARKER = /^\s*<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
+const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
 
 export class StoreError extends Error {
@@ -60,21 +60,22 @@ function normalizeStory(source, existingSections = []) {
   let fence = null;
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
-    const fenceMatch = /^\s*(```+|~~~+)/.exec(line);
+    const fenceMatch = /^ {0,3}(```+|~~~+)/.exec(line);
     if (fenceMatch) {
-      const token = fenceMatch[1][0];
-      if (!fence) fence = token;
-      else if (fence === token) fence = null;
+      const token = fenceMatch[1];
+      if (!fence) fence = { character: token[0], length: token.length };
+      else if (fence.character === token[0] && token.length >= fence.length)
+        fence = null;
       continue;
     }
     if (fence) continue;
-    const h1 = /^\s*#\s+(.+?)\s*#*\s*$/.exec(line);
+    const h1 = /^ {0,3}#\s+(.+?)\s*#*\s*$/.exec(line);
     if (h1) {
       inSections = h1[1].trim().toLowerCase() === "sections";
       continue;
     }
     if (!inSections) continue;
-    const h2 = /^\s*##\s+(.+?)\s*#*\s*$/.exec(line);
+    const h2 = /^ {0,3}##\s+(.+?)\s*#*\s*$/.exec(line);
     if (!h2) continue;
     const marker = index > 0 ? STORY_MARKER.exec(lines[index - 1]) : null;
     let sectionId = marker?.[1]?.toLowerCase();
@@ -207,10 +208,11 @@ function jobRow(row) {
 }
 
 export class Store {
-  constructor(workspace, { afterMigrationCommit, beforeStoryPublish } = {}) {
+  constructor(workspace, { afterMigrationCommit, beforeStoryPublish, afterStoryRename } = {}) {
     this.workspace = path.resolve(workspace);
     this.afterMigrationCommit = afterMigrationCommit;
     this.beforeStoryPublish = beforeStoryPublish;
+    this.afterStoryRename = afterStoryRename;
     for (const dir of ["", "media", "cache", "exports", "imports", "branding/assets"])
       mkdirSync(path.join(this.workspace, dir), { recursive: true });
     const databasePath = path.join(this.workspace, "storybench.sqlite");
@@ -524,8 +526,11 @@ export class Store {
     const file = path.join(this.episodeDirectory(episodeId), "story.md");
     if (existsSync(file) && lstatSync(file).isSymbolicLink())
       throw new StoreError("Registered story file cannot be a symbolic link", 403);
-    if (existsSync(file) && story.publishedHash && hash(readFileSync(file)) !== story.publishedHash)
-      return { ...story, publicationStatus: "external-conflict", externalConflict: true };
+    if (existsSync(file) && story.publishedHash) {
+      const fileHash = hash(readFileSync(file));
+      if (fileHash !== story.publishedHash && !(story.publicationPending && fileHash === story.committedHash))
+        return { ...story, publicationStatus: "external-conflict", externalConflict: true };
+    }
     return story;
   }
   saveStory(episodeId, expectedStoryRevision, source, actor = "human") {
@@ -588,9 +593,18 @@ export class Store {
     this.ensureEpisodeDirectories(episodeId);
     const folder = this.episodeDirectory(episodeId);
     const file = path.join(folder, "story.md");
-    if (existsSync(file) && lstatSync(file).isSymbolicLink())
-      throw new StoreError("Registered story file cannot be a symbolic link", 403);
-    if (existsSync(file) && story.publishedHash && hash(readFileSync(file)) !== story.publishedHash) {
+    let fileHash = null;
+    if (existsSync(file)) {
+      if (lstatSync(file).isSymbolicLink())
+        throw new StoreError("Registered story file cannot be a symbolic link", 403);
+      fileHash = hash(readFileSync(file));
+    }
+    if (fileHash === story.committedHash) {
+      this.db.prepare("UPDATE stories SET publication_pending=0,published_hash=? WHERE episode_id=? AND revision=?")
+        .run(story.committedHash, episodeId, story.storyRevision);
+      return this.getStory(episodeId);
+    }
+    if (fileHash && story.publishedHash && fileHash !== story.publishedHash) {
       const conflict = path.join(folder, "conflicts", `story-${Date.now()}.md`);
       copyFileSync(file, conflict);
       throw new StoreError("The registered story file changed outside Storybench; it was preserved as a conflict artifact", 409, { conflictPath: path.relative(this.workspace, conflict) });
@@ -606,6 +620,7 @@ export class Store {
         closeSync(descriptor);
       }
       renameSync(temporary, file);
+      this.afterStoryRename?.({ episodeId, story, file });
     } finally {
       if (existsSync(temporary)) unlinkSync(temporary);
     }

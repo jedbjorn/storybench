@@ -89,7 +89,7 @@ test("story sections keep stable identities, ignore fences, and retire mappings 
   const store = new Store(workspace(t));
   t.after(() => store.close());
   let episode = store.createEpisode({ title: "Story" });
-  let saved = store.saveStory(episode.id, 1, "# Overview\r\nUnicode café\r\n# Hook\r\nBeat\r\n# Sections\r\n## Same\r\nA\r\n## Same\r\nB\r\n```md\r\n## Fake\r\n```\r\n~~~\r\n## Also fake\r\n~~~");
+  let saved = store.saveStory(episode.id, 1, "# Overview\r\nUnicode café\r\n# Hook\r\nBeat\r\n# Sections\r\n## Same\r\nA\r\n## Same\r\nB\r\n    ## Indented code\r\n````md\r\n## Fake\r\n```\r\n## Still fake\r\n````\r\n~~~\r\n## Also fake\r\n~~~");
   assert.equal(saved.sections.length, 2);
   assert.equal(saved.source.replaceAll("\r\n", "").includes("\r"), false);
   const [first, second] = saved.sections;
@@ -142,6 +142,22 @@ test("publication failure exposes committed pending state and startup recovery p
   assert.equal(readFileSync(path.join(root, "episodes", episode.id, "story.md"), "utf8"), pending.source);
   assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM story_history WHERE episode_id=?").get(episode.id).n, 2);
   assert.throws(() => store.saveStory(episode.id, 1, "retry"), /Stale/);
+  store.close();
+});
+
+test("startup recognizes a committed file after a crash between rename and publication acknowledgement", (t) => {
+  const root = workspace(t);
+  let store = new Store(root);
+  const episode = store.createEpisode();
+  store.afterStoryRename = () => { throw new Error("crash after rename"); };
+  assert.throws(() => store.saveStory(episode.id, 1, "renamed bytes"), (error) => error.statusCode === 503);
+  assert.equal(readFileSync(path.join(root, "episodes", episode.id, "story.md"), "utf8"), "renamed bytes");
+  assert.equal(store.getStory(episode.id).publicationPending, true);
+  store.close();
+  store = new Store(root);
+  assert.equal(store.getStory(episode.id).publicationPending, false);
+  assert.equal(store.getStory(episode.id).publishedHash, store.getStory(episode.id).committedHash);
+  assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM story_history WHERE episode_id=?").get(episode.id).n, 2);
   store.close();
 });
 
