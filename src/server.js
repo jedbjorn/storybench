@@ -83,13 +83,14 @@ async function streamFile(req, res, file, contentType) {
   const info = await stat(file);
   if (!info.isFile()) throw new StoreError("File not found", 404);
   const range = req.headers.range;
+  const selectedType =
+    contentType || mime[path.extname(file).toLowerCase()] || "application/octet-stream";
   const headers = {
-    "content-type":
-      contentType ||
-      mime[path.extname(file).toLowerCase()] ||
-      "application/octet-stream",
+    "content-type": selectedType,
     "accept-ranges": "bytes",
-    "cache-control": "private, max-age=3600",
+    "cache-control": /^(text\/html|text\/css|text\/javascript)/.test(selectedType)
+      ? "no-store"
+      : "private, max-age=3600",
   };
   const pipe = (opts) => {
     const stream = createReadStream(file, opts);
@@ -124,8 +125,8 @@ async function streamFile(req, res, file, contentType) {
   pipe({ start, end });
 }
 
-export async function createApp({ workspace, onListen } = {}) {
-  const store = new Store(workspace);
+export async function createApp({ workspace, onListen, storeOptions } = {}) {
+  const store = new Store(workspace, storeOptions);
   const listeners = new Map();
   const notify = (episodeId) => listeners.get(episodeId)?.forEach((fn) => fn());
   const chat = createChatService({ store, onChange: notify });
@@ -235,6 +236,12 @@ export async function createApp({ workspace, onListen } = {}) {
             body.expectedStoryRevision,
             body.source,
           );
+          notify(episodeId);
+          return send(res, 200, value);
+        }
+        if (parts[3] === "story" && parts[4] === "publication" && parts.length === 5 && req.method === "POST") {
+          const body = await jsonBody(req);
+          const value = store.retryStoryPublication(episodeId, body.expectedStoryRevision);
           notify(episodeId);
           return send(res, 200, value);
         }
