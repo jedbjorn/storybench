@@ -180,10 +180,12 @@ test("HTTP shutdown closes SSE and completed job files cannot escape through sym
   ]);
 });
 
-test("shutdown leaves no queued or running render state", async (t) => {
+test("shutdown leaves no queued or running render state", { timeout: 5000 }, async (t) => {
   const dir = await fixture(t);
-  const app = await createApp({ workspace: dir, renderOptions: { renderCompositionImpl: async ({ signal }) =>
-    new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })) } });
+  const app = await createApp({ workspace: dir, renderOptions: { renderCompositionImpl: async ({ signal }) => {
+    if (signal.aborted) throw signal.reason;
+    return new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  } } });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   const port = app.server.address().port;
   let episode = app.store.createEpisode({ title: "Queue" });
