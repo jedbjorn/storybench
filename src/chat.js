@@ -29,7 +29,7 @@ function installSchema(db) {
       db.prepare(`INSERT INTO conversations(id,episode_id,name,state,thread_id,active_turn_id,error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`)
         .run(id, legacy.episode_id, legacy.name || "Conversation 1", legacy.state, legacy.thread_id, legacy.active_turn_id, legacy.error, legacy.created_at, legacy.updated_at);
       if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_messages'").get())
-        db.prepare(`INSERT INTO conversation_messages(conversation_id,role,text,state,turn_id,created_at,updated_at) SELECT ?,role,text,state,turn_id,created_at,updated_at FROM chat_messages WHERE episode_id=? ORDER BY id`).run(id, legacy.episode_id);
+        db.prepare(`INSERT INTO conversation_messages(id,conversation_id,role,text,state,turn_id,created_at,updated_at) SELECT id,?,role,text,state,turn_id,created_at,updated_at FROM chat_messages WHERE episode_id=? ORDER BY id`).run(id, legacy.episode_id);
       if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_events'").get())
         db.prepare(`INSERT INTO conversation_events(conversation_id,sequence,type,payload,created_at) SELECT ?,sequence,type,payload,created_at FROM chat_events WHERE episode_id=? ORDER BY sequence`).run(id, legacy.episode_id);
       db.exec("COMMIT");
@@ -87,9 +87,9 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     if (!value) { create(episodeId, { name: "Conversation 1" }); value = db.prepare("SELECT * FROM conversations WHERE episode_id=? ORDER BY created_at,id LIMIT 1").get(episodeId); }
     return value;
   };
-  const ensureActive = (value) => {
+  const ensureActive = (value, origin) => {
     const current = row(value.episode_id, value.id), activity = active.get(value.episode_id);
-    if (closing || activity?.conversationId !== value.id || !["queued", "running"].includes(current.state)) throw error("The turn is no longer active; changes are closed", 409);
+    if (closing || activity !== origin || activity?.conversationId !== value.id || !["queued", "running"].includes(current.state)) throw error("The turn is no longer active; changes are closed", 409);
   };
   const excerpt = (episodeId, itemId, offset = 0, limit = 4000) => {
     const item = store.listEpisodeLibrary(episodeId).find((candidate) => candidate.id === itemId);
@@ -97,26 +97,36 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     const text = item.extractedText ?? item.provenance?.extractedText ?? "", start = Math.max(0, Number(offset) || 0), size = Math.min(20_000, Math.max(1, Number(limit) || 4000));
     return { itemId, offset: start, text: text.slice(start, start + size), truncated: start + size < text.length };
   };
-  const tools = (value) => ({
-    get_context: () => ({ episode: episode(value.episode_id), story: store.getStory(value.episode_id), library: store.listEpisodeLibrary(value.episode_id), operationGuides: OPERATION_GUIDE_NAMES }),
+  const librarySummary = (episodeId) => store.listEpisodeLibrary(episodeId).map((item) => ({ id: item.id, revision: item.revision, label: item.label,
+    category: item.category, sectionId: item.sectionId, sourceKind: item.sourceKind, extractionStatus: item.extractionStatus,
+    asset: item.asset && { id: item.asset.id, name: item.asset.name, kind: item.asset.kind, duration: item.asset.duration, width: item.asset.width, height: item.asset.height } }));
+  const bootText = (value) => { const currentEpisode = episode(value.episode_id), story = store.getStory(value.episode_id);
+    return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires the user's one-use Storybench authorization.`; };
+  const tools = (value, origin) => ({
+    get_context: () => ({ episode: episode(value.episode_id), story: store.getStory(value.episode_id), library: librarySummary(value.episode_id), branding: store.listBrandingTemplates(), operationGuides: OPERATION_GUIDE_NAMES }),
     get_operation_guide: ({ name }) => getOperationGuide(name),
     read_reference_excerpt: ({ itemId, offset, limit }) => excerpt(value.episode_id, itemId, offset, limit),
-    update_story: ({ expectedStoryRevision, source }) => { ensureActive(value); return store.saveStory(value.episode_id, expectedStoryRevision, source, "agent"); },
-    update_cards: ({ expectedRevision, cards }) => { ensureActive(value); return store.updateEpisode(value.episode_id, expectedRevision, { cards }, "agent"); },
+    update_story: ({ expectedStoryRevision, source }) => { ensureActive(value, origin); return store.saveStory(value.episode_id, expectedStoryRevision, source, "agent"); },
+    update_cards: ({ expectedRevision, cards }) => { ensureActive(value, origin); return store.updateEpisode(value.episode_id, expectedRevision, { cards }, "agent"); },
     validate_render: () => renders.validateRender(value.episode_id),
-    create_draft: ({ expectedRenderRevision }) => { ensureActive(value); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "draft", expectedRenderRevision, conversationId: value.id }); },
+    create_draft: ({ expectedRenderRevision }) => { ensureActive(value, origin); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "draft", expectedRenderRevision, conversationId: value.id }); },
     request_final: () => ({ requiredAction: "Use Create final in Storybench", conversationId: value.id, renderRevision: renders.validateRender(value.episode_id).renderRevision }),
-    create_final: ({ expectedRenderRevision, finalGrantId }) => { ensureActive(value); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "final", expectedRenderRevision, finalGrantId, conversationId: value.id }); },
+    create_final: ({ expectedRenderRevision, finalGrantId }) => { ensureActive(value, origin); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "final", expectedRenderRevision, finalGrantId, conversationId: value.id }); },
     get_job: ({ jobId }) => renders.getJob(value.episode_id, jobId),
-    cancel_job: ({ jobId }) => { ensureActive(value); return renders.cancelJob(value.episode_id, jobId); },
-    create_graphic_recipe: (input) => { ensureActive(value); return renders.createGraphicRecipe(value.episode_id, input, "agent"); },
-    update_graphic_recipe: ({ recipeId, expectedRevision, ...input }) => { ensureActive(value); return renders.updateGraphicRecipe(value.episode_id, recipeId, expectedRevision, input, "agent"); },
-    render_graphic: ({ recipeId, expectedRecipeRevision }) => { ensureActive(value); return renders.enqueueGraphic({ episodeId: value.episode_id, recipeId, expectedRecipeRevision }); },
+    cancel_job: ({ jobId }) => { ensureActive(value, origin); return renders.cancelJob(value.episode_id, jobId); },
+    list_graphic_recipes: () => renders.listGraphicRecipes(value.episode_id),
+    get_graphic_recipe: ({ recipeId }) => { const recipe = renders.getGraphicRecipe(value.episode_id, recipeId); if (!recipe) throw error("Graphic recipe not found", 404); return recipe; },
+    create_graphic_recipe: (input) => { ensureActive(value, origin); return renders.createGraphicRecipe(value.episode_id, input, "agent"); },
+    update_graphic_recipe: ({ recipeId, expectedRevision, ...input }) => { ensureActive(value, origin); return renders.updateGraphicRecipe(value.episode_id, recipeId, expectedRevision, input, "agent"); },
+    render_graphic: ({ recipeId, expectedRecipeRevision }) => { ensureActive(value, origin); return renders.enqueueGraphic({ episodeId: value.episode_id, recipeId, expectedRecipeRevision }); },
+    list_branding: () => store.listBrandingTemplates(),
+    promote_card: ({ cardId, name, role = null }) => { ensureActive(value, origin); return store.promoteCard(value.episode_id, cardId, { name, role }); },
+    apply_branding: ({ templateId }) => { ensureActive(value, origin); return store.applyBrandingTemplate(value.episode_id, templateId); },
     // Compatibility handlers for provider threads created by the first prototype.
     get_project: () => episode(value.episode_id),
-    list_assets: () => store.listAssets().map((asset) => ({ id: asset.id, name: asset.name, kind: asset.kind, duration: asset.duration, width: asset.width, height: asset.height,
-      hasAudio: Array.isArray(asset.metadata?.streams) ? asset.metadata.streams.some((stream) => stream?.codec_type === "audio") : Boolean(asset.metadata?.hasAudio), mediaRef: safeRef(asset.path), thumbnailRef: safeRef(asset.thumbnailPath) })),
-    update_storyboard: ({ expectedRevision, cards }) => { ensureActive(value); return store.updateEpisode(value.episode_id, expectedRevision, { cards }, "agent"); },
+    list_assets: () => store.listEpisodeLibrary(value.episode_id).filter((item) => item.asset).map((item) => ({ id: item.asset.id, name: item.asset.name, kind: item.asset.kind, duration: item.asset.duration, width: item.asset.width, height: item.asset.height,
+      hasAudio: Array.isArray(item.asset.metadata?.streams) ? item.asset.metadata.streams.some((stream) => stream?.codec_type === "audio") : Boolean(item.asset.metadata?.hasAudio), mediaRef: safeRef(item.asset.path), thumbnailRef: safeRef(item.asset.thumbnailPath) })),
+    update_storyboard: ({ expectedRevision, cards }) => { ensureActive(value, origin); return store.updateEpisode(value.episode_id, expectedRevision, { cards }, "agent"); },
   });
 
   async function execute(value, messageId, text) {
@@ -142,12 +152,14 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       }
     };
     try {
-      connection = await codexFactory({ cwd: store.workspace, model, tools: tools(value), signal: controller.signal, onEvent: (event) => dispatch ? consume(event) : pending.push(event), onError: (cause) => { if (dispatch) rejectDone(cause); } });
+      connection = await codexFactory({ cwd: store.workspace, model, tools: tools(value, activity), signal: controller.signal, onEvent: (event) => dispatch ? consume(event) : pending.push(event), onError: (cause) => { if (dispatch) rejectDone(cause); } });
       if (aborted) throw error("Chat stopped; the prompt was not replayed", 409);
       activity.connection = connection;
       const threadId = value.thread_id ? await connection.resumeThread(value.thread_id) : await connection.startThread();
+      if (aborted || active.get(value.episode_id) !== activity) throw error("Chat stopped; the prompt was not replayed", 409);
       setState(value, "queued", { threadId });
-      const returned = await connection.startTurn(threadId, text);
+      const returned = await connection.startTurn(threadId, `${bootText(value)}\n\nUser request:\n${text}`);
+      if (aborted || active.get(value.episode_id) !== activity) throw error("Chat stopped; the prompt was not replayed", 409);
       if (turnId && turnId !== returned) throw new Error("Codex returned inconsistent turn identities");
       turnId = returned; activity.threadId = threadId; activity.turnId = turnId;
       db.prepare("UPDATE conversations SET active_turn_id=?,updated_at=? WHERE id=?").run(turnId, now(), value.id);
