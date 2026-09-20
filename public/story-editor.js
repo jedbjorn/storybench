@@ -32637,7 +32637,13 @@ var STARTER_STORY = `# Overview
 
 ## Outro
 `;
-var sectionMarker = /<!--\s*storybench:section\s+[0-9a-f-]+\s*-->/gi;
+function mappingChangeSummary(mappingChanges) {
+  const sections = mappingChanges?.retiredSectionIds?.length || 0;
+  const cards = mappingChanges?.unassignedCardIds?.length || 0;
+  if (!sections && !cards) return "";
+  return `${cards} ${cards === 1 ? "card is" : "cards are"} now unassigned because ${sections} story ${sections === 1 ? "section was" : "sections were"} removed. Open Storyboard to reassign ${cards === 1 ? "it" : "them"}.`;
+}
+var sectionMarker = /^ {0,3}<!--\s*storybench:section\s+[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\s*-->\s*$/gim;
 function createStoryRenderer() {
   const renderer = new MarkdownItCallable({ html: false, linkify: false, typographer: false });
   renderer.renderer.rules.image = (tokens, index) => {
@@ -32681,21 +32687,53 @@ var StoryEditor = class {
   }
   async open(episodeId) {
     if (episodeId === this.episodeId && this.isDirty()) return;
+    const request = Symbol("story-open");
+    this.openRequest = request;
+    this.destroyView();
+    this.episodeId = null;
+    this.story = null;
+    this.showLoading();
+    let story;
+    try {
+      story = await this.api(`/api/episodes/${episodeId}/story`);
+    } catch (error2) {
+      if (this.openRequest === request) this.showLoadError(error2.message);
+      throw error2;
+    }
+    if (this.openRequest !== request) return false;
     this.episodeId = episodeId;
-    this.story = await this.api(`/api/episodes/${episodeId}/story`);
+    this.story = story;
+    this.showMappingChanges(null);
     this.mode = "read";
     this.destroyView();
     this.drawRead();
+    return true;
   }
   drawRead() {
     const source = this.story?.source || "";
     this.root.querySelector("[data-story-read]").innerHTML = source ? this.renderMarkdown(source) : '<div class="story-empty"><h2>Your story is empty</h2><p>Start with an outline or write ordinary Markdown.</p></div>';
     this.root.querySelector("[data-story-start]").hidden = Boolean(source);
+    this.root.querySelector("[data-story-start]").disabled = false;
+    this.root.querySelector("[data-story-edit]").disabled = false;
     this.root.querySelector("[data-story-edit]").textContent = source ? "Edit story" : "Write from scratch";
     this.root.querySelector("[data-story-reading]").hidden = false;
     this.root.querySelector("[data-story-editing]").hidden = true;
     this.root.querySelector("[data-story-conflict]").hidden = true;
     this.setStatus(`Story saved \xB7 r${this.story.storyRevision}`);
+  }
+  showLoading() {
+    this.root.querySelector("[data-story-reading]").hidden = false;
+    this.root.querySelector("[data-story-editing]").hidden = true;
+    this.root.querySelector("[data-story-read]").innerHTML = '<div class="story-empty"><p>Loading story\u2026</p></div>';
+    this.root.querySelector("[data-story-start]").hidden = true;
+    this.root.querySelector("[data-story-edit]").disabled = true;
+    this.setStatus("Loading story\u2026");
+  }
+  showLoadError(message) {
+    this.root.querySelector("[data-story-read]").innerHTML = `<div class="story-empty"><h2>Story unavailable</h2><p>${escapeText(message)}</p></div>`;
+    this.root.querySelector("[data-story-start]").hidden = true;
+    this.root.querySelector("[data-story-edit]").disabled = true;
+    this.setStatus("Story could not be loaded");
   }
   edit(initial = this.story?.source || "") {
     this.mode = "write";
@@ -32776,12 +32814,28 @@ var StoryEditor = class {
   async resolveUncertain(submitted, originalError) {
     try {
       const current = await this.api(`/api/episodes/${this.episodeId}/story`);
+      if (originalError.conflictPath && current.source === submitted) {
+        this.story = current;
+        this.showConflict(current, submitted, "Story changes were committed, but the registered story.md had changed outside Storybench. That file was preserved as a conflict artifact; your draft remains open while publication is blocked.");
+        this.setStatus("Story committed \u2014 external file conflict blocks publication");
+        return null;
+      }
       if (current.source === submitted && current.publicationStatus === "published") return this.accept(current);
       if (current.source === submitted) {
-        this.story = current;
-        this.setStatus("Story committed; publication pending \u2014 draft preserved");
-        this.toast("Story is committed but story.md still needs publication recovery.");
-        return null;
+        try {
+          const published = await this.api(`/api/episodes/${this.episodeId}/story/publication`, {
+            method: "POST",
+            body: JSON.stringify({ expectedStoryRevision: current.storyRevision })
+          });
+          return this.accept(published);
+        } catch (retryError) {
+          this.story = current;
+          if (retryError.conflictPath)
+            return this.showConflict(current, submitted, "Story changes were committed, but the registered story.md had changed outside Storybench. That file was preserved as a conflict artifact; your draft remains open while publication is blocked.");
+          this.setStatus("Story committed; publication pending \u2014 draft preserved");
+          this.toast("Story is committed but story.md still needs publication recovery.");
+          return null;
+        }
       }
       return this.showConflict(current, submitted, "The save outcome was uncertain and the saved story differs.");
     } catch {
@@ -32795,7 +32849,15 @@ var StoryEditor = class {
     this.destroyView();
     this.mode = "read";
     this.drawRead();
+    this.showMappingChanges(saved.mappingChanges);
     return saved;
+  }
+  showMappingChanges(changes) {
+    const message = mappingChangeSummary(changes);
+    const panel = this.root.querySelector("[data-story-mapping-changes]");
+    panel.hidden = !message;
+    panel.textContent = message;
+    if (message) this.toast(message);
   }
   showConflict(current, draft, message) {
     this.story = current;
@@ -32859,10 +32921,20 @@ var StoryEditor = class {
     this.view = null;
   }
 };
+function escapeText(value) {
+  return String(value || "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[character]);
+}
 export {
   STARTER_STORY,
   StoryEditor,
-  createStoryRenderer
+  createStoryRenderer,
+  mappingChangeSummary
 };
 /*! Bundled license information:
 

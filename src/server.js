@@ -124,8 +124,8 @@ async function streamFile(req, res, file, contentType) {
   pipe({ start, end });
 }
 
-export async function createApp({ workspace, onListen } = {}) {
-  const store = new Store(workspace);
+export async function createApp({ workspace, onListen, storeOptions } = {}) {
+  const store = new Store(workspace, storeOptions);
   const listeners = new Map();
   const notify = (episodeId) => listeners.get(episodeId)?.forEach((fn) => fn());
   const chat = createChatService({ store, onChange: notify });
@@ -235,6 +235,12 @@ export async function createApp({ workspace, onListen } = {}) {
             body.expectedStoryRevision,
             body.source,
           );
+          notify(episodeId);
+          return send(res, 200, value);
+        }
+        if (parts[3] === "story" && parts[4] === "publication" && parts.length === 5 && req.method === "POST") {
+          const body = await jsonBody(req);
+          const value = store.retryStoryPublication(episodeId, body.expectedStoryRevision);
           notify(episodeId);
           return send(res, 200, value);
         }

@@ -249,6 +249,7 @@ h2 {
 .story-rendered a { color: var(--deep); }
 .story-image-unavailable { color: var(--muted); padding: 3px 7px; background: #f3f2ed; border-radius: 5px; }
 .story-empty { text-align: center; padding: 80px 20px; color: var(--muted); }
+.story-mapping-changes { margin-bottom: 12px; padding: 11px 13px; border: 1px solid #dabd74; border-radius: 9px; background: #fff8df; }
 .story-toolbar { display: flex; justify-content: space-between; margin-bottom: 8px; }
 .story-mode { display: flex; }
 .story-mode button { border-radius: 0; }
