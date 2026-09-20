@@ -182,20 +182,27 @@ test("HTTP shutdown closes SSE and completed job files cannot escape through sym
 
 test("shutdown leaves no queued or running render state", async (t) => {
   const dir = await fixture(t);
-  const app = await createApp({ workspace: dir });
+  const app = await createApp({ workspace: dir, renderOptions: { renderCompositionImpl: async ({ signal }) =>
+    new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })) } });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   const port = app.server.address().port;
-  const episode = app.store.createEpisode({ title: "Queue" });
+  let episode = app.store.createEpisode({ title: "Queue" });
+  const story = app.store.saveStory(episode.id, 1, "# Sections\n\n## Main");
+  await writeFile(path.join(dir, "media", "queue.mp4"), "fixture");
+  const asset = app.store.saveAsset({ name: "queue.mp4", hash: "queue", kind: "video", path: "media/queue.mp4", duration: 1, metadata: {} });
+  const item = app.store.attachLibraryItem(episode.id, asset.id, { category: "B-roll" });
+  episode = app.store.updateEpisode(episode.id, episode.revision, { cards: [{ id: "visual", title: "Visual", type: "Video",
+    sectionId: story.sections[0].id, itemId: item.id, in: 0, out: 1 }] });
   const request = () =>
     fetch(`http://127.0.0.1:${port}/api/episodes/${episode.id}/render`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: '{"kind":"export"}',
+      body: '{"kind":"preview"}',
     }).then((response) => response.json());
   const [first, second] = await Promise.all([request(), request()]);
   await app.close();
   const reopened = new Store(dir);
   t.after(() => reopened.close());
-  assert.equal(reopened.getJob(first.id).state, "failed");
-  assert.equal(reopened.getJob(second.id).state, "failed");
+  assert.equal(reopened.getJob(first.id).state, "cancelled");
+  assert.equal(reopened.getJob(second.id).state, "cancelled");
 });

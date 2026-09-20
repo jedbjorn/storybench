@@ -1,15 +1,17 @@
 import { StoryEditor } from "/story-editor.js?v=round2-editor";
 import { LibraryWorkspace, episodeNavigatorHTML } from "/library-workspace.js";
 import { setCardType } from "/card-workspace.js";
+import { ChatWorkspace } from "/chat-workspace.js";
+import { jobsForOutputView, refreshJobStatus, renderJobList } from "/job-status.js";
 
 const $ = (s) => document.querySelector(s);
 let state = { episodes: [], assets: [], jobs: [] },
   episode = null,
-  chatTimer = null,
   fieldTimer,
   dirty = false,
   saveInFlight = null,
   saveRequested = false,
+  jobRefreshInFlight = null,
   boardSections = [],
   boardItems = [];
 const api = async (url, opt = {}) => {
@@ -50,6 +52,8 @@ async function load(select) {
   else if (episode)
     episode = state.episodes.find((e) => e.id === episode.id) || null;
   render();
+  await syncChat();
+  if (episode && !$("#boardPanel").hidden) await loadBoardContext();
 }
 function render() {
   const filter = $("#episodeFilter").value;
@@ -62,22 +66,31 @@ function render() {
   if (!episode) return;
   $("#episodeTitle").value = episode.title;
   $("#episodeNotes").value = episode.notes;
-  $("#jobCount").textContent =
-    state.jobs.filter(
-      (j) =>
-        j.episodeId === episode.id && ["queued", "running"].includes(j.state),
-    ).length || "";
   renderCards();
-  const jobs = state.jobs.filter((j) => j.episodeId === episode.id);
-  $("#jobs").innerHTML =
-    jobs
-      .map(
-        (j) =>
-          `<div class="job"><div><b>${esc(j.kind)}</b> · revision ${j.revision}<br><span class="${j.state === "failed" ? "failed" : ""}">${esc(j.error || j.state)} ${j.state === "running" ? Math.round(j.progress * 100) + "%" : ""}</span>${j.state === "completed" ? `<video controls preload="metadata" src="/api/jobs/${j.id}/file" style="display:block;max-width:420px;width:100%;margin-top:8px"></video>` : ""}</div>${j.state === "completed" ? `<a href="/api/jobs/${j.id}/file" target="_blank"><button>Open</button></a>` : ""}</div>`,
-      )
-      .join("") || "<p>No renders yet.</p>";
+  renderJobs();
   if (!$("#storyPanel").hidden)
     storyEditor.open(episode.id).catch((error) => toast(error.message));
+}
+function renderJobs() {
+  if (!episode) return;
+  const episodeJobs = state.jobs.filter((job) => job.episodeId === episode.id);
+  const drafts = jobsForOutputView(episodeJobs, "draft");
+  const finals = jobsForOutputView(episodeJobs, "final");
+  const activeCount = (jobs) => jobs.filter((job) => ["queued", "running"].includes(job.state)).length || "";
+  $("#draftJobCount").textContent = activeCount(drafts);
+  $("#finalJobCount").textContent = activeCount(finals);
+  renderJobList($("#draftJobs"), drafts);
+  renderJobList($("#finalJobs"), finals);
+}
+
+async function refreshJobs(target = episode?.id) {
+  if (!jobRefreshInFlight) {
+    jobRefreshInFlight = refreshJobStatus(api, () => state)
+      .then((next) => { state = next; })
+      .finally(() => { jobRefreshInFlight = null; });
+  }
+  await jobRefreshInFlight;
+  if (episode?.id === target) renderJobs();
 }
 
 const storyEditor = new StoryEditor({
@@ -85,8 +98,15 @@ const storyEditor = new StoryEditor({
   api,
   setStatus: (text) => { $("#saveState").textContent = text; },
   toast,
+  onSaved: () => refreshJobs().catch((error) => toast(error.message)),
 });
-const libraryWorkspace = new LibraryWorkspace({ api, toast, getEpisode: () => episode, refreshState: () => load(episode?.id) });
+const libraryWorkspace = new LibraryWorkspace({ api, toast, getEpisode: () => episode, refreshState: () => load(episode?.id), onMutation: () => refreshJobs().catch((error) => toast(error.message)) });
+const chatWorkspace = new ChatWorkspace({ root: $("#chatWorkspace"), api, toast, getEpisode: () => episode });
+async function syncChat() {
+  if (episode?.id === chatWorkspace.episodeId) return;
+  if (episode) await chatWorkspace.open();
+  else chatWorkspace.close();
+}
 
 async function leaveStory() {
   const choice = await storyEditor.requestLeave();
@@ -144,6 +164,7 @@ $("#promoteCardForm").onsubmit = async (event) => {
   } catch (error) { form.querySelector("[data-promote-error]").textContent = error.message; }
 };
 document.querySelectorAll("[data-promote-close]").forEach((button) => button.onclick = () => $("#promoteCardModal").close());
+document.querySelectorAll("[data-graphic-close]").forEach((button) => button.onclick = () => $("#graphicModal").close());
 document.querySelectorAll("[data-branding-close]").forEach((button) => button.onclick = () => $("#brandingModal").close());
 $("#openBranding").onclick = async () => {
   try {
@@ -229,6 +250,7 @@ async function save(changes = {}) {
   } catch {
     saved = false;
   }
+  if (saved) await refreshJobs(target).catch((error) => toast(error.message));
   if (saved && (dirty || saveRequested) && episode?.id === target)
     return save();
 }
@@ -261,7 +283,7 @@ $("#episodes").onclick = async (e) => {
     await flushDraft();
     episode = state.episodes.find((x) => x.id === id);
     render();
-    refreshChat();
+    await chatWorkspace.open();
     if (!$("#mediaPanel").hidden) libraryWorkspace.open().catch((error) => toast(error.message));
   }
 };
@@ -368,14 +390,14 @@ $("#undo").onclick = async () => {
     toast(e.message);
   }
 };
-document.querySelectorAll(".tabs > button").forEach(
-  (b) =>
-    (b.onclick = async () => {
-      if (b.dataset.tab !== "story" && !(await leaveStory())) return;
+async function showTab(tab, { confirmStory = true } = {}) {
+      const b = document.querySelector(`.tabs > button[data-tab="${tab}"]`);
+      if (!b) return;
+      if (confirmStory && b.dataset.tab !== "story" && !(await leaveStory())) return;
       document
         .querySelectorAll(".tabs > button")
         .forEach((x) => x.classList.toggle("active", x === b));
-      ["story", "board", "media", "exports"].forEach(
+      ["story", "board", "media", "drafts", "final"].forEach(
         (x) => ($(`#${x}Panel`).hidden = b.dataset.tab !== x),
       );
       if (b.dataset.tab === "story" && episode)
@@ -384,91 +406,78 @@ document.querySelectorAll(".tabs > button").forEach(
         libraryWorkspace.open().catch((error) => toast(error.message));
       if (b.dataset.tab === "board" && episode)
         loadBoardContext().catch((error) => toast(error.message));
-    }),
-);
+}
+document.querySelectorAll(".tabs > button").forEach((button) => {
+  button.onclick = () => showTab(button.dataset.tab);
+});
 async function renderJob(kind) {
   try {
     await flushDraft();
+    const plan = await api(`/api/episodes/${episode.id}/render-plan`);
+    let finalGrantId = null, requestId = null, conversationId = null;
+    if (kind === "final") {
+      conversationId = chatWorkspace.currentId;
+      if (!conversationId) requestId = crypto.randomUUID();
+      const grant = await api(`/api/episodes/${episode.id}/final-authorizations`, { method: "POST",
+        body: JSON.stringify({ expectedRenderRevision: plan.renderRevision, conversationId, requestId }) });
+      finalGrantId = grant.id;
+    }
     await api(`/api/episodes/${episode.id}/render`, {
       method: "POST",
-      body: JSON.stringify({ kind }),
+      body: JSON.stringify({ outputClass: kind, expectedRenderRevision: plan.renderRevision, finalGrantId, conversationId, requestId }),
     });
-    toast(`${kind} queued`);
+    toast(`${kind === "final" ? "Final" : "Draft"} queued`);
     await load(episode.id);
+    await showTab(kind === "final" ? "final" : "drafts", { confirmStory: false });
   } catch (e) {
     toast(e.message);
   }
 }
-$("#preview").onclick = () => renderJob("preview");
-$("#export").onclick = () => renderJob("export");
-setInterval(() => {
-  if (
-    episode &&
-    !["INPUT", "TEXTAREA", "SELECT"].includes(
-      document.activeElement?.tagName,
-    ) &&
-    state.jobs.some((j) => ["queued", "running"].includes(j.state))
-  )
-    load(episode.id);
-}, 1800);
-function drawChat(s) {
-  $("#chatStatus").textContent = s.error || s.state || "Ready";
-  $("#stopChat").hidden = !["queued", "running", "interrupting"].includes(
-    s.state,
-  );
-  const msgs = s.messages || [];
-  $("#messages").innerHTML =
-    '<div class="welcome">Ask for help shaping the arc, renaming cards, or reorganizing the storyboard. Your message and project context are sent to your configured Codex provider.</div>' +
-    msgs
-      .map(
-        (m) =>
-          `<div class="message ${esc(m.role)}">${esc(m.text || m.content || "")}</div>`,
-      )
-      .join("");
-  $("#messages").scrollTop = $("#messages").scrollHeight;
-}
-async function refreshChat() {
+$("#preview").onclick = () => renderJob("draft");
+$("#export").onclick = () => renderJob("final");
+document.querySelectorAll("[data-jobs-list]").forEach((list) => list.onclick = async (event) => {
+  const id = event.target.closest("[data-cancel-job]")?.dataset.cancelJob;
+  if (!id || !episode) return;
+  try { await api(`/api/episodes/${episode.id}/jobs/${id}/cancel`, { method: "POST", body: "{}" }); await load(episode.id); }
+  catch (error) { toast(error.message); }
+});
+$("#openGraphic").onclick = () => {
   if (!episode) return;
-  const target = episode.id;
-  try {
-    const s = await api(`/api/episodes/${target}/chat`);
-    if (episode?.id !== target) return;
-    drawChat(s);
-    if (["queued", "running", "interrupting"].includes(s.state)) {
-      clearTimeout(chatTimer);
-      chatTimer = setTimeout(refreshChat, 900);
-    } else await load(target);
-  } catch (e) {
-    $("#chatStatus").textContent = e.message;
-  }
-}
-$("#chatForm").onsubmit = async (e) => {
-  e.preventDefault();
-  const text = $("#chatText").value.trim();
-  if (!text || !episode) return;
-  $("#chatText").value = "";
+  const form = $("#graphicForm");
+  form.elements.cardId.innerHTML = `<option value="">Library only</option>${episode.cards.map((card) => `<option value="${card.id}">${esc(card.title || card.type)}</option>`).join("")}`;
+  form.querySelector("[data-graphic-error]").textContent = "";
+  $("#graphicModal").showModal();
+};
+$("#graphicForm").onsubmit = async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget, kind = form.elements.kind.value;
+  const duration = Number(form.elements.duration.value);
+  const layer = { kind: "text", text: form.elements.text.value, x: 640, y: 360, fontSize: 64,
+    fill: form.elements.fill.value, textAnchor: "middle", opacity: 1, z: 0,
+    ...(kind === "motion" ? { keyframes: { opacity: [{ time: 0, value: 0, easing: "linear" }, { time: duration, value: 1, easing: "linear" }] } } : {}) };
+  const recipe = { kind, width: 1280, height: 720, background: form.elements.background.value, layers: [layer],
+    ...(kind === "motion" ? { duration, fps: 30 } : {}) };
   try {
     await flushDraft();
-    drawChat(
-      await api(`/api/episodes/${episode.id}/chat`, {
-        method: "POST",
-        body: JSON.stringify({ text }),
-      }),
-    );
-    refreshChat();
-  } catch (e) {
-    toast(e.message);
-  }
+    const graphic = await api(`/api/episodes/${episode.id}/graphics`, { method: "POST", body: JSON.stringify({
+      name: form.elements.name.value, cardId: form.elements.cardId.value || null, recipe }) });
+    await api(`/api/episodes/${episode.id}/graphics/${graphic.id}/render`, { method: "POST",
+      body: JSON.stringify({ expectedRecipeRevision: graphic.revision }) });
+    $("#graphicModal").close(); toast("Graphic queued"); await load(episode.id);
+    await showTab("drafts", { confirmStory: false });
+  } catch (error) { form.querySelector("[data-graphic-error]").textContent = error.message; }
 };
-$("#stopChat").onclick = async () => {
-  if (episode)
-    drawChat(
-      await api(`/api/episodes/${episode.id}/chat/interrupt`, {
-        method: "POST",
-        body: "{}",
-      }),
-    );
-};
+setInterval(async () => {
+  if (!episode) return;
+  try {
+    if (
+      !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName) &&
+      state.jobs.some((j) => ["queued", "running"].includes(j.state))
+    ) {
+      await load(episode.id);
+    } else await refreshJobs(episode.id);
+  } catch (error) { toast(error.message); }
+}, 1800);
 window.addEventListener("beforeunload", (event) => {
   if (storyEditor.isDirty()) event.preventDefault();
 });
