@@ -43,7 +43,7 @@ async function jsonBody(req) {
   let bytes = 0;
   for await (const chunk of req) {
     bytes += chunk.length;
-    if (bytes > 1_000_000) throw new StoreError("Request body too large", 413);
+    if (bytes > 6_500_000) throw new StoreError("Request body too large", 413);
     chunks.push(chunk);
   }
   if (!chunks.length) return {};
@@ -226,6 +226,18 @@ export async function createApp({ workspace, onListen } = {}) {
           if (!value) throw new StoreError("Episode not found", 404);
           return send(res, 200, value);
         }
+        if (parts[3] === "story" && parts.length === 4 && req.method === "GET")
+          return send(res, 200, store.getStory(episodeId));
+        if (parts[3] === "story" && parts.length === 4 && req.method === "PUT") {
+          const body = await jsonBody(req);
+          const value = store.saveStory(
+            episodeId,
+            body.expectedStoryRevision,
+            body.source,
+          );
+          notify(episodeId);
+          return send(res, 200, value);
+        }
         if (parts[3] === "history" && req.method === "GET")
           return send(res, 200, store.listEpisodeHistory(episodeId));
         if (parts.length === 3 && req.method === "PUT") {
@@ -320,7 +332,7 @@ export async function createApp({ workspace, onListen } = {}) {
         contained(workspaceReal, path.relative(workspaceReal, actual));
         const sourceType =
           mime[path.extname(asset.metadata?.originPath || "").toLowerCase()];
-        return streamFile(
+        return await streamFile(
           req,
           res,
           actual,
@@ -339,7 +351,7 @@ export async function createApp({ workspace, onListen } = {}) {
         const workspaceReal = await realpath(workspace);
         const actual = await realpath(contained(workspace, job.outputPath));
         contained(workspaceReal, path.relative(workspaceReal, actual));
-        return streamFile(req, res, actual);
+        return await streamFile(req, res, actual);
       }
       if (!["GET", "HEAD"].includes(req.method))
         throw new StoreError("Route not found", 404);
@@ -347,11 +359,14 @@ export async function createApp({ workspace, onListen } = {}) {
         url.pathname === "/"
           ? "index.html"
           : decodeURIComponent(url.pathname.slice(1));
-      return streamFile(req, res, contained(publicDir, relative));
+      return await streamFile(req, res, contained(publicDir, relative));
     } catch (error) {
       if (!res.headersSent)
         send(res, error.statusCode || (error.code === "ENOENT" ? 404 : 500), {
           error: error.message || "Internal error",
+          ...(error.current ? { current: error.current } : {}),
+          ...(error.committed ? { committed: error.committed } : {}),
+          ...(error.conflictPath ? { conflictPath: error.conflictPath } : {}),
         });
       else res.destroy();
     }

@@ -12,7 +12,7 @@ const safeRelativeRef = (value) => {
 export function createChatService({ store, onChange = () => {}, codexFactory = createCodexConnection, model = process.env.STORYBENCH_CODEX_MODEL }) {
   const db = store.db;
   db.exec(`
-    CREATE TABLE IF NOT EXISTS chats (episode_id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'idle', thread_id TEXT, active_turn_id TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS chats (episode_id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'idle', thread_id TEXT, active_turn_id TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, name TEXT NOT NULL DEFAULT 'Conversation 1');
     CREATE TABLE IF NOT EXISTS chat_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL, state TEXT NOT NULL, turn_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS chat_events (episode_id TEXT NOT NULL, sequence INTEGER NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(episode_id,sequence));
   `);
