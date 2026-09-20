@@ -124,6 +124,16 @@ test("invalid section identities and stale writes leave story and board unchange
   assert.deepEqual(store.getEpisode(two.id), boardBefore);
 });
 
+test("section parsing follows fence closers and Setext heading structure", (t) => {
+  const store = new Store(workspace(t));
+  t.after(() => store.close());
+  const episode = store.createEpisode();
+  const saved = store.saveStory(episode.id, 1, "Sections\n========\nBeat one\n--------\n```md\n```not-a-closer\n## Fake\n````\nBeat two\n--------");
+  assert.deepEqual(saved.sections.map((section) => section.title), ["Beat one", "Beat two"]);
+  assert.match(saved.source, /^<!-- storybench:section [0-9a-f-]+ -->\nBeat one/m);
+  assert.match(saved.source, /^<!-- storybench:section [0-9a-f-]+ -->\nBeat two/m);
+});
+
 test("publication failure exposes committed pending state and startup recovery publishes once", (t) => {
   const root = workspace(t);
   let store = new Store(root);

@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { storySectionHeadings } from "./story-markdown.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix) => `${prefix}_${crypto.randomUUID()}`;
@@ -56,39 +57,21 @@ function normalizeStory(source, existingSections = []) {
   const lines = source.split(newline);
   const sections = [];
   const seen = new Set();
-  let inSections = false;
-  let fence = null;
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index];
-    const fenceMatch = /^ {0,3}(```+|~~~+)/.exec(line);
-    if (fenceMatch) {
-      const token = fenceMatch[1];
-      if (!fence) fence = { character: token[0], length: token.length };
-      else if (fence.character === token[0] && token.length >= fence.length)
-        fence = null;
-      continue;
-    }
-    if (fence) continue;
-    const h1 = /^ {0,3}#\s+(.+?)\s*#*\s*$/.exec(line);
-    if (h1) {
-      inSections = h1[1].trim().toLowerCase() === "sections";
-      continue;
-    }
-    if (!inSections) continue;
-    const h2 = /^ {0,3}##\s+(.+?)\s*#*\s*$/.exec(line);
-    if (!h2) continue;
-    const marker = index > 0 ? STORY_MARKER.exec(lines[index - 1]) : null;
+  const missing = [];
+  for (const heading of storySectionHeadings(source)) {
+    const headingIndex = heading.line;
+    const marker = headingIndex > 0 ? STORY_MARKER.exec(lines[headingIndex - 1]) : null;
     let sectionId = marker?.[1]?.toLowerCase();
     if (sectionId && seen.has(sectionId))
       throw new StoreError(`Duplicate story section id: ${sectionId}`);
     if (!sectionId) {
       sectionId = crypto.randomUUID();
-      lines.splice(index, 0, `<!-- storybench:section ${sectionId} -->`);
-      index++;
+      missing.push({ line: headingIndex, marker: `<!-- storybench:section ${sectionId} -->` });
     }
     seen.add(sectionId);
-    sections.push({ id: sectionId, title: h2[1].trim(), order: sections.length });
+    sections.push({ id: sectionId, title: heading.title, order: sections.length });
   }
+  for (const insertion of missing.reverse()) lines.splice(insertion.line, 0, insertion.marker);
   return {
     source: lines.join(newline),
     sections,
