@@ -48,16 +48,24 @@ test("job updates preserve completed playback across stale and sibling refreshes
 
 test("output views separate final cuts while keeping graphics operable in Drafts", () => {
   const draft = { id: "draft", outputClass: "draft", state: "completed" };
+  const legacy = { id: "legacy", kind: "export", outputClass: "legacy_draft", state: "completed", progress: 1, revision: 1, createdAt: "2026-09-19T12:00:00.000Z" };
   const final = { id: "final", outputClass: "final", state: "completed" };
   const graphic = { id: "graphic", kind: "graphic", outputClass: null, state: "running", progress: 0.5, revision: 1 };
-  assert.deepEqual(jobsForOutputView([draft, final, graphic], "draft"), [draft, graphic]);
-  assert.deepEqual(jobsForOutputView([draft, final, graphic], "final"), [final]);
+  assert.deepEqual(jobsForOutputView([draft, legacy, final, graphic], "draft"), [draft, legacy, graphic]);
+  assert.deepEqual(jobsForOutputView([draft, legacy, final, graphic], "final"), [final]);
 
   const dom = new JSDOM('<div id="drafts"></div><div id="finals"></div>');
   const drafts = dom.window.document.querySelector("#drafts");
   const finals = dom.window.document.querySelector("#finals");
-  renderJobList(drafts, [draft, graphic]); renderJobList(finals, [final]);
+  renderJobList(drafts, [draft, legacy, graphic]); renderJobList(finals, [final]);
   assert.equal(drafts.querySelector('[data-cancel-job="graphic"]')?.textContent, "Cancel");
+  assert.match(drafts.querySelector('[data-job-id="legacy"]').textContent, /Legacy Draft/);
+  const legacyVideo = drafts.querySelector('[data-job-id="legacy"] video');
+  assert.equal(legacyVideo?.getAttribute("src"), "/api/jobs/legacy/file");
+  renderJobList(drafts, [draft, { ...legacy, stale: true }, graphic]);
+  assert.equal(drafts.querySelector('[data-job-id="legacy"] video'), legacyVideo);
+  assert.match(drafts.querySelector('[data-job-id="legacy"]').textContent, /out of date/);
   assert.equal(finals.querySelector('[data-job-id="graphic"]'), null);
+  assert.equal(finals.querySelector('[data-job-id="legacy"]'), null);
   dom.window.close();
 });

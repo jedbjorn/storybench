@@ -9,14 +9,14 @@ export function jobsForOutputView(jobs, view) {
 }
 
 function jobTitle(job) {
-  const completedOutput = job.state === "completed" && ["draft", "final"].includes(job.outputClass);
+  const completedOutput = job.state === "completed" && ["draft", "legacy_draft", "final"].includes(job.outputClass);
   return completedOutput
-    ? `${job.outputClass === "final" ? "Final" : "Draft"} — ${new Date(job.createdAt).toLocaleString()}`
+    ? `${job.outputClass === "final" ? "Final" : job.outputClass === "legacy_draft" ? "Legacy Draft" : "Draft"} — ${new Date(job.createdAt).toLocaleString()}`
     : job.kind;
 }
 
 function updateJobRow(element, job) {
-  const completedOutput = job.state === "completed" && ["draft", "final"].includes(job.outputClass);
+  const completedOutput = job.state === "completed" && ["draft", "legacy_draft", "final"].includes(job.outputClass);
   element.querySelector("[data-job-title]").textContent = jobTitle(job);
   element.querySelector("[data-job-meta]").textContent = ` · revision ${job.revision}${job.stale === true ? " · out of date" : ""}`;
   const status = element.querySelector("[data-job-status]");
