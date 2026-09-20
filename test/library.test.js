@@ -39,6 +39,9 @@ test("library items preserve membership identity, scoped metadata, and optimisti
   assert.deepEqual(edited.tags, ["person", "quote"]);
   assert.throws(() => f.store.updateLibraryItem(f.episode.id, first.id, 1, { notes: "stale" }), /Stale library revision/);
   assert.throws(() => f.store.updateLibraryItem(f.episode.id, first.id, 2, { sectionId: "elsewhere" }), /Story section not found/);
+  const removed = f.store.saveStory(f.episode.id, story.storyRevision, "# Sections\n\n## Replacement");
+  assert.deepEqual(removed.mappingChanges.unassignedLibraryItemIds, [first.id]);
+  assert.equal(f.store.getLibraryItem(f.episode.id, first.id).sectionId, null);
 });
 
 test("reference file imports are atomic, serialized, bounded, and report extraction", async (t) => {
@@ -81,6 +84,19 @@ test("pasted references preserve source while bounding excerpts", async (t) => {
   assert.equal(item.extractedText.length, 200_000);
   assert.equal(item.extractionStatus, "truncated");
   assert.equal((await readFile(path.join(f.workspace, item.asset.path), "utf8")).length, source.length);
+});
+
+test("content deduplication reuses a registered asset without orphan episode copies", async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  const other = f.store.createEpisode({ title: "Other" });
+  const service = createLibraryService({ workspace: f.workspace, store: f.store });
+  const first = await service.registerText({ episodeId: f.episode.id, title: "One", text: "same bytes" });
+  const second = await service.registerText({ episodeId: other.id, title: "Two", text: "same bytes" });
+  assert.equal(first.assetId, second.assetId);
+  assert.equal(first.asset.path, second.asset.path);
+  const otherReference = path.join(f.workspace, "episodes", other.id, "reference");
+  assert.deepEqual(await import("node:fs/promises").then(({ readdir }) => readdir(otherReference)), []);
 });
 
 test("URL references reject private destinations and revalidate redirects", async (t) => {

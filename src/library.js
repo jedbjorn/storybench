@@ -164,11 +164,14 @@ export function createLibraryService({ workspace, store, fetchImpl = null, dnsLo
         if (chosenCategory === "Reference") {
           extraction = await extractReference(temporary, name, contentType);
           const hash = crypto.createHash("sha256").update(await readFile(temporary)).digest("hex");
-          const folder = path.join(store.episodeDirectory(episodeId), "reference");
-          await mkdir(folder, { recursive: true });
-          const registered = path.join(folder, `${hash.slice(0, 16)}-${name}`);
-          try { await stat(registered); } catch { await rename(temporary, registered); }
-          asset = store.saveAsset({ name, hash, kind: "reference", path: path.relative(workspace, registered), metadata: { contentType, bytes } });
+          asset = store.getAssetByHash(hash);
+          if (!asset) {
+            const folder = path.join(store.episodeDirectory(episodeId), "reference");
+            await mkdir(folder, { recursive: true });
+            const registered = path.join(folder, `${hash.slice(0, 16)}-${name}`);
+            try { await stat(registered); } catch { await rename(temporary, registered); }
+            asset = store.saveAsset({ name, hash, kind: "reference", path: path.relative(workspace, registered), metadata: { contentType, bytes } });
+          }
         } else {
           const imported = await importMedia({ workspace, sourcePath: temporary });
           imported.name = name;
@@ -192,9 +195,12 @@ export function createLibraryService({ workspace, store, fetchImpl = null, dnsLo
       const content = String(text || "");
       if (Buffer.byteLength(content) > REFERENCE_BYTES) throw new StoreError("Reference text exceeds the 20 MiB limit", 413);
       const hash = crypto.createHash("sha256").update(content).digest("hex");
-      const file = path.join(store.episodeDirectory(episodeId), "reference", `${hash.slice(0, 16)}-${name.endsWith(".txt") ? name : `${name}.txt`}`);
-      try { await stat(file); } catch { await writeFile(file, content, { flag: "wx" }); }
-      const asset = store.saveAsset({ name, hash, kind: "reference", path: path.relative(workspace, file), metadata: { contentType: "text/plain", bytes: Buffer.byteLength(content) } });
+      let asset = store.getAssetByHash(hash);
+      if (!asset) {
+        const file = path.join(store.episodeDirectory(episodeId), "reference", `${hash.slice(0, 16)}-${name.endsWith(".txt") ? name : `${name}.txt`}`);
+        try { await stat(file); } catch { await writeFile(file, content, { flag: "wx" }); }
+        asset = store.saveAsset({ name, hash, kind: "reference", path: path.relative(workspace, file), metadata: { contentType: "text/plain", bytes: Buffer.byteLength(content) } });
+      }
       return store.attachLibraryItem(episodeId, asset.id, { category: "Reference", label: name, sectionId, sourceKind: "text", extractedText: extracted.text, extractionStatus: extracted.truncated ? "truncated" : "complete", provenance: { format: "text", truncated: extracted.truncated } });
     });
   }
@@ -227,10 +233,13 @@ export function createLibraryService({ workspace, store, fetchImpl = null, dnsLo
         const extraction = await extractReference(temporary, name, contentType);
         const bytes = (await stat(temporary)).size;
         const hash = crypto.createHash("sha256").update(await readFile(temporary)).digest("hex");
-        const registered = path.join(store.episodeDirectory(episodeId), "reference", `${hash.slice(0, 16)}-${name}`);
-        try { await stat(registered); } catch { await copyFile(temporary, registered); }
-        const asset = store.saveAsset({ name, hash, kind: "reference", path: path.relative(workspace, registered), metadata: { contentType, bytes, sourceUrl: current.href } });
-        return store.attachLibraryItem(episodeId, asset.id, { category: "Reference", label: name, sectionId, sourceKind: "url", sourceUrl: current.href, extractedText: extraction.text, extractionStatus: extraction.status, provenance: { requestedUrl: String(input), finalUrl: current.href, contentType, bytes, format: extraction.format, truncated: extraction.truncated, pages: extraction.pages || null, extractionError: extraction.error || null } });
+        let asset = store.getAssetByHash(hash);
+        if (!asset) {
+          const registered = path.join(store.episodeDirectory(episodeId), "reference", `${hash.slice(0, 16)}-${name}`);
+          try { await stat(registered); } catch { await copyFile(temporary, registered); }
+          asset = store.saveAsset({ name, hash, kind: "reference", path: path.relative(workspace, registered), metadata: { contentType, bytes, sourceUrl: current.href } });
+        }
+        return store.attachLibraryItem(episodeId, asset.id, { category: "Reference", label: name, sectionId, sourceKind: "url", sourceUrl: current.href, extractedText: extraction.text, extractionStatus: extraction.status, provenance: { requestedUrl: String(input), finalUrl: current.href, retrievedAt: new Date().toISOString(), contentType, bytes, format: extraction.format, truncated: extraction.truncated, pages: extraction.pages || null, extractionError: extraction.error || null } });
       } finally { await rm(temporary, { force: true }); }
     });
   }

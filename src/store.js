@@ -635,6 +635,7 @@ export class Store {
     const stamp = now();
     const nextRevision = current.storyRevision + 1;
     let unassignedCardIds = [];
+    let unassignedLibraryItemIds = [];
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const episode = this.getEpisode(episodeId);
@@ -646,6 +647,11 @@ export class Store {
         return card;
       });
       this.db.prepare("UPDATE story_sections SET retired_at=? WHERE episode_id=? AND retired_at IS NULL").run(stamp, episodeId);
+      if (normalized.retiredSectionIds.length) {
+        const placeholders = normalized.retiredSectionIds.map(() => "?").join(",");
+        unassignedLibraryItemIds = this.db.prepare(`SELECT id FROM library_items WHERE episode_id=? AND section_id IN (${placeholders})`).all(episodeId, ...normalized.retiredSectionIds).map((row) => row.id);
+        this.db.prepare(`UPDATE library_items SET section_id=NULL,revision=revision+1,updated_at=? WHERE episode_id=? AND section_id IN (${placeholders})`).run(stamp, episodeId, ...normalized.retiredSectionIds);
+      }
       const upsert = this.db.prepare(`INSERT INTO story_sections(id,episode_id,title,sort_order,retired_at) VALUES(?,?,?,?,NULL)
         ON CONFLICT(id) DO UPDATE SET title=excluded.title,sort_order=excluded.sort_order,retired_at=NULL`);
       for (const section of normalized.sections)
@@ -668,7 +674,7 @@ export class Store {
     }
     try {
       const published = this.publishStory(episodeId);
-      return { ...published, mappingChanges: { retiredSectionIds: normalized.retiredSectionIds, unassignedCardIds } };
+      return { ...published, mappingChanges: { retiredSectionIds: normalized.retiredSectionIds, unassignedCardIds, unassignedLibraryItemIds } };
     } catch (error) {
       if (error.statusCode === 409) throw error;
       const committed = this.getStory(episodeId);

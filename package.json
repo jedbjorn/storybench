@@ -10,7 +10,7 @@
     "start": "node src/server.js",
     "build": "esbuild src/story-editor.js --bundle --format=esm --outfile=public/story-editor.js",
     "test": "node --test",
-    "lint": "npm run build && node --check src/server.js && node --check src/store.js && node --check src/story-markdown.js && node --check src/story-editor.js && node --check src/library.js && node --check src/media.js && node --check src/chat.js && node --check src/codex.js && node --check public/app.js"
+    "lint": "npm run build && node --check src/server.js && node --check src/store.js && node --check src/story-markdown.js && node --check src/story-editor.js && node --check src/library.js && node --check src/media.js && node --check src/chat.js && node --check src/codex.js && node --check public/app.js && node --check public/library-workspace.js"
   },
   "dependencies": {
     "@codemirror/commands": "6.10.3",
