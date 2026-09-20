@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { Store } from "../src/store.js";
 import { createApp } from "../src/server.js";
+import { STARTER_STORY } from "../src/story-markdown.js";
 
 function workspace(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), "storybench-foundation-"));
@@ -85,6 +86,18 @@ test("asset-only migration creates one discoverable Imported library episode", (
   assert.equal(store.listEpisodeLibrary(store.listEpisodes()[0].id).length, 3);
 });
 
+test("new episodes start with the editable story template and mapped beats", (t) => {
+  const root = workspace(t);
+  const store = new Store(root);
+  t.after(() => store.close());
+  const episode = store.createEpisode();
+  const story = store.getStory(episode.id);
+  assert.deepEqual(story.sections.map((section) => section.title), ["Intro", "Beat", "Outro"]);
+  assert.match(story.source, /# Overview[\s\S]*# Hook[\s\S]*# Sections/);
+  assert.notEqual(story.source, STARTER_STORY, "registered section markers are inserted into the template");
+  assert.equal(readFileSync(path.join(root, "episodes", episode.id, "story.md"), "utf8"), story.source);
+});
+
 test("story sections keep stable identities, ignore fences, and retire mappings atomically", (t) => {
   const store = new Store(workspace(t));
   t.after(() => store.close());
@@ -137,7 +150,7 @@ test("marker insertion cannot grow accepted source beyond the 1 MiB bound", (t) 
     (error) => error.statusCode === 413,
   );
   assert.deepEqual(store.getStory(episode.id), before);
-  assert.equal(readFileSync(path.join(root, "episodes", episode.id, "story.md"), "utf8"), "");
+  assert.equal(readFileSync(path.join(root, "episodes", episode.id, "story.md"), "utf8"), before.source);
 });
 
 test("section parsing follows fence closers and Setext heading structure", (t) => {

@@ -1,5 +1,18 @@
 import MarkdownIt from "markdown-it";
 
+export const STARTER_STORY = `# Overview
+
+# Hook
+
+# Sections
+
+## Intro
+
+## Beat
+
+## Outro
+`;
+
 export const storyMarkdown = new MarkdownIt({
   html: false,
   linkify: false,
