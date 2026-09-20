@@ -62,6 +62,19 @@ test('rejects limits and injection-shaped or unregistered resources with stable 
   await assert.rejects(renderGraphic({ workspace: root, outputPath: join(root, 'bad.png'), resolveImage: () => '/etc/passwd', recipe: { ...base, layers: [{ kind: 'image', itemId: 'bad' }] } }), error => error.code === 'IMAGE_PATH_ESCAPE');
   await writeFile(join(root, 'fake.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
   await assert.rejects(renderGraphic({ workspace: root, outputPath: join(root, 'svg.png'), resolveImage: () => join(root, 'fake.svg'), recipe: { ...base, layers: [{ kind: 'image', itemId: 'svg' }] } }), error => error.code === 'INVALID_IMAGE');
+  assert.throws(() => validateGraphicRecipe({ kind: 'motion', width: 321, height: 180, duration: 1, fps: 30, layers: [] }), error => error.code === 'MOTION_DIMENSIONS' && error.path === 'width');
+  const fallback = validateGraphicRecipe({ ...base, layers: [{ kind: 'text', text: 'Fallback', fontFamily: 'Unavailable Face' }] });
+  assert.equal(fallback.layers[0].fontFamily, 'DejaVu Sans');
+});
+
+test('rejects excessive decoded image dimensions and aggregate resources before rasterization', async t => {
+  const root = await workspace(t); const oversized = Buffer.alloc(24);
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(oversized); oversized.writeUInt32BE(10000, 16); oversized.writeUInt32BE(10000, 20);
+  await assert.rejects(renderGraphic({ workspace: root, outputPath: join(root, 'huge.png'), resolveImage: () => ({ data: oversized, mimeType: 'image/png' }), recipe: { kind: 'still', width: 100, height: 100, layers: [{ kind: 'image', itemId: 'huge' }] } }), error => error.code === 'IMAGE_PIXEL_LIMIT');
+  const seed = join(root, 'seed.png');
+  await renderGraphic({ workspace: root, outputPath: seed, recipe: { kind: 'still', width: 1920, height: 1080, layers: [] } });
+  const layers = Array.from({ length: 17 }, (_, index) => ({ kind: 'image', itemId: `image-${index}` }));
+  await assert.rejects(renderGraphic({ workspace: root, outputPath: join(root, 'aggregate.png'), resolveImage: () => seed, recipe: { kind: 'still', width: 100, height: 100, layers } }), error => error.code === 'IMAGE_TOTAL_LIMIT');
 });
 
 test('cancellation removes output and module temporary files while preserving sources', async t => {

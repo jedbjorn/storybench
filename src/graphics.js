@@ -4,7 +4,11 @@ import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { Resvg } from '@resvg/resvg-js';
 
-export const GRAPHIC_LIMITS = Object.freeze({ maxWidth: 1920, maxHeight: 1080, maxDuration: 30, maxLayers: 100, maxFps: 30, maxImageBytes: 20 * 1024 * 1024 });
+export const GRAPHIC_LIMITS = Object.freeze({
+  maxWidth: 1920, maxHeight: 1080, maxDuration: 30, maxLayers: 100, maxFps: 30,
+  maxImageBytes: 20 * 1024 * 1024, maxTotalImageBytes: 64 * 1024 * 1024,
+  maxImagePixels: 16 * 1024 * 1024, maxTotalImagePixels: 32 * 1024 * 1024,
+});
 export const DEFAULT_GRAPHIC_FONT = Object.freeze({ family: 'DejaVu Sans', path: '/usr/share/fonts/TTF/DejaVuSans.ttf' });
 const KINDS = ['text', 'rectangle', 'ellipse', 'line', 'path', 'image'];
 const MOTION = ['x', 'y', 'scale', 'rotation', 'opacity'];
@@ -67,7 +71,11 @@ function layer(input, index, duration) {
   if (out.opacity < 0 || out.opacity > 1) fail('INVALID_OPACITY', 'opacity must be between 0 and 1', `${p}.opacity`);
   if (duration == null && input.keyframes != null) fail('STILL_KEYFRAMES', 'Still recipes cannot have keyframes', `${p}.keyframes`);
   if (duration != null) out.keyframes = keyframes(input.keyframes, duration, `${p}.keyframes`);
-  if (kind === 'text') { Object.assign(out, { text: string(input.text, undefined, `${p}.text`, { max: 10000 }), fontSize: number(input.fontSize ?? 48, `${p}.fontSize`, { positive: true, max: 1000 }), fontFamily: string(input.fontFamily, DEFAULT_GRAPHIC_FONT.family, `${p}.fontFamily`, { max: 200 }), fontWeight: number(input.fontWeight ?? 400, `${p}.fontWeight`, { min: 100, max: 900, integer: true }), fill: color(input.fill, '#fff', `${p}.fill`), textAnchor: string(input.textAnchor, 'start', `${p}.textAnchor`, { choices: ['start', 'middle', 'end'] }) }); if (!/^[\p{L}\p{N} ._-]+$/u.test(out.fontFamily)) fail('INVALID_FONT_FAMILY', 'fontFamily contains unsupported characters', `${p}.fontFamily`); }
+  if (kind === 'text') {
+    const requestedFont = string(input.fontFamily, DEFAULT_GRAPHIC_FONT.family, `${p}.fontFamily`, { max: 200 });
+    if (!/^[\p{L}\p{N} ._-]+$/u.test(requestedFont)) fail('INVALID_FONT_FAMILY', 'fontFamily contains unsupported characters', `${p}.fontFamily`);
+    Object.assign(out, { text: string(input.text, undefined, `${p}.text`, { max: 10000 }), fontSize: number(input.fontSize ?? 48, `${p}.fontSize`, { positive: true, max: 1000 }), fontFamily: DEFAULT_GRAPHIC_FONT.family, fontWeight: number(input.fontWeight ?? 400, `${p}.fontWeight`, { min: 100, max: 900, integer: true }), fill: color(input.fill, '#fff', `${p}.fill`), textAnchor: string(input.textAnchor, 'start', `${p}.textAnchor`, { choices: ['start', 'middle', 'end'] }) });
+  }
   if (kind === 'rectangle') { out.width = number(input.width, `${p}.width`, { positive: true, max: 7680 }); out.height = number(input.height, `${p}.height`, { positive: true, max: 4320 }); out.rx = number(input.rx ?? 0, `${p}.rx`, { min: 0, max: 7680 }); paint(out, input, p, '#fff'); }
   if (kind === 'ellipse') { out.rx = number(input.rx, `${p}.rx`, { positive: true, max: 3840 }); out.ry = number(input.ry, `${p}.ry`, { positive: true, max: 2160 }); paint(out, input, p, '#fff'); }
   if (kind === 'line') Object.assign(out, { x2: number(input.x2, `${p}.x2`, { min: -7680, max: 7680 }), y2: number(input.y2, `${p}.y2`, { min: -7680, max: 7680 }), stroke: color(input.stroke, '#fff', `${p}.stroke`), strokeWidth: number(input.strokeWidth ?? 1, `${p}.strokeWidth`, { min: 0, max: 1000 }) });
@@ -83,7 +91,7 @@ export function validateGraphicRecipe(recipe, { resolveImage } = {}) {
   const height = number(recipe.height, 'height', { positive: true, max: GRAPHIC_LIMITS.maxHeight, integer: true });
   if (!Array.isArray(recipe.layers) || recipe.layers.length > GRAPHIC_LIMITS.maxLayers) fail('LAYER_LIMIT', 'layers must contain at most 100 entries', 'layers');
   let duration; let fps;
-  if (kind === 'motion') { duration = number(recipe.duration, 'duration', { positive: true, max: 30 }); fps = number(recipe.fps ?? 30, 'fps', { min: 1, max: 30, integer: true }); if (!Number.isInteger(duration * fps)) fail('FRAME_ALIGNMENT', 'duration must resolve to a whole frame at fps', 'duration'); }
+  if (kind === 'motion') { duration = number(recipe.duration, 'duration', { positive: true, max: 30 }); fps = number(recipe.fps ?? 30, 'fps', { min: 1, max: 30, integer: true }); if (!Number.isInteger(duration * fps)) fail('FRAME_ALIGNMENT', 'duration must resolve to a whole frame at fps', 'duration'); if (width % 2 || height % 2) fail('MOTION_DIMENSIONS', 'Motion width and height must be even for H.264 output', width % 2 ? 'width' : 'height'); }
   else if (recipe.duration != null || recipe.fps != null) fail('STILL_TIMING', 'Still recipes cannot contain duration or fps', recipe.duration != null ? 'duration' : 'fps');
   const layers = recipe.layers.map((item, index) => layer(item, index, duration));
   if (layers.some(item => item.kind === 'image') && resolveImage != null && typeof resolveImage !== 'function') fail('INVALID_RESOLVER', 'resolveImage must be a function', 'resolveImage');
@@ -98,20 +106,51 @@ function at(item, property, time) {
   const index = points.findIndex(point => point.time > time); const before = points[index - 1]; const after = points[index];
   return before.easing === 'hold' ? before.value : before.value + (after.value - before.value) * ((time - before.time) / (after.time - before.time));
 }
+function jpegSize(data) {
+  let offset = 2;
+  while (offset + 8 < data.length) {
+    if (data[offset] !== 0xff) return null;
+    while (data[offset] === 0xff) offset++;
+    const marker = data[offset++];
+    if (marker === 0xd8 || marker === 0xd9) continue;
+    if (marker === 0xda || offset + 2 > data.length) return null;
+    const length = data.readUInt16BE(offset); if (length < 2 || offset + length > data.length) return null;
+    if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) {
+      if (length < 7) return null;
+      return { width: data.readUInt16BE(offset + 5), height: data.readUInt16BE(offset + 3) };
+    }
+    offset += length;
+  }
+  return null;
+}
+function webpSize(data) {
+  const kind = data.subarray(12, 16).toString();
+  if (kind === 'VP8X' && data.length >= 30) return { width: 1 + data.readUIntLE(24, 3), height: 1 + data.readUIntLE(27, 3) };
+  if (kind === 'VP8 ' && data.length >= 30 && data[23] === 0x9d && data[24] === 0x01 && data[25] === 0x2a) return { width: data.readUInt16LE(26) & 0x3fff, height: data.readUInt16LE(28) & 0x3fff };
+  if (kind === 'VP8L' && data.length >= 25 && data[20] === 0x2f) { const bits = data.readUInt32LE(21); return { width: 1 + (bits & 0x3fff), height: 1 + ((bits >>> 14) & 0x3fff) }; }
+  return null;
+}
 function sniff(data, path = '') {
-  if (data.length >= 8 && data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'image/png';
-  if (data.length >= 3 && data[0] === 255 && data[1] === 216 && data[2] === 255) return 'image/jpeg';
-  if (data.length >= 12 && data.subarray(0, 4).toString() === 'RIFF' && data.subarray(8, 12).toString() === 'WEBP') return 'image/webp';
-  fail('INVALID_IMAGE', 'Resolved image must be PNG, JPEG, or WebP', path);
+  let mime; let dimensions;
+  if (data.length >= 24 && data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) { mime = 'image/png'; dimensions = { width: data.readUInt32BE(16), height: data.readUInt32BE(20) }; }
+  else if (data.length >= 3 && data[0] === 255 && data[1] === 216 && data[2] === 255) { mime = 'image/jpeg'; dimensions = jpegSize(data); }
+  else if (data.length >= 16 && data.subarray(0, 4).toString() === 'RIFF' && data.subarray(8, 12).toString() === 'WEBP') { mime = 'image/webp'; dimensions = webpSize(data); }
+  if (!mime || !dimensions || !dimensions.width || !dimensions.height) fail('INVALID_IMAGE', 'Resolved image must be a valid PNG, JPEG, or WebP header', path);
+  return { mime, ...dimensions };
 }
 async function loadImages(plan, workspace, resolveImage) {
-  const root = await realpath(resolve(workspace)).catch(() => fail('INVALID_WORKSPACE', 'workspace must exist', 'workspace')); const images = new Map();
+  const root = await realpath(resolve(workspace)).catch(() => fail('INVALID_WORKSPACE', 'workspace must exist', 'workspace')); const images = new Map(); let totalBytes = 0; let totalPixels = 0;
   for (const [index, item] of plan.layers.entries()) {
     if (item.kind !== 'image' || images.has(item.itemId)) continue;
     const p = `layers[${index}].itemId`; if (typeof resolveImage !== 'function') fail('IMAGE_RESOLVER_REQUIRED', 'Image layers require resolveImage', p);
-    const source = await resolveImage(item.itemId); let data; let mime;
-    if (typeof source === 'string') { if (!isAbsolute(source)) fail('INVALID_IMAGE', 'Resolved image path must be absolute', p); const canonical = await realpath(source).catch(() => null); if (!canonical || !within(root, canonical)) fail('IMAGE_PATH_ESCAPE', 'Resolved image must be inside workspace', p); const info = await lstat(canonical); if (!info.isFile() || info.size > GRAPHIC_LIMITS.maxImageBytes) fail('INVALID_IMAGE', 'Resolved image file is invalid or too large', p); data = await readFile(canonical); mime = sniff(data, p); }
-    else { object(source, `resolveImage(${item.itemId})`); data = Buffer.isBuffer(source.data) ? source.data : source.data instanceof Uint8Array ? Buffer.from(source.data) : null; if (!data || data.length > GRAPHIC_LIMITS.maxImageBytes) fail('INVALID_IMAGE', 'Resolved image data is invalid or too large', p); mime = sniff(data, p); if (source.mimeType !== mime) fail('INVALID_IMAGE', 'Resolved image MIME type does not match its bytes', p); }
+    const source = await resolveImage(item.itemId); let data; let declaredMime;
+    if (typeof source === 'string') { if (!isAbsolute(source)) fail('INVALID_IMAGE', 'Resolved image path must be absolute', p); const canonical = await realpath(source).catch(() => null); if (!canonical || !within(root, canonical)) fail('IMAGE_PATH_ESCAPE', 'Resolved image must be inside workspace', p); const info = await lstat(canonical); if (!info.isFile() || info.size > GRAPHIC_LIMITS.maxImageBytes) fail('INVALID_IMAGE', 'Resolved image file is invalid or too large', p); data = await readFile(canonical); }
+    else { object(source, `resolveImage(${item.itemId})`); data = Buffer.isBuffer(source.data) ? source.data : source.data instanceof Uint8Array ? Buffer.from(source.data) : null; if (!data || data.length > GRAPHIC_LIMITS.maxImageBytes) fail('INVALID_IMAGE', 'Resolved image data is invalid or too large', p); declaredMime = source.mimeType; }
+    const { mime, width, height } = sniff(data, p); if (declaredMime != null && declaredMime !== mime) fail('INVALID_IMAGE', 'Resolved image MIME type does not match its bytes', p);
+    const pixels = width * height; totalBytes += data.length; totalPixels += pixels;
+    if (pixels > GRAPHIC_LIMITS.maxImagePixels) fail('IMAGE_PIXEL_LIMIT', 'Resolved image dimensions exceed the per-image pixel limit', p);
+    if (totalBytes > GRAPHIC_LIMITS.maxTotalImageBytes) fail('IMAGE_TOTAL_LIMIT', 'Resolved images exceed the aggregate byte limit', p);
+    if (totalPixels > GRAPHIC_LIMITS.maxTotalImagePixels) fail('IMAGE_TOTAL_LIMIT', 'Resolved images exceed the aggregate pixel limit', p);
     images.set(item.itemId, `data:${mime};base64,${data.toString('base64')}`);
   }
   return { root, images };
