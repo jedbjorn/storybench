@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { episodeNavigatorHTML, runImportBatch } from "../public/library-workspace.js";
+import { setCardType } from "../public/card-workspace.js";
+import { buildRenderPlan } from "../src/composition-plan.js";
 
 test("episode navigator groups states, applies filters, and keeps dropdown alternative", () => {
   const episodes = [
@@ -34,4 +36,22 @@ test("import batch keeps its captured episode and cancels remaining files", asyn
   }});
   assert.deepEqual(seen, [["one", "captured"]]);
   assert.deepEqual(rows.map((row) => row.state), ["Imported", "Cancelled"]);
+});
+
+test("changing a card to Audio stores the role displayed by the UI", () => {
+  const visual = { id: "visual", title: "Visual", type: "Video", sectionId: "section", itemId: "visual-item", in: 0, out: 2 };
+  const audio = { id: "audio", title: "QA Voice", type: "Video", sectionId: "section", itemId: "audio-item", anchorVisualCardId: "visual", in: 0, out: 1 };
+
+  setCardType(audio, "Audio");
+
+  assert.equal(audio.role, "voiceover");
+  const plan = buildRenderPlan({
+    sections: [{ id: "section" }],
+    cards: [visual, audio],
+    libraryItems: [
+      { id: "visual-item", assetId: "visual-asset", asset: { kind: "video", duration: 2 } },
+      { id: "audio-item", assetId: "audio-asset", asset: { kind: "audio", duration: 1 } },
+    ],
+  });
+  assert.equal(plan.audioPlacements[0].role, "voiceover");
 });
