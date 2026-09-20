@@ -13,6 +13,7 @@ export class CompositionError extends Error {
     super(issues.map((issue) => `${issue.cardTitle || issue.cardId || "Composition"}: ${issue.message}`).join("; "));
     this.name = "CompositionError";
     this.issues = issues;
+    this.statusCode = 422;
   }
 }
 
@@ -63,7 +64,12 @@ function checkedTrim(card, item, fps, issues, { still = false } = {}) {
       issues.push(issue("invalid-duration", card, "static graphics require a positive duration"));
       return null;
     }
-    return { sourceInFrame: 0, sourceOutFrame: null, durationFrames: secondsToFrame(card.duration, fps) };
+    const durationFrames = secondsToFrame(card.duration, fps);
+    if (durationFrames < 1) {
+      issues.push(issue("duration-below-frame", card, `static graphic duration is shorter than one ${fps} fps frame`));
+      return null;
+    }
+    return { sourceInFrame: 0, sourceOutFrame: null, durationFrames };
   }
   const start = card.in ?? 0;
   const end = card.out ?? item?.asset?.duration;
@@ -165,9 +171,10 @@ export function buildRenderPlan({ sections = [], cards = [], libraryItems = [], 
       issues.push(issue("audio-beyond-cut", card, "audio extends beyond the visual cut; it is not silently trimmed"));
       continue;
     }
-    const fadeInFrames = secondsToFrame(card.fadeIn ?? 0, safeFps);
-    const fadeOutFrames = secondsToFrame(card.fadeOut ?? 0, safeFps);
-    if (fadeInFrames < 0 || fadeOutFrames < 0 || fadeInFrames + fadeOutFrames > trim.durationFrames)
+    const fadeIn = card.fadeIn ?? 0, fadeOut = card.fadeOut ?? 0;
+    const fadeInFrames = Number.isFinite(fadeIn) ? secondsToFrame(fadeIn, safeFps) : NaN;
+    const fadeOutFrames = Number.isFinite(fadeOut) ? secondsToFrame(fadeOut, safeFps) : NaN;
+    if (!Number.isFinite(fadeIn) || !Number.isFinite(fadeOut) || fadeInFrames < 0 || fadeOutFrames < 0 || fadeInFrames + fadeOutFrames > trim.durationFrames)
       issues.push(issue("invalid-audio-fade", card, "audio fades must be non-negative and fit within the placement"));
     audioPlacements.push({
       cardId: card.id,

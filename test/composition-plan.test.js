@@ -102,3 +102,14 @@ test("an audio-only episode is rejected without inventing a background", () => {
     return true;
   });
 });
+
+test("sub-frame stills and non-finite fades are rejected", () => {
+  const short = cards();
+  short.find((card) => card.id === "intro-card").duration = 0.001;
+  assert.throws(() => buildRenderPlan({ sections, cards: short, libraryItems }), (error) => error.issues.some((entry) => entry.code === "duration-below-frame"));
+  for (const value of [NaN, Infinity]) {
+    const values = cards();
+    values.find((card) => card.id === "music-card").fadeIn = value;
+    assert.throws(() => buildRenderPlan({ sections, cards: values, libraryItems }), (error) => error.issues.some((entry) => entry.code === "invalid-audio-fade"));
+  }
+});

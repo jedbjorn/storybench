@@ -7,6 +7,7 @@ import { Store, StoreError } from "./store.js";
 import { importMedia, renderEpisode } from "./media.js";
 import { createChatService } from "./chat.js";
 import { createLibraryService } from "./library.js";
+import { buildRenderPlan } from "./composition-plan.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = path.join(root, "public");
@@ -222,6 +223,12 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
         });
       if (req.method === "POST" && url.pathname === "/api/episodes")
         return send(res, 201, store.createEpisode(await jsonBody(req)));
+      if (req.method === "GET" && url.pathname === "/api/branding")
+        return send(res, 200, store.listBrandingTemplates());
+      if (parts[0] === "api" && parts[1] === "branding" && parts[2] && req.method === "PUT") {
+        const body = await jsonBody(req);
+        return send(res, 200, store.setBrandingRole(parts[2], body.role ?? null));
+      }
       if (parts[0] === "api" && parts[1] === "episodes" && parts[2]) {
         const episodeId = parts[2];
         if (parts.length === 3 && req.method === "GET") {
@@ -249,6 +256,21 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
         }
         if (parts[3] === "history" && req.method === "GET")
           return send(res, 200, store.listEpisodeHistory(episodeId));
+        if (parts[3] === "composition" && parts.length === 4 && req.method === "GET") {
+          const episode = store.getEpisode(episodeId);
+          if (!episode) throw new StoreError("Episode not found", 404);
+          const story = store.getStory(episodeId);
+          return send(res, 200, buildRenderPlan({ sections: story.sections, cards: episode.cards, libraryItems: store.listEpisodeLibrary(episodeId) }));
+        }
+        if (parts[3] === "cards" && parts[4] && parts[5] === "promote" && req.method === "POST") {
+          const value = store.promoteCard(episodeId, parts[4], await jsonBody(req));
+          return send(res, 201, value);
+        }
+        if (parts[3] === "branding" && parts[4] && parts[5] === "apply" && req.method === "POST") {
+          const value = store.applyBrandingTemplate(episodeId, parts[4]);
+          notify(episodeId);
+          return send(res, 200, value);
+        }
         if (parts[3] === "library") {
           if (parts.length === 4 && req.method === "GET")
             return send(res, 200, store.listEpisodeLibrary(episodeId));
@@ -433,6 +455,7 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
           ...(error.current ? { current: error.current } : {}),
           ...(error.committed ? { committed: error.committed } : {}),
           ...(error.conflictPath ? { conflictPath: error.conflictPath } : {}),
+          ...(error.issues ? { issues: error.issues } : {}),
         });
       else res.destroy();
     }
