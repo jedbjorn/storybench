@@ -139,6 +139,8 @@
       <form method="dialog"><div class="modal-heading"><h2>Import to library</h2><button value="cancel" aria-label="Close">×</button></div></form>
       <label>Category <select id="libraryImportCategory"><option>Reference</option><option>B-roll</option><option>Narration</option><option>Graphics</option></select></label>
       <div id="libraryDropzone" class="library-dropzone" tabindex="0">Drop files here or <button id="pickLibraryFiles" type="button">choose files</button><input id="libraryFiles" type="file" multiple hidden></div>
+      <div id="libraryImportQueue" class="library-import-queue"></div>
+      <div class="modal-actions"><button id="cancelLibraryFiles" type="button" hidden>Cancel imports</button><button id="startLibraryFiles" type="button" class="primary" hidden>Import files</button></div>
       <div class="library-divider">or add a reference</div>
       <label>Public URL <input id="libraryUrl" type="url" placeholder="https://example.com/article"></label>
       <label>Title <input id="libraryTextTitle" placeholder="Research notes"></label>

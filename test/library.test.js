@@ -133,6 +133,25 @@ test("URL references reject private IPv4-mapped IPv6 before connecting", async (
   assert.equal(connected, false);
 });
 
+test("URL redirects and rejected responses destroy their bodies", async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  let destroyed = 0;
+  const response = (status, location) => {
+    const body = Readable.from([Buffer.alloc(1024)]);
+    const original = body.destroy.bind(body);
+    body.destroy = (...args) => { destroyed += 1; return original(...args); };
+    return { status, ok: false, headers: { get: (name) => name === "location" ? location : null }, body };
+  };
+  let call = 0;
+  const service = createLibraryService({ workspace: f.workspace, store: f.store,
+    dnsLookup: async () => [{ address: "93.184.216.34", family: 4 }],
+    fetchImpl: async () => ++call === 1 ? response(302, "https://public.example/end") : response(500),
+  });
+  await assert.rejects(service.registerUrl({ episodeId: f.episode.id, url: "https://public.example/start" }), /HTTP 500/);
+  assert.equal(destroyed, 2);
+});
+
 test("unreadable PDF and invalid UTF-8 preserve originals with unavailable extraction", async (t) => {
   const f = await fixture();
   t.after(() => f.close());

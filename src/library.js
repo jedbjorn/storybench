@@ -97,6 +97,10 @@ function decodeUtf8(buffer) {
   try { return new TextDecoder("utf-8", { fatal: true }).decode(buffer); }
   catch { return null; }
 }
+async function discardResponse(response) {
+  if (typeof response?.body?.destroy === "function") response.body.destroy();
+  else if (typeof response?.body?.cancel === "function") await response.body.cancel().catch(() => {});
+}
 async function extractReference(file, name, contentType) {
   const extension = path.extname(name).toLowerCase();
   if (extension === ".pdf" || /^application\/pdf(?:;|$)/i.test(contentType || "")) {
@@ -147,7 +151,7 @@ export function createLibraryService({ workspace, store, fetchImpl = null, dnsLo
     await pipeline(readable, meter, createWriteStream(destination, { flags: "wx" }), { signal });
     return bytes;
   }
-  async function registerFile({ episodeId, readable, fileName, contentType, selectedCategory, signal }) {
+  async function registerFile({ episodeId, readable, fileName, label, sectionId, contentType, selectedCategory, signal }) {
     return serialized(async () => {
       const chosenCategory = category(selectedCategory);
       if (!store.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
@@ -179,7 +183,7 @@ export function createLibraryService({ workspace, store, fetchImpl = null, dnsLo
           asset = store.saveAsset(imported);
         }
         return store.attachLibraryItem(episodeId, asset.id, {
-          category: chosenCategory, label: name, sourceKind: "file",
+          category: chosenCategory, label: String(label || name), sectionId, sourceKind: "file",
           extractedText: extraction.text, extractionStatus: extraction.status,
           provenance: { fileName: name, contentType: contentType || null, bytes, format: extraction.format, truncated: extraction.truncated, pages: extraction.pages || null, extractionError: extraction.error || null },
         });
@@ -216,15 +220,22 @@ export function createLibraryService({ workspace, store, fetchImpl = null, dnsLo
           ? await fetchImpl(current, { redirect: "manual", signal, headers: { accept: "text/html,text/plain,application/pdf;q=0.9" }, validatedAddresses: validated.addresses })
           : await requestPublic(current, validated.addresses, signal);
         if (![301, 302, 303, 307, 308].includes(response.status)) break;
+        await discardResponse(response);
         if (redirects === 5) throw new StoreError("Reference URL redirected too many times", 422);
         const location = response.headers.get("location");
         if (!location) throw new StoreError("Reference URL redirect has no destination", 422);
         validated = await validatePublicUrl(new URL(location, current).href, dnsLookup);
         current = validated.url;
       }
-      if (!response.ok) throw new StoreError(`Reference URL returned HTTP ${response.status}`, 422);
+      if (!response.ok) {
+        await discardResponse(response);
+        throw new StoreError(`Reference URL returned HTTP ${response.status}`, 422);
+      }
       const declared = Number(response.headers.get("content-length") || 0);
-      if (declared > URL_BYTES) throw new StoreError("Reference URL response exceeds the 10 MiB limit", 413);
+      if (declared > URL_BYTES) {
+        await discardResponse(response);
+        throw new StoreError("Reference URL response exceeds the 10 MiB limit", 413);
+      }
       const name = safeName(path.basename(current.pathname) || `${current.hostname}.html`);
       const temporary = path.join(workspace, "imports", `.url-${crypto.randomUUID()}.tmp`);
       try {

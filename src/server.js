@@ -253,11 +253,17 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
           if (parts.length === 4 && req.method === "GET")
             return send(res, 200, store.listEpisodeLibrary(episodeId));
           if (parts[4] === "files" && parts.length === 5 && req.method === "POST") {
-            const fileName = decodeURIComponent(String(req.headers["x-file-name"] || "upload"));
+            let fileName, label;
+            try {
+              fileName = decodeURIComponent(String(req.headers["x-file-name"] || "upload"));
+              label = decodeURIComponent(String(req.headers["x-library-label"] || ""));
+            } catch { throw new StoreError("Import metadata is malformed"); }
             const value = await library.registerFile({
               episodeId,
               readable: req,
               fileName,
+              label,
+              sectionId: String(req.headers["x-story-section-id"] || "") || null,
               contentType: String(req.headers["content-type"] || "application/octet-stream"),
               selectedCategory: String(req.headers["x-library-category"] || "Reference"),
               signal: AbortSignal.any([AbortSignal.timeout(10 * 60_000)]),

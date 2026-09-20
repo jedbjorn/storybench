@@ -413,6 +413,8 @@ h2 {
 .library-dropzone { padding: 24px; border: 2px dashed #b8c4be; border-radius: 10px; text-align: center; background: #f7faf8; }
 .library-dropzone.drag-over { border-color: var(--accent); background: #fff5f0; }
 .library-divider { margin: 15px 0 4px; text-align: center; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.library-import-queue fieldset { display: grid; grid-template-columns: 2fr 1fr 1.4fr; gap: 8px; margin: 10px 0; border: 1px solid var(--line); border-radius: 9px; }
+.library-import-queue legend { color: var(--ink); font-weight: 700; }
 .asset {
   background: #fff;
   border: 1px solid var(--line);

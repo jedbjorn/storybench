@@ -85,7 +85,7 @@ const storyEditor = new StoryEditor({
   setStatus: (text) => { $("#saveState").textContent = text; },
   toast,
 });
-const libraryWorkspace = new LibraryWorkspace({ api, toast, getEpisode: () => episode });
+const libraryWorkspace = new LibraryWorkspace({ api, toast, getEpisode: () => episode, refreshState: () => load(episode?.id) });
 
 async function leaveStory() {
   const choice = await storyEditor.requestLeave();
