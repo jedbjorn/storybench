@@ -1,18 +1,85 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
+import {
+  copyFileSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { storySectionHeadings } from "./story-markdown.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix) => `${prefix}_${crypto.randomUUID()}`;
 const parse = (value, fallback = null) =>
   value == null ? fallback : JSON.parse(value);
+const STORY_LIMIT = 1024 * 1024;
+const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
+const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
 
 export class StoreError extends Error {
-  constructor(message, statusCode = 400) {
+  constructor(message, statusCode = 400, details = {}) {
     super(message);
     this.statusCode = statusCode;
+    Object.assign(this, details);
   }
+}
+
+function storyRow(row) {
+  if (!row) return null;
+  return {
+    episodeId: row.episode_id,
+    source: row.source,
+    storyRevision: row.revision,
+    publicationPending: Boolean(row.publication_pending),
+    publicationStatus: row.publication_pending ? "pending" : "published",
+    sections: parse(row.sections, []),
+    committedHash: row.committed_hash,
+    publishedHash: row.published_hash,
+    updatedAt: row.updated_at,
+  };
+}
+
+function normalizeStory(source, existingSections = []) {
+  if (typeof source !== "string") throw new StoreError("source must be a string");
+  if (Buffer.byteLength(source, "utf8") > STORY_LIMIT)
+    throw new StoreError("Story source exceeds the 1 MiB UTF-8 limit", 413);
+  const known = new Map(existingSections.map((section) => [section.id, section]));
+  const newline = source.includes("\r\n") ? "\r\n" : "\n";
+  const lines = source.split(newline);
+  const sections = [];
+  const seen = new Set();
+  const missing = [];
+  for (const heading of storySectionHeadings(source)) {
+    const headingIndex = heading.line;
+    const marker = headingIndex > 0 ? STORY_MARKER.exec(lines[headingIndex - 1]) : null;
+    let sectionId = marker?.[1]?.toLowerCase();
+    if (sectionId && seen.has(sectionId))
+      throw new StoreError(`Duplicate story section id: ${sectionId}`);
+    if (!sectionId) {
+      sectionId = crypto.randomUUID();
+      missing.push({ line: headingIndex, marker: `<!-- storybench:section ${sectionId} -->` });
+    }
+    seen.add(sectionId);
+    sections.push({ id: sectionId, title: heading.title, order: sections.length });
+  }
+  for (const insertion of missing.reverse()) lines.splice(insertion.line, 0, insertion.marker);
+  const acceptedSource = lines.join(newline);
+  if (Buffer.byteLength(acceptedSource, "utf8") > STORY_LIMIT)
+    throw new StoreError("Accepted story source exceeds the 1 MiB UTF-8 limit after section IDs are added", 413);
+  return {
+    source: acceptedSource,
+    sections,
+    retiredSectionIds: [...known.keys()].filter((sectionId) => !seen.has(sectionId)),
+  };
 }
 
 function placement(value, field) {
@@ -68,6 +135,10 @@ export function validateCards(cards) {
       visual: placement(card.visual, "visual"),
       narration: placement(card.narration, "narration"),
       duration,
+      sectionId:
+        card.sectionId == null || card.sectionId === ""
+          ? null
+          : String(card.sectionId),
     };
   });
 }
@@ -78,6 +149,7 @@ function episodeRow(row) {
       id: row.id,
       title: row.title,
       notes: row.notes,
+      state: row.state || "Scaffold",
       revision: row.revision,
       cards: parse(row.cards, []),
       createdAt: row.created_at,
@@ -113,6 +185,7 @@ function jobRow(row) {
       revision: row.revision,
       outputPath: row.output_path,
       error: row.error,
+      outputClass: row.output_class || "active",
       snapshot: parse(row.snapshot),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -121,34 +194,123 @@ function jobRow(row) {
 }
 
 export class Store {
-  constructor(workspace) {
+  constructor(workspace, { afterMigrationCommit, beforeStoryPublish, afterStoryRename } = {}) {
     this.workspace = path.resolve(workspace);
-    for (const dir of ["", "media", "cache", "exports", "imports"])
+    this.afterMigrationCommit = afterMigrationCommit;
+    this.beforeStoryPublish = beforeStoryPublish;
+    this.afterStoryRename = afterStoryRename;
+    for (const dir of ["", "media", "cache", "exports", "imports", "branding/assets"])
       mkdirSync(path.join(this.workspace, dir), { recursive: true });
-    this.db = new DatabaseSync(path.join(this.workspace, "storybench.sqlite"));
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
-      CREATE TABLE IF NOT EXISTS episodes (id TEXT PRIMARY KEY,title TEXT NOT NULL,notes TEXT NOT NULL DEFAULT '',revision INTEGER NOT NULL,cards TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS episode_history (episode_id TEXT NOT NULL,revision INTEGER NOT NULL,title TEXT NOT NULL,notes TEXT NOT NULL,cards TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL,parent_revision INTEGER,PRIMARY KEY(episode_id,revision));
-      CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY,name TEXT NOT NULL,hash TEXT NOT NULL UNIQUE,kind TEXT NOT NULL,path TEXT NOT NULL,duration REAL,width INTEGER,height INTEGER,metadata TEXT NOT NULL,thumbnail_path TEXT,created_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY,episode_id TEXT NOT NULL,kind TEXT NOT NULL,state TEXT NOT NULL,progress REAL NOT NULL DEFAULT 0,revision INTEGER NOT NULL,output_path TEXT,error TEXT,snapshot TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);`);
-    if (
-      !this.db
-        .prepare("PRAGMA table_info('episode_history')")
-        .all()
-        .some((column) => column.name === "parent_revision")
-    ) {
-      this.db.exec(
-        "ALTER TABLE episode_history ADD COLUMN parent_revision INTEGER",
-      );
-      this.db.exec(
-        "UPDATE episode_history SET parent_revision=revision-1 WHERE revision>1",
-      );
-    }
+    const databasePath = path.join(this.workspace, "storybench.sqlite");
+    const existingDatabase = existsSync(databasePath);
+    this.db = new DatabaseSync(databasePath);
+    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+    this.migrate(existingDatabase);
+    for (const episode of this.db.prepare("SELECT id FROM episodes").all())
+      this.ensureEpisodeDirectories(episode.id);
+    this.recoverPendingStories();
     this.db
       .prepare(
         "UPDATE jobs SET state='failed', error='Render interrupted by server restart', updated_at=? WHERE state IN ('queued','running')",
       )
       .run(now());
+  }
+  migrate(existingDatabase) {
+    const version = Number(this.db.prepare("PRAGMA user_version").get().user_version);
+    if (version >= 2) return;
+    const hadLegacySchema = this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='episodes'")
+      .get();
+    if (existingDatabase && hadLegacySchema) {
+      const backupPath = path.join(this.workspace, "storybench.pre-v2.sqlite");
+      if (!existsSync(backupPath)) {
+        const escaped = backupPath.replaceAll("'", "''");
+        this.db.exec(`VACUUM INTO '${escaped}'`);
+      }
+    }
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS episodes (id TEXT PRIMARY KEY,title TEXT NOT NULL,notes TEXT NOT NULL DEFAULT '',revision INTEGER NOT NULL,cards TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'Scaffold');
+        CREATE TABLE IF NOT EXISTS episode_history (episode_id TEXT NOT NULL,revision INTEGER NOT NULL,title TEXT NOT NULL,notes TEXT NOT NULL,cards TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL,parent_revision INTEGER,PRIMARY KEY(episode_id,revision));
+        CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY,name TEXT NOT NULL,hash TEXT NOT NULL UNIQUE,kind TEXT NOT NULL,path TEXT NOT NULL,duration REAL,width INTEGER,height INTEGER,metadata TEXT NOT NULL,thumbnail_path TEXT,created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY,episode_id TEXT NOT NULL,kind TEXT NOT NULL,state TEXT NOT NULL,progress REAL NOT NULL DEFAULT 0,revision INTEGER NOT NULL,output_path TEXT,error TEXT,snapshot TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,output_class TEXT NOT NULL DEFAULT 'active');
+        CREATE TABLE IF NOT EXISTS stories (episode_id TEXT PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,source TEXT NOT NULL DEFAULT '',revision INTEGER NOT NULL DEFAULT 1,sections TEXT NOT NULL DEFAULT '[]',publication_pending INTEGER NOT NULL DEFAULT 1,committed_hash TEXT NOT NULL,published_hash TEXT,updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS story_sections (id TEXT PRIMARY KEY,episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,title TEXT NOT NULL,sort_order INTEGER NOT NULL,retired_at TEXT);
+        CREATE TABLE IF NOT EXISTS story_history (episode_id TEXT NOT NULL,revision INTEGER NOT NULL,source TEXT NOT NULL,sections TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(episode_id,revision));
+        CREATE TABLE IF NOT EXISTS episode_library (episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,asset_id TEXT NOT NULL REFERENCES assets(id),category TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(episode_id,asset_id));
+        CREATE TABLE IF NOT EXISTS migration_log (version INTEGER PRIMARY KEY,completed_at TEXT NOT NULL);
+      `);
+      const columns = (table) =>
+        new Set(this.db.prepare(`PRAGMA table_info('${table}')`).all().map((column) => column.name));
+      if (!columns("episodes").has("state"))
+        this.db.exec("ALTER TABLE episodes ADD COLUMN state TEXT NOT NULL DEFAULT 'Scaffold'");
+      if (!columns("episode_history").has("parent_revision")) {
+        this.db.exec("ALTER TABLE episode_history ADD COLUMN parent_revision INTEGER");
+        this.db.exec("UPDATE episode_history SET parent_revision=revision-1 WHERE revision>1");
+      }
+      if (!columns("jobs").has("output_class")) {
+        this.db.exec("ALTER TABLE jobs ADD COLUMN output_class TEXT NOT NULL DEFAULT 'active'");
+        this.db.exec("UPDATE jobs SET output_class='legacy_draft'");
+      }
+      if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chats'").get() && !columns("chats").has("name"))
+        this.db.exec("ALTER TABLE chats ADD COLUMN name TEXT NOT NULL DEFAULT 'Conversation 1'");
+      const stamp = now();
+      if (!this.db.prepare("SELECT 1 FROM episodes LIMIT 1").get() && this.db.prepare("SELECT 1 FROM assets LIMIT 1").get()) {
+        const importedId = id("episode");
+        this.db.prepare("INSERT INTO episodes(id,title,notes,revision,cards,created_at,updated_at,state) VALUES(?,?,?,?,?,?,?,?)")
+          .run(importedId, "Imported library", "", 1, "[]", stamp, stamp, "Scaffold");
+        this.db.prepare("INSERT INTO episode_history(episode_id,revision,title,notes,cards,actor,created_at,parent_revision) VALUES(?,?,?,?,?,?,?,?)")
+          .run(importedId, 1, "Imported library", "", "[]", "migration", stamp, null);
+      }
+      const emptyHash = hash("");
+      this.db.prepare(`INSERT OR IGNORE INTO stories(episode_id,source,revision,sections,publication_pending,committed_hash,published_hash,updated_at)
+        SELECT id,'',1,'[]',1,?,NULL,? FROM episodes`).run(emptyHash, stamp);
+      this.db.prepare(`INSERT OR IGNORE INTO story_history(episode_id,revision,source,sections,actor,created_at)
+        SELECT id,1,'','[]','migration',? FROM episodes`).run(stamp);
+      const category = (kind) => kind === "video" ? "B-roll" : kind === "audio" ? "Narration" : kind === "image" ? "Graphics" : "Reference";
+      const episodes = this.db.prepare("SELECT id FROM episodes").all();
+      const assets = this.db.prepare("SELECT id,kind FROM assets").all();
+      const membership = this.db.prepare("INSERT OR IGNORE INTO episode_library(episode_id,asset_id,category,created_at) VALUES(?,?,?,?)");
+      for (const episode of episodes)
+        for (const asset of assets) membership.run(episode.id, asset.id, category(asset.kind), stamp);
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(2,?)").run(stamp);
+      this.db.exec("PRAGMA user_version=2; COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    try {
+      this.afterMigrationCommit?.();
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
+    for (const episode of this.db.prepare("SELECT id FROM episodes").all())
+      this.ensureEpisodeDirectories(episode.id);
+  }
+  episodeDirectory(episodeId) {
+    const episodesRoot = path.join(this.workspace, "episodes");
+    const directory = path.resolve(episodesRoot, String(episodeId));
+    if (directory === episodesRoot || !directory.startsWith(episodesRoot + path.sep))
+      throw new StoreError("Invalid registered episode path", 403);
+    return directory;
+  }
+  ensureEpisodeDirectories(episodeId) {
+    const episodeDirectory = this.episodeDirectory(episodeId);
+    mkdirSync(path.join(this.workspace, "episodes"), { recursive: true });
+    mkdirSync(episodeDirectory, { recursive: true });
+    const actual = realpathSync(episodeDirectory);
+    const root = realpathSync(path.join(this.workspace, "episodes"));
+    if (actual === root || !actual.startsWith(root + path.sep))
+      throw new StoreError("Registered episode path escapes the workspace", 403);
+    for (const dir of ["reference", "b-roll", "narration", "graphics", "drafts", "final", "cache", "conflicts"]) {
+      const destination = path.join(episodeDirectory, dir);
+      mkdirSync(destination, { recursive: true });
+      const resolved = realpathSync(destination);
+      if (!resolved.startsWith(root + path.sep))
+        throw new StoreError("Registered episode path escapes the workspace", 403);
+    }
   }
   close() {
     this.db.close();
@@ -169,6 +331,7 @@ export class Store {
       id: id("episode"),
       title: String(title).trim() || "Untitled episode",
       notes: String(notes),
+      state: "Scaffold",
       revision: 1,
       cards: [],
       createdAt: now(),
@@ -177,7 +340,7 @@ export class Store {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db
-        .prepare("INSERT INTO episodes VALUES(?,?,?,?,?,?,?)")
+        .prepare("INSERT INTO episodes(id,title,notes,revision,cards,created_at,updated_at,state) VALUES(?,?,?,?,?,?,?,?)")
         .run(
           episode.id,
           episode.title,
@@ -186,6 +349,7 @@ export class Store {
           "[]",
           episode.createdAt,
           episode.updatedAt,
+          episode.state,
         );
       this.db
         .prepare(
@@ -201,11 +365,19 @@ export class Store {
           episode.createdAt,
           null,
         );
+      this.db
+        .prepare("INSERT INTO stories(episode_id,source,revision,sections,publication_pending,committed_hash,published_hash,updated_at) VALUES(?,?,?,?,?,?,?,?)")
+        .run(episode.id, "", 1, "[]", 1, hash(""), null, episode.createdAt);
+      this.db
+        .prepare("INSERT INTO story_history(episode_id,revision,source,sections,actor,created_at) VALUES(?,?,?,?,?,?)")
+        .run(episode.id, 1, "", "[]", "human", episode.createdAt);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
+    this.ensureEpisodeDirectories(episode.id);
+    this.publishStory(episode.id);
     return episode;
   }
   updateEpisode(
@@ -224,6 +396,9 @@ export class Store {
       throw new StoreError(`Stale revision: expected ${current.revision}`, 409);
     const cards =
       changes.cards == null ? current.cards : validateCards(changes.cards);
+    const state = changes.state == null ? current.state : String(changes.state);
+    if (!["Scaffold", "Draft", "Final", "Published"].includes(state))
+      throw new StoreError("state must be Scaffold, Draft, Final, or Published");
     for (const card of cards)
       for (const [field, value] of [
         ["visual", card.visual],
@@ -241,11 +416,15 @@ export class Store {
           if (asset.duration != null && value.out > asset.duration + 0.001)
             throw new StoreError(`${field} range exceeds source duration`);
         }
+    for (const card of cards)
+      if (card.sectionId && !this.db.prepare("SELECT 1 FROM story_sections WHERE id=? AND episode_id=? AND retired_at IS NULL").get(card.sectionId, episodeId))
+        throw new StoreError(`Story section not found for this episode: ${card.sectionId}`);
     const next = {
       ...current,
       title: changes.title == null ? current.title : String(changes.title),
       notes: changes.notes == null ? current.notes : String(changes.notes),
       cards,
+      state,
       revision: current.revision + 1,
       updatedAt: now(),
     };
@@ -253,11 +432,12 @@ export class Store {
     try {
       const result = this.db
         .prepare(
-          "UPDATE episodes SET title=?,notes=?,revision=?,cards=?,updated_at=? WHERE id=? AND revision=?",
+          "UPDATE episodes SET title=?,notes=?,state=?,revision=?,cards=?,updated_at=? WHERE id=? AND revision=?",
         )
         .run(
           next.title,
           next.notes,
+          next.state,
           next.revision,
           JSON.stringify(next.cards),
           next.updatedAt,
@@ -319,6 +499,132 @@ export class Store {
         "SELECT revision,actor,created_at AS createdAt,title FROM episode_history WHERE episode_id=? ORDER BY revision DESC",
       )
       .all(episodeId);
+  }
+  listEpisodeLibrary(episodeId) {
+    if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
+    return this.db.prepare(`SELECT l.episode_id AS episodeId,l.asset_id AS assetId,l.category,l.created_at AS createdAt
+      FROM episode_library l WHERE l.episode_id=? ORDER BY l.created_at,l.asset_id`).all(episodeId);
+  }
+  getStory(episodeId) {
+    if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
+    const story = storyRow(this.db.prepare("SELECT * FROM stories WHERE episode_id=?").get(episodeId));
+    if (!story) throw new StoreError("Story not found", 404);
+    const file = path.join(this.episodeDirectory(episodeId), "story.md");
+    if (existsSync(file) && lstatSync(file).isSymbolicLink())
+      throw new StoreError("Registered story file cannot be a symbolic link", 403);
+    if (existsSync(file) && story.publishedHash) {
+      const fileHash = hash(readFileSync(file));
+      if (fileHash !== story.publishedHash && !(story.publicationPending && fileHash === story.committedHash))
+        return { ...story, publicationStatus: "external-conflict", externalConflict: true };
+    }
+    return story;
+  }
+  saveStory(episodeId, expectedStoryRevision, source, actor = "human") {
+    const current = this.getStory(episodeId);
+    if (!Number.isInteger(expectedStoryRevision) || expectedStoryRevision !== current.storyRevision)
+      throw new StoreError(`Stale story revision: expected ${current.storyRevision}`, 409, { current });
+    const normalized = normalizeStory(source, current.sections);
+    for (const section of normalized.sections) {
+      const owner = this.db.prepare("SELECT episode_id FROM story_sections WHERE id=?").get(section.id);
+      if (owner && owner.episode_id !== episodeId)
+        throw new StoreError(`Story section id belongs to another episode: ${section.id}`);
+    }
+    const stamp = now();
+    const nextRevision = current.storyRevision + 1;
+    let unassignedCardIds = [];
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const episode = this.getEpisode(episodeId);
+      const cards = episode.cards.map((card) => {
+        if (card.sectionId && normalized.retiredSectionIds.includes(card.sectionId)) {
+          unassignedCardIds.push(card.id);
+          return { ...card, sectionId: null };
+        }
+        return card;
+      });
+      this.db.prepare("UPDATE story_sections SET retired_at=? WHERE episode_id=? AND retired_at IS NULL").run(stamp, episodeId);
+      const upsert = this.db.prepare(`INSERT INTO story_sections(id,episode_id,title,sort_order,retired_at) VALUES(?,?,?,?,NULL)
+        ON CONFLICT(id) DO UPDATE SET title=excluded.title,sort_order=excluded.sort_order,retired_at=NULL`);
+      for (const section of normalized.sections)
+        upsert.run(section.id, episodeId, section.title, section.order);
+      this.db.prepare(`UPDATE stories SET source=?,revision=?,sections=?,publication_pending=1,committed_hash=?,updated_at=?
+        WHERE episode_id=? AND revision=?`).run(normalized.source, nextRevision, JSON.stringify(normalized.sections), hash(normalized.source), stamp, episodeId, expectedStoryRevision);
+      this.db.prepare("INSERT INTO story_history(episode_id,revision,source,sections,actor,created_at) VALUES(?,?,?,?,?,?)")
+        .run(episodeId, nextRevision, normalized.source, JSON.stringify(normalized.sections), actor, stamp);
+      if (unassignedCardIds.length) {
+        const boardRevision = episode.revision + 1;
+        this.db.prepare("UPDATE episodes SET cards=?,revision=?,updated_at=? WHERE id=? AND revision=?")
+          .run(JSON.stringify(cards), boardRevision, stamp, episodeId, episode.revision);
+        this.db.prepare("INSERT INTO episode_history(episode_id,revision,title,notes,cards,actor,created_at,parent_revision) VALUES(?,?,?,?,?,?,?,?)")
+          .run(episodeId, boardRevision, episode.title, episode.notes, JSON.stringify(cards), "story", stamp, episode.revision);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    try {
+      const published = this.publishStory(episodeId);
+      return { ...published, mappingChanges: { retiredSectionIds: normalized.retiredSectionIds, unassignedCardIds } };
+    } catch (error) {
+      if (error.statusCode === 409) throw error;
+      const committed = this.getStory(episodeId);
+      throw new StoreError("Story was committed but file publication is pending", 503, { committed, cause: error });
+    }
+  }
+  publishStory(episodeId) {
+    const story = storyRow(this.db.prepare("SELECT * FROM stories WHERE episode_id=?").get(episodeId));
+    if (!story) throw new StoreError("Story not found", 404);
+    if (!story.publicationPending) return story;
+    this.ensureEpisodeDirectories(episodeId);
+    const folder = this.episodeDirectory(episodeId);
+    const file = path.join(folder, "story.md");
+    let fileHash = null;
+    if (existsSync(file)) {
+      if (lstatSync(file).isSymbolicLink())
+        throw new StoreError("Registered story file cannot be a symbolic link", 403);
+      fileHash = hash(readFileSync(file));
+    }
+    if (fileHash === story.committedHash) {
+      this.db.prepare("UPDATE stories SET publication_pending=0,published_hash=? WHERE episode_id=? AND revision=?")
+        .run(story.committedHash, episodeId, story.storyRevision);
+      return this.getStory(episodeId);
+    }
+    if (fileHash && story.publishedHash && fileHash !== story.publishedHash) {
+      const conflict = path.join(folder, "conflicts", `story-${Date.now()}.md`);
+      copyFileSync(file, conflict);
+      throw new StoreError("The registered story file changed outside Storybench; it was preserved as a conflict artifact", 409, { conflictPath: path.relative(this.workspace, conflict) });
+    }
+    const temporary = path.join(folder, `.story-${crypto.randomUUID()}.tmp`);
+    try {
+      this.beforeStoryPublish?.({ episodeId, story, file, temporary });
+      const descriptor = openSync(temporary, "wx");
+      try {
+        writeFileSync(descriptor, story.source, { encoding: "utf8" });
+        fsyncSync(descriptor);
+      } finally {
+        closeSync(descriptor);
+      }
+      renameSync(temporary, file);
+      this.afterStoryRename?.({ episodeId, story, file });
+    } finally {
+      if (existsSync(temporary)) unlinkSync(temporary);
+    }
+    this.db.prepare("UPDATE stories SET publication_pending=0,published_hash=? WHERE episode_id=? AND revision=?")
+      .run(story.committedHash, episodeId, story.storyRevision);
+    return this.getStory(episodeId);
+  }
+  recoverPendingStories() {
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='stories'").get()) return [];
+    const outcomes = [];
+    for (const row of this.db.prepare("SELECT episode_id FROM stories WHERE publication_pending=1").all()) {
+      try {
+        outcomes.push({ episodeId: row.episode_id, recovered: true, story: this.publishStory(row.episode_id) });
+      } catch (error) {
+        outcomes.push({ episodeId: row.episode_id, recovered: false, error });
+      }
+    }
+    return outcomes;
   }
   listAssets() {
     return this.db

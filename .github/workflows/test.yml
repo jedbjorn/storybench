@@ -6,7 +6,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 24 }
+        with:
+          node-version: 24
+          cache: npm
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: npm ci
       - run: npm run lint
       - run: npm test
