@@ -99,3 +99,22 @@ test("graphic output registers once and never overwrites a card changed during r
   assert.equal(graphics.length, 1);
   await access(path.join(value.workspace, completed.outputPath));
 });
+
+test("graphic database publication rolls back before deleting a failed output", async (t) => {
+  const workspace = await mkdtemp(path.join(tmpdir(), "storybench-graphic-rollback-"));
+  const store = new Store(workspace, { beforeGraphicMembership: () => { throw new Error("injected membership failure"); } });
+  const episode = store.createEpisode({ title: "Rollback" });
+  const renders = createRenderService({ workspace, store, validateGraphicRecipe: (recipe) => structuredClone(recipe),
+    renderGraphic: async ({ outputPath }) => { await writeFile(outputPath, "staged graphic"); return { path: outputPath, kind: "image", width: 10, height: 10, metadata: { frames: 1 } }; } });
+  t.after(async () => { await renders.close(); store.close(); await rm(workspace, { recursive: true, force: true }); });
+  const recipe = renders.createGraphicRecipe(episode.id, { name: "Rollback",
+    recipe: { kind: "still", width: 10, height: 10, layers: [] } });
+  const job = renders.enqueueGraphic({ episodeId: episode.id, recipeId: recipe.id, expectedRecipeRevision: 1 });
+  const failed = await waitFor(store, job.id);
+  assert.equal(failed.state, "failed");
+  assert.match(failed.error, /injected membership failure/);
+  assert.deepEqual(store.listAssets(), []);
+  assert.deepEqual(store.listEpisodeLibrary(episode.id), []);
+  const graphicsDir = path.join(workspace, "episodes", episode.id, "graphics");
+  assert.deepEqual(await import("node:fs/promises").then(({ readdir }) => readdir(graphicsDir)), []);
+});

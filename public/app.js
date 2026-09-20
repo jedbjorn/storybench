@@ -428,7 +428,7 @@ $("#graphicForm").onsubmit = async (event) => {
   const form = event.currentTarget, kind = form.elements.kind.value;
   const duration = Number(form.elements.duration.value);
   const layer = { kind: "text", text: form.elements.text.value, x: 640, y: 360, fontSize: 64,
-    fill: form.elements.fill.value, opacity: 1, z: 0,
+    fill: form.elements.fill.value, textAnchor: "middle", opacity: 1, z: 0,
     ...(kind === "motion" ? { keyframes: { opacity: [{ time: 0, value: 0, easing: "linear" }, { time: duration, value: 1, easing: "linear" }] } } : {}) };
   const recipe = { kind, width: 1280, height: 720, background: form.elements.background.value, layers: [layer],
     ...(kind === "motion" ? { duration, fps: 30 } : {}) };
@@ -441,7 +441,7 @@ $("#graphicForm").onsubmit = async (event) => {
     $("#graphicModal").close(); toast("Graphic queued"); await load(episode.id);
   } catch (error) { form.querySelector("[data-graphic-error]").textContent = error.message; }
 };
-setInterval(() => {
+setInterval(async () => {
   if (
     episode &&
     !["INPUT", "TEXTAREA", "SELECT"].includes(
@@ -449,7 +449,10 @@ setInterval(() => {
     ) &&
     state.jobs.some((j) => ["queued", "running"].includes(j.state))
   )
-    load(episode.id);
+    try {
+      await load(episode.id);
+      if (!$("#boardPanel").hidden) await loadBoardContext();
+    } catch (error) { toast(error.message); }
 }, 1800);
 function drawChat(s) {
   $("#chatStatus").textContent = s.error || s.state || "Ready";

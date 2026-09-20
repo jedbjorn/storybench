@@ -256,11 +256,12 @@ function graphicRecipeRow(row) {
 }
 
 export class Store {
-  constructor(workspace, { afterMigrationCommit, beforeStoryPublish, afterStoryRename } = {}) {
+  constructor(workspace, { afterMigrationCommit, beforeStoryPublish, afterStoryRename, beforeGraphicMembership } = {}) {
     this.workspace = path.resolve(workspace);
     this.afterMigrationCommit = afterMigrationCommit;
     this.beforeStoryPublish = beforeStoryPublish;
     this.afterStoryRename = afterStoryRename;
+    this.beforeGraphicMembership = beforeGraphicMembership;
     for (const dir of ["", "media", "cache", "exports", "imports", "branding/assets"])
       mkdirSync(path.join(this.workspace, dir), { recursive: true });
     const databasePath = path.join(this.workspace, "storybench.sqlite");
@@ -982,6 +983,50 @@ export class Store {
         value.createdAt,
       );
     return this.getAsset(value.id);
+  }
+  publishGraphicOutput(episodeId, candidate, { recipeId, recipeRevision, jobId, label, targetCard = null, expectedEpisodeRevision }) {
+    const episode = this.getEpisode(episodeId);
+    if (!episode) throw new StoreError("Episode not found", 404);
+    const stamp = now();
+    let assetId, itemId, appliedToCard = false, applyNote = null;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const existingAsset = this.db.prepare("SELECT id FROM assets WHERE hash=?").get(candidate.hash);
+      assetId = existingAsset?.id || candidate.id || id("asset");
+      if (!existingAsset) this.db.prepare("INSERT INTO assets VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(
+        assetId, candidate.name, candidate.hash, candidate.kind, candidate.path, candidate.duration ?? null,
+        candidate.width ?? null, candidate.height ?? null, JSON.stringify(candidate.metadata || {}),
+        candidate.thumbnailPath ?? null, candidate.createdAt || stamp,
+      );
+      this.beforeGraphicMembership?.();
+      const existingItem = this.db.prepare("SELECT id,provenance FROM library_items WHERE episode_id=? AND asset_id=?").all(episodeId, assetId)
+        .find((row) => { const provenance = parse(row.provenance, {}); return provenance.recipeId === recipeId && provenance.recipeRevision === recipeRevision; });
+      itemId = existingItem?.id || id("library");
+      if (!existingItem) this.db.prepare(`INSERT INTO library_items(
+        id,episode_id,asset_id,category,label,tags,notes,section_id,source_kind,source_url,
+        extracted_text,extraction_status,provenance,revision,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        itemId, episodeId, assetId, "Graphics", String(label || candidate.name), "[]", "", null, "graphic", null,
+        "", "not-applicable", JSON.stringify({ recipeId, recipeRevision, jobId }), 1, stamp, stamp,
+      );
+      const current = episodeRow(this.db.prepare("SELECT * FROM episodes WHERE id=?").get(episodeId));
+      const card = targetCard && current.cards.find((value) => value.id === targetCard.id);
+      const unchanged = targetCard && current.revision === expectedEpisodeRevision && card &&
+        card.type === targetCard.type && card.itemId === targetCard.itemId;
+      if (unchanged) {
+        const cards = validateCards(current.cards.map((value) => value.id === card.id ? { ...value, itemId,
+          type: candidate.kind === "image" ? "Static Graphic" : "Video Graphic" } : value));
+        const revision = current.revision + 1;
+        this.db.prepare("UPDATE episodes SET cards=?,revision=?,updated_at=? WHERE id=? AND revision=?")
+          .run(JSON.stringify(cards), revision, stamp, episodeId, current.revision);
+        this.db.prepare(`INSERT INTO episode_history(
+          episode_id,revision,title,notes,cards,actor,created_at,parent_revision
+        ) VALUES(?,?,?,?,?,?,?,?)`).run(episodeId, revision, current.title, current.notes, JSON.stringify(cards), "graphic", stamp, current.revision);
+        appliedToCard = true;
+      } else if (targetCard) applyNote = "Graphic registered in the library; the target card changed while rendering and was not overwritten";
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    return { asset: this.getAsset(assetId), item: this.getLibraryItem(episodeId, itemId), appliedToCard, applyNote };
   }
   listGraphicRecipes(episodeId) {
     return this.db.prepare(`SELECT g.*,r.recipe FROM graphic_recipes g

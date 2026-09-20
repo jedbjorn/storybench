@@ -169,28 +169,15 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
         if (signal.aborted) throw signal.reason || new DOMException("Job cancelled", "AbortError");
         const bytes = await readFile(inside(root, result.path || outputPath));
         const hash = createHash("sha256").update(bytes).digest("hex");
-        const asset = store.saveAsset({ name: `${recipe.name}.${extension}`, hash, kind: result.kind,
+        const publishedOutput = store.publishGraphicOutput(episodeId, { name: `${recipe.name}.${extension}`, hash, kind: result.kind,
           path: path.relative(root, result.path || outputPath), width: result.width, height: result.height,
-          duration: result.duration ?? null, metadata: { ...result.metadata, graphicRecipeId: recipe.id, graphicRecipeRevision: recipe.revision } });
+          duration: result.duration ?? null, metadata: { ...result.metadata, graphicRecipeId: recipe.id, graphicRecipeRevision: recipe.revision } },
+        { recipeId: recipe.id, recipeRevision: recipe.revision, jobId: value.id, label: recipe.name,
+          targetCard: snapshot.targetCard, expectedEpisodeRevision: snapshot.episodeRevision });
+        const { asset, item, appliedToCard, applyNote } = publishedOutput;
         if (path.resolve(root, asset.path) !== path.resolve(result.path || outputPath))
           await rm(outputPath, { force: true });
-        let item = store.listEpisodeLibrary(episodeId).find((candidate) => candidate.provenance?.recipeId === recipe.id && candidate.provenance?.recipeRevision === recipe.revision);
-        if (!item) item = store.attachLibraryItem(episodeId, asset.id, { category: "Graphics", label: recipe.name,
-          sourceKind: "graphic", provenance: { recipeId: recipe.id, recipeRevision: recipe.revision, jobId: value.id } });
         published = true;
-        let appliedToCard = false, applyNote = null;
-        if (recipe.cardId && snapshot.targetCard) {
-          const latest = store.getEpisode(episodeId);
-          const currentCard = latest.cards.find((card) => card.id === recipe.cardId);
-          const unchanged = latest.revision === snapshot.episodeRevision && currentCard &&
-            currentCard.type === snapshot.targetCard.type && currentCard.itemId === snapshot.targetCard.itemId;
-          if (unchanged) {
-            const cards = latest.cards.map((card) => card.id === recipe.cardId ? { ...card, itemId: item.id,
-              type: recipe.kind === "still" ? "Static Graphic" : "Video Graphic" } : card);
-            store.updateEpisode(episodeId, latest.revision, { cards }, "graphic");
-            appliedToCard = true;
-          } else applyNote = "Graphic registered in the library; the target card changed while rendering and was not overwritten";
-        }
         store.saveJob({ ...current, state: "completed", progress: 1, outputPath: asset.path, error: null,
           snapshot: { ...current.snapshot, libraryItemId: item.id, assetId: asset.id, appliedToCard, applyNote } });
       } catch (error) {
