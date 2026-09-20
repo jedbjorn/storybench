@@ -132,6 +132,9 @@ export function validateCards(cards) {
     const referenceItemIds = card.referenceItemIds == null ? [] : card.referenceItemIds;
     if (!Array.isArray(referenceItemIds) || referenceItemIds.some((value) => typeof value !== "string"))
       throw new StoreError("card referenceItemIds must be an array of strings");
+    const referenceUrls = card.referenceUrls == null ? [] : card.referenceUrls;
+    if (!Array.isArray(referenceUrls) || referenceUrls.some((value) => typeof value !== "string"))
+      throw new StoreError("card referenceUrls must be an array of strings");
     return {
       id: cardId,
       title: String(card.title ?? ""),
@@ -150,6 +153,7 @@ export function validateCards(cards) {
       order: Number.isFinite(card.order) ? Number(card.order) : 0,
       itemId: card.itemId == null || card.itemId === "" ? null : String(card.itemId),
       referenceItemIds: [...new Set(referenceItemIds)],
+      referenceUrls: [...new Set(referenceUrls)],
       enabled: card.enabled !== false,
       excluded: Boolean(card.excluded),
       role: card.role == null ? null : String(card.role),
@@ -501,6 +505,13 @@ export class Store {
         if (!libraryById.has(itemId)) throw new StoreError(`Library item not found for this episode: ${itemId}`);
       if (card.type === "Audio" && card.anchorVisualCardId && !cardIds.has(card.anchorVisualCardId))
         throw new StoreError(`Audio anchor card not found: ${card.anchorVisualCardId}`);
+      const selected = card.itemId ? libraryById.get(card.itemId) : null;
+      if (selected) {
+        const kind = selected.asset.kind;
+        if (card.type === "Static Graphic" && kind !== "image") throw new StoreError("Static Graphic requires an image library item");
+        if (["Video", "Video/Audio", "Video Graphic"].includes(card.type) && kind !== "video") throw new StoreError(`${card.type} requires a video library item`);
+        if (card.type === "Audio" && !(kind === "audio" || (kind === "video" && selected.asset.metadata?.hasAudio))) throw new StoreError("Audio requires an audio-bearing library item");
+      }
       if (card.role && !["voiceover", "music", "sound effect", "other"].includes(card.role))
         throw new StoreError("audio role is invalid");
       for (const key of ["in", "out", "offset", "gain", "fadeIn", "fadeOut"])
