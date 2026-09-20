@@ -351,6 +351,11 @@ export class Store {
         id,episode_id,asset_id,category,label,source_kind,created_at,updated_at
       ) SELECT 'library_' || lower(hex(randomblob(16))),l.episode_id,l.asset_id,l.category,a.name,'file',l.created_at,l.created_at
         FROM episode_library l JOIN assets a ON a.id=l.asset_id`).run();
+      for (const row of this.db.prepare("SELECT id,cards FROM episodes").all()) {
+        const legacy = parse(row.cards, []);
+        if (!legacy.some((card) => !card.type && (card.visual || card.narration))) continue;
+        this.db.prepare("UPDATE episodes SET cards=? WHERE id=?").run(JSON.stringify(this.normalizeLegacyCards(row.id, legacy)), row.id);
+      }
       this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(4,?)").run(stamp);
       this.db.exec("PRAGMA user_version=4; COMMIT");
     } catch (error) {
@@ -455,7 +460,10 @@ export class Store {
     }
     this.ensureEpisodeDirectories(episode.id);
     this.publishStory(episode.id);
-    for (const template of this.listBrandingTemplates().filter((value) => value.role))
+    const standards = this.listBrandingTemplates().filter((value) => value.role);
+    if (standards.length)
+      this.saveStory(episode.id, 1, "# Overview\n\n# Hook\n\n# Sections\n\n## Intro\n\n## Outro\n", "branding-standard");
+    for (const template of standards)
       this.applyBrandingTemplate(episode.id, template.id, { automatic: true });
     return this.getEpisode(episode.id);
   }
@@ -586,7 +594,7 @@ export class Store {
     return this.updateEpisode(
       episodeId,
       expectedRevision,
-      { title: prior.title, notes: prior.notes, cards: parse(prior.cards, []) },
+      { title: prior.title, notes: prior.notes, cards: this.normalizeLegacyCards(episodeId, parse(prior.cards, [])) },
       "undo",
       prior.parent_revision,
     );
@@ -606,6 +614,29 @@ export class Store {
       WHERE l.episode_id=? ORDER BY l.created_at,l.id`).all(episodeId).map((row) =>
         libraryItemRow({ ...row, id: row.id, created_at: row.created_at })
       );
+  }
+  normalizeLegacyCards(episodeId, cards) {
+    const findMembership = this.db.prepare("SELECT id FROM library_items WHERE episode_id=? AND asset_id=? ORDER BY created_at,id LIMIT 1");
+    const converted = [];
+    for (let order = 0; order < cards.length; order++) {
+      const card = cards[order];
+      if (card.type || (!card.visual && !card.narration)) { converted.push(card); continue; }
+      const common = { ...card, prompt: card.purpose || "", referenceItemIds: [], referenceUrls: [], enabled: true, excluded: false, order };
+      if (card.visual) {
+        const asset = this.getAsset(card.visual.assetId);
+        converted.push({ ...common, type: asset?.kind === "image" ? "Static Graphic" : "Video/Audio",
+          itemId: findMembership.get(episodeId, card.visual.assetId)?.id || null,
+          in: card.visual.in, out: card.visual.out, gain: card.visual.gain, offset: 0,
+          duration: card.duration ?? (asset?.kind === "image" ? card.visual.out - card.visual.in : null) });
+      }
+      if (card.narration) converted.push({ ...common, id: card.visual ? `${card.id}__audio` : card.id,
+        title: card.visual ? `${card.title || "Card"} audio` : card.title, type: "Audio",
+        itemId: findMembership.get(episodeId, card.narration.assetId)?.id || null,
+        role: "voiceover", anchorVisualCardId: card.visual ? card.id : null,
+        in: card.narration.in, out: card.narration.out, offset: card.narration.offset, gain: card.narration.gain,
+        duration: null, visual: null, narration: card.narration, order: order + 0.5 });
+    }
+    return converted;
   }
   getLibraryItem(episodeId, itemId) {
     if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
@@ -729,11 +760,12 @@ export class Store {
         createdItemIds.push(item.id); itemMap.set(dependency.sourceItemId, item.id);
       }
       const source = template.card;
+      const intendedSectionTitle = template.role === "intro" ? "Intro" : template.role === "outro" ? "Outro" : source.intendedSectionTitle;
+      const sectionId = intendedSectionTitle ? this.getStory(episodeId).sections.find((section) => section.title.trim().toLowerCase() === intendedSectionTitle.trim().toLowerCase())?.id || null : null;
       const card = { ...structuredClone(source), id: id("card"), brandingTemplateId: templateId,
         itemId: source.itemId ? itemMap.get(source.itemId) || null : null,
         referenceItemIds: (source.referenceItemIds || []).map((value) => itemMap.get(value)).filter(Boolean),
-        anchorVisualCardId: null, sectionId: null,
-        intendedSectionTitle: template.role === "intro" ? "Intro" : template.role === "outro" ? "Outro" : source.intendedSectionTitle };
+        anchorVisualCardId: null, sectionId, intendedSectionTitle };
       episode = this.updateEpisode(episodeId, episode.revision, { cards: [...episode.cards, card] }, automatic ? "branding-standard" : "branding");
       return episode;
     } catch (error) {

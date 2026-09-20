@@ -5,6 +5,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import crypto from "node:crypto";
 import { Store } from "../src/store.js";
+import { buildRenderPlan } from "../src/composition-plan.js";
 
 test("promotion preserves source and standards create editable fresh copies once", async (t) => {
   const workspace = await mkdtemp(path.join(tmpdir(), "storybench-branding-"));
@@ -35,12 +36,39 @@ test("promotion preserves source and standards create editable fresh copies once
   assert.equal(targetItems.length, 1);
   assert.notEqual(targetItems[0].id, item.id);
   assert.equal(targetItems[0].assetId, item.assetId);
+  assert.equal(store.getStory(target.id).sections.find((section) => section.id === target.cards[0].sectionId).title, "Intro");
   assert.equal(store.applyBrandingTemplate(target.id, template.id, { automatic: true }).cards.length, 1, "reopen does not duplicate standard");
-
-  const story = store.getStory(target.id);
-  store.saveStory(target.id, story.storyRevision, "# Sections\n\n## Intro\n\n## Outro");
-  assert.equal(store.getEpisode(target.id).cards[0].sectionId, store.getStory(target.id).sections[0].id);
   assert.equal(updated.cards[0].title, "Intro");
+});
+
+test("v3 migration splits legacy visual and narration into a valid anchored plan", async (t) => {
+  const workspace = await mkdtemp(path.join(tmpdir(), "storybench-card-migration-"));
+  let store = new Store(workspace);
+  t.after(async () => { store.close(); await rm(workspace, { recursive: true, force: true }); });
+  const episode = store.createEpisode({ title: "Legacy" });
+  const story = store.saveStory(episode.id, 1, "# Sections\n\n## Body");
+  const video = store.saveAsset({ name: "video", hash: "video-hash", kind: "video", path: "media/video", duration: 5, metadata: { hasAudio: true } });
+  const audio = store.saveAsset({ name: "audio", hash: "audio-hash", kind: "audio", path: "media/audio", duration: 4, metadata: { hasAudio: true } });
+  const videoItem = store.attachLibraryItem(episode.id, video.id, { category: "B-roll" });
+  const audioItem = store.attachLibraryItem(episode.id, audio.id, { category: "Narration" });
+  const legacy = [{ id: "legacy-card", title: "Legacy scene", purpose: "Keep timing", notes: "", missing: "", sectionId: story.sections[0].id, duration: null,
+    visual: { assetId: video.id, in: 0, out: 5, offset: 0, gain: 0.7 }, narration: { assetId: audio.id, in: 1, out: 3, offset: 1, gain: 0.4 } }];
+  store.db.prepare("UPDATE episodes SET cards=? WHERE id=?").run(JSON.stringify(legacy), episode.id);
+  store.db.exec("PRAGMA user_version=3");
+  store.close();
+  store = new Store(workspace);
+  const migrated = store.getEpisode(episode.id).cards;
+  assert.equal(migrated.length, 2);
+  assert.equal(migrated[0].id, "legacy-card");
+  assert.equal(migrated[0].itemId, videoItem.id);
+  assert.equal(migrated[1].id, "legacy-card__audio");
+  assert.equal(migrated[1].itemId, audioItem.id);
+  assert.equal(migrated[1].anchorVisualCardId, "legacy-card");
+  assert.equal(migrated[1].offset, 1);
+  assert.equal(migrated[1].gain, 0.4);
+  const plan = buildRenderPlan({ sections: store.getStory(episode.id).sections, cards: migrated, libraryItems: store.listEpisodeLibrary(episode.id) });
+  assert.equal(plan.audioPlacements[0].startFrame, 30);
+  assert.equal(plan.audioPlacements[0].sourceInFrame, 30);
 });
 
 test("changing standards affects later episodes without rewriting existing copies", async (t) => {
