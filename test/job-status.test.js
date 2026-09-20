@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
-import { refreshJobStatus, renderJobList } from "../public/job-status.js";
+import { jobsForOutputView, refreshJobStatus, renderJobList } from "../public/job-status.js";
 
 test("job refresh uses server status without clobbering concurrent local episode drafts", async () => {
   let release;
@@ -43,5 +43,21 @@ test("job updates preserve completed playback across stale and sibling refreshes
   assert.equal(container.querySelector('[data-job-id="active"]'), activeRow);
   assert.match(container.querySelector('[data-job-id="active"]').textContent, /60%/);
   assert.equal(rowMoves, 0);
+  dom.window.close();
+});
+
+test("output views separate final cuts while keeping graphics operable in Drafts", () => {
+  const draft = { id: "draft", outputClass: "draft", state: "completed" };
+  const final = { id: "final", outputClass: "final", state: "completed" };
+  const graphic = { id: "graphic", kind: "graphic", outputClass: null, state: "running", progress: 0.5, revision: 1 };
+  assert.deepEqual(jobsForOutputView([draft, final, graphic], "draft"), [draft, graphic]);
+  assert.deepEqual(jobsForOutputView([draft, final, graphic], "final"), [final]);
+
+  const dom = new JSDOM('<div id="drafts"></div><div id="finals"></div>');
+  const drafts = dom.window.document.querySelector("#drafts");
+  const finals = dom.window.document.querySelector("#finals");
+  renderJobList(drafts, [draft, graphic]); renderJobList(finals, [final]);
+  assert.equal(drafts.querySelector('[data-cancel-job="graphic"]')?.textContent, "Cancel");
+  assert.equal(finals.querySelector('[data-job-id="graphic"]'), null);
   dom.window.close();
 });

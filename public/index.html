@@ -58,14 +58,17 @@
             </div>
           </div>
           <div class="tabs">
-            <button data-tab="story" class="active">Story</button
-            ><button data-tab="board">Storyboard</button
-            ><button data-tab="media">Media library</button
-            ><button data-tab="exports">
-              Renders <span id="jobCount"></span>
+            <button data-tab="board" class="active">Storyboard</button
+            ><button data-tab="story">Story.md</button
+            ><button data-tab="media">Media Library</button
+            ><button data-tab="drafts">
+              Drafts <span id="draftJobCount"></span>
+            </button
+            ><button data-tab="final">
+              Final <span id="finalJobCount"></span>
             </button>
           </div>
-          <div id="storyPanel" class="story-surface">
+          <div id="storyPanel" class="story-surface" hidden>
             <div data-story-reading>
               <div class="panel-heading"><div><h2>Story</h2><p>The saved Markdown used by Storybench and episode chats.</p></div><div><button data-story-start>Start with outline</button> <button data-story-edit>Edit story</button></div></div>
               <div class="story-mapping-changes" data-story-mapping-changes role="status" hidden></div>
@@ -84,7 +87,7 @@
               <div class="story-leave" data-story-leave hidden><strong>Save story changes before leaving?</strong><div><button data-leave-stay>Stay</button><button data-leave-discard>Discard</button><button data-leave-save class="primary">Save</button></div></div>
             </div>
           </div>
-          <div id="boardPanel" hidden>
+          <div id="boardPanel">
             <div class="panel-heading">
               <div>
                 <h2>Story cards</h2>
@@ -99,14 +102,23 @@
             <div id="libraryProgress" class="library-progress" aria-live="polite"></div>
             <div id="libraryGroups"></div>
           </div>
-          <div id="exportsPanel" hidden>
+          <div id="draftsPanel" hidden>
             <div class="panel-heading">
               <div>
-                <h2>Renders</h2>
-                <p>Preview and export use the same timing plan.</p>
+                <h2>Drafts</h2>
+                <p>Draft outputs, graphics, and active production jobs.</p>
               </div>
             </div>
-            <div id="jobs"></div>
+            <div id="draftJobs" data-jobs-list></div>
+          </div>
+          <div id="finalPanel" hidden>
+            <div class="panel-heading">
+              <div>
+                <h2>Final</h2>
+                <p>Human-authorized final outputs stay immutable here.</p>
+              </div>
+            </div>
+            <div id="finalJobs" data-jobs-list></div>
           </div>
         </div>
       </section>

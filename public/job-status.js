@@ -3,6 +3,11 @@ export async function refreshJobStatus(api, getCurrentState) {
   return { ...getCurrentState(), jobs: incoming.jobs };
 }
 
+export function jobsForOutputView(jobs, view) {
+  if (view === "final") return jobs.filter((job) => job.outputClass === "final");
+  return jobs.filter((job) => job.outputClass !== "final");
+}
+
 function jobTitle(job) {
   const completedOutput = job.state === "completed" && ["draft", "final"].includes(job.outputClass);
   return completedOutput

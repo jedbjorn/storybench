@@ -2,7 +2,7 @@ import { StoryEditor } from "/story-editor.js?v=round2-editor";
 import { LibraryWorkspace, episodeNavigatorHTML } from "/library-workspace.js";
 import { setCardType } from "/card-workspace.js";
 import { ChatWorkspace } from "/chat-workspace.js";
-import { refreshJobStatus, renderJobList } from "/job-status.js";
+import { jobsForOutputView, refreshJobStatus, renderJobList } from "/job-status.js";
 
 const $ = (s) => document.querySelector(s);
 let state = { episodes: [], assets: [], jobs: [] },
@@ -53,6 +53,7 @@ async function load(select) {
     episode = state.episodes.find((e) => e.id === episode.id) || null;
   render();
   await syncChat();
+  if (episode && !$("#boardPanel").hidden) await loadBoardContext();
 }
 function render() {
   const filter = $("#episodeFilter").value;
@@ -72,13 +73,14 @@ function render() {
 }
 function renderJobs() {
   if (!episode) return;
-  $("#jobCount").textContent =
-    state.jobs.filter(
-      (j) =>
-        j.episodeId === episode.id && ["queued", "running"].includes(j.state),
-    ).length || "";
-  const jobs = state.jobs.filter((j) => j.episodeId === episode.id);
-  renderJobList($("#jobs"), jobs);
+  const episodeJobs = state.jobs.filter((job) => job.episodeId === episode.id);
+  const drafts = jobsForOutputView(episodeJobs, "draft");
+  const finals = jobsForOutputView(episodeJobs, "final");
+  const activeCount = (jobs) => jobs.filter((job) => ["queued", "running"].includes(job.state)).length || "";
+  $("#draftJobCount").textContent = activeCount(drafts);
+  $("#finalJobCount").textContent = activeCount(finals);
+  renderJobList($("#draftJobs"), drafts);
+  renderJobList($("#finalJobs"), finals);
 }
 
 async function refreshJobs(target = episode?.id) {
@@ -388,14 +390,14 @@ $("#undo").onclick = async () => {
     toast(e.message);
   }
 };
-document.querySelectorAll(".tabs > button").forEach(
-  (b) =>
-    (b.onclick = async () => {
-      if (b.dataset.tab !== "story" && !(await leaveStory())) return;
+async function showTab(tab, { confirmStory = true } = {}) {
+      const b = document.querySelector(`.tabs > button[data-tab="${tab}"]`);
+      if (!b) return;
+      if (confirmStory && b.dataset.tab !== "story" && !(await leaveStory())) return;
       document
         .querySelectorAll(".tabs > button")
         .forEach((x) => x.classList.toggle("active", x === b));
-      ["story", "board", "media", "exports"].forEach(
+      ["story", "board", "media", "drafts", "final"].forEach(
         (x) => ($(`#${x}Panel`).hidden = b.dataset.tab !== x),
       );
       if (b.dataset.tab === "story" && episode)
@@ -404,8 +406,10 @@ document.querySelectorAll(".tabs > button").forEach(
         libraryWorkspace.open().catch((error) => toast(error.message));
       if (b.dataset.tab === "board" && episode)
         loadBoardContext().catch((error) => toast(error.message));
-    }),
-);
+}
+document.querySelectorAll(".tabs > button").forEach((button) => {
+  button.onclick = () => showTab(button.dataset.tab);
+});
 async function renderJob(kind) {
   try {
     await flushDraft();
@@ -424,18 +428,19 @@ async function renderJob(kind) {
     });
     toast(`${kind === "final" ? "Final" : "Draft"} queued`);
     await load(episode.id);
+    await showTab(kind === "final" ? "final" : "drafts", { confirmStory: false });
   } catch (e) {
     toast(e.message);
   }
 }
 $("#preview").onclick = () => renderJob("draft");
 $("#export").onclick = () => renderJob("final");
-$("#jobs").onclick = async (event) => {
+document.querySelectorAll("[data-jobs-list]").forEach((list) => list.onclick = async (event) => {
   const id = event.target.closest("[data-cancel-job]")?.dataset.cancelJob;
   if (!id || !episode) return;
   try { await api(`/api/episodes/${episode.id}/jobs/${id}/cancel`, { method: "POST", body: "{}" }); await load(episode.id); }
   catch (error) { toast(error.message); }
-};
+});
 $("#openGraphic").onclick = () => {
   if (!episode) return;
   const form = $("#graphicForm");
@@ -459,6 +464,7 @@ $("#graphicForm").onsubmit = async (event) => {
     await api(`/api/episodes/${episode.id}/graphics/${graphic.id}/render`, { method: "POST",
       body: JSON.stringify({ expectedRecipeRevision: graphic.revision }) });
     $("#graphicModal").close(); toast("Graphic queued"); await load(episode.id);
+    await showTab("drafts", { confirmStory: false });
   } catch (error) { form.querySelector("[data-graphic-error]").textContent = error.message; }
 };
 setInterval(async () => {
@@ -469,7 +475,6 @@ setInterval(async () => {
       state.jobs.some((j) => ["queued", "running"].includes(j.state))
     ) {
       await load(episode.id);
-      if (!$("#boardPanel").hidden) await loadBoardContext();
     } else await refreshJobs(episode.id);
   } catch (error) { toast(error.message); }
 }, 1800);
