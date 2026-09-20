@@ -174,6 +174,28 @@ function assetRow(row) {
     }
   );
 }
+function libraryItemRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    episodeId: row.episode_id,
+    assetId: row.asset_id,
+    category: row.category,
+    label: row.label,
+    tags: parse(row.tags, []),
+    notes: row.notes,
+    sectionId: row.section_id,
+    sourceKind: row.source_kind,
+    sourceUrl: row.source_url,
+    extractedText: row.extracted_text,
+    extractionStatus: row.extraction_status,
+    provenance: parse(row.provenance, {}),
+    revision: row.revision,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    asset: row.asset_id ? assetRow({ ...row, id: row.asset_id, created_at: row.asset_created_at }) : null,
+  };
+}
 function jobRow(row) {
   return (
     row && {
@@ -217,7 +239,7 @@ export class Store {
   }
   migrate(existingDatabase) {
     const version = Number(this.db.prepare("PRAGMA user_version").get().user_version);
-    if (version >= 2) return;
+    if (version >= 3) return;
     const hadLegacySchema = this.db
       .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='episodes'")
       .get();
@@ -240,6 +262,24 @@ export class Store {
         CREATE TABLE IF NOT EXISTS story_history (episode_id TEXT NOT NULL,revision INTEGER NOT NULL,source TEXT NOT NULL,sections TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(episode_id,revision));
         CREATE TABLE IF NOT EXISTS episode_library (episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,asset_id TEXT NOT NULL REFERENCES assets(id),category TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(episode_id,asset_id));
         CREATE TABLE IF NOT EXISTS migration_log (version INTEGER PRIMARY KEY,completed_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS library_items (
+          id TEXT PRIMARY KEY,
+          episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+          asset_id TEXT NOT NULL REFERENCES assets(id),
+          category TEXT NOT NULL,
+          label TEXT NOT NULL,
+          tags TEXT NOT NULL DEFAULT '[]',
+          notes TEXT NOT NULL DEFAULT '',
+          section_id TEXT,
+          source_kind TEXT NOT NULL DEFAULT 'file',
+          source_url TEXT,
+          extracted_text TEXT NOT NULL DEFAULT '',
+          extraction_status TEXT NOT NULL DEFAULT 'not-applicable',
+          provenance TEXT NOT NULL DEFAULT '{}',
+          revision INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
       `);
       const columns = (table) =>
         new Set(this.db.prepare(`PRAGMA table_info('${table}')`).all().map((column) => column.name));
@@ -274,8 +314,12 @@ export class Store {
       const membership = this.db.prepare("INSERT OR IGNORE INTO episode_library(episode_id,asset_id,category,created_at) VALUES(?,?,?,?)");
       for (const episode of episodes)
         for (const asset of assets) membership.run(episode.id, asset.id, category(asset.kind), stamp);
-      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(2,?)").run(stamp);
-      this.db.exec("PRAGMA user_version=2; COMMIT");
+      this.db.prepare(`INSERT OR IGNORE INTO library_items(
+        id,episode_id,asset_id,category,label,source_kind,created_at,updated_at
+      ) SELECT 'library_' || lower(hex(randomblob(16))),l.episode_id,l.asset_id,l.category,a.name,'file',l.created_at,l.created_at
+        FROM episode_library l JOIN assets a ON a.id=l.asset_id`).run();
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(3,?)").run(stamp);
+      this.db.exec("PRAGMA user_version=3; COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
@@ -502,8 +546,67 @@ export class Store {
   }
   listEpisodeLibrary(episodeId) {
     if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
-    return this.db.prepare(`SELECT l.episode_id AS episodeId,l.asset_id AS assetId,l.category,l.created_at AS createdAt
-      FROM episode_library l WHERE l.episode_id=? ORDER BY l.created_at,l.asset_id`).all(episodeId);
+    return this.db.prepare(`SELECT l.*,a.id AS id_asset,a.name,a.hash,a.kind,a.path,a.duration,a.width,a.height,
+      a.metadata,a.thumbnail_path,a.created_at AS asset_created_at
+      FROM library_items l JOIN assets a ON a.id=l.asset_id
+      WHERE l.episode_id=? ORDER BY l.created_at,l.id`).all(episodeId).map((row) =>
+        libraryItemRow({ ...row, id: row.id, created_at: row.created_at })
+      );
+  }
+  getLibraryItem(episodeId, itemId) {
+    if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
+    const row = this.db.prepare(`SELECT l.*,a.name,a.hash,a.kind,a.path,a.duration,a.width,a.height,
+      a.metadata,a.thumbnail_path,a.created_at AS asset_created_at
+      FROM library_items l JOIN assets a ON a.id=l.asset_id WHERE l.episode_id=? AND l.id=?`).get(episodeId, itemId);
+    return libraryItemRow(row);
+  }
+  attachLibraryItem(episodeId, assetId, details = {}) {
+    if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
+    const asset = this.getAsset(assetId);
+    if (!asset) throw new StoreError("Asset not found", 404);
+    const category = String(details.category || "Reference");
+    if (!["Reference", "B-roll", "Narration", "Graphics"].includes(category))
+      throw new StoreError("Unknown library category");
+    const sectionId = details.sectionId == null || details.sectionId === "" ? null : String(details.sectionId);
+    if (sectionId && !this.db.prepare("SELECT 1 FROM story_sections WHERE id=? AND episode_id=? AND retired_at IS NULL").get(sectionId, episodeId))
+      throw new StoreError("Story section not found for this episode");
+    const stamp = now();
+    const itemId = id("library");
+    this.db.prepare(`INSERT INTO library_items(
+      id,episode_id,asset_id,category,label,tags,notes,section_id,source_kind,source_url,
+      extracted_text,extraction_status,provenance,revision,created_at,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      itemId, episodeId, assetId, category, String(details.label || asset.name),
+      JSON.stringify(details.tags || []), String(details.notes || ""), sectionId,
+      String(details.sourceKind || "file"), details.sourceUrl || null,
+      String(details.extractedText || ""), String(details.extractionStatus || "not-applicable"),
+      JSON.stringify(details.provenance || {}), 1, stamp, stamp,
+    );
+    return this.getLibraryItem(episodeId, itemId);
+  }
+  updateLibraryItem(episodeId, itemId, expectedRevision, changes = {}) {
+    const current = this.getLibraryItem(episodeId, itemId);
+    if (!current) throw new StoreError("Library item not found", 404);
+    if (!Number.isInteger(expectedRevision) || expectedRevision !== current.revision)
+      throw new StoreError(`Stale library revision: expected ${current.revision}`, 409, { current });
+    const category = changes.category == null ? current.category : String(changes.category);
+    if (!["Reference", "B-roll", "Narration", "Graphics"].includes(category))
+      throw new StoreError("Unknown library category");
+    const sectionId = changes.sectionId === undefined ? current.sectionId : changes.sectionId == null || changes.sectionId === "" ? null : String(changes.sectionId);
+    if (sectionId && !this.db.prepare("SELECT 1 FROM story_sections WHERE id=? AND episode_id=? AND retired_at IS NULL").get(sectionId, episodeId))
+      throw new StoreError("Story section not found for this episode");
+    const tags = changes.tags == null ? current.tags : changes.tags;
+    if (!Array.isArray(tags) || tags.some((tag) => typeof tag !== "string"))
+      throw new StoreError("tags must be an array of strings");
+    const stamp = now();
+    const result = this.db.prepare(`UPDATE library_items SET category=?,label=?,tags=?,notes=?,section_id=?,revision=revision+1,updated_at=?
+      WHERE id=? AND episode_id=? AND revision=?`).run(
+      category, changes.label == null ? current.label : String(changes.label).trim() || current.asset.name,
+      JSON.stringify(tags.map((tag) => tag.trim()).filter(Boolean)), changes.notes == null ? current.notes : String(changes.notes),
+      sectionId, stamp, itemId, episodeId, expectedRevision,
+    );
+    if (!result.changes) throw new StoreError("Stale library revision", 409);
+    return this.getLibraryItem(episodeId, itemId);
   }
   getStory(episodeId) {
     if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
@@ -532,6 +635,7 @@ export class Store {
     const stamp = now();
     const nextRevision = current.storyRevision + 1;
     let unassignedCardIds = [];
+    let unassignedLibraryItemIds = [];
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const episode = this.getEpisode(episodeId);
@@ -543,6 +647,11 @@ export class Store {
         return card;
       });
       this.db.prepare("UPDATE story_sections SET retired_at=? WHERE episode_id=? AND retired_at IS NULL").run(stamp, episodeId);
+      if (normalized.retiredSectionIds.length) {
+        const placeholders = normalized.retiredSectionIds.map(() => "?").join(",");
+        unassignedLibraryItemIds = this.db.prepare(`SELECT id FROM library_items WHERE episode_id=? AND section_id IN (${placeholders})`).all(episodeId, ...normalized.retiredSectionIds).map((row) => row.id);
+        this.db.prepare(`UPDATE library_items SET section_id=NULL,revision=revision+1,updated_at=? WHERE episode_id=? AND section_id IN (${placeholders})`).run(stamp, episodeId, ...normalized.retiredSectionIds);
+      }
       const upsert = this.db.prepare(`INSERT INTO story_sections(id,episode_id,title,sort_order,retired_at) VALUES(?,?,?,?,NULL)
         ON CONFLICT(id) DO UPDATE SET title=excluded.title,sort_order=excluded.sort_order,retired_at=NULL`);
       for (const section of normalized.sections)
@@ -565,7 +674,7 @@ export class Store {
     }
     try {
       const published = this.publishStory(episodeId);
-      return { ...published, mappingChanges: { retiredSectionIds: normalized.retiredSectionIds, unassignedCardIds } };
+      return { ...published, mappingChanges: { retiredSectionIds: normalized.retiredSectionIds, unassignedCardIds, unassignedLibraryItemIds } };
     } catch (error) {
       if (error.statusCode === 409) throw error;
       const committed = this.getStory(episodeId);

@@ -1,4 +1,5 @@
 import { StoryEditor } from "/story-editor.js?v=round2-editor";
+import { LibraryWorkspace, episodeNavigatorHTML } from "/library-workspace.js";
 
 const $ = (s) => document.querySelector(s);
 let state = { episodes: [], assets: [], jobs: [] },
@@ -48,12 +49,11 @@ async function load(select) {
   render();
 }
 function render() {
-  $("#episodes").innerHTML = state.episodes
-    .map(
-      (e) =>
-        `<button data-id="${e.id}" class="${episode?.id === e.id ? "active" : ""}">${esc(e.title)}</button>`,
-    )
-    .join("");
+  const filter = $("#episodeFilter").value;
+  $("#episodes").innerHTML = episodeNavigatorHTML(state.episodes, filter, episode?.id);
+  const selectedHidden = episode && filter !== "All" && episode.state !== filter;
+  $("#filteredEpisodeNotice").hidden = !selectedHidden;
+  $("#filteredEpisodeNotice").innerHTML = selectedHidden ? `Current episode is in ${esc(episode.state)}. <button data-reveal-episode>Show it</button>` : "";
   $("#empty").hidden = !!episode;
   $("#editor").hidden = !episode;
   if (!episode) return;
@@ -67,13 +67,6 @@ function render() {
   $("#cards").innerHTML =
     episode.cards.map((c, i) => cardHTML(c, i)).join("") ||
     '<div class="welcome">No cards yet. Add a card to begin planning—even before media arrives.</div>';
-  $("#assets").innerHTML =
-    state.assets
-      .map(
-        (a) =>
-          `<article class="asset">${a.thumbnailPath ? `<img src="/api/assets/${a.id}/thumbnail">` : '<div style="aspect-ratio:16/9;display:grid;place-items:center;font-size:28px">♪</div>'}<div><b>${esc(a.name)}</b><span>${a.kind} · ${a.duration ? Number(a.duration).toFixed(1) + "s" : "still"}</span><a href="/api/assets/${a.id}/file" target="_blank">Inspect source</a></div></article>`,
-      )
-      .join("") || "<p>No media imported yet.</p>";
   const jobs = state.jobs.filter((j) => j.episodeId === episode.id);
   $("#jobs").innerHTML =
     jobs
@@ -92,6 +85,7 @@ const storyEditor = new StoryEditor({
   setStatus: (text) => { $("#saveState").textContent = text; },
   toast,
 });
+const libraryWorkspace = new LibraryWorkspace({ api, toast, getEpisode: () => episode, refreshState: () => load(episode?.id) });
 
 async function leaveStory() {
   const choice = await storyEditor.requestLeave();
@@ -211,14 +205,44 @@ async function create() {
   await load(e.id);
 }
 $("#episodes").onclick = async (e) => {
+  if (!e.target.closest("[data-episode-select]")) return;
   const id = e.target.closest("[data-id]")?.dataset.id;
   if (id && id !== episode?.id && (await leaveStory())) {
     await flushDraft();
     episode = state.episodes.find((x) => x.id === id);
     render();
     refreshChat();
+    if (!$("#mediaPanel").hidden) libraryWorkspace.open().catch((error) => toast(error.message));
   }
 };
+$("#episodes").onchange = async (event) => {
+  if (!event.target.matches("[data-episode-state-select]")) return;
+  const row = event.target.closest("[data-id]");
+  await moveEpisodeState(row.dataset.id, event.target.value);
+};
+$("#episodes").ondragstart = (event) => {
+  const row = event.target.closest("[data-id]");
+  if (row) event.dataTransfer.setData("text/episode-id", row.dataset.id);
+};
+$("#episodes").ondragover = (event) => { if (event.target.closest("[data-episode-state]")) event.preventDefault(); };
+$("#episodes").ondrop = async (event) => {
+  const group = event.target.closest("[data-episode-state]");
+  const id = event.dataTransfer.getData("text/episode-id");
+  if (group && id) { event.preventDefault(); await moveEpisodeState(id, group.dataset.episodeState); }
+};
+async function moveEpisodeState(id, nextState) {
+  const target = state.episodes.find((candidate) => candidate.id === id);
+  if (!target || target.state === nextState) return;
+  try {
+    if (id === episode?.id) await flushDraft();
+    const updated = await api(`/api/episodes/${id}`, { method: "PUT", body: JSON.stringify({ expectedRevision: target.revision, state: nextState }) });
+    state.episodes = state.episodes.map((candidate) => candidate.id === id ? updated : candidate);
+    if (episode?.id === id) episode = updated;
+    render();
+  } catch (error) { toast(error.message); await load(episode?.id); }
+}
+$("#episodeFilter").onchange = render;
+$("#filteredEpisodeNotice").onclick = (event) => { if (event.target.closest("[data-reveal-episode]")) { $("#episodeFilter").value = "All"; render(); } };
 $("#newEpisode").onclick = $("#firstEpisode").onclick = create;
 $("#episodeTitle").oninput = $("#episodeNotes").oninput = () => {
   dirty = true;
@@ -311,30 +335,10 @@ document.querySelectorAll(".tabs > button").forEach(
       );
       if (b.dataset.tab === "story" && episode)
         storyEditor.open(episode.id).catch((error) => toast(error.message));
+      if (b.dataset.tab === "media" && episode)
+        libraryWorkspace.open().catch((error) => toast(error.message));
     }),
 );
-$("#importForm").onsubmit = async (e) => {
-  e.preventDefault();
-  $("#importError").textContent = "";
-  const btn = e.submitter;
-  btn.disabled = true;
-  btn.textContent = "Importing…";
-  try {
-    await flushDraft();
-    await api("/api/import", {
-      method: "POST",
-      body: JSON.stringify({ path: $("#importPath").value }),
-    });
-    $("#importPath").value = "";
-    await load(episode.id);
-    toast("Media imported");
-  } catch (err) {
-    $("#importError").textContent = err.message;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "Import";
-  }
-};
 async function renderJob(kind) {
   try {
     await flushDraft();

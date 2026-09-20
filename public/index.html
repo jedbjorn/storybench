@@ -19,6 +19,8 @@
         <div class="aside-head">
           <span>Episodes</span><button id="newEpisode" class="icon">＋</button>
         </div>
+        <label class="episode-filter">Show <select id="episodeFilter"><option>All</option><option>Scaffold</option><option>Draft</option><option>Final</option><option>Published</option></select></label>
+        <div id="filteredEpisodeNotice" class="filter-notice" hidden></div>
         <nav id="episodes"></nav>
         <div class="privacy">
           <b>Private workspace</b
@@ -91,22 +93,9 @@
             <div id="cards"></div>
           </div>
           <div id="mediaPanel" hidden>
-            <div class="import-box">
-              <h2>Import completed media</h2>
-              <p>
-                Enter the absolute path to a finished local file. Storybench
-                copies it; your original is never changed.
-              </p>
-              <form id="importForm">
-                <input
-                  id="importPath"
-                  placeholder="/absolute/path/to/recording.mp4"
-                  required
-                /><button class="primary">Import</button>
-              </form>
-              <div id="importError" class="error"></div>
-            </div>
-            <div id="assets" class="asset-grid"></div>
+            <div class="panel-heading"><div><h2>Episode library</h2><p>References and media stay grouped here until you explicitly add them to cards.</p></div><button id="openLibraryImport" class="primary">＋ Import</button></div>
+            <div id="libraryProgress" class="library-progress" aria-live="polite"></div>
+            <div id="libraryGroups"></div>
           </div>
           <div id="exportsPanel" hidden>
             <div class="panel-heading">
@@ -146,6 +135,26 @@
         </form>
       </aside>
     </main>
+    <dialog id="libraryImportModal" class="library-modal">
+      <form method="dialog"><div class="modal-heading"><h2>Import to library</h2><button value="cancel" aria-label="Close">×</button></div></form>
+      <label>Category <select id="libraryImportCategory"><option>Reference</option><option>B-roll</option><option>Narration</option><option>Graphics</option></select></label>
+      <div id="libraryDropzone" class="library-dropzone" tabindex="0">Drop files here or <button id="pickLibraryFiles" type="button">choose files</button><input id="libraryFiles" type="file" multiple hidden></div>
+      <div id="libraryImportQueue" class="library-import-queue"></div>
+      <div class="modal-actions"><button id="cancelLibraryFiles" type="button" hidden>Cancel imports</button><button id="startLibraryFiles" type="button" class="primary" hidden>Import files</button></div>
+      <div class="library-divider">or add a reference</div>
+      <label>Public URL <input id="libraryUrl" type="url" placeholder="https://example.com/article"></label>
+      <label>Title <input id="libraryTextTitle" placeholder="Research notes"></label>
+      <label>Pasted text <textarea id="libraryText" placeholder="Paste UTF-8 text or Markdown"></textarea></label>
+      <div class="modal-actions"><button id="importLibraryUrl" type="button">Add URL</button><button id="importLibraryText" type="button">Add text</button></div>
+      <div id="libraryImportError" class="error" role="alert"></div>
+    </dialog>
+    <dialog id="libraryEditModal" class="library-modal">
+      <form id="libraryEditForm"><div class="modal-heading"><h2>Edit library item</h2><button type="button" data-library-close aria-label="Close">×</button></div>
+        <label>Label <input name="label" required></label><label>Category <select name="category"><option>Reference</option><option>B-roll</option><option>Narration</option><option>Graphics</option></select></label>
+        <label>Story section <select name="sectionId"></select></label><label>Tags <input name="tags" placeholder="interview, opening"></label><label>Notes <textarea name="notes"></textarea></label>
+        <div class="modal-actions"><button type="button" data-library-close>Cancel</button><button class="primary">Save</button></div><div class="error" data-library-edit-error></div>
+      </form>
+    </dialog>
     <div id="toast" role="status"></div>
     <script type="module" src="/app.js?v=round2-editor"></script>
   </body>

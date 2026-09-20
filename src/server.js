@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { Store, StoreError } from "./store.js";
 import { importMedia, renderEpisode } from "./media.js";
 import { createChatService } from "./chat.js";
+import { createLibraryService } from "./library.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = path.join(root, "public");
@@ -130,6 +131,7 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
   const listeners = new Map();
   const notify = (episodeId) => listeners.get(episodeId)?.forEach((fn) => fn());
   const chat = createChatService({ store, onChange: notify });
+  const library = createLibraryService({ workspace, store });
   let renderTail = Promise.resolve();
   const activeRenders = new Set();
   const eventStreams = new Set();
@@ -247,6 +249,63 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
         }
         if (parts[3] === "history" && req.method === "GET")
           return send(res, 200, store.listEpisodeHistory(episodeId));
+        if (parts[3] === "library") {
+          if (parts.length === 4 && req.method === "GET")
+            return send(res, 200, store.listEpisodeLibrary(episodeId));
+          if (parts[4] === "files" && parts.length === 5 && req.method === "POST") {
+            let fileName, label;
+            try {
+              fileName = decodeURIComponent(String(req.headers["x-file-name"] || "upload"));
+              label = decodeURIComponent(String(req.headers["x-library-label"] || ""));
+            } catch { throw new StoreError("Import metadata is malformed"); }
+            const value = await library.registerFile({
+              episodeId,
+              readable: req,
+              fileName,
+              label,
+              sectionId: String(req.headers["x-story-section-id"] || "") || null,
+              contentType: String(req.headers["content-type"] || "application/octet-stream"),
+              selectedCategory: String(req.headers["x-library-category"] || "Reference"),
+              signal: AbortSignal.any([AbortSignal.timeout(10 * 60_000)]),
+            });
+            notify(episodeId);
+            return send(res, 201, value);
+          }
+          if (parts[4] === "text" && parts.length === 5 && req.method === "POST") {
+            const body = await jsonBody(req);
+            const value = await library.registerText({ episodeId, title: body.title, text: body.text, sectionId: body.sectionId });
+            notify(episodeId);
+            return send(res, 201, value);
+          }
+          if (parts[4] === "url" && parts.length === 5 && req.method === "POST") {
+            const body = await jsonBody(req);
+            const value = await library.registerUrl({ episodeId, url: body.url, sectionId: body.sectionId, signal: AbortSignal.timeout(30_000) });
+            notify(episodeId);
+            return send(res, 201, value);
+          }
+          if (parts[4] && parts.length === 5 && req.method === "PUT") {
+            const body = await jsonBody(req);
+            const value = store.updateLibraryItem(episodeId, parts[4], body.expectedRevision, body);
+            notify(episodeId);
+            return send(res, 200, value);
+          }
+          if (parts[4] && parts[5] === "file" && parts.length === 6 && ["GET", "HEAD"].includes(req.method)) {
+            const item = store.getLibraryItem(episodeId, parts[4]);
+            if (!item) throw new StoreError("Library item not found", 404);
+            const actual = await realpath(contained(workspace, item.asset.path));
+            const workspaceReal = await realpath(workspace);
+            contained(workspaceReal, path.relative(workspaceReal, actual));
+            return await streamFile(req, res, actual, item.asset.metadata?.contentType);
+          }
+          if (parts[4] && parts[5] === "thumbnail" && parts.length === 6 && ["GET", "HEAD"].includes(req.method)) {
+            const item = store.getLibraryItem(episodeId, parts[4]);
+            if (!item?.asset.thumbnailPath) throw new StoreError("Thumbnail unavailable", 404);
+            const actual = await realpath(contained(workspace, item.asset.thumbnailPath));
+            const workspaceReal = await realpath(workspace);
+            contained(workspaceReal, path.relative(workspaceReal, actual));
+            return await streamFile(req, res, actual);
+          }
+        }
         if (parts.length === 3 && req.method === "PUT") {
           const body = await jsonBody(req);
           const value = store.updateEpisode(
