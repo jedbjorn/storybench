@@ -8,6 +8,7 @@ import { importMedia, renderEpisode } from "./media.js";
 import { createChatService } from "./chat.js";
 import { createLibraryService } from "./library.js";
 import { buildRenderPlan } from "./composition-plan.js";
+import { renderComposition } from "./composition-renderer.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = path.join(root, "public");
@@ -140,13 +141,17 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
   let closePromise;
   const enqueue = (episode, kind) => {
     const assets = store.listAssets();
+    const libraryItems = store.listEpisodeLibrary(episode.id);
+    const composition = episode.cards.some((card) => card.type)
+      ? buildRenderPlan({ sections: store.getStory(episode.id).sections, cards: episode.cards, libraryItems })
+      : null;
     let job = store.saveJob({
       episodeId: episode.id,
       kind,
       state: "queued",
       progress: 0,
       revision: episode.revision,
-      snapshot: { episode, assets },
+      snapshot: { episode, assets, libraryItems, composition },
     });
     renderTail = renderTail
       .catch(() => {})
@@ -169,13 +174,8 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
             folder,
             `${episode.id}-${job.id}-${kind}.mp4`,
           );
-          const result = await renderEpisode({
-            workspace,
-            episode,
-            assets,
-            outputPath,
-            preview: kind === "preview",
-            signal: controller.signal,
+          const renderOptions = {
+            workspace, outputPath, preview: kind === "preview", signal: controller.signal,
             onProgress: (progress) => {
               job = store.saveJob({
                 ...job,
@@ -183,7 +183,10 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
                 progress: Math.max(0, Math.min(1, Number(progress) || 0)),
               });
             },
-          });
+          };
+          const result = composition
+            ? await renderComposition({ ...renderOptions, plan: composition, libraryItems })
+            : await renderEpisode({ ...renderOptions, episode, assets });
           const rel = path.relative(
             workspace,
             path.resolve(result.path || outputPath),
