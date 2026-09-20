@@ -56,11 +56,12 @@ export function createStoryRenderer() {
 }
 
 export class StoryEditor {
-  constructor({ root, api, setStatus, toast }) {
+  constructor({ root, api, setStatus, toast, onSaved = () => {} }) {
     this.root = root;
     this.api = api;
     this.setStatus = setStatus;
     this.toast = toast;
+    this.onSaved = onSaved;
     this.renderMarkdown = createStoryRenderer();
     this.story = null;
     this.episodeId = null;
@@ -250,6 +251,7 @@ export class StoryEditor {
     this.mode = "read";
     this.drawRead();
     this.showMappingChanges(saved.mappingChanges);
+    this.onSaved(saved);
     return saved;
   }
 

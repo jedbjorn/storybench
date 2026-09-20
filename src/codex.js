@@ -11,48 +11,28 @@ export class CodexError extends Error {
   }
 }
 
+const empty = { type: 'object', properties: {}, additionalProperties: false };
+const object = (required, properties) => ({ type: 'object', additionalProperties: false, required, properties });
 const toolSpecs = [
-  {
-    type: 'function', name: 'get_project',
-    description: 'Read the current episode, including its revision and storyboard cards.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false }
-  },
-  {
-    type: 'function', name: 'list_assets',
-    description: 'List media assets available in this Storybench workspace.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false }
-  },
-  {
-    type: 'function', name: 'update_storyboard',
-    description: 'Replace the episode storyboard using optimistic revision control. Read the project first and pass its current revision.',
-    inputSchema: {
-      type: 'object', additionalProperties: false,
-      required: ['expectedRevision', 'cards'],
-      properties: {
-        expectedRevision: { type: 'integer', minimum: 1 },
-        cards: { type: 'array', items: {
-          type: 'object', additionalProperties: false,
-          properties: {
-            id: { type: 'string' }, title: { type: 'string' }, purpose: { type: 'string' },
-            notes: { type: 'string' }, missing: { type: 'string' },
-            duration: { anyOf: [{ type: 'number', exclusiveMinimum: 0 }, { type: 'null' }] },
-            visual: { $ref: '#/$defs/placement' }, narration: { $ref: '#/$defs/placement' }
-          }
-        } }
-      },
-      $defs: {
-        placement: { anyOf: [{ type: 'null' }, {
-          type: 'object', additionalProperties: false,
-          required: ['assetId', 'in', 'out', 'offset', 'gain'],
-          properties: {
-            assetId: { type: 'string' }, in: { type: 'number', minimum: 0 },
-            out: { type: 'number', exclusiveMinimum: 0 }, offset: { type: 'number', minimum: 0 },
-            gain: { type: 'number', minimum: 0, maximum: 8 }
-          }
-        }] }
-      }
-    }
-  }
+  { type: 'function', name: 'get_context', description: 'Read current scoped episode, story, cards, library and revisions.', inputSchema: empty },
+  { type: 'function', name: 'get_operation_guide', description: 'Read an app-owned guide for one supported operation.', inputSchema: object(['name'], { name: { type: 'string', enum: ['edit_story','edit_card','create_still_graphic','create_animated_graphic','create_draft','create_final'] } }) },
+  { type: 'function', name: 'read_reference_excerpt', description: 'Read a bounded excerpt from a registered Reference item.', inputSchema: object(['itemId'], { itemId: { type: 'string' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 20000 } }) },
+  { type: 'function', name: 'update_story', description: 'Save story Markdown using its exact current revision.', inputSchema: object(['expectedStoryRevision','source'], { expectedStoryRevision: { type: 'integer', minimum: 1 }, source: { type: 'string' } }) },
+  { type: 'function', name: 'update_cards', description: 'Replace cards using the exact current episode revision.', inputSchema: object(['expectedRevision','cards'], { expectedRevision: { type: 'integer', minimum: 1 }, cards: { type: 'array', items: { type: 'object' } } }) },
+  { type: 'function', name: 'validate_render', description: 'Validate the current cut and return its exact render revision.', inputSchema: empty },
+  { type: 'function', name: 'create_draft', description: 'Enqueue a draft for an exact validated render revision.', inputSchema: object(['expectedRenderRevision'], { expectedRenderRevision: { type: 'string' } }) },
+  { type: 'function', name: 'request_final', description: 'Explain the human Final action required for the current render revision.', inputSchema: empty },
+  { type: 'function', name: 'create_final', description: 'Consume a human-created one-use grant for the exact render revision.', inputSchema: object(['expectedRenderRevision','finalGrantId'], { expectedRenderRevision: { type: 'string' }, finalGrantId: { type: 'string' } }) },
+  { type: 'function', name: 'get_job', description: 'Read one render or graphic job in this episode.', inputSchema: object(['jobId'], { jobId: { type: 'string' } }) },
+  { type: 'function', name: 'cancel_job', description: 'Cancel one active job in this episode.', inputSchema: object(['jobId'], { jobId: { type: 'string' } }) },
+  { type: 'function', name: 'list_graphic_recipes', description: 'List editable graphic recipes in this episode.', inputSchema: empty },
+  { type: 'function', name: 'get_graphic_recipe', description: 'Read one editable graphic recipe in this episode.', inputSchema: object(['recipeId'], { recipeId: { type: 'string' } }) },
+  { type: 'function', name: 'create_graphic_recipe', description: 'Create a validated episode graphic recipe.', inputSchema: object(['name','recipe'], { name: { type: 'string' }, cardId: { type: 'string' }, recipe: { type: 'object' } }) },
+  { type: 'function', name: 'update_graphic_recipe', description: 'Revision-check and update an episode graphic recipe.', inputSchema: object(['recipeId','expectedRevision','recipe'], { recipeId: { type: 'string' }, expectedRevision: { type: 'integer', minimum: 1 }, name: { type: 'string' }, cardId: { type: 'string' }, recipe: { type: 'object' } }) },
+  { type: 'function', name: 'render_graphic', description: 'Render an exact graphic recipe revision.', inputSchema: object(['recipeId','expectedRecipeRevision'], { recipeId: { type: 'string' }, expectedRecipeRevision: { type: 'integer', minimum: 1 } }) },
+  { type: 'function', name: 'list_branding', description: 'List reusable channel branding templates.', inputSchema: empty },
+  { type: 'function', name: 'promote_card', description: 'Promote an episode card into reusable channel branding.', inputSchema: object(['cardId','name'], { cardId: { type: 'string' }, name: { type: 'string' }, role: { anyOf: [{ type: 'string', enum: ['intro','outro'] }, { type: 'null' }] } }) },
+  { type: 'function', name: 'apply_branding', description: 'Apply a reusable branding template to this episode.', inputSchema: object(['templateId'], { templateId: { type: 'string' } }) },
 ];
 
 const DISABLED_FEATURES = [
@@ -187,7 +167,7 @@ export class CodexConnection {
       cwd: this.cwd,
       ...(this.model ? { model: this.model } : {}),
       approvalPolicy: 'never', sandbox: 'read-only', dynamicTools: toolSpecs,
-      baseInstructions: 'You are the in-app Storybench editorial assistant. Use only the supplied Storybench tools for project data. Do not run shell commands, edit files, access unrelated projects, or claim a storyboard change unless update_storyboard succeeds. Explain revision conflicts and other tool errors plainly.'
+      baseInstructions: 'You are the in-app Storybench episode assistant. Use only the supplied episode-scoped tools. Read current revisions before edits. Do not run commands, access paths or unrelated episodes, mint final authorization, or claim an operation succeeded unless its Storybench tool succeeds. Ask the user to use the labeled Final action when request_final says it is required. Explain revision conflicts and unsupported operations plainly.'
     };
   }
 

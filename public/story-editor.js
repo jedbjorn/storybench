@@ -29757,11 +29757,13 @@ function createStoryRenderer() {
   return (source) => renderer.render(String(source || "").replace(sectionMarker, ""));
 }
 var StoryEditor = class {
-  constructor({ root, api, setStatus, toast }) {
+  constructor({ root, api, setStatus, toast, onSaved = () => {
+  } }) {
     this.root = root;
     this.api = api;
     this.setStatus = setStatus;
     this.toast = toast;
+    this.onSaved = onSaved;
     this.renderMarkdown = createStoryRenderer();
     this.story = null;
     this.episodeId = null;
@@ -29945,6 +29947,7 @@ var StoryEditor = class {
     this.mode = "read";
     this.drawRead();
     this.showMappingChanges(saved.mappingChanges);
+    this.onSaved(saved);
     return saved;
   }
   showMappingChanges(changes) {

@@ -1,14 +1,14 @@
 import http from "node:http";
-import { stat, mkdir, realpath } from "node:fs/promises";
+import { stat, realpath } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Store, StoreError } from "./store.js";
-import { importMedia, renderEpisode } from "./media.js";
+import { importMedia } from "./media.js";
 import { createChatService } from "./chat.js";
 import { createLibraryService } from "./library.js";
-import { buildRenderPlan } from "./composition-plan.js";
-import { renderComposition } from "./composition-renderer.js";
+import { renderGraphic, validateGraphicRecipe } from "./graphics.js";
+import { createRenderService } from "./render-service.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = path.join(root, "public");
@@ -128,102 +128,30 @@ async function streamFile(req, res, file, contentType) {
   pipe({ start, end });
 }
 
-export async function createApp({ workspace, onListen, storeOptions } = {}) {
+export async function createApp({ workspace, onListen, storeOptions, renderOptions = {}, chatOptions = {} } = {}) {
   const store = new Store(workspace, storeOptions);
   const listeners = new Map();
   const notify = (episodeId) => listeners.get(episodeId)?.forEach((fn) => fn());
-  const chat = createChatService({ store, onChange: notify });
   const library = createLibraryService({ workspace, store });
-  let renderTail = Promise.resolve();
-  const activeRenders = new Set();
+  const renders = createRenderService({ workspace, store, renderGraphic, validateGraphicRecipe, ...renderOptions });
+  const chat = createChatService({ store, renders, onChange: notify, ...chatOptions });
   const eventStreams = new Set();
   let closing = false;
   let closePromise;
-  const enqueue = (episode, kind) => {
-    const assets = store.listAssets();
-    const libraryItems = store.listEpisodeLibrary(episode.id);
-    const story = store.getStory(episode.id);
-    const composition = episode.cards.some((card) => card.type)
-      ? buildRenderPlan({ sections: story.sections, cards: episode.cards, libraryItems })
-      : null;
-    let job = store.saveJob({
-      episodeId: episode.id,
-      kind,
-      state: "queued",
-      progress: 0,
-      revision: episode.revision,
-      snapshot: { episode, story, assets, libraryItems, composition },
-    });
-    renderTail = renderTail
-      .catch(() => {})
-      .then(async () => {
-        if (closing) {
-          store.saveJob({
-            ...job,
-            state: "failed",
-            error: "Render cancelled during server shutdown",
-          });
-          return;
-        }
-        job = store.saveJob({ ...job, state: "running" });
-        const controller = new AbortController();
-        activeRenders.add(controller);
-        try {
-          const folder = path.join(workspace, "exports");
-          await mkdir(folder, { recursive: true });
-          const outputPath = path.join(
-            folder,
-            `${episode.id}-${job.id}-${kind}.mp4`,
-          );
-          const renderOptions = {
-            workspace, outputPath, preview: kind === "preview", signal: controller.signal,
-            onProgress: (progress) => {
-              job = store.saveJob({
-                ...job,
-                state: "running",
-                progress: Math.max(0, Math.min(1, Number(progress) || 0)),
-              });
-            },
-          };
-          const result = composition
-            ? await renderComposition({ ...renderOptions, plan: composition, libraryItems })
-            : await renderEpisode({ ...renderOptions, episode, assets });
-          const rel = path.relative(
-            workspace,
-            path.resolve(result.path || outputPath),
-          );
-          contained(workspace, rel);
-          job = store.saveJob({
-            ...job,
-            state: "completed",
-            progress: 1,
-            outputPath: rel,
-            error: null,
-          });
-        } catch (error) {
-          job = store.saveJob({
-            ...job,
-            state: "failed",
-            error: error.message || String(error),
-            outputPath: null,
-          });
-        } finally {
-          activeRenders.delete(controller);
-        }
-      });
-    return job;
-  };
 
   const server = http.createServer(async (req, res) => {
     try {
       ensureLocal(req);
+      if (closing && !["GET", "HEAD"].includes(req.method)) throw new StoreError("Application is shutting down", 503);
       const url = new URL(req.url, `http://${req.headers.host}`);
       const parts = url.pathname.split("/").filter(Boolean);
       if (req.method === "GET" && url.pathname === "/api/state")
         return send(res, 200, {
           episodes: store.listEpisodes(),
           assets: store.listAssets(),
-          jobs: store.listJobs(),
+          jobs: store.listJobs().map((job) => {
+            try { return renders.getJob(job.episodeId, job.id); } catch { return job; }
+          }),
         });
       if (req.method === "POST" && url.pathname === "/api/episodes")
         return send(res, 201, store.createEpisode(await jsonBody(req)));
@@ -260,11 +188,29 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
         }
         if (parts[3] === "history" && req.method === "GET")
           return send(res, 200, store.listEpisodeHistory(episodeId));
-        if (parts[3] === "composition" && parts.length === 4 && req.method === "GET") {
-          const episode = store.getEpisode(episodeId);
-          if (!episode) throw new StoreError("Episode not found", 404);
-          const story = store.getStory(episodeId);
-          return send(res, 200, buildRenderPlan({ sections: story.sections, cards: episode.cards, libraryItems: store.listEpisodeLibrary(episodeId) }));
+        if (["composition", "render-plan"].includes(parts[3]) && parts.length === 4 && req.method === "GET")
+          return send(res, 200, renders.validateRender(episodeId));
+        if (parts[3] === "graphics") {
+          if (parts.length === 4 && req.method === "GET") return send(res, 200, renders.listGraphicRecipes(episodeId));
+          if (parts.length === 4 && req.method === "POST") {
+            const value = renders.createGraphicRecipe(episodeId, await jsonBody(req));
+            notify(episodeId); return send(res, 201, value);
+          }
+          if (parts[4] && parts.length === 5 && req.method === "GET") {
+            const value = renders.getGraphicRecipe(episodeId, parts[4]);
+            if (!value) throw new StoreError("Graphic recipe not found", 404);
+            return send(res, 200, value);
+          }
+          if (parts[4] && parts.length === 5 && req.method === "PUT") {
+            const body = await jsonBody(req);
+            const value = renders.updateGraphicRecipe(episodeId, parts[4], body.expectedRecipeRevision, body);
+            notify(episodeId); return send(res, 200, value);
+          }
+          if (parts[4] && parts[5] === "render" && parts.length === 6 && req.method === "POST") {
+            const body = await jsonBody(req);
+            const value = renders.enqueueGraphic({ episodeId, recipeId: parts[4], expectedRecipeRevision: body.expectedRecipeRevision });
+            notify(episodeId); return send(res, 202, value);
+          }
         }
         if (parts[3] === "cards" && parts[4] && parts[5] === "promote" && req.method === "POST") {
           const value = store.promoteCard(episodeId, parts[4], await jsonBody(req));
@@ -350,15 +296,47 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
         }
         if (parts[3] === "render" && req.method === "POST") {
           const body = await jsonBody(req);
-          if (!["preview", "export"].includes(body.kind))
-            throw new StoreError("kind must be preview or export");
-          const episode = store.getEpisode(episodeId);
-          if (!episode) throw new StoreError("Episode not found", 404);
-          return send(res, 202, enqueue(episode, body.kind));
+          const outputClass = body.kind === "preview" ? "draft" : body.kind === "export" ? "final" : body.outputClass;
+          const expectedRenderRevision = body.expectedRenderRevision ||
+            (outputClass === "draft" ? renders.validateRender(episodeId).renderRevision : null);
+          return send(res, 202, renders.enqueueRender({ episodeId, outputClass,
+            expectedRenderRevision,
+            finalGrantId: body.finalGrantId, conversationId: body.conversationId ?? null, requestId: body.requestId ?? null }));
+        }
+        if (parts[3] === "final-authorizations" && req.method === "POST") {
+          const body = await jsonBody(req);
+          return send(res, 201, renders.mintFinalGrant({ episodeId,
+            expectedRenderRevision: body.expectedRenderRevision,
+            conversationId: body.conversationId ?? null, requestId: body.requestId ?? null }));
+        }
+        if (parts[3] === "jobs" && parts[4] && parts[5] === "cancel" && req.method === "POST") {
+          const value = renders.cancelJob(episodeId, parts[4]); notify(episodeId); return send(res, 200, value);
+        }
+        if (parts[3] === "chats") {
+          if (parts.length === 4 && req.method === "GET") return send(res, 200, chat.list(episodeId));
+          if (parts.length === 4 && req.method === "POST") return send(res, 201, chat.create(episodeId, await jsonBody(req)));
+          const conversationId = parts[4];
+          if (conversationId && parts.length === 5 && req.method === "GET") return send(res, 200, chat.get(episodeId, conversationId));
+          if (conversationId && parts.length === 5 && req.method === "PUT") return send(res, 200, chat.update(episodeId, conversationId, await jsonBody(req)));
+          if (conversationId && parts[5] === "messages" && req.method === "POST") {
+            const body = await jsonBody(req); return send(res, 202, await chat.send(episodeId, conversationId, body.text));
+          }
+          if (conversationId && parts[5] === "interrupt" && req.method === "POST")
+            return send(res, 202, await chat.interrupt(episodeId, conversationId));
+          if (conversationId && parts[5] === "events" && req.method === "GET") {
+            res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+            eventStreams.add(res);
+            const emit = (event) => { if (!event || event.conversationId === conversationId) res.write(`data: ${JSON.stringify(event || chat.get(episodeId, conversationId))}\n\n`); };
+            emit();
+            const cleanup = chat.subscribe(episodeId, emit);
+            const keep = setInterval(() => res.write(": keepalive\n\n"), 20000);
+            req.on("close", () => { eventStreams.delete(res); clearInterval(keep); cleanup?.(); });
+            return;
+          }
         }
         if (parts[3] === "chat") {
           if (parts.length === 4 && req.method === "GET")
-            return send(res, 200, await chat.get(episodeId));
+            return send(res, 200, chat.getLegacy(episodeId));
           if (parts.length === 4 && req.method === "POST") {
             const body = await jsonBody(req);
             if (!String(body.text || "").trim())
@@ -366,11 +344,11 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
             return send(
               res,
               202,
-              await chat.send(episodeId, String(body.text)),
+              await chat.sendLegacy(episodeId, String(body.text)),
             );
           }
           if (parts[4] === "interrupt" && req.method === "POST")
-            return send(res, 202, await chat.interrupt(episodeId));
+            return send(res, 202, await chat.interruptLegacy(episodeId));
           if (
             parts[4] === "events" &&
             req.method === "GET" &&
@@ -384,7 +362,7 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
             eventStreams.add(res);
             const emit = async () =>
               res.write(
-                `data: ${JSON.stringify(await chat.get(episodeId))}\n\n`,
+                `data: ${JSON.stringify(chat.getLegacy(episodeId))}\n\n`,
               );
             await emit();
             const cleanup = chat.subscribe(episodeId, emit);
@@ -471,11 +449,10 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
       const stopped = server.listening
         ? new Promise((resolve) => server.close(resolve))
         : Promise.resolve();
-      for (const controller of activeRenders) controller.abort();
-      await Promise.allSettled([stopped, renderTail, chat.close()]);
+      await Promise.allSettled([stopped, renders.close("Job cancelled during server shutdown"), chat.close()]);
       store.close();
     })());
-  return { server, store, chat, close };
+  return { server, store, chat, renders, close };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

@@ -1,12 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { createReadStream } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { Store } from "../src/store.js";
 import { createLibraryService } from "../src/library.js";
 import { createApp } from "../src/server.js";
+import { buildRenderPlan } from "../src/composition-plan.js";
+
+function ffmpeg(args) {
+  const result = spawnSync("ffmpeg", ["-v", "error", "-threads", "1", ...args], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+}
+const hashFile = async (file) => createHash("sha256").update(await readFile(file)).digest("hex");
 
 async function fixture() {
   const workspace = await mkdtemp(path.join(tmpdir(), "storybench-library-"));
@@ -72,6 +82,61 @@ test("reference file imports are atomic, serialized, bounded, and report extract
   }
   await assert.rejects(service.registerFile({ episodeId: f.episode.id, readable: Readable.from(oversized()), fileName: "too-large.txt", contentType: "text/plain", selectedCategory: "Reference" }), /20 MiB limit/);
   assert.equal(f.store.listEpisodeLibrary(f.episode.id).length, 2, "failed import publishes no membership");
+});
+
+test("Reference imports preserve detected image, video, and audio formats across category moves", async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  const sourceDir = path.join(f.workspace, "fixtures");
+  await mkdir(sourceDir);
+  const image = path.join(sourceDir, "still.png"), video = path.join(sourceDir, "clip.webm"), audio = path.join(sourceDir, "tone.wav");
+  ffmpeg(["-f", "lavfi", "-i", "color=c=red:s=32x32:d=0.1", "-frames:v", "1", image]);
+  ffmpeg(["-f", "lavfi", "-i", "color=c=blue:s=64x64:r=30:d=1", "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", video]);
+  ffmpeg(["-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000:duration=1", audio]);
+  const before = await Promise.all([image, video, audio].map(hashFile));
+  const service = createLibraryService({ workspace: f.workspace, store: f.store });
+  const imported = [];
+  for (const file of [image, video, audio]) imported.push(await service.registerFile({ episodeId: f.episode.id,
+    readable: createReadStream(file), fileName: path.basename(file), contentType: "application/octet-stream", selectedCategory: "Reference" }));
+  assert.deepEqual(imported.map((item) => item.asset.kind), ["image", "video", "audio"]);
+  assert.deepEqual(imported.map((item) => item.extractionStatus), ["not-applicable", "not-applicable", "not-applicable"]);
+  const moved = imported.map((item, index) => f.store.updateLibraryItem(f.episode.id, item.id, 1,
+    { category: ["Graphics", "B-roll", "Narration"][index] }));
+  assert.deepEqual(moved.map((item) => item.asset.kind), ["image", "video", "audio"]);
+  assert.deepEqual(await Promise.all([image, video, audio].map(hashFile)), before, "registered import never mutates sources");
+  for (const item of moved) await readFile(path.join(f.workspace, item.asset.path));
+
+  const story = f.store.saveStory(f.episode.id, 1, "# Sections\n\n## Main");
+  const cards = [
+    { id: "video", title: "Video", type: "Video", sectionId: story.sections[0].id, itemId: moved[1].id, order: 0, in: 0, out: .5 },
+    { id: "image", title: "Image", type: "Static Graphic", sectionId: story.sections[0].id, itemId: moved[0].id, order: 1, duration: .5 },
+    { id: "audio", title: "Audio", type: "Audio", sectionId: story.sections[0].id, itemId: moved[2].id, order: 2,
+      role: "music", anchorVisualCardId: "video", offset: 0, in: 0, out: .5 },
+  ];
+  const episode = f.store.updateEpisode(f.episode.id, f.store.getEpisode(f.episode.id).revision, { cards });
+  const plan = buildRenderPlan({ sections: story.sections, cards: episode.cards, libraryItems: f.store.listEpisodeLibrary(f.episode.id) });
+  assert.deepEqual(plan.visualSpine.map((entry) => entry.cardId), ["video", "image"]);
+  assert.equal(plan.audioPlacements[0].cardId, "audio");
+});
+
+test("media deduplication never downgrades format and repairs a matching legacy reference asset", async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  const source = path.join(f.workspace, "clip.mp4");
+  ffmpeg(["-f", "lavfi", "-i", "color=c=green:s=64x64:r=30:d=0.3", "-c:v", "libx264", "-pix_fmt", "yuv420p", source]);
+  const bytesHash = await hashFile(source);
+  const legacy = f.store.saveAsset({ name: "misclassified.mp4", hash: bytesHash, kind: "reference", path: "clip.mp4", metadata: {} });
+  const service = createLibraryService({ workspace: f.workspace, store: f.store });
+  const repaired = await service.registerFile({ episodeId: f.episode.id, readable: createReadStream(source), fileName: "clip.mp4",
+    contentType: "video/mp4", selectedCategory: "Reference" });
+  assert.equal(repaired.assetId, legacy.id, "existing stable asset identity is retained");
+  assert.equal(repaired.asset.kind, "video");
+  assert.notEqual(repaired.asset.path, "clip.mp4", "repaired asset uses the managed media path");
+  const other = f.store.createEpisode({ title: "Other" });
+  const duplicate = await service.registerFile({ episodeId: other.id, readable: createReadStream(source), fileName: "clip.mp4",
+    contentType: "video/mp4", selectedCategory: "Reference" });
+  assert.equal(duplicate.assetId, legacy.id);
+  assert.equal(duplicate.asset.kind, "video");
 });
 
 test("pasted references preserve source while bounding excerpts", async (t) => {
