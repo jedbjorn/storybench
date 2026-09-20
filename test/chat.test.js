@@ -76,7 +76,7 @@ test('interrupt targets exact turn and restart never replays an active prompt', 
   await chat.interrupt(episode.id);
   await until(() => chat.get(episode.id).state === 'interrupted');
   assert.deepEqual(interrupted, ['thread_stop', 'turn_stop']);
-  store.db.prepare("UPDATE chats SET state='running',active_turn_id='lost_turn' WHERE episode_id=?").run(episode.id);
+  store.db.prepare("UPDATE conversations SET state='running',active_turn_id='lost_turn' WHERE episode_id=?").run(episode.id);
   chat = createChatService({ store, codexFactory: async () => { throw new Error('must not launch'); } });
   const recovered = chat.get(episode.id);
   assert.equal(recovered.state, 'error');
@@ -117,17 +117,67 @@ test('Codex JSONL client declares scoped tools and answers dynamic tool calls', 
     }
     callback();
   } });
-  connection = await new CodexConnection({ cwd: '/tmp', tools: { get_project: () => ({ revision: 7 }) }, spawn: () => child }).open();
+  connection = await new CodexConnection({ cwd: '/tmp', tools: { get_context: () => ({ revision: 7 }) }, spawn: () => child }).open();
   const threadId = await connection.startThread();
   assert.equal(await connection.startTurn(threadId, 'hello'), 'turn_rpc');
   const start = requests.find((request) => request.method === 'thread/start');
   assert.equal(start.params.sandbox, 'read-only');
   assert.equal(start.params.approvalPolicy, 'never');
-  assert.deepEqual(start.params.dynamicTools.map((tool) => tool.name), ['get_project', 'list_assets', 'update_storyboard']);
-  stdout.write(`${JSON.stringify({ id: 99, method: 'item/tool/call', params: { threadId, turnId: 'turn_rpc', callId: 'call_1', tool: 'get_project', arguments: {} } })}\n`);
+  assert.deepEqual(start.params.dynamicTools.map((tool) => tool.name), ['get_context','get_operation_guide','read_reference_excerpt','update_story','update_cards','validate_render','create_draft','request_final','create_final','get_job','cancel_job','create_graphic_recipe','update_graphic_recipe','render_graphic']);
+  stdout.write(`${JSON.stringify({ id: 99, method: 'item/tool/call', params: { threadId, turnId: 'turn_rpc', callId: 'call_1', tool: 'get_context', arguments: {} } })}\n`);
   await until(() => requests.some((request) => request.id === 99 && request.result));
   const response = requests.find((request) => request.id === 99);
   assert.equal(response.result.success, true);
   assert.match(response.result.contentItems[0].text, /"revision":7/);
   connection.close();
+});
+
+test('multiple conversations keep names and drafts while one turn per episode is enforced', async () => {
+  const root = workspace(); const store = new Store(root); const episode = store.createEpisode();
+  let options;
+  const factory = async (value) => { options = value; return { startThread: async () => 'thread_one', startTurn: async () => 'turn_one', interrupt: async (threadId, turnId) => queueMicrotask(() => value.onEvent({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'interrupted' } } })), close() {} }; };
+  const chat = createChatService({ store, codexFactory: factory, renders: {} });
+  const one = chat.create(episode.id, { name: 'Outline' });
+  const two = chat.create(episode.id, { name: 'Polish' });
+  chat.update(episode.id, one.id, { draft: 'unsent outline' });
+  chat.update(episode.id, two.id, { name: 'Final polish', draft: 'different draft' });
+  assert.equal(chat.get(episode.id, one.id).draft, 'unsent outline');
+  assert.equal(chat.get(episode.id, two.id).draft, 'different draft');
+  await chat.send(episode.id, one.id, 'start');
+  await until(() => options);
+  await assert.rejects(chat.send(episode.id, two.id, 'must reject'), (cause) => cause.statusCode === 409);
+  await assert.rejects(chat.interrupt(episode.id, two.id), (cause) => cause.statusCode === 409);
+  await chat.interrupt(episode.id, one.id);
+  await until(() => chat.get(episode.id, one.id).state === 'interrupted');
+  assert.equal(chat.get(episode.id, two.id).draft, 'different draft');
+  await chat.close(); store.close(); rmSync(root, { recursive: true, force: true });
+});
+
+test('legacy episode chat migrates once with exact thread and history', async () => {
+  const root = workspace(); const store = new Store(root); const episode = store.createEpisode(); const stamp = new Date().toISOString();
+  store.db.exec(`CREATE TABLE chats(episode_id TEXT PRIMARY KEY,state TEXT,thread_id TEXT,active_turn_id TEXT,error TEXT,created_at TEXT,updated_at TEXT,name TEXT);
+    CREATE TABLE chat_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,episode_id TEXT,role TEXT,text TEXT,state TEXT,turn_id TEXT,created_at TEXT,updated_at TEXT);
+    CREATE TABLE chat_events(episode_id TEXT,sequence INTEGER,type TEXT,payload TEXT,created_at TEXT,PRIMARY KEY(episode_id,sequence));`);
+  store.db.prepare("INSERT INTO chats VALUES(?,'idle','thread_legacy',NULL,NULL,?,?,?)").run(episode.id, stamp, stamp, 'Original chat');
+  store.db.prepare("INSERT INTO chat_messages(episode_id,role,text,state,created_at,updated_at) VALUES(?,'user','hello','completed',?,?)").run(episode.id, stamp, stamp);
+  const chat = createChatService({ store, codexFactory: async () => { throw new Error('not used'); }, renders: {} });
+  const migrated = chat.list(episode.id);
+  assert.equal(migrated.length, 1); assert.equal(migrated[0].threadId, 'thread_legacy'); assert.equal(migrated[0].name, 'Original chat');
+  assert.equal(chat.get(episode.id, migrated[0].id).messages[0].text, 'hello');
+  assert.equal(createChatService({ store, renders: {} }).list(episode.id).length, 1);
+  await chat.close(); store.close(); rmSync(root, { recursive: true, force: true });
+});
+
+test('agent final tool cannot mint grants and forwards exact conversation scope', async () => {
+  const root = workspace(); const store = new Store(root); const episode = store.createEpisode(); let options; let enqueued;
+  const renders = { validateRender: () => ({ renderRevision: 'render_exact' }), enqueueRender: (input) => { enqueued = input; return { id: 'job_final' }; } };
+  const factory = async (value) => { options = value; return { startThread: async () => 'thread_final', startTurn: async () => 'turn_final', interrupt: async (threadId, turnId) => queueMicrotask(() => value.onEvent({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'interrupted' } } })), close() {} }; };
+  const chat = createChatService({ store, renders, codexFactory: factory }); const conversation = chat.create(episode.id);
+  await chat.send(episode.id, conversation.id, 'make final'); await until(() => options);
+  assert.deepEqual(options.tools.request_final({}), { requiredAction: 'Use Create final in Storybench', conversationId: conversation.id, renderRevision: 'render_exact' });
+  assert.equal(options.tools.mint_final_grant, undefined);
+  assert.deepEqual(options.tools.create_final({ expectedRenderRevision: 'render_exact', finalGrantId: 'grant_human' }), { id: 'job_final' });
+  assert.deepEqual(enqueued, { episodeId: episode.id, outputClass: 'final', expectedRenderRevision: 'render_exact', finalGrantId: 'grant_human', conversationId: conversation.id });
+  await chat.interrupt(episode.id, conversation.id); await until(() => chat.get(episode.id, conversation.id).state === 'interrupted');
+  await chat.close(); store.close(); rmSync(root, { recursive: true, force: true });
 });
