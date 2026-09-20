@@ -181,7 +181,7 @@ var Text = class _Text {
   Return a cursor that iterates over the given range of lines,
   _without_ returning the line breaks between, and yielding empty
   strings for empty lines.
-
+  
   When `from` and `to` are given, they should be 1-based line numbers.
   */
   iterLines(from, to) {
@@ -720,7 +720,7 @@ var ChangeDesc = class _ChangeDesc {
   `fromA`/`toA` provides the extent of the change in the starting
   document, `fromB`/`toB` the extent of the replacement in the
   changed document.
-
+  
   When `individual` is true, adjacent changes (which are kept
   separate for [position mapping](https://codemirror.net/6/docs/ref/#state.ChangeDesc.mapPos)) are
   reported separately.
@@ -882,7 +882,7 @@ var ChangeSet = class _ChangeSet extends ChangeDesc {
   applied to the document produced by applying `other`. When
   `before` is `true`, order changes as if `this` comes before
   `other`, otherwise (the default) treat `other` as coming first.
-
+  
   Given two changes `A` and `B`, `A.compose(B.map(A))` and
   `B.compose(A.map(B, true))` will produce the same document. This
   provides a basic form of [operational
@@ -897,7 +897,7 @@ var ChangeSet = class _ChangeSet extends ChangeDesc {
   each, with the range in the original document (`fromA`-`toA`)
   and the range that replaces it in the new document
   (`fromB`-`toB`).
-
+  
   When `individual` is true, adjacent changes are reported
   separately.
   */
@@ -1525,7 +1525,7 @@ var Facet = class _Facet {
   state. You must take care to declare the parts of the state that
   this value depends on, since your function is only called again
   for a new state when one of those parts changed.
-
+  
   In cases where your value depends only on a single field, you'll
   want to use the [`from`](https://codemirror.net/6/docs/ref/#state.Facet.from) method instead.
   */
@@ -2525,7 +2525,7 @@ var EditorState = class _EditorState {
   Look up a translation for the given phrase (via the
   [`phrases`](https://codemirror.net/6/docs/ref/#state.EditorState^phrases) facet), or return the
   original string if no translation is found.
-
+  
   If additional arguments are passed, they will be inserted in
   place of markers like `$1` (for the first value) and `$2`, etc.
   A single `$` is equivalent to `$1`, and `$$` will produce a
@@ -2549,9 +2549,9 @@ var EditorState = class _EditorState {
   /**
   Find the values for a given language data field, provided by the
   the [`languageData`](https://codemirror.net/6/docs/ref/#state.EditorState^languageData) facet.
-
+  
   Examples of language data fields are...
-
+  
   - [`"commentTokens"`](https://codemirror.net/6/docs/ref/#commands.CommentTokens) for specifying
     comment syntax.
   - [`"autocomplete"`](https://codemirror.net/6/docs/ref/#autocomplete.autocompletion^config.override)
@@ -2576,7 +2576,7 @@ var EditorState = class _EditorState {
   Return a function that can categorize strings (expected to
   represent a single [grapheme cluster](https://codemirror.net/6/docs/ref/#state.findClusterBreak))
   into one of:
-
+  
    - Word (contains an alphanumeric character or a character
      explicitly listed in the local language's `"wordChars"`
      language data, which should be a string)
@@ -2810,7 +2810,7 @@ var RangeSet = class _RangeSet {
   /**
   Update the range set, optionally adding new ranges or filtering
   out existing ones.
-
+  
   (Note: The type parameter is just there as a kludge to work
   around TypeScript variance issues that prevented `RangeSet<X>`
   from being a subtype of `RangeSet<Y>` when `X` is a subtype of
@@ -11506,7 +11506,7 @@ var EditorView = class _EditorView {
   When the start position was the last one on the line, the
   returned position will be across the line break. If there is no
   further line, the original position is returned.
-
+  
   By default, this method moves over a single cluster. The
   optional `by` argument can be used to move across more. It will
   be called with the first cluster as argument, and should return
@@ -11550,7 +11550,7 @@ var EditorView = class _EditorView {
   it defaults to moving to the next line (including wrapped
   lines). Otherwise, `distance` should provide a positive distance
   in pixels.
-
+  
   When `start` has a
   [`goalColumn`](https://codemirror.net/6/docs/ref/#state.SelectionRange.goalColumn), the vertical
   motion will use that as a target horizontal position. Otherwise,
@@ -11565,7 +11565,7 @@ var EditorView = class _EditorView {
   Find the DOM parent node and offset (child offset if `node` is
   an element, character offset when it is a text node) at the
   given document position.
-
+  
   Note that for positions that aren't currently in
   `visibleRanges`, the resulting DOM position isn't necessarily
   meaningful (it may just point before or after a placeholder
@@ -11748,7 +11748,7 @@ var EditorView = class _EditorView {
   only affects the editor's own scrollable element, not parents.
   See also
   [`EditorViewConfig.scrollTo`](https://codemirror.net/6/docs/ref/#view.EditorViewConfig.scrollTo).
-
+  
   The effect should be used with a document identical to the one
   it was created for. Failing to do so is not an error, but may
   not scroll to the expected position. You can
@@ -11764,7 +11764,7 @@ var EditorView = class _EditorView {
   for Tab and Shift-Tab, letting the browser's default
   focus-changing behavior go through instead. This is useful to
   prevent trapping keyboard users in your editor.
-
+  
   Without argument, this toggles the mode. With a boolean, it
   enables (true) or disables it (false). Given a number, it
   temporarily enables the mode until that number of milliseconds
@@ -11809,14 +11809,14 @@ var EditorView = class _EditorView {
   [`style-mod`](https://code.haverbeke.berlin/marijn/style-mod#documentation)
   style spec providing the styles for the theme. These will be
   prefixed with a generated class for the style.
-
+  
   Because the selectors will be prefixed with a scope class, rule
   that directly match the editor's [wrapper
   element](https://codemirror.net/6/docs/ref/#view.EditorView.dom)—to which the scope class will be
   added—need to be explicitly differentiated by adding an `&` to
   the selector for that element—for example
   `&.cm-focused`.
-
+  
   When `dark` is set to true, the theme will be marked as dark,
   which will cause the `&dark` rules from [base
   themes](https://codemirror.net/6/docs/ref/#view.EditorView^baseTheme) to be used (as opposed to
@@ -12493,7 +12493,7 @@ var Tree = class _Tree {
   position. If 1, it'll move into nodes that start at the
   position. With 0, it'll only enter nodes that cover the position
   from both sides.
-
+  
   Note that this will not enter
   [overlays](#common.MountedTree.overlay), and you often want
   [`resolveInner`](#common.Tree.resolveInner) instead.
@@ -13837,7 +13837,7 @@ var Parser = class {
   Start a parse, returning a [partial parse](#common.PartialParse)
   object. [`fragments`](#common.TreeFragment) can be passed in to
   make the parse incremental.
-
+  
   By default, the entire input is parsed. You can pass `ranges`,
   which should be a sorted array of non-empty, non-overlapping
   ranges, to parse only those ranges. The tree returned in that
@@ -14300,7 +14300,7 @@ var Tag = class _Tag {
   same modifier to a twice tag will return the same value (`m1(t1)
   == m1(t1)`) and applying multiple modifiers will, regardless or
   order, produce the same tag (`m1(m2(t1)) == m2(m1(t1))`).
-
+  
   When multiple modifiers are applied to a given base tag, each
   smaller set of modifiers is registered as a parent, so that for
   example `m1(m2(m3(t1)))` is a subtype of `m1(m2(t1))`,
@@ -15215,7 +15215,7 @@ var ParseContext = class _ParseContext {
   asynchronously loading a nested parser. It'll skip its input and
   mark it as not-really-parsed, so that the next update will parse
   it again.
-
+  
   When `until` is given, a reparse will be scheduled when that
   promise resolves.
   */
@@ -15790,7 +15790,7 @@ var HighlightStyle = class _HighlightStyle {
   that rely on external styling), or a
   [`style-mod`](https://code.haverbeke.berlin/marijn/style-mod#documentation)-style
   set of CSS properties (which define the styling for those tags).
-
+  
   The CSS rules created for a highlighter will be emitted in the
   order of the spec's properties. That means that for elements that
   have multiple tags associated with them, styles defined further
@@ -17169,7 +17169,7 @@ var CompletionContext = class {
   Allows you to register abort handlers, which will be called when
   the query is
   [aborted](https://codemirror.net/6/docs/ref/#autocomplete.CompletionContext.aborted).
-
+  
   By default, running queries will not be aborted for regular
   typing or backspacing, on the assumption that they are likely to
   return a result with a
@@ -20296,7 +20296,7 @@ var InputStream = class {
   Look at a code unit near the stream position. `.peek(0)` equals
   `.next`, `.peek(-1)` gives you the previous character, and so
   on.
-
+  
   Note that looking around during tokenizing creates dependencies
   on potentially far-away content, which may reduce the
   effectiveness incremental parsing—when looking forward—or even
