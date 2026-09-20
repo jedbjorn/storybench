@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 import { Store, StoreError } from "./store.js";
 import { importMedia, renderEpisode } from "./media.js";
 import { createChatService } from "./chat.js";
+import { createLibraryService } from "./library.js";
+import { buildRenderPlan } from "./composition-plan.js";
+import { renderComposition } from "./composition-renderer.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = path.join(root, "public");
@@ -130,6 +133,7 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
   const listeners = new Map();
   const notify = (episodeId) => listeners.get(episodeId)?.forEach((fn) => fn());
   const chat = createChatService({ store, onChange: notify });
+  const library = createLibraryService({ workspace, store });
   let renderTail = Promise.resolve();
   const activeRenders = new Set();
   const eventStreams = new Set();
@@ -137,13 +141,18 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
   let closePromise;
   const enqueue = (episode, kind) => {
     const assets = store.listAssets();
+    const libraryItems = store.listEpisodeLibrary(episode.id);
+    const story = store.getStory(episode.id);
+    const composition = episode.cards.some((card) => card.type)
+      ? buildRenderPlan({ sections: story.sections, cards: episode.cards, libraryItems })
+      : null;
     let job = store.saveJob({
       episodeId: episode.id,
       kind,
       state: "queued",
       progress: 0,
       revision: episode.revision,
-      snapshot: { episode, assets },
+      snapshot: { episode, story, assets, libraryItems, composition },
     });
     renderTail = renderTail
       .catch(() => {})
@@ -166,13 +175,8 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
             folder,
             `${episode.id}-${job.id}-${kind}.mp4`,
           );
-          const result = await renderEpisode({
-            workspace,
-            episode,
-            assets,
-            outputPath,
-            preview: kind === "preview",
-            signal: controller.signal,
+          const renderOptions = {
+            workspace, outputPath, preview: kind === "preview", signal: controller.signal,
             onProgress: (progress) => {
               job = store.saveJob({
                 ...job,
@@ -180,7 +184,10 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
                 progress: Math.max(0, Math.min(1, Number(progress) || 0)),
               });
             },
-          });
+          };
+          const result = composition
+            ? await renderComposition({ ...renderOptions, plan: composition, libraryItems })
+            : await renderEpisode({ ...renderOptions, episode, assets });
           const rel = path.relative(
             workspace,
             path.resolve(result.path || outputPath),
@@ -220,6 +227,12 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
         });
       if (req.method === "POST" && url.pathname === "/api/episodes")
         return send(res, 201, store.createEpisode(await jsonBody(req)));
+      if (req.method === "GET" && url.pathname === "/api/branding")
+        return send(res, 200, store.listBrandingTemplates());
+      if (parts[0] === "api" && parts[1] === "branding" && parts[2] && req.method === "PUT") {
+        const body = await jsonBody(req);
+        return send(res, 200, store.setBrandingRole(parts[2], body.role ?? null));
+      }
       if (parts[0] === "api" && parts[1] === "episodes" && parts[2]) {
         const episodeId = parts[2];
         if (parts.length === 3 && req.method === "GET") {
@@ -247,6 +260,78 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
         }
         if (parts[3] === "history" && req.method === "GET")
           return send(res, 200, store.listEpisodeHistory(episodeId));
+        if (parts[3] === "composition" && parts.length === 4 && req.method === "GET") {
+          const episode = store.getEpisode(episodeId);
+          if (!episode) throw new StoreError("Episode not found", 404);
+          const story = store.getStory(episodeId);
+          return send(res, 200, buildRenderPlan({ sections: story.sections, cards: episode.cards, libraryItems: store.listEpisodeLibrary(episodeId) }));
+        }
+        if (parts[3] === "cards" && parts[4] && parts[5] === "promote" && req.method === "POST") {
+          const value = store.promoteCard(episodeId, parts[4], await jsonBody(req));
+          return send(res, 201, value);
+        }
+        if (parts[3] === "branding" && parts[4] && parts[5] === "apply" && req.method === "POST") {
+          const value = store.applyBrandingTemplate(episodeId, parts[4]);
+          notify(episodeId);
+          return send(res, 200, value);
+        }
+        if (parts[3] === "library") {
+          if (parts.length === 4 && req.method === "GET")
+            return send(res, 200, store.listEpisodeLibrary(episodeId));
+          if (parts[4] === "files" && parts.length === 5 && req.method === "POST") {
+            let fileName, label;
+            try {
+              fileName = decodeURIComponent(String(req.headers["x-file-name"] || "upload"));
+              label = decodeURIComponent(String(req.headers["x-library-label"] || ""));
+            } catch { throw new StoreError("Import metadata is malformed"); }
+            const value = await library.registerFile({
+              episodeId,
+              readable: req,
+              fileName,
+              label,
+              sectionId: String(req.headers["x-story-section-id"] || "") || null,
+              contentType: String(req.headers["content-type"] || "application/octet-stream"),
+              selectedCategory: String(req.headers["x-library-category"] || "Reference"),
+              signal: AbortSignal.any([AbortSignal.timeout(10 * 60_000)]),
+            });
+            notify(episodeId);
+            return send(res, 201, value);
+          }
+          if (parts[4] === "text" && parts.length === 5 && req.method === "POST") {
+            const body = await jsonBody(req);
+            const value = await library.registerText({ episodeId, title: body.title, text: body.text, sectionId: body.sectionId });
+            notify(episodeId);
+            return send(res, 201, value);
+          }
+          if (parts[4] === "url" && parts.length === 5 && req.method === "POST") {
+            const body = await jsonBody(req);
+            const value = await library.registerUrl({ episodeId, url: body.url, sectionId: body.sectionId, signal: AbortSignal.timeout(30_000) });
+            notify(episodeId);
+            return send(res, 201, value);
+          }
+          if (parts[4] && parts.length === 5 && req.method === "PUT") {
+            const body = await jsonBody(req);
+            const value = store.updateLibraryItem(episodeId, parts[4], body.expectedRevision, body);
+            notify(episodeId);
+            return send(res, 200, value);
+          }
+          if (parts[4] && parts[5] === "file" && parts.length === 6 && ["GET", "HEAD"].includes(req.method)) {
+            const item = store.getLibraryItem(episodeId, parts[4]);
+            if (!item) throw new StoreError("Library item not found", 404);
+            const actual = await realpath(contained(workspace, item.asset.path));
+            const workspaceReal = await realpath(workspace);
+            contained(workspaceReal, path.relative(workspaceReal, actual));
+            return await streamFile(req, res, actual, item.asset.metadata?.contentType);
+          }
+          if (parts[4] && parts[5] === "thumbnail" && parts.length === 6 && ["GET", "HEAD"].includes(req.method)) {
+            const item = store.getLibraryItem(episodeId, parts[4]);
+            if (!item?.asset.thumbnailPath) throw new StoreError("Thumbnail unavailable", 404);
+            const actual = await realpath(contained(workspace, item.asset.thumbnailPath));
+            const workspaceReal = await realpath(workspace);
+            contained(workspaceReal, path.relative(workspaceReal, actual));
+            return await streamFile(req, res, actual);
+          }
+        }
         if (parts.length === 3 && req.method === "PUT") {
           const body = await jsonBody(req);
           const value = store.updateEpisode(
@@ -374,6 +459,7 @@ export async function createApp({ workspace, onListen, storeOptions } = {}) {
           ...(error.current ? { current: error.current } : {}),
           ...(error.committed ? { committed: error.committed } : {}),
           ...(error.conflictPath ? { conflictPath: error.conflictPath } : {}),
+          ...(error.issues ? { issues: error.issues } : {}),
         });
       else res.destroy();
     }
