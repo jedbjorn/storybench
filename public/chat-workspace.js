@@ -75,7 +75,7 @@ export class ChatWorkspace {
       const value = await this.api(`/api/episodes/${episodeId}/chats`, { method: "POST", body: JSON.stringify({ name: `Conversation ${this.conversations.length + 1}` }) });
       if (!this.isCurrent(generation, episodeId)) return;
       this.currentId = value.id;
-      await this.refreshList(generation, episodeId);
+      await this.refreshList(generation, episodeId, { preserveSelection: true });
     };
     this.root.querySelector("[data-chat-rename]").onclick = async () => {
       const conversationId = this.currentId, current = this.conversations.find((value) => value.id === conversationId);

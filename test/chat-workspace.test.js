@@ -47,6 +47,27 @@ test("polling releases the episode busy lock after a turn completes", async (t) 
   workspace.close();
 });
 
+test("creating a conversation selects the new conversation", async (t) => {
+  const { dom, root } = page(); t.after(() => dom.window.close());
+  const conversations = [{ id: "old", name: "Conversation 1", state: "idle", draft: "old draft" }];
+  const api = async (url, options = {}) => {
+    if (url.endsWith("/chats") && options.method === "POST") {
+      const created = { id: "new", name: "Conversation 2", state: "idle", draft: "new draft" };
+      conversations.push(created); return created;
+    }
+    if (url.endsWith("/chats")) return conversations;
+    const conversation = conversations.find((value) => url.endsWith(`/${value.id}`));
+    return { ...conversation, messages: [] };
+  };
+  const workspace = new ChatWorkspace({ root, api, getEpisode: () => ({ id: "episode" }) });
+  await workspace.open();
+  await root.querySelector("[data-chat-new]").onclick();
+  assert.equal(workspace.currentId, "new");
+  assert.equal(root.querySelector("[data-chat-select]").value, "new");
+  assert.equal(root.querySelector("[data-chat-draft]").value, "new draft");
+  workspace.close();
+});
+
 test("episode switch flushes the captured draft without cross-writing the next episode", async (t) => {
   const { dom, root } = page(); t.after(() => dom.window.close());
   let episode = { id: "one" }; const writes = [];
