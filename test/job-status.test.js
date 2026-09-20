@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { refreshJobStatus } from "../public/job-status.js";
+import { JSDOM } from "jsdom";
+import { refreshJobStatus, renderJobList } from "../public/job-status.js";
 
 test("job refresh uses server status without clobbering concurrent local episode drafts", async () => {
   let release;
@@ -18,4 +19,22 @@ test("job refresh uses server status without clobbering concurrent local episode
   assert.equal(next.episodes, localEpisodes);
   assert.deepEqual(next.assets, [{ id: "new" }]);
   assert.deepEqual(next.jobs, [{ id: "job", stale: true }]);
+});
+
+test("job updates preserve completed video nodes across identical and sibling refreshes", () => {
+  const dom = new JSDOM('<div id="jobs"></div>');
+  const container = dom.window.document.querySelector("#jobs");
+  const completed = { id: "done", kind: "render", state: "completed", progress: 1, revision: 2, outputClass: "draft", createdAt: "2026-09-20T12:00:00.000Z", stale: false, error: null };
+  const active = { id: "active", kind: "graphic", state: "running", progress: 0.1, revision: 1, outputClass: null, createdAt: "2026-09-20T12:01:00.000Z", stale: false, error: null };
+  renderJobList(container, [completed, active]);
+  const video = container.querySelector("video");
+  const activeRow = container.querySelector('[data-job-id="active"]');
+
+  renderJobList(container, [completed, active]);
+  assert.equal(container.querySelector("video"), video);
+  renderJobList(container, [completed, { ...active, progress: 0.6 }]);
+  assert.equal(container.querySelector("video"), video);
+  assert.notEqual(container.querySelector('[data-job-id="active"]'), activeRow);
+  assert.match(container.querySelector('[data-job-id="active"]').textContent, /60%/);
+  dom.window.close();
 });
