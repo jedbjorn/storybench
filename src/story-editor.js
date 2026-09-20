@@ -24,6 +24,14 @@ export function mappingChangeSummary(mappingChanges) {
   return `${cards} ${cards === 1 ? "card is" : "cards are"} now unassigned because ${sections} story ${sections === 1 ? "section was" : "sections were"} removed. Open Storyboard to reassign ${cards === 1 ? "it" : "them"}.`;
 }
 
+export function matchesSubmittedCommit(current, submitted, error = {}) {
+  return current?.source === submitted || Boolean(
+    error.committed &&
+    current?.storyRevision === error.committed.storyRevision &&
+    current?.source === error.committed.source,
+  );
+}
+
 const sectionMarker = /^ {0,3}<!--\s*storybench:section\s+[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\s*-->\s*$/gim;
 
 export function createStoryRenderer() {
@@ -197,14 +205,15 @@ export class StoryEditor {
   async resolveUncertain(submitted, originalError) {
     try {
       const current = await this.api(`/api/episodes/${this.episodeId}/story`);
-      if (originalError.conflictPath && current.source === submitted) {
+      if (originalError.conflictPath) {
         this.story = current;
         this.showConflict(current, submitted, "Story changes were committed, but the registered story.md had changed outside Storybench. That file was preserved as a conflict artifact; your draft remains open while publication is blocked.");
         this.setStatus("Story committed — external file conflict blocks publication");
         return null;
       }
-      if (current.source === submitted && current.publicationStatus === "published") return this.accept(current);
-      if (current.source === submitted) {
+      const committedMatch = matchesSubmittedCommit(current, submitted, originalError);
+      if (committedMatch && current.publicationStatus === "published") return this.accept(current);
+      if (committedMatch) {
         try {
           const published = await this.api(`/api/episodes/${this.episodeId}/story/publication`, {
             method: "POST",

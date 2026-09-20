@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createStoryRenderer, mappingChangeSummary, STARTER_STORY, StoryEditor } from "../src/story-editor.js";
+import { createStoryRenderer, mappingChangeSummary, matchesSubmittedCommit, STARTER_STORY, StoryEditor } from "../src/story-editor.js";
 
 test("story renderer supports the agreed markdown without executing document HTML", () => {
   const render = createStoryRenderer();
@@ -74,4 +74,12 @@ test("mapping changes produce a persistent user-facing reassignment summary", ()
   assert.equal(mappingChangeSummary({ retiredSectionIds: ["section"], unassignedCardIds: ["a", "b"] }),
     "2 cards are now unassigned because 1 story section was removed. Open Storyboard to reassign them.");
   assert.equal(mappingChangeSummary({ retiredSectionIds: [], unassignedCardIds: [] }), "");
+});
+
+test("publication recovery recognizes server-normalized committed source", () => {
+  const submitted = "# Sections\n## Intro";
+  const normalized = "# Sections\n<!-- storybench:section 123e4567-e89b-42d3-a456-426614174000 -->\n## Intro";
+  const current = { storyRevision: 2, source: normalized };
+  assert.equal(matchesSubmittedCommit(current, submitted, { committed: current }), true);
+  assert.equal(matchesSubmittedCommit({ storyRevision: 3, source: normalized }, submitted, { committed: current }), false);
 });
