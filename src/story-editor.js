@@ -32,6 +32,10 @@ export function matchesSubmittedCommit(current, submitted, error = {}) {
   );
 }
 
+export function isStorySaveShortcut(event) {
+  return (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "s";
+}
+
 const sectionMarker = /^ {0,3}<!--\s*storybench:section\s+[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\s*-->\s*$/gim;
 
 export function createStoryRenderer() {
@@ -76,6 +80,11 @@ export class StoryEditor {
     this.root.querySelector("[data-story-copy]").onclick = () => this.copyDraft();
     this.root.querySelector("[data-story-latest]").onclick = () => this.useLatest();
     this.root.querySelector("[data-story-reconcile]").onclick = () => this.reconcile();
+    document.addEventListener("keydown", (event) => {
+      if (!this.view || this.root.querySelector("[data-story-editing]").hidden || !isStorySaveShortcut(event)) return;
+      event.preventDefault();
+      this.save();
+    });
   }
 
   async open(episodeId) {
@@ -145,9 +154,7 @@ export class StoryEditor {
         doc: initial,
         extensions: [
           history(), markdown(), EditorView.lineWrapping,
-          keymap.of([...defaultKeymap, ...historyKeymap, ...markdownKeymap, {
-            key: "Mod-s", preventDefault: true, run: () => { this.save(); return true; },
-          }]),
+          keymap.of([...defaultKeymap, ...historyKeymap, ...markdownKeymap]),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) this.setStatus("Story has unsaved changes");
           }),

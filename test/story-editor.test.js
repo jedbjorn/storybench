@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createStoryRenderer, mappingChangeSummary, matchesSubmittedCommit, STARTER_STORY, StoryEditor } from "../src/story-editor.js";
+import { createStoryRenderer, isStorySaveShortcut, mappingChangeSummary, matchesSubmittedCommit, STARTER_STORY, StoryEditor } from "../src/story-editor.js";
 
 test("story renderer supports the agreed markdown without executing document HTML", () => {
   const render = createStoryRenderer();
@@ -82,4 +82,10 @@ test("publication recovery recognizes server-normalized committed source", () =>
   const current = { storyRevision: 2, source: normalized };
   assert.equal(matchesSubmittedCommit(current, submitted, { committed: current }), true);
   assert.equal(matchesSubmittedCommit({ storyRevision: 3, source: normalized }, submitted, { committed: current }), false);
+});
+
+test("story save shortcut remains active when editor controls have focus", () => {
+  assert.equal(isStorySaveShortcut({ ctrlKey: true, metaKey: false, altKey: false, shiftKey: false, key: "s" }), true);
+  assert.equal(isStorySaveShortcut({ ctrlKey: false, metaKey: true, altKey: false, shiftKey: false, key: "S" }), true);
+  assert.equal(isStorySaveShortcut({ ctrlKey: true, metaKey: false, altKey: false, shiftKey: true, key: "s" }), false);
 });
