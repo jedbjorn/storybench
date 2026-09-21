@@ -209,6 +209,7 @@ test("deriving from a reference needs direction; the direction is recorded with 
 test("capabilities list only what is served and verified", () => {
   const scope = { harness: "claude", model: "sonnet", episodeDir: "/storybench/data/channels/c/episodes/e", workDir: "/storybench/data/channels/c/episodes/e/work", requestWorkDir: null };
   const noImages = describeCapabilities({ scope, served: TOOL_DEFINITIONS.filter((definition) => !definition.name.startsWith("inspect_")) });
+  assert.equal(describeCapabilities({ scope: { ...scope, harness: "other" }, served: TOOL_DEFINITIONS }).imageInput.verified, false, "an unverified route is not advertised");
   assert.equal(noImages.imageInput.available, false);
   assert.equal(noImages.commandExecution.commands.verified, false);
   const full = describeCapabilities({ scope, served: TOOL_DEFINITIONS, release: { tools: { ffmpeg: "7.1.5", codex: "0.155.1" } } });
@@ -237,3 +238,43 @@ test("contact sheet helper tiles and labels frames", async (t) => {
   assert.deepEqual([sheet.columns, sheet.rows], [2, 2]);
   assert.equal(sheet.png.subarray(1, 4).toString(), "PNG");
 });
+
+test("reads use the validated descriptor: a path swapped after validation is never read and tool errors never quote file bytes", async (t) => {
+  const f = await fixture(t);
+  const { resolveTarget } = await import("../src/runtime/project-catalog.js");
+  const { mediaSummary } = await import("../src/runtime/media-inspect.js");
+  const { unlink } = await import("node:fs/promises");
+  await exec("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=0x00ff00:s=16x16:d=1", "-frames:v", "1", path.join(f.scope.workDir, "x.png")]);
+  await mkdir(path.join(f.root, "imports"), { recursive: true });
+  await exec("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=0xff0000:s=16x16:d=1", "-frames:v", "1", path.join(f.root, "imports", "secret.png")]);
+  const target = await resolveTarget(f.store, f.scope, { path: "work/x.png" });
+  await unlink(target.file);
+  await symlink(path.join(f.root, "imports", "secret.png"), target.file);
+  const [r, g] = await averageColor(await frameAt(target.handle), f.scratch);
+  assert.ok(g > 200 && r < 50, `the validated (green) file was read, got ${[r, g]}`);
+  await target.handle.close();
+  // Opening through the swapped symlink is refused outright.
+  await assert.rejects(f.tools().call("inspect_image", { path: "work/x.png" }), { code: "PATH_NOT_PROJECT" });
+  // A validated file swapped to the database: the descriptor still points at the old inode.
+  await unlink(target.file);
+  await writeFile(target.file, "not media but not secret either");
+  const second = await resolveTarget(f.store, f.scope, { path: "work/x.png" });
+  await unlink(second.file);
+  await symlink(path.join(f.root, "storybench.sqlite"), second.file);
+  const failure = await frameAt(second.handle).catch((error) => error);
+  assert.equal(failure.code, "FRAME_FAILED");
+  assert.doesNotMatch(failure.message, /SQLite|not media/);
+  const probe = await mediaSummary(second.handle).catch((error) => error);
+  assert.doesNotMatch(probe.message, /SQLite|not media/);
+  await second.handle.close();
+});
+
+test("media tools time out instead of hanging", async (t) => {
+  const f = await fixture(t);
+  const fifo = path.join(f.scratch, "stall.fifo");
+  await exec("mkfifo", [fifo]);
+  await assert.rejects(frameAt(fifo, null, { timeoutMs: 300 }), { code: "FRAME_TIMEOUT" });
+});
+
+// Review item 5: wired once the v9 message origin/kind marker lands (#26/#27).
+test.todo("a shortcut-originated message (v9 message origin marker) is refused as reference direction");

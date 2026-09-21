@@ -199,22 +199,25 @@ export function createScopedTools(scope, { store, library = null, isShortcutMess
   let served = TOOL_DEFINITIONS;
   const handlers = {
     async inspect_image(args = {}) {
-      const target = await resolveTarget(store, scope, args);
       const at = args.atSeconds == null ? null : assertTimestamp(args.atSeconds);
-      const bytes = await frameAt(target.file, at);
+      const target = await resolveTarget(store, scope, args);
+      let bytes;
+      try { bytes = await frameAt(target.handle, at); } finally { await target.handle.close(); }
       return { text: JSON.stringify({ origin: target.origin, reference: target.reference, atSeconds: at, image: `${bytes.length} bytes PNG`, note: `Image of ${label(target.origin)}${at != null ? ` at ${at}s` : ""}` }), images: [png(bytes)] };
     },
     async inspect_contact_sheet(args = {}) {
-      const target = await resolveTarget(store, scope, args);
       const times = sheetTimestamps(args.startSeconds, args.endSeconds, args.count ?? 8);
       const columns = Number.isInteger(args.columns) && args.columns >= 1 && args.columns <= 8 ? args.columns : undefined;
-      const sheet = await contactSheet(target.file, times, { columns });
+      const target = await resolveTarget(store, scope, args);
+      let sheet;
+      try { sheet = await contactSheet(target.handle, times, { columns }); } finally { await target.handle.close(); }
       const layout = times.map((at, index) => ({ tile: index + 1, row: Math.floor(index / sheet.columns) + 1, column: (index % sheet.columns) + 1, atSeconds: at }));
       return { text: JSON.stringify({ origin: target.origin, reference: target.reference, columns: sheet.columns, rows: sheet.rows, labelled: sheet.labelled, frames: layout }), images: [png(sheet.png)] };
     },
     async inspect_media(args = {}) {
       const target = await resolveTarget(store, scope, args);
-      return json({ origin: target.origin, reference: target.reference, ...(await mediaSummary(target.file)) });
+      try { return json({ origin: target.origin, reference: target.reference, ...(await mediaSummary(target.handle)) }); }
+      finally { await target.handle.close(); }
     },
     async read_reference_excerpt(args = {}) {
       return json(readExcerpt(store, scope, args));

@@ -4,7 +4,7 @@
 // through the store; files resolve through the project-root containment check.
 import path from "node:path";
 import { PROJECT_ROOTS } from "./layout.js";
-import { RuntimeError, resolveProjectFile } from "./validate.js";
+import { RuntimeError, openProjectFile } from "./validate.js";
 
 const lower = (value) => String(value ?? "").toLowerCase();
 
@@ -34,21 +34,23 @@ export function getItem(store, episodeId, itemId) {
   return item;
 }
 
-// Resolve a tool target { itemId, episodeId? } or { path } to a readable project file and
-// its origin. Paths are relative to the current episode directory or absolute project paths.
+// Resolve a tool target { itemId, episodeId? } or { path } to an OPEN descriptor of a
+// validated project file (see openProjectFile) plus its origin. Paths are relative to the
+// current episode directory or absolute project paths. The caller closes `handle`.
 export async function resolveTarget(store, scope, args = {}) {
   if (args.itemId != null) {
     const episodeId = args.episodeId ?? scope.episodeId;
     const item = getItem(store, episodeId, args.itemId);
     if (!item.asset?.path) throw new RuntimeError("ITEM_HAS_NO_FILE", "This library item has no stored file");
-    const file = await resolveProjectFile(scope.dataRoot, path.resolve(scope.dataRoot, item.asset.path), { projectRoots: PROJECT_ROOTS });
-    return { file, item, origin: originOf(store, episodeId, item), reference: isReferenceItem(store, episodeId, item) };
+    const opened = await openProjectFile(scope.dataRoot, path.resolve(scope.dataRoot, item.asset.path), { projectRoots: PROJECT_ROOTS });
+    return { handle: opened.handle, file: opened.path, item, origin: originOf(store, episodeId, item), reference: isReferenceItem(store, episodeId, item) };
   }
   if (typeof args.path !== "string" || !args.path) throw new RuntimeError("INVALID_TARGET", "Give either itemId (with optional episodeId) or path");
-  const file = await resolveProjectFile(scope.dataRoot, path.resolve(scope.episodeDir, args.path), { projectRoots: PROJECT_ROOTS });
+  const opened = await openProjectFile(scope.dataRoot, path.resolve(scope.episodeDir, args.path), { projectRoots: PROJECT_ROOTS });
+  const file = opened.path;
   const parts = path.relative(scope.dataRoot, file).split(path.sep);
   const origin = { path: file, ...(parts[0] === "channels" ? { channel: { id: parts[1] } } : {}), ...(parts[2] === "episodes" || parts[0] === "episodes" ? { episode: { id: parts[0] === "episodes" ? parts[1] : parts[3] } } : {}) };
-  return { file, item: null, origin, reference: null };
+  return { handle: opened.handle, file, item: null, origin, reference: null };
 }
 
 // Browse/search the installation. Empty query lists episodes (with channel) and their items.
