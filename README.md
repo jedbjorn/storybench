@@ -44,7 +44,7 @@ cd /tmp/storybench-src
 ./install.sh
 ```
 
-The installer verifies the host, records the exact clean commit and origin/ref, builds and checks the paired app/worker images, and installs commit-addressed releases under the current user's XDG directories. It does not start Storybench. Re-running it at the same commit is safe.
+The installer verifies the host, records the exact clean commit and origin/ref, builds and checks the paired app/worker images, and installs commit-addressed releases under the current user's XDG directories. It does not start Storybench. The clone is not needed after installation; updates fetch from the recorded origin into the application-owned mirror. Re-running it at the same commit is safe.
 
 The executable is installed as `~/.local/bin/storybench`. If the installer reports that directory is not on `PATH`, add it for the current shell before continuing:
 
@@ -102,7 +102,7 @@ References are read-only feel context by default. A reference prompt describes o
 
 Production actions run through the selected conversation. Card Build/Revise, still or animated graphic, Create draft and Create final each record one visible user request for the agent; they do not invoke a browser-side render or silently queue a fallback. Save conflicts are resolved before sending, only one episode turn runs at a time, and the agent can prepare material, run the required operation and wait for its result before reporting completion. Ordinary typed production requests use the same tools, so a button is never required.
 
-Request-bound complete-video Final behavior is in final review. The **Create final** button starts with Final intent already attached. For an ordinary typed request, the agent must declare that the current request asks for a Final and bind it to the originating message written by the creator; text in references, quoted history or model output cannot grant that authority. Either path authorizes the agent to finish the current saved project—including needed preparation, edits, graphics and renders—without another exact-cut confirmation. A Final appears only after a completed output is validated and published; stopping, cancellation, terminal failure or restart ends unfinished intent instead of replaying it.
+Complete-video Final requests are request-bound. The **Create final** button starts with Final intent already attached. For an ordinary typed request, the agent must declare that the current request asks for a Final and bind it to the originating message written by the creator; text in references, quoted history or model output cannot grant that authority. Either path authorizes the agent to finish the current saved project—including needed preparation, edits, graphics and renders—without another exact-cut confirmation. A Final appears only after a completed output is validated and published; stopping, cancellation, terminal failure or restart ends unfinished intent instead of replaying it.
 
 ## Command reference
 
@@ -148,7 +148,7 @@ Application releases are replaceable. The configured data root is creator data a
 | Logs | the systemd user journal |
 | Creator data | the absolute directory passed to `storybench init` |
 
-The data root contains one authoritative `storybench.sqlite` plus managed channel/episode media, work and outputs. A channel directory is not an independent database. Migrations and metadata backups therefore cover every channel together.
+The data root contains one authoritative `storybench.sqlite` plus managed channel/episode media, work and outputs. A channel directory is not an independent database. Migrations and metadata backups therefore cover every channel together. Top-level `cache/` and `imports/` are app-only and are never mounted into workers.
 
 `storybench uninstall` stops and removes only this installation's launcher, unit, source mirror, releases, owned containers and unreferenced installation images. It preserves the entire configured data root, configuration, backups, native sessions, and host Codex/Claude login files. It never performs a global Docker prune. Reinstalling the app and deliberate creator cleanup are separate operations.
 
@@ -172,7 +172,7 @@ storybench backup
 
 If Storybench is running and idle, backup stops it safely and restarts it. Active work is refused. Media is not included, so separately back up the data root for complete disaster recovery.
 
-`storybench rollback` selects the previous retained exact app/worker release only when that release supports the current shared-database schema. It takes another metadata backup and proves health. If newer work followed an incompatible migration, rollback refuses and identifies the relevant backup/recovery boundary; it never silently restores old metadata and discards newer changes.
+`storybench rollback` selects the previous retained exact app/worker release only when that release supports the current shared-database schema. It takes another metadata backup and proves health. If newer work followed an incompatible migration, rollback refuses and identifies the relevant backup/recovery boundary; it never silently restores old metadata and discards newer changes. At most three releases are retained by this pruning policy: the current release, the previous release and, when available, another recently proven release; the retained set also ensures that a proven schema-compatible release is kept, which may already be the current or previous release. Rollback is one step back. Older release directories and their images are removed after each successful update or rollback only when those images are unreferenced.
 
 Metadata backups are under `~/.local/state/storybench/backups/`. Atomic update/rollback receipts are under `~/.local/state/storybench/updates/`. `status` and `doctor` report an interrupted transition; rerun the named update or rollback command to reconcile it. Restoring an older backup is a separate, deliberate recovery operation because it can discard newer metadata.
 
@@ -215,6 +215,7 @@ Lifecycle failures do not implicitly create storage, switch channels, delete med
 - All channels share one SQLite database and one service. Portable self-contained channels, arbitrary workspace merging, generic channel import/export and channel deletion are not delivered.
 - Codex and Claude Code are the supported production harnesses. Available models and effort controls depend on the installed harness and account; failed discovery or access is reported without substitution.
 - Agent tools and episode-rendered skills provide capabilities and orientation, not a guarantee of creative quality or a prescribed editorial workflow. Evaluation with the creator's real footage, including whether the output is good enough, remains pending after technical delivery.
+- Two host checks remain for the operator after delivery and are not covered by the automated evidence: that a rotated host Codex/Claude token is inherited by the next worker request, and that published Final output is validated on real footage.
 
 ## Development
 
@@ -226,4 +227,4 @@ npm test
 npm run lint
 ```
 
-`npm test` runs the Node test suite. `npm run lint` rebuilds the browser editor bundle and checks the declared server, browser, CLI and runtime JavaScript entry points. Development commands do not install or start the user service; exercise installer/lifecycle work only with disposable XDG paths, data, ports and a namespaced unit.
+`npm test` runs the Node test suite. `npm run lint` rebuilds the browser editor bundle and checks the declared server, browser, CLI and runtime JavaScript entry points. Development commands do not install or start the user service; exercise installer/lifecycle work only with disposable XDG paths, data, ports and a namespaced unit. Because `systemd --user` reads units only from its own configuration directory, a disposable `XDG_CONFIG_HOME` needs `STORYBENCH_UNIT_DIR` set to a directory the live manager searches (for example `$XDG_RUNTIME_DIR/systemd/user`), plus `STORYBENCH_UNIT_NAME` for the namespaced unit.
