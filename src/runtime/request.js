@@ -37,7 +37,10 @@ export async function openWorkerRequest(options) {
   try { request = await openHeldRequest(options); }
   catch (error) { release(); throw error; }
   const stop = request.stop;
-  request.stop = async () => { try { return await stop(); } finally { release(); } };
+  // The turn is over once its harness connection closes: renders may be refreshed for the
+  // next request even while this worker's container is still being removed.
+  request.releaseRenders = release;
+  request.stop = async () => { release(); return stop(); };
   return request;
 }
 

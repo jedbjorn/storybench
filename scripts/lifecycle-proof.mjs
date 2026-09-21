@@ -171,7 +171,8 @@ async function main() {
   const turn1 = await sendAndWait(main, epA.id, chatA.id, `Use a shell command with ffmpeg to create a 2-second 320x240 test video at work/lifecycle-1.mp4 (for example: ffmpeg -y -f lavfi -i testsrc=duration=2:size=320x240:rate=24 -pix_fmt yuv420p work/lifecycle-1.mp4), then register it with the Storybench tool register_work_file and reply with the returned assetId. Also remember this code word for later: ${word}.`, { onWorker: (line) => workerLines.push(line) });
   const library = (await main.api("GET", `/api/episodes/${epA.id}/library`)).json;
   const registered = (library ?? []).find((item) => item.provenance?.tool === "register_work_file");
-  const afterTurn1 = await main.containers("worker");
+  // The worker is removed when the turn's connection closes (a few seconds for docker stop).
+  const afterTurn1 = (await waitFor(async () => ((await main.containers("worker")) ? null : "none"), { timeout: 30_000 })) === "none" ? "" : await main.containers("worker");
   await save("turn1-production.json", { chat: trimChat(turn1.chat), workersSeenDuringTurn: workerLines, workersAfterTurn: afterTurn1, registered: registered && { id: registered.id, category: registered.category, asset: { id: registered.asset?.id, kind: registered.asset?.kind, channelId: registered.asset?.channelId }, provenance: registered.provenance } });
   record("turn", "real Codex turn via app API ran in a request-scoped worker and registered a file", turn1.chat?.state === "idle" && workerLines.length >= 1 && registered && lastAssistant(turn1.chat).includes(registered.asset?.id ?? "none") && !afterTurn1,
     `workers during turn ${workerLines.length}, after ${afterTurn1 || "none"}; asset ${registered?.asset?.id} in ${registered?.category}`, "turn1-production.json");
