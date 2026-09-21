@@ -31,6 +31,20 @@ test('channel standards persist independently, validate limits and refuse stale 
   assert.deepEqual(store.saveBrandStandards(a.id, 2, { colors: [], fonts: [], stylePrompt: '' }).fonts, []);
 });
 
+test('optional brand roles keep their positions across saves and reloads', (t) => {
+  const store = new Store(temp(t)); t.after(() => store.close());
+  const channel = store.getDefaultChannel();
+  const saved = store.saveBrandStandards(channel.id, 1, {
+    colors: [null, '#0055ff', '#FFFFFF'], fonts: [null, null, 'Liberation Serif'], stylePrompt: '',
+  });
+  assert.deepEqual(saved.colorRoles, { base: null, accent: '#0055FF', background: '#FFFFFF' });
+  assert.deepEqual(saved.fontRoles, { base: null, accent: null, alternate: 'Liberation Serif' });
+  assert.deepEqual(store.getBrandStandards(channel.id), saved);
+  assert.throws(() => store.saveBrandStandards(channel.id, 2, {
+    colors: [], fonts: [null, 'DejaVu Sans', 'DejaVu Sans'], stylePrompt: '',
+  }), { statusCode: 400 });
+});
+
 test('v9 migration backs up data and leaves branding and conversations intact', (t) => {
   const root = temp(t); let store = new Store(root); t.after(() => store.close());
   const ep = store.createEpisode();
@@ -93,6 +107,10 @@ test('each turn receives current channel standards and font paths; in-flight con
   assert.match(prompts[0], /Calm blue/); assert.match(prompts[1], /New warm direction/);
   assert.equal(contexts[1].brandStandards.stylePrompt, standards.stylePrompt);
   assert.equal(contexts[2].brandStandards.stylePrompt, 'New warm direction');
+  assert.deepEqual(contexts[1].brandStandards.colorRoles, { base: '#0055FF', accent: '#FFFFFF', background: null });
+  assert.deepEqual(contexts[1].brandStandards.fontRoles, { base: 'DejaVu Sans', accent: 'Liberation Serif', alternate: null });
+  assert.match(prompts[0], /"colorRoles":\{"base":"#0055FF","accent":"#FFFFFF","background":null\}/);
+  assert.match(prompts[0], /"fontRoles":\{"base":"DejaVu Sans","accent":"Liberation Serif","alternate":null\}/);
   assert.equal(contexts[1].fonts.length, 6);
   assert.ok(contexts[1].fonts.every((font) => font.files.regular && font.files.bold));
 });

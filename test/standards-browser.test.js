@@ -4,16 +4,16 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { chromium } from 'playwright-core';
+import { chromium, firefox } from 'playwright-core';
 import { createApp } from '../src/server.js';
 
-async function launch() {
-  try { return await chromium.launch(); }
-  catch { return existsSync('/usr/bin/chromium') ? chromium.launch({ executablePath: '/usr/bin/chromium' }).catch(() => null) : null; }
+async function launch(browserType) {
+  try { return await browserType.launch(); }
+  catch { return browserType === chromium && existsSync('/usr/bin/chromium') ? chromium.launch({ executablePath: '/usr/bin/chromium' }).catch(() => null) : null; }
 }
-test('Branding and Models pages save settings, render fonts, preserve episodes and guard navigation', { timeout: 60000 }, async (t) => {
-  const browser = await launch();
-  if (!browser) return t.skip('No launchable Chromium on this seat');
+for (const browserType of [chromium, firefox]) test(`${browserType.name()}: Branding and Models pages save settings, render fonts, preserve episodes and guard navigation`, { timeout: 60000 }, async (t) => {
+  const browser = await launch(browserType);
+  if (!browser) return t.skip(`No launchable ${browserType.name()} on this seat`);
   t.after(() => browser.close());
   const root = mkdtempSync(path.join(tmpdir(), 'storybench-standards-browser-'));
   const catalog = [{ harness: 'codex', available: true, exactModelIds: false, models: [
@@ -34,6 +34,14 @@ test('Branding and Models pages save settings, render fonts, preserve episodes a
   await page.click('[data-page="branding"]');
   await page.locator('#standardsForm').waitFor();
   assert.equal(await page.locator('#episodesPage').isVisible(), false);
+  for (const width of [1440, 900, 600]) {
+    await page.setViewportSize({ width, height: 1050 });
+    const nav = await page.locator('.page-nav').boundingBox();
+    assert.ok(Math.abs(nav.x + nav.width / 2 - width / 2) < 1, `Navigation centered at ${width}px`);
+  }
+  await page.setViewportSize({ width: 1440, height: 1050 });
+  assert.equal(await page.getByRole('textbox', { name: 'Base color hex', exact: true }).count(), 1);
+  assert.equal(await page.getByRole('combobox', { name: 'Alternate font' }).count(), 1);
   assert.match(await page.textContent('#brandingTemplates'), /Brand intro/);
   await page.fill('[name="color0"]', '#0055ff');
   await page.fill('[name="color1"]', '#ffffff');
@@ -80,5 +88,48 @@ test('Branding and Models pages save settings, render fonts, preserve episodes a
   await page.goto(base + '/models' + query);
   await page.locator('#defaultModelEditor form').waitFor();
   assert.equal(await page.inputValue('#defaultModelEditor [name="model"]'), 'model-a');
+  await page.goto(base + '/branding' + query);
+  await page.locator('#standardsForm').waitFor();
+  await page.getByRole('button', { name: 'Clear base color' }).click();
+  await page.fill('[name="color2"]', '#FFFFFF');
+  await page.selectOption('[name="font0"]', '');
+  await page.selectOption('[name="font2"]', 'Liberation Serif');
+  await page.getByRole('button', { name: 'Save standards', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#saveState').textContent === 'Standards saved');
+  await page.reload();
+  await page.locator('#standardsForm').waitFor();
+  assert.equal(await page.inputValue('[name="color0"]'), '');
+  assert.equal(await page.inputValue('[name="color2"]'), '#FFFFFF');
+  assert.equal(await page.inputValue('[name="font0"]'), '');
+  assert.equal(await page.inputValue('[name="font1"]'), 'DejaVu Sans');
+  assert.equal(await page.inputValue('[name="font2"]'), 'Liberation Serif');
+
+  // Real pointer clicks must place the caret after switching between fields.
+  async function checkCaret(selector, other) {
+    const field = page.locator(selector);
+    await field.fill('abcdefghijklmno');
+    await page.locator(other).click();
+    await field.click({ position: { x: 45, y: 12 } });
+    const middle = await field.evaluate((el) => el.selectionStart);
+    assert.ok(middle > 0 && middle < 15, `${selector}: middle caret is ${middle}`);
+    await page.keyboard.insertText('X');
+    assert.equal(await field.inputValue(), 'abcdefghijklmno'.slice(0, middle) + 'X' + 'abcdefghijklmno'.slice(middle));
+    await page.locator(other).click();
+    const bounds = await field.boundingBox();
+    await field.click({ position: { x: bounds.width - 12, y: 12 } });
+    assert.equal(await field.evaluate((el) => el.selectionStart), 16);
+  }
+  await checkCaret('[name="stylePrompt"]', '[name="color0"]');
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.click('[data-page="episodes"]');
+  await page.locator('#cards [data-key="prompt"]').waitFor();
+  await checkCaret('#cards [data-key="prompt"]', '#episodeTitle');
+  await page.locator('#cards .card-group-heading').last().click();
+  await page.waitForFunction(() => document.querySelector('#saveState').textContent.startsWith('Saved'));
+  await Promise.all([
+    page.waitForResponse((response) => response.url().includes('/api/episodes/' + episode.id) && response.request().method() === 'PUT'),
+    page.locator('#cards .drag').dragTo(page.locator('#cards .card-group-heading').last()),
+  ]);
+  assert.equal(app.store.getEpisode(episode.id).cards[0].order, 1);
   assert.deepEqual(errors, []);
 });
