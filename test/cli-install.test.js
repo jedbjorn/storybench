@@ -111,6 +111,7 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
   const buildRelease = async ({ repo }) => {
     builds++;
     assert.equal(path.basename(repo).startsWith(".stage-"), true, "the image context is the materialized release tree");
+    assert.equal(command("git", ["-C", repo, "status", "--porcelain", "--untracked-files=no"]), "", "the archive export is the exact clean commit");
     return createManifest({ packageName: "storybench", packageVersion: "0.1.0", commit: s.commit, ref: "HEAD",
       images: { app: APP, worker: WORKER }, tools: {}, schema: { min: 0, max: SCHEMA_VERSION } });
   };

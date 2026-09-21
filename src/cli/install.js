@@ -125,6 +125,8 @@ async function attachDetachedMetadata(run, mirror, commit, stage) {
   await checked(run, "git", ["init", "--quiet", metadata]);
   await checked(run, "git", ["-C", metadata, "fetch", "--quiet", "--no-tags", mirror, commit], { timeoutMs: 120_000 });
   await checked(run, "git", ["-C", metadata, "update-ref", "--no-deref", "HEAD", commit]);
+  await checked(run, "git", ["-C", metadata, "read-tree", commit]);
+  await checked(run, "git", ["-C", metadata, "config", "core.worktree", stage]);
   writeFileSync(path.join(stage, ".git"), `gitdir: ${path.join(metadata, ".git")}\n`, { mode: 0o600 });
   return () => { rmSync(path.join(stage, ".git"), { force: true }); rmSync(metadata, { recursive: true, force: true }); };
 }
