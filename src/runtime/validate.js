@@ -1,6 +1,7 @@
 // Pure validation for the private runtime control channel and worker-visible paths.
 // No Docker, network or provider access happens here; everything is unit-testable.
-import { lstat, realpath, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readlink, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 export class RuntimeError extends Error {
@@ -157,4 +158,28 @@ export async function resolveProjectFile(dataRoot, input, { projectRoots }) {
     throw new RuntimeError("PATH_NOT_PROJECT", "Path resolves outside Storybench project directories", { status: 403 });
   if (!(await stat(actual)).isFile()) throw new RuntimeError("PATH_NOT_FILE", "Only regular files can be inspected");
   return actual;
+}
+
+// Open a validated project file ONCE (O_NOFOLLOW) and confirm, from the kernel's view of the
+// open descriptor (/proc/self/fd/N), that it is inside a project root. Readers then use only
+// this descriptor, so swapping the path after validation (e.g. to a symlink at the database)
+// cannot change what is read. Caller closes `handle`.
+export async function openProjectFile(dataRoot, input, { projectRoots }) {
+  const actual = await resolveProjectFile(dataRoot, input, { projectRoots });
+  const rootReal = await realpath(dataRoot);
+  let handle;
+  try { handle = await open(actual, constants.O_RDONLY | constants.O_NOFOLLOW); }
+  catch (error) {
+    if (error.code === "ELOOP") throw new RuntimeError("PATH_NOT_PROJECT", "Path resolves outside Storybench project directories", { status: 403 });
+    throw new RuntimeError("PATH_MISSING", "File does not exist", { status: 404 });
+  }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) throw new RuntimeError("PATH_NOT_FILE", "Only regular files can be inspected");
+    const opened = await readlink(`/proc/self/fd/${handle.fd}`);
+    const top = path.relative(rootReal, opened).split(path.sep)[0];
+    if (!isInside(rootReal, opened) || !projectRoots.includes(top))
+      throw new RuntimeError("PATH_NOT_PROJECT", "Path resolves outside Storybench project directories", { status: 403 });
+    return { handle, path: opened, size: info.size };
+  } catch (error) { await handle.close(); throw error; }
 }

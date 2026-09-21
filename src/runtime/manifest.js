@@ -4,7 +4,10 @@
 // (later) the installer/CLI. Mutable tags are never identity: images are exact IDs.
 import { createHash } from "node:crypto";
 
-export const MANIFEST_SCHEMA = "storybench.release/1";
+// v2: the content id excludes the informational `builtAt`. v1 manifests (id over every field
+// but `id`) remain readable with their original id rule.
+export const MANIFEST_SCHEMA = "storybench.release/2";
+export const LEGACY_MANIFEST_SCHEMAS = Object.freeze(["storybench.release/1"]);
 // Bumped when the app <-> host control protocol, worker launch table or scoped-tool
 // bridge changes incompatibly. App and worker of one release always share it.
 export const RUNTIME_PROTOCOL = 1;
@@ -25,9 +28,12 @@ function canonical(value) {
   return JSON.stringify(value);
 }
 
-// Stable identity of a manifest's content (independent of key order and whitespace).
+// Stable identity of a manifest's content (independent of key order and whitespace). From v2
+// the informational build time is excluded, so one commit's release has one identity.
 export function manifestId(manifest) {
-  const { id, ...content } = manifest;
+  const { id, ...all } = manifest;
+  const { builtAt, ...content } = all;
+  if (LEGACY_MANIFEST_SCHEMAS.includes(manifest.schema)) return `sha256:${createHash("sha256").update(canonical(all)).digest("hex")}`;
   return `sha256:${createHash("sha256").update(canonical(content)).digest("hex")}`;
 }
 
@@ -46,7 +52,7 @@ export function createManifest({ packageName, packageVersion, commit, ref = null
 
 export function validateManifest(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) fail("not an object");
-  if (input.schema !== MANIFEST_SCHEMA) fail(`schema must be ${MANIFEST_SCHEMA}`);
+  if (input.schema !== MANIFEST_SCHEMA && !LEGACY_MANIFEST_SCHEMAS.includes(input.schema)) fail(`schema must be ${MANIFEST_SCHEMA}`);
   if (typeof input.package?.name !== "string" || !VERSION.test(input.package?.version ?? "")) fail("package name/version");
   if (!COMMIT.test(input.source?.commit ?? "")) fail("source.commit must be a git commit");
   for (const role of ["app", "worker"]) if (!IMAGE_ID.test(input.images?.[role]?.id ?? "")) fail(`images.${role}.id must be an exact sha256 image ID`);
@@ -82,6 +88,7 @@ export function releaseIdentity(manifest) {
     images: { app: manifest.images.app.id, worker: manifest.images.worker.id },
     protocol: manifest.runtime.protocol,
     supportedSchema: { ...manifest.database.supportedSchema },
+    tools: { ...(manifest.runtime.tools ?? {}) },
   };
 }
 

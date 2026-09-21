@@ -100,8 +100,16 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     await resolveEpisodeDirectory(config.dataRoot, request.episode);
     const sessionDir = paths.sessionDir(request.harness, request.segmentId);
     await mkdir(sessionDir, { recursive: true, mode: 0o700 });
-    // Pre-create the empty mountpoint for the single credential file bind.
-    await writeFile(path.join(sessionDir, CREDENTIAL_FILES[request.harness]), "", { flag: "a", mode: 0o600 });
+    // The harness reads its login from inside its session dir (CODEX_HOME/CLAUDE_CONFIG_DIR),
+    // so the per-request credential copy is bind-mounted over <sessionDir>/<credential file>.
+    // That target must exist on the host before `docker run`; it is an EMPTY 0600 placeholder
+    // that never holds token bytes (the staged copy lives only in the runtime dir). A
+    // non-empty placeholder would mean something wrote to it while unmounted: refuse loudly.
+    const placeholder = path.join(sessionDir, CREDENTIAL_FILES[request.harness]);
+    await writeFile(placeholder, "", { flag: "a", mode: 0o600 });
+    const placeholderInfo = await lstat(placeholder);
+    if (!placeholderInfo.isFile() || placeholderInfo.size !== 0 || (placeholderInfo.mode & 0o077))
+      throw new RuntimeError("SESSION_CREDENTIAL_PLACEHOLDER", "The session credential mountpoint must be an empty 0600 file; it was changed outside a worker", { status: 409 });
     const requestDir = paths.requestDir(request.requestId);
     await rm(requestDir, { recursive: true, force: true });
     await mkdir(path.join(requestDir, "app"), { recursive: true, mode: 0o700 });
@@ -260,7 +268,8 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
       await new Promise((resolve) => (server ? server.close(() => resolve()) : resolve()));
       await rm(paths.controlDir, { recursive: true, force: true });
       for (const network of [n.appNetwork, n.workerNetwork]) await docker(["network", "rm", network]).catch(() => {});
-      log({ event: "host.stopped", containersRemaining: remaining.length });
+      if (remaining.length) log({ event: "host.stop.incomplete", level: "error", containersRemaining: remaining.length });
+      log({ event: "host.stopped", containersRemaining: remaining.length, ...(remaining.length ? { level: "error" } : {}) });
       return { containersRemaining: remaining.length };
     })();
     return stopped;
@@ -283,8 +292,9 @@ async function main(argv) {
   const shutdown = async (code) => {
     if (exiting) return;
     exiting = true;
-    await host.stop();
-    process.exit(code);
+    const result = await host.stop();
+    // A drain that leaves installation containers behind is a failed stop.
+    process.exit(result?.containersRemaining ? 1 : code);
   };
   process.once("SIGTERM", () => shutdown(0));
   process.once("SIGINT", () => shutdown(0));

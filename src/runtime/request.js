@@ -3,14 +3,16 @@
 //   render boot/skills -> ask the host for a worker -> bind scoped tools to a request
 //   bridge -> connect a harness -> ... -> stop (container and descendants removed).
 import { randomBytes } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { createLibraryService } from "../library.js";
+import { releaseFromEnv } from "./health.js";
 import path from "node:path";
 import { renderEpisodeBoot } from "./boot.js";
 import { startBridge } from "./bridge.js";
 import { connectHarness, controlRequest } from "./channel.js";
 import { ClaudeStreamSession, WorkerCodexConnection } from "./harnesses.js";
 import { BRIDGE_SOCKET_NAME, DATA_MOUNT, WORKER_REQUEST_MOUNT } from "./layout.js";
-import { createScopedTools } from "./tools.js";
+import { createScopedTools, defaultIsShortcutMessage } from "./tools.js";
 import { RuntimeError, assertModel, assertSessionId, parseEpisodeDir } from "./validate.js";
 
 export const MCP_BRIDGE_SCRIPT = "/opt/storybench/app/src/runtime/worker/mcp-bridge.mjs";
@@ -47,6 +49,7 @@ export async function openWorkerRequest(options) {
 async function openHeldRequest({
   controlSocket, store, requestId, conversationId, harness, segmentId, episodeId,
   bootContext = {}, templates, onToolCall = () => {}, wrapTools = (tools) => tools,
+  model = null, library = null, release = null, isShortcutMessage = defaultIsShortcutMessage,
 }) {
   const dataRoot = store.workspace;
   // App and worker must see project files at identical paths so worker-reported paths
@@ -62,11 +65,16 @@ async function openHeldRequest({
     context: { ...bootContext, paths: { ...bootContext.paths, episode: location.directory, work: store.episodeWorkDirectory(episodeId) } },
   });
   const started = await controlRequest(controlSocket, { op: "worker.start", requestId, harness, segmentId, episodeDir: episodeDir.relative, workDir: workRelative });
+  // A request-specific working subdirectory inside the episode work area.
+  const requestWorkDir = path.join(store.episodeWorkDirectory(episodeId), requestId);
+  await mkdir(requestWorkDir, { recursive: true });
   const scope = {
-    requestId, conversationId, harness, channelId: location.channelId, episodeId,
-    dataRoot, episodeDir: location.directory, workDir: store.episodeWorkDirectory(episodeId),
+    requestId, conversationId, harness, model: model ?? null, channelId: location.channelId, episodeId,
+    dataRoot, episodeDir: location.directory, workDir: store.episodeWorkDirectory(episodeId), requestWorkDir,
   };
-  const tools = wrapTools(createScopedTools(scope, { store }));
+  const scoped = createScopedTools(scope, { store, library: library ?? createLibraryService({ workspace: dataRoot, store }), release: release ?? releaseFromEnv(), isShortcutMessage });
+  const tools = wrapTools(scoped);
+  scoped.setServedDefinitions(tools.definitions);
   const token = randomBytes(32).toString("hex");
   let bridge;
   try {
