@@ -1,3 +1,5 @@
+import { ChatSettings, boundaryText, selectionLabel } from "./chat-settings.js";
+
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
 const working = (state) => ["queued", "running", "interrupting"].includes(state);
 
@@ -9,6 +11,8 @@ export class ChatWorkspace {
     this.generation = 0;
     this.draftChain = Promise.resolve();
     this.historyOpen = false;
+    this.settings = new ChatSettings({ root, api, toast });
+    this.current = null;
   }
 
   async open() {
@@ -21,7 +25,7 @@ export class ChatWorkspace {
     this.conversations = [];
     if (!episodeId) return this.clear();
     this.root.hidden = false;
-    this.root.innerHTML = `<div class="chat-toolbar"><button class="chat-history-toggle" data-chat-history-toggle type="button" aria-label="Open chat history" aria-controls="chatHistoryDrawer" aria-expanded="false">‹</button><div class="chat-identity"><b data-chat-title>Episode assistant</b><span data-chat-status role="status"></span></div></div><div class="chat-history-backdrop" data-chat-history-backdrop hidden></div><section id="chatHistoryDrawer" class="chat-history-drawer" data-chat-history-drawer aria-label="Chat history" hidden><div class="chat-history-heading"><strong>Chat history</strong><button data-chat-rename type="button">Rename</button></div><div class="chat-history-list" data-chat-history-list></div></section><div data-chat-messages></div><div class="chat-composer"><textarea data-chat-draft aria-label="Message" placeholder="Ask the episode assistant" rows="3"></textarea><div class="chat-composer-actions"><button class="visually-hidden" data-chat-send type="button">Send message</button><button class="chat-icon" data-chat-new type="button" aria-label="New chat" title="New chat">＋</button><button class="chat-icon danger" data-chat-stop type="button" aria-label="Stop active response" title="Stop active response" hidden>×</button></div><small>Enter to send · Shift+Enter for a new line</small></div>`;
+    this.root.innerHTML = `<div class="chat-toolbar"><button class="chat-history-toggle" data-chat-history-toggle type="button" aria-label="Open chat history" aria-controls="chatHistoryDrawer" aria-expanded="false">‹</button><div class="chat-identity"><b data-chat-title>Episode assistant</b><span data-chat-status role="status"></span></div><button class="chat-selection" data-chat-selection type="button" aria-haspopup="dialog" aria-controls="chatSettingsPanel" title="Harness, model and thinking for this conversation">Codex · default model</button></div><div id="chatSettingsPanel" class="chat-settings-panel" data-chat-settings-panel role="dialog" aria-label="Conversation harness and model" hidden></div><div class="chat-history-backdrop" data-chat-history-backdrop hidden></div><section id="chatHistoryDrawer" class="chat-history-drawer" data-chat-history-drawer aria-label="Chat history" hidden><div class="chat-history-heading"><strong>Chat history</strong><button data-chat-rename type="button">Rename</button></div><div class="chat-history-list" data-chat-history-list></div></section><div data-chat-messages></div><div class="chat-composer"><textarea data-chat-draft aria-label="Message" placeholder="Ask the episode assistant" rows="3"></textarea><div class="chat-composer-actions"><button class="visually-hidden" data-chat-send type="button">Send message</button><button class="chat-icon" data-chat-new type="button" aria-label="New chat" title="New chat">＋</button><button class="chat-icon danger" data-chat-stop type="button" aria-label="Stop active response" title="Stop active response" hidden>×</button></div><small>Enter to send · Shift+Enter for a new line</small></div>`;
     this.setHistoryOpen(false);
     this.bind(generation, episodeId);
     await this.refreshList(generation, episodeId);
@@ -100,6 +104,17 @@ export class ChatWorkspace {
         this.setHistoryOpen(false);
       }
     };
+    this.root.querySelector("[data-chat-selection]").onclick = async () => {
+      const panel = this.root.querySelector("[data-chat-settings-panel]");
+      if (!panel.hidden) { panel.hidden = true; panel.innerHTML = ""; return; }
+      const conversationId = this.currentId;
+      await this.settings.loadCatalog();
+      if (!this.isCurrent(generation, episodeId, conversationId) || !this.current) return;
+      const busy = this.conversations.some((item) => working(item.state));
+      this.settings.open(panel, { ...this.current, episodeId }, { busy, onSaved: async () => {
+        if (this.isCurrent(generation, episodeId, conversationId)) await this.refreshList(generation, episodeId, { preserveSelection: true });
+      } });
+    };
     this.root.querySelector("[data-chat-new]").onclick = async () => {
       await this.flushDraft();
       if (!this.isCurrent(generation, episodeId)) return;
@@ -176,8 +191,17 @@ export class ChatWorkspace {
   async refresh(generation, episodeId, conversationId) {
     const value = await this.api(this.itemUrl(episodeId, conversationId));
     if (!this.isCurrent(generation, episodeId, conversationId)) return;
+    this.current = value;
     this.root.querySelector("[data-chat-status]").textContent = value.error || value.state;
-    this.root.querySelector("[data-chat-messages]").innerHTML = value.messages.map((message) => `<p class="chat-${escapeHtml(message.role)}"><b>${message.role === "user" ? "You" : "Assistant"}</b><span>${escapeHtml(message.text)}</span></p>`).join("") || "<p>Start a conversation about this episode.</p>";
+    const chip = this.root.querySelector("[data-chat-selection]");
+    chip.textContent = selectionLabel(value.settings);
+    chip.dataset.selectable = value.settings ? "true" : "false";
+    // Messages and visible boundaries (settings changes, new native sessions) in time order.
+    const boundaries = (value.events ?? []).map((event) => ({ at: event.createdAt, text: boundaryText(event) })).filter((entry) => entry.text);
+    const items = [...value.messages.map((message) => ({ at: message.createdAt, html: `<p class="chat-${escapeHtml(message.role)}"><b>${message.role === "user" ? "You" : "Assistant"}</b><span>${escapeHtml(message.text)}</span></p>` })),
+      ...boundaries.map((entry) => ({ at: entry.at, html: `<p class="chat-boundary" role="note"><span>${escapeHtml(entry.text)}</span></p>` }))]
+      .sort((a, b) => String(a.at ?? "").localeCompare(String(b.at ?? "")));
+    this.root.querySelector("[data-chat-messages]").innerHTML = items.map((item) => item.html).join("") || "<p>Start a conversation about this episode.</p>";
     const draft = this.draftField();
     if (draft.dataset.dirty !== "true") { draft.value = value.draft || ""; draft.dataset.dirty = "false"; }
     const busy = this.conversations.some((item) => working(item.state));

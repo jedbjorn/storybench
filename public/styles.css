@@ -725,3 +725,16 @@ audio.reference-preview { width: 48px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 button.danger { background: #b3402a; color: #fff; border-color: #b3402a; }
 button.danger:disabled { opacity: .5; }
+
+/* Conversation harness/model selection */
+.chat-selection { max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 8px; border: 1px solid var(--line); border-radius: 999px; background: #fff; font-size: 11px; color: var(--muted); }
+.chat-selection:hover { border-color: var(--accent); color: var(--accent); }
+.chat-settings-panel { padding: 10px 12px; border-bottom: 1px solid var(--line); background: #fafaf7; }
+.chat-settings-panel[hidden] { display: none; }
+.chat-settings fieldset { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; }
+.chat-settings label { display: grid; gap: 3px; font-size: 11px; color: var(--muted); }
+.chat-settings select, .chat-settings input { font: inherit; padding: 5px 6px; }
+.chat-settings-note { margin: 8px 0; font-size: 11px; color: var(--muted); }
+.chat-settings-actions { display: flex; gap: 6px; justify-content: flex-end; }
+[data-chat-messages] > p.chat-boundary { max-width: 100%; margin: 6px auto 14px; text-align: center; }
+[data-chat-messages] > p.chat-boundary > span { background: transparent; border: 1px dashed var(--line); color: var(--muted); font-size: 11px; }
