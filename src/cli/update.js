@@ -5,7 +5,7 @@ import { checkCompatibility, readReleaseManifest } from "../runtime/manifest.js"
 import { inspectDataRoot } from "../services/data-root.js";
 import { createMetadataBackup, currentRelease, restoreMetadataBackup, stopService } from "./backup.js";
 import { CliError, EXIT } from "./errors.js";
-import { activateSymlink, stageRelease } from "./install.js";
+import { activateSymlink, assertActivationStopped, reusableRelease, stageRelease } from "./install.js";
 import { prepareService, startAndVerify } from "./lifecycle.js";
 import { withLock } from "./lock.js";
 import { readReceipts, receiptName, writeJsonAtomic } from "./receipts.js";
@@ -240,11 +240,14 @@ export async function runUpdate(context, { options }) {
       const available = await fetchAvailable(context, prior, adapters);
       receipt.to = { commit: available.available, manifestId: null, images: null };
       saveAttempt(file, receipt, adapters);
-      if (available.available === prior.identity.commit) {
+      const sameCommit = available.available === prior.identity.commit;
+      if (sameCommit && await reusableRelease(prior.file, prior.identity.commit, context.runCommand)) {
         Object.assign(receipt, { outcome: "success", completedAt: new Date().toISOString(), noChange: true }); saveAttempt(file, receipt, adapters);
         context.out(`Storybench is already current at ${available.available}.`); return EXIT.OK;
       }
-      failureStep = "build"; step(adapters, "build");
+      failureStep = "build";
+      if (sameCommit) await assertActivationStopped(context, prior.root, prior.root, { replacing: true });
+      step(adapters, "build");
       const staged = adapters.stageRelease ? await adapters.stageRelease({ context, commit: available.available, prior })
         : await stageRelease(context, { commit: available.available, remote: prior.manifest.source.remote, ref: prior.manifest.source.ref }, context.installAdapters);
       target = { ...staged, root: staged.release, file: path.join(staged.release, "manifest.json"), identity: {
@@ -265,6 +268,7 @@ export async function runUpdate(context, { options }) {
       backup = await createMetadataBackup(context, config, prior, { reason: `pre-update:${prior.identity.commit}->${target.identity.commit}`, adapters });
       receipt.backup = { path: backup.directory, receipt: backup.receiptFile, schema: backup.receipt.database.schema }; saveAttempt(file, receipt, adapters);
       failureStep = "switch"; step(adapters, "switch");
+      await assertActivationStopped(context, prior.root, target.root);
       activateSymlink(context.xdg.current, target.root); downtime = true;
       await prepareService(context, config, { releaseRoot: target.root, manifestPath: target.file });
       failureStep = "health"; step(adapters, "health");
@@ -325,7 +329,9 @@ export async function runRollback(context) {
       failureStep = "backup"; step(adapters, "backup");
       backup = await createMetadataBackup(context, config, prior, { reason: `pre-rollback:${prior.identity.commit}->${target.identity.commit}`, adapters });
       receipt.backup = { path: backup.directory, receipt: backup.receiptFile, schema: backup.receipt.database.schema }; saveAttempt(file, receipt, adapters);
-      failureStep = "switch"; step(adapters, "switch"); activateSymlink(context.xdg.current, target.root); downtime = true;
+      failureStep = "switch"; step(adapters, "switch");
+      await assertActivationStopped(context, prior.root, target.root);
+      activateSymlink(context.xdg.current, target.root); downtime = true;
       await prepareService(context, config, { releaseRoot: target.root, manifestPath: target.file });
       failureStep = "health"; step(adapters, "health"); const health = await verifyActivation(context, config, target, wasRunning, adapters);
       Object.assign(receipt, { outcome: "success", completedAt: new Date().toISOString(), database: { identity: health.database.id, schema: health.schema.current } }); saveAttempt(file, receipt, adapters);

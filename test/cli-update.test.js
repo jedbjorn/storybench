@@ -130,6 +130,21 @@ test("update --check reports exact commits without activation", async (t) => {
   assert.equal(readReceipts(path.join(s.xdg.state, "updates")).length, 0);
 });
 
+test("same-commit update refuses to re-stage a missing image pair while the unit is active", async (t) => {
+  const s = await fixture(t);
+  s.adapters.fetchAvailable = async () => ({ local: OLD, current: OLD, available: OLD, ref: "main" });
+  let staged = false;
+  s.adapters.stageRelease = async () => { staged = true; return { release: path.join(s.xdg.releases, OLD), manifest: s.oldManifest, reused: false }; };
+  const result = await s.run(["update"], { runCommand: async (command, args) => {
+    if (command === "docker" && args[0] === "image" && args[1] === "inspect") return { code: 1, stdout: "", stderr: "missing" };
+    return { code: 0, stdout: "", stderr: "" };
+  } });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /Cannot replace the active release directory while .* is active/);
+  assert.equal(staged, false);
+  assert.equal(path.basename(readlinkSync(s.xdg.current)), OLD);
+});
+
 test("running and stopped updates preserve metadata, exact pairs and service state", async (t) => {
   for (const active of [true, false]) await t.test(active ? "running" : "stopped", async (t) => {
     const s = await fixture(t, { active });

@@ -167,7 +167,16 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
   assert.deepEqual(Object.keys(receipt.receipt.tools).sort(), ["app", "worker"], "per-role probes live only in the install receipt");
   assert.match(output, /Next: `storybench init \[DIR\]`, then `storybench up`/);
 
-  // If the same commit must be rebuilt, the active directory is renamed aside before the stage is promoted.
+  // A same-commit rebuild must not retire the live WorkingDirectory while its unit is active.
+  missingImageInspects = 1;
+  unitActive = true;
+  await assert.rejects(installFromSource(context, metadata, { runCommand: fakeRun, buildRelease }), /Cannot replace the active release directory while .* is active/);
+  assert.equal(builds, 1, "the active release is refused before rebuilding");
+  assert.equal(realpath(s.xdg.current), path.join(s.xdg.releases, s.commit));
+  assert.deepEqual(readdirSync(s.xdg.releases).filter((name) => name.includes(".retired-")), []);
+  unitActive = false;
+
+  // Once stopped, the active commit can be rebuilt with retire-then-promote staging.
   missingImageInspects = 1;
   let retiredObserved = false;
   output = "";

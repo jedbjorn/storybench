@@ -161,6 +161,13 @@ export async function stageRelease(context, metadata, adapters = {}) {
   const manifestFile = path.join(final, "manifest.json");
   const reusable = await reusableRelease(manifestFile, metadata.commit, run);
   if (reusable) return { release: final, manifest: reusable, reused: true };
+  let current = null;
+  try {
+    if (lstatSync(context.xdg.current).isSymbolicLink())
+      current = path.resolve(path.dirname(context.xdg.current), readlinkSync(context.xdg.current));
+  } catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (existsSync(final) && current === final)
+    await assertActivationStopped(context, current, final, { replacing: true });
   const stage = path.join(context.xdg.releases, `.stage-${metadata.commit}.${crypto.randomUUID()}`);
   await materialize(run, context.xdg.mirror, metadata.commit, stage);
   let detach = () => {};
@@ -247,8 +254,8 @@ function unitText(context, release) {
   });
 }
 
-async function assertActivationStopped(context, current, release) {
-  if (current === release) return;
+export async function assertActivationStopped(context, current, release, { replacing = false } = {}) {
+  if (current === release && !replacing) return;
   const unit = unitName(context.env);
   let state;
   try { state = await context.system.unitState(unit); }
@@ -258,14 +265,15 @@ async function assertActivationStopped(context, current, release) {
     });
   }
   const hint = "Run `storybench down` first; staged in-place updates arrive with `storybench update`.";
+  const action = replacing ? "replace the active release directory" : "activate the staged release";
   if (ACTIVE_UNIT_STATES.has(state.active))
-    throw new CliError(`Cannot activate the staged release while ${unit} is ${state.active}`, { hint });
+    throw new CliError(`Cannot ${action} while ${unit} is ${state.active}`, { hint });
   const config = readConfig(context.xdg.configFile);
   const probe = context.probeService ?? probeService;
   for (const port of new Set([config?.port ?? DEFAULT_PORT, DEFAULT_PORT])) {
     const answer = await probe(port);
     if (answer.state === "running")
-      throw new CliError(`Cannot activate the staged release while a Storybench app is answering on port ${port}`, { hint });
+      throw new CliError(`Cannot ${action} while a Storybench app is answering on port ${port}`, { hint });
   }
 }
 
