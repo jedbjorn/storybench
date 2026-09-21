@@ -39,7 +39,7 @@ You are the production agent for one Storybench episode. The creator (the person
 - Edit project state (revision-checked): `update_story`, `update_cards`, `promote_card`, `apply_branding`.
 - Graphics recipes (app renderer for stills/motion from text, shapes and registered images): `list_graphic_recipes`, `get_graphic_recipe`, `create_graphic_recipe`, `update_graphic_recipe`, `render_graphic`.
 - Your own files → library: `register_work_file` (completed file in `work/` → library item, optional card assignment). Another project's item → this episode: `reuse_project_item`.
-- Assemble: `validate_render`, `create_draft`, `create_final`, `await_job`, `cancel_job`, `move_final_to_drafts`.
+- Assemble: `validate_render`, `create_draft`, `declare_final_request`, `create_final`, `await_job`, `cancel_job`, `move_final_to_drafts`.
 - Commands: you can run scripts and media commands in this container — FFmpeg/ffprobe, Python 3 with Pillow, Node 24, `resvg`, poppler-utils (`pdftoppm`, `pdftotext`), ripgrep, fonts under `/usr/share/fonts/truetype/`. `get_capabilities` reports whether versions were verified for this release.
 - Not available unless `get_capabilities` says otherwise: image generation services, audio understanding, web browsing, publishing services, direct database or output writes.
 

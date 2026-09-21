@@ -377,13 +377,10 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
             (outputClass === "draft" ? renders.validateRender(episodeId).renderRevision : null);
           return send(res, 202, renders.enqueueRender({ episodeId, channelId: requestedChannel ?? body.channelId ?? null, outputClass,
             expectedRenderRevision,
-            finalGrantId: body.finalGrantId, conversationId: body.conversationId ?? null, requestId: body.requestId ?? null }));
+            conversationId: body.conversationId ?? null, requestId: body.requestId ?? null }));
         }
         if (parts[3] === "final-authorizations" && req.method === "POST") {
-          const body = await jsonBody(req);
-          return send(res, 201, renders.mintFinalGrant({ episodeId,
-            expectedRenderRevision: body.expectedRenderRevision,
-            conversationId: body.conversationId ?? null, requestId: body.requestId ?? null }));
+          throw new StoreError("Final grants are retired; use a request-bound Final intent", 410);
         }
         if (parts[3] === "outputs") {
           if (parts[4] === "cleanup" && parts.length === 5 && req.method === "GET")

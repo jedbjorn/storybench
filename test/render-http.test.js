@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createApp } from "../src/server.js";
 
-test("HTTP draft/final flow requires and consumes exact human intent", async (t) => {
+test("HTTP draft/final flow requires request-bound intent and retires timed grants", async (t) => {
   const workspace = await mkdtemp(path.join(tmpdir(), "storybench-render-http-"));
   const app = await createApp({ workspace, renderOptions: { renderCompositionImpl: async ({ outputPath }) => {
     await writeFile(outputPath, "rendered"); return { path: outputPath };
@@ -29,17 +29,25 @@ test("HTTP draft/final flow requires and consumes exact human intent", async (t)
   const missing = await request(`/api/episodes/${episode.id}/render`, { outputClass: "final", expectedRenderRevision: plan.renderRevision });
   assert.equal(missing.status, 403);
 
-  const grantResponse = await request(`/api/episodes/${episode.id}/final-authorizations`, {
+  const retired = await request(`/api/episodes/${episode.id}/final-authorizations`, {
     expectedRenderRevision: plan.renderRevision, requestId: "human-click",
   });
-  assert.equal(grantResponse.status, 201);
-  const grant = await grantResponse.json();
+  assert.equal(retired.status, 410);
+  const conversation = app.chat.create(episode.id, { name: "HTTP Final" });
+  const message = app.store.addConversationMessage({ conversationId: conversation.id, role: "user", text: "Create final", shortcut: true });
+  const run = app.store.createProductionRun({ id: "request_http_final", conversationId: conversation.id, kind: "final", origin: "button",
+    originatingMessageId: message.id, harness: "codex" }).run;
   const accepted = await request(`/api/episodes/${episode.id}/render`, { outputClass: "final",
-    expectedRenderRevision: plan.renderRevision, finalGrantId: grant.id, requestId: "human-click" });
+    expectedRenderRevision: plan.renderRevision, conversationId: conversation.id, requestId: run.id });
   assert.equal(accepted.status, 202);
+  const acceptedJob = await accepted.json();
   const reused = await request(`/api/episodes/${episode.id}/render`, { outputClass: "final",
-    expectedRenderRevision: plan.renderRevision, finalGrantId: grant.id, requestId: "human-click" });
-  assert.equal(reused.status, 409);
+    expectedRenderRevision: plan.renderRevision, conversationId: conversation.id, requestId: run.id });
+  assert.equal(reused.status, 202);
+  assert.equal((await reused.json()).id, acceptedJob.id);
+  for (let attempt = 0; attempt < 100 && app.store.getProductionRun(run.id).finalIntent !== "published"; attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(app.store.getProductionRun(run.id).finalIntent, "published");
 
   const draft = await request(`/api/episodes/${episode.id}/render`, { outputClass: "draft", expectedRenderRevision: plan.renderRevision });
   assert.equal(draft.status, 202);

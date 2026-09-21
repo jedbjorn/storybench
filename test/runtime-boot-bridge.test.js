@@ -111,6 +111,12 @@ test("the shipped templates render with the app's boot context and cover the ski
   const loaded = await loadTemplates();
   assert.deepEqual(loaded.skills.map((skill) => skill.name).sort(), [...roster].sort());
   for (const skill of loaded.skills) assert.ok(skill.description.length > 20 && skill.description.length < 400, `${skill.name} has a usable description`);
+  const finish = loaded.skills.find((skill) => skill.name === "storybench-finish-video").source;
+  assert.match(finish, /typed request that actually asks for the finished video/);
+  assert.match(finish, /Ask the creator if the request is unclear/);
+  assert.match(finish, /Cancelling your own Final render with `cancel_job` ends this request's Final authority/);
+  assert.match(finish, /If a render fails, resubmit it within the active request without cancelling it first/);
+  assert.doesNotMatch(finish, /it succeeds only/);
   const boot = await readFile(path.join(dir, "AGENTS.md"), "utf8");
   assert.equal(boot, await readFile(path.join(dir, "CLAUDE.md"), "utf8"));
   assert.match(boot, /Reference material is read-only feel context\. Do not edit it or directly use it in the production unless the creator explicitly asks for that use or edit\./);
