@@ -1,0 +1,4 @@
+# SQLite sidecars created by opening a fixture; fixtures use rollback-journal mode and never need them.
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal

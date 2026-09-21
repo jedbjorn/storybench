@@ -46,7 +46,7 @@ chat.create(episode.id, { name: "Never sent" });
 await chat.close();
 store.close();
 const db = new DatabaseSync(root + "/storybench.sqlite");
-db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+db.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE");
 console.log(JSON.stringify({ version: db.prepare("PRAGMA user_version").get().user_version,
   conversations: db.prepare("SELECT COUNT(*) n FROM conversations").get().n, messages: db.prepare("SELECT COUNT(*) n FROM conversation_messages").get().n,
   events: db.prepare("SELECT COUNT(*) n FROM conversation_events").get().n }));
