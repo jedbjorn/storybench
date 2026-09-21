@@ -121,6 +121,49 @@ async function runTurn(spec) {
   return out;
 }
 
+// Proof of harness/model switching through the real chat service, real workers and the host
+// catalogue, with in-memory conversation persistence (schema v9 pending). Steps:
+//   { settings: { harness, model, effort } } | { send: "text" }
+async function continuityRun(spec) {
+  const { createChatService } = await import("../chat.js");
+  const { createRenderService } = await import("../render-service.js");
+  const { renderGraphic, validateGraphicRecipe } = await import("../graphics.js");
+  const { createMemoryConversationPersistence } = await import("./conversation-runtime.js");
+  const { createModelCatalog, createWorkerHarnessFactory } = await import("./app-runtime.js");
+  const store = openDataRoot(DATA_MOUNT, { startup: false });
+  if (spec.story) { const story = store.getStory(spec.episodeId); store.saveStory(spec.episodeId, story.storyRevision, spec.story, "human"); }
+  const renders = createRenderService({ workspace: DATA_MOUNT, store, renderGraphic, validateGraphicRecipe });
+  const requests = [];
+  const catalog = createModelCatalog({ controlSocket: CONTROL });
+  const persistence = createMemoryConversationPersistence();
+  const chat = createChatService({ store, renders, continuity: { persistence, catalog: (options) => catalog.list(options) },
+    codexFactory: createWorkerHarnessFactory({ store, controlSocket: CONTROL, onRequest: (info) => requests.push({ requestId: info.requestId, harness: info.harness, container: info.containerId?.slice(0, 12) }) }) });
+  const conversation = chat.create(spec.episodeId, { name: "Continuity proof" });
+  const steps = [];
+  for (const step of spec.steps) {
+    if (step.settings) {
+      const current = chat.get(spec.episodeId, conversation.id).settings;
+      try { const value = await chat.updateSettings(spec.episodeId, conversation.id, { ...step.settings, expectedRevision: current.revision, clientRequestId: randomUUIDLocal() }); steps.push({ settings: step.settings, ok: true, result: value.settingsResult }); }
+      catch (error) { steps.push({ settings: step.settings, ok: false, code: error.code, error: error.message }); }
+      continue;
+    }
+    const before = chat.get(spec.episodeId, conversation.id).messages.length;
+    await chat.send(spec.episodeId, conversation.id, step.send);
+    const deadline = Date.now() + (spec.timeoutMs ?? 300_000);
+    let value;
+    do { await new Promise((resolve) => setTimeout(resolve, 500)); value = chat.get(spec.episodeId, conversation.id); } while (!["idle", "error", "interrupted"].includes(value.state) && Date.now() < deadline);
+    const reply = value.messages.slice(before).filter((message) => message.role === "assistant").map((message) => message.text).join("\n");
+    steps.push({ send: step.send, state: value.state, error: value.error ?? null, threadId: value.threadId ?? null, reply, run: value.runs.at(-1) });
+  }
+  const final = chat.get(spec.episodeId, conversation.id);
+  await chat.close();
+  store.close();
+  return { phase: "continuity", conversationId: conversation.id, steps, requests, segments: final.segments,
+    events: final.events.filter((event) => ["settings.changed", "segment.started", "tool.started", "turn.started"].includes(event.type)).map(({ type, payload, createdAt }) => ({ type, payload, createdAt })),
+    runs: final.runs };
+}
+const randomUUIDLocal = () => globalThis.crypto.randomUUID();
+
 async function main() {
   const spec = JSON.parse(process.argv[2] ?? "{}");
   let result;
@@ -198,6 +241,8 @@ async function main() {
     const directions = store.listReferenceDirections(spec.episodeId);
     store.close();
     result = { phase: "episode-state", revision: episode.revision, cards: episode.cards.map(({ id, type, itemId, referenceItemIds }) => ({ id, type, itemId, referenceItemIds })), library, directions };
+  } else if (spec.phase === "continuity") {
+    result = await continuityRun(spec);
   } else result = await runTurn(spec);
   process.stdout.write(JSON.stringify(result) + "\n");
   process.exit(0);
