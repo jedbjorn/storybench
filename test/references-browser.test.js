@@ -9,10 +9,11 @@ import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
 import { createApp } from "../src/server.js";
+import { listenInRange } from "../test-support/loopback-port.js";
 import { createLibraryService } from "../src/library.js";
 import { initDataRoot, openDataRoot } from "../src/services/data-root.js";
 
-const PORT = Number(process.env.STORYBENCH_BROWSER_TEST_PORT || 18831);
+const PREFERRED_PORT = Number(process.env.STORYBENCH_BROWSER_TEST_PORT || 18831);
 async function launch() {
   try { return await chromium.launch(); }
   catch { return existsSync("/usr/bin/chromium") ? chromium.launch({ executablePath: "/usr/bin/chromium" }).catch(() => null) : null; }
@@ -44,7 +45,7 @@ test("episode and card reference panels link, upload, unlink and report unavaila
   setup.close();
 
   const app = await createApp({ dataRoot: root });
-  await new Promise((resolve, reject) => { app.server.once("error", reject); app.server.listen(PORT, "127.0.0.1", resolve); });
+  const PORT = await listenInRange(app.server, { preferred: PREFERRED_PORT });
   t.after(() => app.close());
   const store = app.store;
   const evidence = process.env.STORYBENCH_EVIDENCE_DIR;
