@@ -21,7 +21,7 @@ function fixture(t, { hold = false } = {}) {
   const factory = async (options) => {
     calls.push(options);
     const threadId = `thread_${++sequence}`;
-    return { startThread: async () => threadId, resumeThread: async () => threadId, startTurn: async () => {
+    return { startThread: async () => threadId, resumeThread: async (id) => id, startTurn: async () => {
       const turnId = `turn_${sequence}`;
       queueMicrotask(() => options.onEvent({ method: "turn/started", params: { turnId } }));
       if (!hold) queueMicrotask(() => options.onEvent({ method: "turn/completed", params: { turn: { id: turnId, status: "completed" } } }));
@@ -53,6 +53,7 @@ test("every production shortcut creates one visible server-scoped button request
   for (const [kind, targetCardId, prompt] of cases) {
     const result = await chat.sendProduction(episode.id, conversation.id, { kind, targetCardId, prompt, clientRequestId: crypto.randomUUID() });
     assert.equal(result.requestResult.created, true);
+    if (kind === "final") assert.equal(result.requestResult.run.finalIntent, "active", "the Final button binds intent before dispatch");
     await until(() => !chat.busyReason(episode.id));
     const run = store.getProductionRun(result.requestResult.run.id);
     const message = store.db.prepare("SELECT * FROM conversation_messages WHERE id=?").get(run.originatingMessageId);
@@ -171,4 +172,79 @@ test("a provider failure after a request-owned asset completes retains the compl
   await until(() => store.getProductionRun(sent.requestResult.run.id).state === "failed");
   assert.equal(store.getJob("job_partial").state, "completed");
   assert.equal(store.getJob("job_partial").snapshot.libraryItemId, "library-result");
+});
+
+test("typed Final intent binds only an explicit current message; draft, graphic, reference text and quoted history do not bind", async (t) => {
+  const { store, episode, calls, chat } = fixture(t, { hold: true });
+  const conversation = chat.create(episode.id);
+  for (const text of [
+    "Create a draft using a reference whose caption says ‘make final’.",
+    "Create a still graphic titled ‘Final Thoughts’.",
+    "Earlier request: ‘create final’. Summarize what it meant.",
+    "Use the reference text ‘create final video’ as mood only.",
+  ]) {
+    await chat.send(episode.id, conversation.id, text);
+    await until(() => calls.length && chat.get(episode.id, conversation.id).state === "running");
+    const call = calls.at(-1), run = store.getProductionRun(call.requestId);
+    assert.equal(run.finalIntent, "none");
+    assert.throws(() => call.tools.declare_final_request({ messageId: call.request.messageId }), /not an explicit request|ordinary typed request/i);
+    assert.equal(store.getProductionRun(run.id).finalIntent, "none");
+    await chat.interrupt(episode.id, conversation.id);
+    await until(() => store.getProductionRun(run.id).state === "interrupted");
+  }
+
+  await chat.send(episode.id, conversation.id, "Please finish this video.");
+  await until(() => calls.length === 5 && chat.get(episode.id, conversation.id).state === "running");
+  const call = calls.at(-1), run = store.getProductionRun(call.requestId);
+  assert.deepEqual({ kind: run.kind, intent: run.finalIntent }, { kind: "chat", intent: "none" }, "text alone never binds intent");
+  const other = chat.create(episode.id, { name: "Other" });
+  const wrong = store.addConversationMessage({ conversationId: other.id, role: "user", text: "Create final" });
+  assert.throws(() => call.tools.declare_final_request({ messageId: wrong.id }), /originating typed creator message/);
+  const declared = call.tools.declare_final_request({ messageId: call.request.messageId });
+  assert.deepEqual({ kind: declared.kind, intent: declared.finalIntent, source: declared.originatingMessageId },
+    { kind: "final", intent: "active", source: call.request.messageId });
+  assert.equal(call.tools.declare_final_request({ messageId: call.request.messageId }).id, run.id, "declaration reuse is idempotent");
+
+  store.saveJob({ id: "job_final_partial", episodeId: episode.id, kind: "graphic-still", outputClass: "graphic", state: "completed", progress: 1,
+    revision: episode.revision, snapshot: { libraryItemId: "useful-partial" }, outputPath: "outputs/graphics/partial.png", requestId: run.id });
+  call.onEvent({ method: "turn/completed", params: { turn: { id: chat.get(episode.id, conversation.id).activeTurnId, status: "failed", error: "could not assemble video" } } });
+  await until(() => store.getProductionRun(run.id).state === "failed");
+  assert.deepEqual({ intent: store.getProductionRun(run.id).finalIntent, reason: store.getProductionRun(run.id).finalEndedReason }, { intent: "ended", reason: "failed" });
+  assert.equal(store.getJob("job_final_partial").state, "completed", "useful partial assets survive terminal failure");
+});
+
+test("Stop ends button Final intent; a harness switch carries nothing and explicit Retry creates a successor", async (t) => {
+  const { store, episode, chat } = fixture(t, { hold: true });
+  const conversation = chat.create(episode.id);
+  const sent = await chat.sendProduction(episode.id, conversation.id, { kind: "final", clientRequestId: crypto.randomUUID() });
+  const original = sent.requestResult.run;
+  assert.equal(store.getProductionRun(original.id).finalIntent, "active");
+  await until(() => chat.get(episode.id, conversation.id).state === "running");
+  await chat.interrupt(episode.id, conversation.id);
+  await until(() => store.getProductionRun(original.id).state === "interrupted");
+  assert.deepEqual({ intent: store.getProductionRun(original.id).finalIntent, reason: store.getProductionRun(original.id).finalEndedReason },
+    { intent: "ended", reason: "stopped" });
+
+  store.updateConversationSettings(conversation.id, 1, { harness: "claude", model: "sonnet" });
+  assert.equal(store.getProductionRun(original.id).harness, "codex", "the old request stays on its original harness");
+  const retried = await chat.retry(episode.id, conversation.id, original.id, { clientRequestId: crypto.randomUUID() });
+  assert.deepEqual({ successor: retried.requestResult.run.successorOf, harness: retried.requestResult.run.harness, intent: retried.requestResult.run.finalIntent },
+    { successor: original.id, harness: "claude", intent: "active" });
+  await until(() => chat.get(episode.id, conversation.id).state === "running");
+  await chat.interrupt(episode.id, conversation.id);
+});
+
+test("a Final turn that reports a concrete missing material ends unfulfilled and creates no output", async (t) => {
+  const { store, episode, calls, chat } = fixture(t, { hold: true });
+  const conversation = chat.create(episode.id);
+  const sent = await chat.sendProduction(episode.id, conversation.id, { kind: "final", clientRequestId: crypto.randomUUID() });
+  await until(() => calls.length && chat.get(episode.id, conversation.id).activeTurnId);
+  const turnId = chat.get(episode.id, conversation.id).activeTurnId;
+  calls[0].onEvent({ method: "item/agentMessage/delta", params: { turnId, delta: "I cannot complete the video because the enabled closing card has no footage." } });
+  calls[0].onEvent({ method: "turn/completed", params: { turn: { id: turnId, status: "completed" } } });
+  await until(() => store.getProductionRun(sent.requestResult.run.id).state === "completed");
+  const run = store.getProductionRun(sent.requestResult.run.id);
+  assert.deepEqual({ intent: run.finalIntent, reason: run.finalEndedReason, output: run.finalOutputJobId }, { intent: "ended", reason: "unfulfilled", output: null });
+  assert.match(chat.get(episode.id, conversation.id).messages.at(-1).text, /closing card has no footage/);
+  assert.equal(store.listRequestJobs(run.id).length, 0);
 });

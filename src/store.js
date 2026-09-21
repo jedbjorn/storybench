@@ -2083,6 +2083,26 @@ export class Store {
     }
     return { run: this.getProductionRun(value), created: true };
   }
+  // A typed Final is recognized by the active agent request, then bound by the app to that
+  // request's exact originating creator message. Button Finals are already active at creation.
+  declareFinalRequest(runId, messageId) {
+    const run = this.getProductionRun(runId);
+    if (!run) throw new StoreError("Production request not found", 404);
+    if (run.origin !== "typed") throw new StoreError("Only a typed creator request can declare Final intent", 403);
+    if (run.originatingMessageId !== messageId) throw new StoreError("Final intent must cite this request's originating message", 403);
+    const message = this.db.prepare("SELECT conversation_id,role,origin FROM conversation_messages WHERE id=?").get(messageId);
+    if (!message || message.conversation_id !== run.conversationId) throw new StoreError("The Final request message is not in this conversation", 404);
+    if (message.role !== "user" || message.origin !== "typed") throw new StoreError("Final intent requires the originating typed creator message", 403);
+    if (RUN_TERMINAL.includes(run.state)) throw new StoreError(`A ${run.state} request cannot declare Final intent`, 409, { current: run });
+    if (run.kind === "final" && run.finalIntent === "active") return run;
+    if (run.kind !== "chat" || run.finalIntent !== "none")
+      throw new StoreError("Only an ordinary typed request without existing Final intent can be declared Final", 409, { current: run });
+    const result = this.db.prepare(`UPDATE production_runs SET kind='final',final_intent='active',updated_at=?
+      WHERE id=? AND state IN ('starting','running') AND kind='chat' AND origin='typed' AND originating_message_id=? AND final_intent='none'`)
+      .run(now(), runId, messageId);
+    if (!result.changes) throw new StoreError("The request changed before Final intent could be declared", 409, { current: this.getProductionRun(runId) });
+    return this.getProductionRun(runId);
+  }
   // Progress and attribution as the harness reports it. Terminal states are final.
   updateProductionRun(runId, changes = {}) {
     const current = this.getProductionRun(runId);
@@ -2122,17 +2142,30 @@ export class Store {
     return this.getProductionRun(runId);
   }
   // Final intent ends exactly once: published (with the completed final output of this request) or with a reason.
-  publishFinalIntent(runId, jobId) {
+  publishFinalIntent(runId, jobId, completion = null) {
     const run = this.getProductionRun(runId);
     if (!run) throw new StoreError("Production request not found", 404);
     if (RUN_TERMINAL.includes(run.state)) throw new StoreError(`A ${run.state} request cannot publish a Final`, 409, { current: run });
-    const job = this.getJob(jobId);
+    let job = this.getJob(jobId);
     if (!job || job.requestId !== runId) throw new StoreError("The output was not produced by this request", 409);
-    if (job.state !== "completed" || job.outputClass !== "final" || job.designation !== "final" || job.deletionState !== "present")
-      throw new StoreError("Only a completed, present Final output can publish a Final request", 409);
-    const result = this.db.prepare(`UPDATE production_runs SET final_intent='published',final_ended_reason='published',final_output_job_id=?,updated_at=?
-      WHERE id=? AND final_intent='active' AND state IN ('starting','running')`).run(jobId, now(), runId);
-    if (!result.changes) throw new StoreError(`This request has no active Final intent (${run.finalIntent})`, 409, { current: run });
+    const stamp = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (completion) {
+        if (!completion.outputPath || !completion.snapshot) throw new StoreError("Completed Final output path and snapshot are required");
+        const completed = this.db.prepare(`UPDATE jobs SET state='completed',progress=1,output_path=?,error=NULL,snapshot=?,updated_at=?
+          WHERE id=? AND request_id=? AND output_class='final' AND designation='final' AND deletion_state='present' AND state IN ('queued','running')`)
+          .run(completion.outputPath, JSON.stringify(completion.snapshot), stamp, jobId, runId);
+        if (!completed.changes) throw new StoreError("The Final output changed before publication", 409, { current: this.getJob(jobId) });
+        job = this.getJob(jobId);
+      }
+      if (job.state !== "completed" || job.outputClass !== "final" || job.designation !== "final" || job.deletionState !== "present")
+        throw new StoreError("Only a completed, present Final output can publish a Final request", 409);
+      const result = this.db.prepare(`UPDATE production_runs SET final_intent='published',final_ended_reason='published',final_output_job_id=?,updated_at=?
+        WHERE id=? AND final_intent='active' AND state IN ('starting','running')`).run(jobId, stamp, runId);
+      if (!result.changes) throw new StoreError(`This request has no active Final intent (${run.finalIntent})`, 409, { current: run });
+      this.db.exec("COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
     return this.getProductionRun(runId);
   }
   endFinalIntent(runId, reason) {

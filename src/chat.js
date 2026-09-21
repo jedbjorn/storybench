@@ -14,6 +14,17 @@ const safeRef = (value) => {
   const normalized = path.normalize(value);
   return normalized === ".." || normalized.startsWith(`..${path.sep}`) ? null : normalized;
 };
+const explicitFinalRequest = (value) => {
+  const text = String(value ?? "").trim();
+  const draftAt = text.search(/\bdraft\b/i), finalAt = text.search(/\bfinal\b/i);
+  if (draftAt >= 0 && (finalAt < 0 || draftAt < finalAt)) return false;
+  const polite = "(?:(?:please|kindly)\\s+|(?:can|could|would|will)\\s+you\\s+)*";
+  const create = text.match(new RegExp(`^${polite}(?:create|make|build|render|produce|export|assemble)\\b[^.!?\\n]{0,240}\\bfinal(?:\\s+(?:video|cut|output|version))?\\b`, "i"));
+  const describesSomethingElse = create && /\b(?:graphic|reference|caption|title|titled|quote|quoted|history|summary|summari[sz]e|text)\b/i.test(create[0]);
+  return (Boolean(create) && !describesSomethingElse)
+    || new RegExp(`^${polite}(?:finish|complete|finali[sz]e)\\s+(?:it|the\\s+(?:video|episode|project|cut|final)|this\\s+(?:video|episode|project|cut))\\b`, "i").test(text)
+    || new RegExp(`^${polite}(?:take|bring)\\b[^.!?\\n]{0,240}\\b(?:to|through\\s+to)\\s+(?:a\\s+)?(?:complete\\s+)?final\\b`, "i").test(text);
+};
 
 function installSchema(db) {
   db.exec(`
@@ -143,8 +154,14 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     update_cards: ({ expectedRevision, cards }) => { ensureActive(value, origin); return store.updateEpisode(value.episode_id, expectedRevision, { cards }, "agent"); },
     validate_render: () => renders.validateRender(value.episode_id),
     create_draft: ({ expectedRenderRevision }) => { ensureActive(value, origin); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "draft", expectedRenderRevision, conversationId: value.id, requestId: origin.requestId }); },
-    request_final: () => ({ requiredAction: "Use Create final in Storybench", conversationId: value.id, renderRevision: renders.validateRender(value.episode_id).renderRevision }),
-    create_final: ({ expectedRenderRevision, finalGrantId }) => { ensureActive(value, origin); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "final", expectedRenderRevision, finalGrantId, conversationId: value.id, requestId: origin.requestId }); },
+    declare_final_request: ({ messageId }) => {
+      ensureActive(value, origin);
+      const source = db.prepare("SELECT text FROM conversation_messages WHERE id=? AND conversation_id=? AND role='user' AND origin='typed'").get(messageId, value.id);
+      if (!source || messageId !== origin.messageId) throw error("Final intent must cite this request's originating typed creator message", 403);
+      if (!explicitFinalRequest(source.text)) throw error("The originating message is not an explicit request to produce a Final video", 409);
+      return store.declareFinalRequest(origin.requestId, messageId);
+    },
+    create_final: ({ expectedRenderRevision }) => { ensureActive(value, origin); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "final", expectedRenderRevision, conversationId: value.id, requestId: origin.requestId }); },
     get_job: ({ jobId }) => renders.getJob(value.episode_id, jobId),
     await_job: async ({ jobId, timeoutSeconds = 120 }) => {
       const timeout = Math.min(300, Math.max(1, Number(timeoutSeconds) || 120)) * 1000;
@@ -165,7 +182,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       const job = renders.getJob(value.episode_id, jobId);
       throw error(`Job ${jobId} is still ${job.state}; it has not succeeded`, 408, { current: job });
     },
-    cancel_job: ({ jobId }) => { ensureActive(value, origin); return renders.cancelJob(value.episode_id, jobId); },
+    cancel_job: ({ jobId }) => { ensureActive(value, origin); return renders.cancelJob(value.episode_id, jobId, { finalEndReason: "cancelled" }); },
     move_final_to_drafts: ({ outputId = null, expectedRevision = null } = {}) => { ensureActive(value, origin); return moveFinalToDrafts(store, { episodeId: value.episode_id, outputId, expectedRevision, actor: "agent", requestId: origin.requestId }); },
     list_graphic_recipes: () => renders.listGraphicRecipes(value.episode_id),
     get_graphic_recipe: ({ recipeId }) => { const recipe = renders.getGraphicRecipe(value.episode_id, recipeId); if (!recipe) throw error("Graphic recipe not found", 404); return recipe; },
@@ -195,7 +212,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       db.prepare("UPDATE conversations SET draft=?,updated_at=? WHERE id=? AND draft=''").run(text, now(), value.id);
     };
     const controller = new AbortController(), pending = [], done = new Promise((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
-    const activity = { conversationId: value.id, requestId, signal: controller.signal, abort: () => { aborted = true; controller.abort(); if (dispatch) rejectDone(error("Chat stopped; the prompt was not replayed", 409)); } };
+    const activity = { conversationId: value.id, requestId, messageId, signal: controller.signal, abort: () => { aborted = true; controller.abort(); if (dispatch) rejectDone(error("Chat stopped; the prompt was not replayed", 409)); } };
     active.set(value.episode_id, activity);
     const consume = (event) => {
       const params = event.params || {}, eventTurn = params.turnId || params.turn?.id;
@@ -410,7 +427,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
   const cancelOwnedJobs = (activity) => {
     if (!activity?.requestId || !db.isOpen) return;
     for (const job of store.listRequestJobs(activity.requestId, { activeOnly: true })) {
-      if (["queued", "running"].includes(job.state)) try { renders.cancelJob(job.episodeId, job.id); } catch { /* terminal race */ }
+      if (["queued", "running"].includes(job.state)) try { renders.cancelJob(job.episodeId, job.id, { finalEndReason: "stopped" }); } catch { /* terminal race */ }
     }
   };
   const interrupt = async (episodeId, id) => {

@@ -188,6 +188,25 @@ test("final intent is bound to its request: active, then published once or ended
   assert.throws(() => w.store.updateProductionRun(draft.id, { state: "running" }), (error) => error.statusCode === 409, "terminal states are final");
 });
 
+test("typed Final declaration is idempotent and bound to the request's exact typed creator message", (t) => {
+  const w = world(t);
+  const typedMessage = w.message(w.conversation.id, "user", "typed");
+  const request = w.store.createProductionRun({ conversationId: w.conversation.id, kind: "chat", origin: "typed",
+    originatingMessageId: typedMessage, harness: "codex" }).run;
+  assert.equal(request.finalIntent, "none");
+  const declared = w.store.declareFinalRequest(request.id, typedMessage);
+  assert.deepEqual({ kind: declared.kind, intent: declared.finalIntent, source: declared.originatingMessageId },
+    { kind: "final", intent: "active", source: typedMessage });
+  assert.equal(w.store.declareFinalRequest(request.id, typedMessage).finalIntent, "active", "same-request reuse returns the existing intent");
+  assert.throws(() => w.store.declareFinalRequest(request.id, w.userMessage), /originating message/);
+  const foreignMessage = w.message(w.foreign.id, "user", "typed");
+  assert.throws(() => w.store.declareFinalRequest(request.id, foreignMessage), /originating message/);
+  const draftMessage = w.message(w.second.id, "user", "typed");
+  const draft = w.store.createProductionRun({ conversationId: w.second.id, kind: "draft", origin: "typed",
+    originatingMessageId: draftMessage, harness: "codex" }).run;
+  assert.throws(() => w.store.declareFinalRequest(draft.id, draftMessage), /ordinary typed request/);
+});
+
 test("jobs link to their request within the same episode; Stop can list a request's active jobs", (t) => {
   const w = world(t);
   const { run } = w.store.createProductionRun({ conversationId: w.conversation.id, kind: "draft", harness: "codex" });

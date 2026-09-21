@@ -167,7 +167,7 @@ async function continuityRun(spec) {
     runs: final.runs };
 }
 
-// Disposable live proof for task #27: enter through the same shortcut service as the UI,
+// Disposable live production proof: enter through the same typed/shortcut services as the UI,
 // then observe request/job attribution and (optionally) stop while its render is active.
 async function productionRun(spec) {
   const { createRenderService } = await import("../render-service.js");
@@ -186,9 +186,12 @@ async function productionRun(spec) {
   const directionMessage = spec.directionText
     ? store.addConversationMessage({ conversationId: conversation.id, role: "user", text: spec.directionText }) : null;
   const prompt = String(spec.prompt ?? "").replaceAll("{{directionMessageId}}", String(directionMessage?.id ?? ""));
-  const sent = await chat.sendProduction(spec.episodeId, conversation.id, { kind: spec.kind,
-    prompt, targetCardId: spec.targetCardId ?? null, clientRequestId: `live-${spec.requestId}` });
-  const requestId = sent.requestResult.run.id;
+  const sent = spec.typed
+    ? await chat.send(spec.episodeId, conversation.id, prompt)
+    : await chat.sendProduction(spec.episodeId, conversation.id, { kind: spec.kind,
+      prompt, targetCardId: spec.targetCardId ?? null, clientRequestId: `live-${spec.requestId}` });
+  const requestId = spec.typed ? sent.runs.at(-1)?.id : sent.requestResult.run.id;
+  if (!requestId) throw new Error(`Production request was not created: ${sent.error ?? sent.state}`);
   let stopped = false;
   const deadline = Date.now() + (spec.timeoutMs ?? 300_000);
   while (Date.now() < deadline) {
@@ -207,7 +210,7 @@ async function productionRun(spec) {
   const result = chat.get(spec.episodeId, conversation.id);
   const jobs = store.listRequestJobs(requestId);
   await chat.close(); await renders.close("production proof finished"); store.close();
-  return { phase: "production", harness: spec.harness, model: spec.model, requestId, stopped, requests: requests.map((value) => ({ requestId: value.requestId, harness: value.harness })),
+  return { phase: "production", harness: spec.harness, model: spec.model, typed: Boolean(spec.typed), requestId, stopped, requests: requests.map((value) => ({ requestId: value.requestId, harness: value.harness })),
     state: result.state, error: result.error ?? null, directionMessageId: directionMessage?.id ?? null, messages: result.messages,
     events: result.events.filter((event) => event.type === "tool.called"), run: result.runs.find((value) => value.id === requestId), jobs };
 }
@@ -282,6 +285,30 @@ async function main() {
     }
     store.close();
     result = { phase: "attach-files", items };
+  } else if (spec.phase === "seed-final") {
+    const store = openDataRoot(DATA_MOUNT, { startup: false });
+    const episode = store.getEpisode(spec.episodeId);
+    const imported = await importMedia({ workspace: DATA_MOUNT, sourcePath: path.join(DATA_MOUNT, "imports/fixtures/final-clip.mp4"), mediaDirectory: store.channelMediaDirectory(episode.channelId) });
+    const asset = store.saveAsset({ ...imported, channelId: episode.channelId, name: "final-clip.mp4" });
+    const item = store.attachLibraryItem(episode.id, asset.id, { category: "B-roll", label: "Two-scene synthetic clip" });
+    const story = store.getStory(episode.id);
+    const saved = store.saveStory(episode.id, story.storyRevision, "# Overview\n\nA compact two-scene synthetic proof.\n\n# Hook\n\nOpen immediately on the first colour.\n\n# Sections\n\n## Opening\n\nFirst scene.\n\n## Closing\n\nSecond scene.\n", "human");
+    const sections = saved.sections;
+    const updated = store.updateEpisode(episode.id, episode.revision, { cards: [
+      { id: "opening", title: "Opening", type: "Video", prompt: "Use the first second of the synthetic clip.", sectionId: sections[0].id, itemId: item.id, in: 0, out: 1, order: 0, enabled: true },
+      { id: "closing", title: "Closing", type: "Video", prompt: "Complete this card from the available synthetic clip's second scene.", sectionId: sections[1].id, itemId: null, order: 1, enabled: true },
+    ] }, "human");
+    store.close();
+    result = { phase: "seed-final", episodeId: episode.id, itemId: item.id, revision: updated.revision, storyRevision: saved.storyRevision, cards: updated.cards };
+  } else if (spec.phase === "move-final") {
+    const store = openDataRoot(DATA_MOUNT, { startup: false });
+    const moved = store.moveFinalToDrafts({ episodeId: spec.episodeId, outputId: spec.outputId, expectedRevision: spec.expectedRevision, actor: "human" });
+    store.close();
+    result = { phase: "move-final", output: moved };
+  } else if (spec.phase === "final-state") {
+    const store = openDataRoot(DATA_MOUNT, { startup: false });
+    result = { phase: "final-state", episode: store.getEpisode(spec.episodeId), jobs: store.listJobs(spec.episodeId), runs: store.listProductionRuns({ episodeId: spec.episodeId }) };
+    store.close();
   } else if (spec.phase === "episode-state") {
     const store = openDataRoot(DATA_MOUNT, { startup: false });
     const episode = store.getEpisode(spec.episodeId);

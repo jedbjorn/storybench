@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, realpath, rm } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { buildRenderPlan } from "./composition-plan.js";
 import { renderComposition } from "./composition-renderer.js";
@@ -8,6 +9,13 @@ import { StoreError } from "./store.js";
 
 const jobId = () => `job_${randomUUID()}`;
 const now = () => new Date().toISOString();
+
+async function outputReceipt(file, result) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  const info = await stat(file);
+  return { sha256: hash.digest("hex"), bytes: info.size, width: result.width ?? null, height: result.height ?? null, duration: result.duration ?? null };
+}
 
 function inside(root, candidate) {
   const base = path.resolve(root);
@@ -58,14 +66,6 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
 
   function validateRender(episodeId) { return getRenderSnapshot(episodeId); }
 
-  function mintFinalGrant({ episodeId, expectedRenderRevision, conversationId = null, requestId = null }) {
-    const snapshot = getRenderSnapshot(episodeId);
-    if (snapshot.renderRevision !== expectedRenderRevision)
-      throw new StoreError("Render inputs changed; review the current cut before authorizing final", 409, { currentRenderRevision: snapshot.renderRevision });
-    if (!conversationId && !requestId) throw new StoreError("A conversation or GUI request id is required");
-    return store.createFinalAuthorization({ episodeId, renderRevision: snapshot.renderRevision, conversationId, requestId });
-  }
-
   // The destination (channel, episode and managed output folder) is fixed when work is dispatched and travels
   // with the job; later navigation or default-channel changes cannot retarget it.
   function captureDestination(episodeId, channelId, kind) {
@@ -77,28 +77,55 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
   function queueRender(job, destination) {
     worker.enqueue(job.id, async (signal) => {
       let current = store.saveJob({ ...job, state: "running" });
+      let completedPath = null;
       try {
         const folder = inside(root, path.join(root, destination.outputDirectory));
         await mkdir(folder, { recursive: true });
         const outputPath = inside(folder, path.join(folder, `${job.id}.mp4`));
+        completedPath = outputPath;
         const result = await renderCompositionImpl({
           workspace: root, outputPath, preview: job.outputClass === "draft", signal,
           plan: job.snapshot.composition, libraryItems: job.snapshot.libraryItems,
           onProgress: (progress) => { current = store.saveJob({ ...current, state: "running", progress: Math.max(0, Math.min(1, Number(progress) || 0)) }); },
         });
-        const relative = path.relative(root, inside(root, result.path || outputPath));
-        store.saveJob({ ...current, state: "completed", progress: 1, outputPath: relative, error: null });
+        completedPath = inside(root, result.path || outputPath);
+        const relative = path.relative(root, completedPath);
+        if (job.outputClass === "final") {
+          const latest = getRenderSnapshot(job.episodeId);
+          if (latest.renderRevision !== job.snapshot.renderRevision)
+            throw new StoreError("Render inputs changed before Final publication; validate the current cut and render again", 409, { currentRenderRevision: latest.renderRevision });
+          const receipt = await outputReceipt(completedPath, result);
+          store.publishFinalIntent(job.requestId, job.id, { outputPath: relative, snapshot: { ...job.snapshot, output: receipt } });
+        } else store.saveJob({ ...current, state: "completed", progress: 1, outputPath: relative, error: null });
       } catch (error) {
         const cancelled = signal.aborted || error?.name === "AbortError";
-        store.saveJob({ ...current, state: cancelled ? "cancelled" : "failed", error: cancelled ? signal.reason?.message || "Job cancelled" : error.message, outputPath: null });
+        if (job.outputClass === "final" && completedPath) await rm(completedPath, { force: true }).catch(() => {});
+        const latest = store.getJob(job.id);
+        if (latest && latest.state !== "completed") store.saveJob({ ...latest, state: cancelled ? "cancelled" : "failed", error: cancelled ? signal.reason?.message || "Job cancelled" : error.message, outputPath: null });
       }
     }, (reason) => store.saveJob({ ...job, state: "cancelled", error: reason, outputPath: null }),
     (error) => store.saveJob({ ...job, state: "failed", error: error.message || String(error), outputPath: null }));
   }
 
-  function enqueueRender({ episodeId, channelId = null, outputClass, expectedRenderRevision, finalGrantId = null, conversationId = null, requestId = null }) {
+  function enqueueRender({ episodeId, channelId = null, outputClass, expectedRenderRevision, conversationId = null, requestId = null }) {
     worker.assertOpen();
     if (!["draft", "final"].includes(outputClass)) throw new StoreError("outputClass must be draft or final");
+    let finalRun = null;
+    if (outputClass === "final") {
+      finalRun = store.getProductionRun(requestId);
+      if (!finalRun) throw new StoreError("An active request-bound Final intent is required", 403);
+      if (finalRun.episodeId !== episodeId || (conversationId != null && finalRun.conversationId !== conversationId))
+        throw new StoreError("The Final request does not match this episode and conversation", 403);
+      if (finalRun.finalIntent === "published" && finalRun.finalOutputJobId) {
+        const published = store.getJob(finalRun.finalOutputJobId);
+        if (published?.snapshot?.renderRevision === expectedRenderRevision) return published;
+      }
+      if (finalRun.kind !== "final" || finalRun.finalIntent !== "active" || !["starting", "running"].includes(finalRun.state))
+        throw new StoreError("This request has no active Final intent", 403, { current: finalRun });
+      const existing = store.listRequestJobs(requestId).find((job) => job.outputClass === "final" && ["queued", "running", "cancelling"].includes(job.state)
+        && job.snapshot?.renderRevision === expectedRenderRevision);
+      if (existing) return existing;
+    }
     const destination = captureDestination(episodeId, channelId, outputClass === "final" ? "final" : "drafts");
     const rendered = getRenderSnapshot(episodeId);
     const snapshot = { ...rendered, destination };
@@ -107,9 +134,7 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
     const createdAt = now();
     const value = { id: jobId(), episodeId, kind: outputClass, outputClass, state: "queued", progress: 0,
       revision: snapshot.episode.revision, snapshot, requestId, createdAt };
-    const job = outputClass === "final"
-      ? store.saveAuthorizedFinalJob(finalGrantId, { episodeId, renderRevision: snapshot.renderRevision, conversationId, requestId }, value)
-      : store.saveJob(value);
+    const job = store.saveJob(value);
     queueRender(job, destination);
     return job;
   }
@@ -125,12 +150,16 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
 
   function listJobs(episodeId) { return store.listJobs(episodeId).map((job) => getJob(episodeId, job.id)); }
 
-  function cancelJob(episodeId, id) {
+  function cancelJob(episodeId, id, { finalEndReason = "cancelled" } = {}) {
     const job = getJob(episodeId, id);
     if (!['queued', 'running'].includes(job.state)) throw new StoreError("Only queued or running jobs can be cancelled", 409);
     const cancelled = worker.cancel(id);
     if (!cancelled) throw new StoreError("Job is no longer active", 409);
     if (cancelled === "active") store.saveJob({ ...job, state: "cancelling", error: "Cancellation requested" });
+    if (job.outputClass === "final" && job.requestId) {
+      const run = store.getProductionRun(job.requestId);
+      if (run?.finalIntent === "active") store.endFinalIntent(run.id, finalEndReason);
+    }
     return getJob(episodeId, id);
   }
 
@@ -202,7 +231,7 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
     return value;
   }
 
-  return { getRenderSnapshot, validateRender, mintFinalGrant, enqueueRender, getJob, listJobs, cancelJob,
+  return { getRenderSnapshot, validateRender, enqueueRender, getJob, listJobs, cancelJob,
     createGraphicRecipe, updateGraphicRecipe, enqueueGraphic, listGraphicRecipes: (episodeId) => store.listGraphicRecipes(episodeId),
     getGraphicRecipe: (episodeId, recipeId) => store.getGraphicRecipe(episodeId, recipeId), close: (reason) => worker.close(reason) };
 }

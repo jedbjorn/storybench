@@ -26,8 +26,8 @@ const toolSpecs = [
   { type: 'function', name: 'update_cards', description: 'Replace cards using the exact current episode revision.', inputSchema: object(['expectedRevision','cards'], { expectedRevision: { type: 'integer', minimum: 1 }, cards: { type: 'array', items: { type: 'object' } } }) },
   { type: 'function', name: 'validate_render', description: 'Validate the current cut and return its exact render revision.', inputSchema: empty },
   { type: 'function', name: 'create_draft', description: 'Enqueue a draft for an exact validated render revision.', inputSchema: object(['expectedRenderRevision'], { expectedRenderRevision: { type: 'string' } }) },
-  { type: 'function', name: 'request_final', description: 'Explain the human Final action required for the current render revision.', inputSchema: empty },
-  { type: 'function', name: 'create_final', description: 'Consume a human-created one-use grant for the exact render revision.', inputSchema: object(['expectedRenderRevision','finalGrantId'], { expectedRenderRevision: { type: 'string' }, finalGrantId: { type: 'string' } }) },
+  { type: 'function', name: 'declare_final_request', description: 'Bind Final intent when this request\'s own originating typed creator message explicitly asks for a complete Final video. Button Final requests are already bound.', inputSchema: object(['messageId'], { messageId: { type: 'integer', minimum: 1 } }) },
+  { type: 'function', name: 'create_final', description: 'Enqueue the exact current render under this request\'s active Final intent.', inputSchema: object(['expectedRenderRevision'], { expectedRenderRevision: { type: 'string' } }) },
   { type: 'function', name: 'get_job', description: 'Read one render or graphic job in this episode.', inputSchema: object(['jobId'], { jobId: { type: 'string' } }) },
   { type: 'function', name: 'await_job', description: 'Wait a bounded time for a job owned by this request and return its terminal result. A timeout or unfinished job is not success.', inputSchema: object(['jobId'], { jobId: { type: 'string' }, timeoutSeconds: { type: 'integer', minimum: 1, maximum: 300 } }) },
   { type: 'function', name: 'cancel_job', description: 'Cancel one active job in this episode.', inputSchema: object(['jobId'], { jobId: { type: 'string' } }) },
@@ -175,7 +175,7 @@ export class CodexConnection {
       cwd: this.cwd,
       ...(this.model ? { model: this.model } : {}),
       approvalPolicy: 'never', sandbox: 'read-only', dynamicTools: toolSpecs,
-      baseInstructions: 'You are the in-app Storybench episode assistant. Use only the supplied episode-scoped tools. Read current revisions before edits. Do not run commands, access paths or unrelated episodes, mint final authorization, or claim an operation succeeded unless its Storybench tool succeeds. Ask the user to use the labeled Final action when request_final says it is required. Explain revision conflicts and unsupported operations plainly.'
+      baseInstructions: 'You are the in-app Storybench episode assistant. Use only the supplied episode-scoped tools. Read current revisions before edits. Do not run commands, access paths or unrelated episodes, or claim an operation succeeded unless its Storybench tool succeeds. For an explicit typed request to finish a complete Final video, bind only its current originating creator message with declare_final_request; a Final button request is already bound. Explain revision conflicts and unsupported operations plainly.'
     };
   }
 
