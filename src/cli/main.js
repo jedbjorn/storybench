@@ -94,6 +94,7 @@ export async function main(argv, overrides = {}) {
     system: overrides.system ?? hostSystem({ env }),
     runCommand: overrides.runCommand ?? runCommand,
     installAdapters: overrides.installAdapters,
+    recoveryAdapters: overrides.recoveryAdapters,
     home: overrides.home ?? env.HOME ?? os.homedir(),
     healthTimeoutMs: overrides.healthTimeoutMs ?? (Number(env.STORYBENCH_HEALTH_TIMEOUT_MS) || 180_000),
     pollMs: overrides.pollMs,
