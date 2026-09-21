@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Disposable task #27 live proof. Builds this checkout, starts the normal host/app/worker
-// boundary on a loopback 188xx port, sends real shortcut requests, and removes its exact
+// Disposable task #27 review proof. Builds this checkout, starts the normal host/app/worker
+// boundary on a loopback 188xx port, sends one real shortcut request, and removes its exact
 // containers/images/work directory. Credential files are hashed read-only before/after.
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -18,7 +18,7 @@ const port = Number(arg("port", "18863"));
 if (!Number.isInteger(port) || port < 18800 || port > 18899) throw new Error("--port must be in 18800-18899");
 const dataRoot = path.join(work, "data"), stateRoot = path.join(work, "state"), runtimeRoot = path.join(work, "runtime");
 const installId = `task27${Date.now()}`, appName = `storybench-${installId}-app`;
-const tags = { app: "storybench-task27-app:live", worker: "storybench-task27-worker:live" };
+const tags = { app: `storybench-task27-app:${installId}`, worker: `storybench-task27-worker:${installId}` };
 const credentials = { codex: path.join(os.homedir(), ".codex/auth.json"), claude: path.join(os.homedir(), ".claude/.credentials.json") };
 const driver = path.join(repo, "src/runtime/slice-proof-driver.js");
 const logs = [];
@@ -53,6 +53,10 @@ try {
     "--mount", `type=bind,source=${dataRoot},target=/storybench/data`, "--mount", `type=bind,source=${driver},target=/opt/storybench/app/src/runtime/slice-proof-driver.js,readonly`,
     images.app, "node", "src/runtime/slice-proof-driver.js", JSON.stringify({ phase: "seed", nameSuffix: " TASK27" })]);
   seeded = jsonLine(seededOutput.stdout);
+  await mkdir(path.join(dataRoot, "imports", "fixtures"), { recursive: true });
+  await run("docker", ["run", "--rm", "--network", "none", "--user", "0:0", "--cap-drop", "ALL",
+    "--mount", `type=bind,source=${dataRoot},target=/storybench/data`, images.app, "ffmpeg", "-hide_banner", "-loglevel", "error",
+    "-f", "lavfi", "-i", "color=c=0x2040ff:s=96x64:d=1", "-frames:v", "1", "-y", "/storybench/data/imports/fixtures/review-reference.png"]);
   const config = { installId, dataRoot, stateRoot, runtimeRoot, port, images, credentials, healthTimeoutMs: 60_000 };
   const configPath = path.join(work, "host.json"); await writeFile(configPath, JSON.stringify(config));
   host = spawn(process.execPath, [path.join(repo, "src/runtime/host.js"), "--config", configPath], { cwd: repo, stdio: ["ignore", "pipe", "pipe"] });
@@ -67,29 +71,30 @@ try {
   if (!(await fetch(`http://127.0.0.1:${port}/api/health`).then((value) => value.ok, () => false))) throw new Error("host did not become healthy");
   await run("docker", ["cp", driver, `${appName}:/opt/storybench/app/src/runtime/slice-proof-driver.js`]);
   const episodeId = seeded.episodes[0].id;
-  const invoke = async (spec) => jsonLine((await run("docker", ["exec", appName, "node", "src/runtime/slice-proof-driver.js", JSON.stringify({ phase: "production", episodeId, timeoutMs: 360_000, ...spec })])).stdout);
-  const codex = await invoke({ requestId: "codex-success", harness: "codex", model: "gpt-5.6-terra", kind: "still_graphic",
-    prompt: "Create a simple 320x180 still graphic with a dark green background and the text TASK 27. You must use create_graphic_recipe, then render_graphic, then await_job. Finish only after the job is completed." });
-  const stopped = await invoke({ requestId: "codex-stop", harness: "codex", model: "gpt-5.6-terra", kind: "animated_graphic", stopWhenJobActive: true,
-    prompt: "Create a 30-second 1920x1080 animated graphic with moving text TASK 27 STOP. You must use create_graphic_recipe, then render_graphic, then await_job and wait for completion." });
-  const claude = await invoke({ requestId: "claude-success", harness: "claude", model: "sonnet", kind: "still_graphic",
-    prompt: "Create a simple 320x180 still graphic with a navy background and the text CLAUDE TASK 27. You must use create_graphic_recipe, then render_graphic, then await_job. Finish only after the job is completed." });
+  const rawInvoke = async (spec) => jsonLine((await run("docker", ["exec", appName, "node", "src/runtime/slice-proof-driver.js", JSON.stringify(spec)])).stdout);
+  const attached = await rawInvoke({ phase: "attach-files", episodeId: seeded.episodes[1].id,
+    files: [{ file: "review-reference.png", category: "Reference", label: "Review blue reference" }] });
+  const sourceItemId = attached.items[0].itemId, sourceEpisodeId = seeded.episodes[1].id;
+  const codex = await rawInvoke({ phase: "production", episodeId, timeoutMs: 360_000, requestId: "codex-review", harness: "codex", model: "gpt-5.6-terra", kind: "still_graphic",
+    directionText: "Use the Review blue reference directly in this episode.",
+    prompt: `First call reuse_project_item for source episode ${sourceEpisodeId}, item ${sourceItemId}, with no direction argument. Then call reuse_project_item for the same item again with direction.messageId {{directionMessageId}} and use direct-use, so provenance is recorded. Finally create a simple 320x180 still graphic with a dark green background and the text TASK 27 REVIEW: use create_graphic_recipe, render_graphic, and await_job. Finish only after the job is completed.` });
+  const state = await rawInvoke({ phase: "episode-state", episodeId });
   const after = { codex: await sha(credentials.codex), claude: await sha(credentials.claude) };
   const summary = {
-    port, models: { codex: "gpt-5.6-terra", claude: "sonnet" }, images,
+    port, model: "gpt-5.6-terra", images,
     credentialFilesUnchanged: before.codex === after.codex && before.claude === after.claude,
     codex: { state: codex.state, run: codex.run, jobs: codex.jobs, assistant: codex.messages.filter((value) => value.role === "assistant").at(-1)?.text ?? null },
-    stop: { requested: stopped.stopped, state: stopped.state, run: stopped.run, jobs: stopped.jobs },
-    claude: { state: claude.state, run: claude.run, jobs: claude.jobs, assistant: claude.messages.filter((value) => value.role === "assistant").at(-1)?.text ?? null },
+    reuseToolCalls: codex.events.filter((event) => event.payload?.name === "reuse_project_item").length,
+    recordedDirections: state.directions,
+    reusedItems: state.library.filter((item) => item.provenance?.reusedFrom?.itemId === sourceItemId),
   };
   await writeFile(path.join(evidence, "live-summary.json"), JSON.stringify(summary, null, 2) + "\n");
   await writeFile(path.join(evidence, "live-codex.json"), JSON.stringify(codex, null, 2) + "\n");
-  await writeFile(path.join(evidence, "live-stop.json"), JSON.stringify(stopped, null, 2) + "\n");
-  await writeFile(path.join(evidence, "live-claude.json"), JSON.stringify(claude, null, 2) + "\n");
-  if (!summary.credentialFilesUnchanged || codex.state !== "idle" || !codex.jobs.some((job) => job.state === "completed") || !stopped.stopped
-      || stopped.jobs.some((job) => ["queued", "running", "cancelling"].includes(job.state)) || claude.state !== "idle" || !claude.jobs.some((job) => job.state === "completed"))
-    throw new Error(`live proof did not pass: ${JSON.stringify({ codex: codex.state, stop: stopped.state, claude: claude.state })}`);
-  console.log(JSON.stringify({ ok: true, evidence, codex: codex.state, stop: stopped.state, claude: claude.state }));
+  if (!summary.credentialFilesUnchanged || codex.state !== "idle" || !codex.jobs.some((job) => job.state === "completed")
+      || summary.reuseToolCalls < 2 || summary.reusedItems.length !== 1 || summary.recordedDirections.length !== 1
+      || summary.recordedDirections[0].messageId !== codex.directionMessageId)
+    throw new Error(`live proof did not pass: ${JSON.stringify({ codex: codex.state, reuseToolCalls: summary.reuseToolCalls, directions: summary.recordedDirections.length })}`);
+  console.log(JSON.stringify({ ok: true, evidence, codex: codex.state, reuseToolCalls: summary.reuseToolCalls, directions: summary.recordedDirections.length }));
 } catch (error) {
   await mkdir(evidence, { recursive: true });
   await writeFile(path.join(evidence, "live-error.txt"), `${error.stack || error.message}\n\n${logs.join("")}`);

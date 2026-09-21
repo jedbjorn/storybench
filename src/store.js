@@ -24,7 +24,7 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 9;
 export const DEFAULT_CHANNEL_NAME = "Main";
 // IDs become directory names, so they must be single safe path segments.
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
@@ -51,9 +51,6 @@ function shortText(value, field) {
 }
 export const REFERENCE_DIRECTION_USES = Object.freeze(["direct-use", "edit"]);
 export const REFERENCE_RULE = "Reference material is read-only feel context. Do not edit it or directly use it in the production unless the creator explicitly asks for that use or edit.";
-const FEEL_ONLY = /\b(?:pace|pacing|feel|style|tone|mood|rhythm|energy|lighting|colour|color)\b/i;
-const DIRECT_USE = /\b(?:use|include|incorporate|insert|show|feature|open(?:ing)?\s+with|close\s+with)\b/i;
-const EDIT_USE = /\b(?:edit|modify|transform|remix|crop|cut|reframe|recolor|animate)\b/i;
 
 function referenceIds(value, field) {
   const ids = value == null ? [] : value;
@@ -399,7 +396,6 @@ export class Store {
     if (version < 7) this.migrateV7();
     if (version < 8) this.migrateV8();
     if (version < 9) this.migrateV9();
-    if (version < 10) this.migrateV10();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -868,38 +864,6 @@ export class Store {
       throw error;
     }
   }
-  // Schema 10 records creator direction that originates in a saved episode/card reference prompt or an
-  // explicit creator media selection. Message direction remains in reference_directions; the separate table
-  // keeps the v7 message invariants intact and makes prompt text/revision immutable provenance.
-  migrateV10() {
-    const stamp = now();
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS reference_prompt_directions (
-          id TEXT PRIMARY KEY,
-          episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
-          item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
-          use TEXT NOT NULL CHECK (use IN ('direct-use','edit')),
-          source_type TEXT NOT NULL CHECK (source_type IN ('episode-prompt','card-prompt','card-media-selection')),
-          card_id TEXT,
-          episode_revision INTEGER NOT NULL,
-          text_snapshot TEXT NOT NULL,
-          request_id TEXT REFERENCES production_runs(id) ON DELETE SET NULL,
-          note TEXT NOT NULL DEFAULT '',
-          created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS reference_prompt_directions_episode_item ON reference_prompt_directions(episode_id,item_id,created_at);
-        CREATE INDEX IF NOT EXISTS reference_prompt_directions_request ON reference_prompt_directions(request_id) WHERE request_id IS NOT NULL;
-        CREATE TRIGGER IF NOT EXISTS reference_prompt_direction_scope BEFORE INSERT ON reference_prompt_directions
-          WHEN (SELECT episode_id FROM library_items WHERE id=NEW.item_id) IS NOT NEW.episode_id
-            OR (NEW.request_id IS NOT NULL AND (SELECT episode_id FROM production_runs WHERE id=NEW.request_id) IS NOT NEW.episode_id)
-          BEGIN SELECT RAISE(ABORT,'reference prompt direction crosses episode scope'); END;
-      `);
-      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(10,?)").run(stamp);
-      this.db.exec("PRAGMA user_version=10; COMMIT");
-    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
-  }
   insertHistory(episode, actor, createdAt, parentRevision) {
     this.db.prepare(`INSERT INTO episode_history(episode_id,revision,title,notes,cards,actor,created_at,parent_revision,reference_prompt,reference_item_ids)
       VALUES(?,?,?,?,?,?,?,?,?,?)`).run(episode.id, episode.revision, episode.title, episode.notes, JSON.stringify(episode.cards), actor, createdAt,
@@ -1320,60 +1284,6 @@ export class Store {
       VALUES(?,?,?,?,?,?,?,?,?)`).run(value.id, episodeId, itemId, use, conversationId, messageId, value.requestId, value.note, value.createdAt);
     return value;
   }
-  recordReferencePromptDirection({ episodeId, itemId, use, sourceType, cardId = null, episodeRevision, requestId = null, note = "", validateOnly = false } = {}) {
-    const episode = this.getEpisode(episodeId), item = this.getLibraryItem(episodeId, itemId);
-    if (!episode) throw new StoreError("Episode not found", 404);
-    if (!item) throw new StoreError("Reference item not found for this episode", 404);
-    if (!REFERENCE_DIRECTION_USES.includes(use)) throw new StoreError(`use must be one of ${REFERENCE_DIRECTION_USES.join(", ")}`);
-    if (!Number.isInteger(episodeRevision) || episodeRevision !== episode.revision)
-      throw new StoreError(`The reference prompt changed; expected episode revision ${episode.revision}`, 409, { currentRevision: episode.revision });
-    let textSnapshot = "";
-    if (sourceType === "episode-prompt") {
-      if (!episode.referenceItemIds.includes(itemId)) throw new StoreError("That item is not linked to the episode reference prompt", 403);
-      textSnapshot = episode.referencePrompt;
-    } else if (sourceType === "card-prompt") {
-      const card = episode.cards.find((value) => value.id === cardId);
-      if (!card) throw new StoreError("Direction card not found", 404);
-      if (!(card.referenceItemIds || []).includes(itemId)) throw new StoreError("That item is not linked to this card reference prompt", 403);
-      textSnapshot = card.referencePrompt || "";
-    } else if (sourceType === "card-media-selection") {
-      const card = episode.cards.find((value) => value.id === cardId);
-      if (!card || card.itemId !== itemId) throw new StoreError("That item is not the card's selected output media", 403);
-      const isReference = item.category === "Reference" || episode.referenceItemIds.includes(itemId)
-        || episode.cards.some((value) => (value.referenceItemIds || []).includes(itemId));
-      if (!isReference) throw new StoreError("The selected output is not reference material", 403);
-      // Locate the revision that introduced the still-current selection. Agent and migration selections do not
-      // become creator direction, even if a later unrelated human save keeps them.
-      const history = this.db.prepare("SELECT revision,cards,actor FROM episode_history WHERE episode_id=? AND revision<=? ORDER BY revision DESC").all(episodeId, episodeRevision);
-      let introduction = null;
-      for (let index = 0; index < history.length; index++) {
-        const selected = parse(history[index].cards, []).find((value) => value.id === cardId)?.itemId ?? null;
-        const prior = parse(history[index + 1]?.cards, []).find((value) => value.id === cardId)?.itemId ?? null;
-        if (selected === itemId && prior !== itemId) { introduction = history[index]; break; }
-      }
-      if (!introduction || introduction.actor === "agent" || introduction.actor === "migration" || introduction.actor === "branding-standard")
-        throw new StoreError("Only an explicit creator media selection is direct-use direction", 403);
-      if (use !== "direct-use") throw new StoreError("Selecting output media authorizes direct use, not editing", 403);
-      textSnapshot = `Creator selected ${item.label} as output media for ${card.title || card.id}`;
-    } else throw new StoreError("Unknown reference prompt direction source");
-    if (sourceType !== "card-media-selection") {
-      const authorized = use === "edit" ? EDIT_USE.test(textSnapshot) : DIRECT_USE.test(textSnapshot) && !FEEL_ONLY.test(textSnapshot.replace(/\b(?:clip|image|photo|video|audio|track|shot|file|item)\b/ig, ""));
-      if (!authorized) throw new StoreError("This reference prompt expresses context or feel, not explicit permission for that use", 403);
-      const linked = sourceType === "episode-prompt" ? episode.referenceItemIds : episode.cards.find((value) => value.id === cardId).referenceItemIds;
-      if (linked.length > 1 && !textSnapshot.toLowerCase().includes(item.label.toLowerCase()) && !textSnapshot.includes(itemId))
-        throw new StoreError("The reference prompt does not unambiguously identify this item", 403);
-    }
-    const value = { id: id("refdir"), episodeId, itemId, use, sourceType, cardId, episodeRevision, textSnapshot, requestId, note: String(note ?? ""), createdAt: now() };
-    if (validateOnly) return value;
-    this.db.prepare(`INSERT INTO reference_prompt_directions(id,episode_id,item_id,use,source_type,card_id,episode_revision,text_snapshot,request_id,note,created_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(value.id, episodeId, itemId, use, sourceType, cardId, episodeRevision, textSnapshot, requestId, value.note, value.createdAt);
-    return value;
-  }
-  listReferencePromptDirections(episodeId, { itemId = null, requestId = null } = {}) {
-    return this.db.prepare(`SELECT * FROM reference_prompt_directions WHERE episode_id=? AND (? IS NULL OR item_id=?) AND (? IS NULL OR request_id=?) ORDER BY created_at,id`)
-      .all(episodeId, itemId, itemId, requestId, requestId).map((row) => ({ id: row.id, episodeId: row.episode_id, itemId: row.item_id, use: row.use,
-        sourceType: row.source_type, cardId: row.card_id, episodeRevision: row.episode_revision, textSnapshot: row.text_snapshot, requestId: row.request_id, note: row.note, createdAt: row.created_at }));
-  }
   listReferenceDirections(episodeId, { itemId = null, requestId = null } = {}) {
     return this.db.prepare(`SELECT * FROM reference_directions WHERE episode_id=? AND (? IS NULL OR item_id=?) AND (? IS NULL OR request_id=?)
       ORDER BY created_at,id`).all(episodeId, itemId, itemId, requestId, requestId).map((row) => ({
@@ -1383,8 +1293,7 @@ export class Store {
   // Helper for production operations: the latest recorded direction permitting exactly this use, or null.
   referenceDirectionFor(episodeId, itemId, use, { requestId = null } = {}) {
     if (!REFERENCE_DIRECTION_USES.includes(use)) throw new StoreError(`use must be one of ${REFERENCE_DIRECTION_USES.join(", ")}`);
-    return [...this.listReferenceDirections(episodeId, { itemId, requestId }), ...this.listReferencePromptDirections(episodeId, { itemId, requestId })]
-      .filter((direction) => direction.use === use).sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt))).at(-1) || null;
+    return this.listReferenceDirections(episodeId, { itemId, requestId }).filter((direction) => direction.use === use).at(-1) || null;
   }
   // Reference scopes as delivered to the agent: episode references apply across the episode; card references
   // are local context for that card. Unavailable links are reported, not dropped.
@@ -1397,17 +1306,14 @@ export class Store {
       if (!item) return { itemId, available: false };
       return { itemId, available: true, label: item.label, category: item.category, kind: item.asset?.kind ?? null,
         sourceKind: item.sourceKind, sourceUrl: item.sourceUrl ?? null, extractionStatus: item.extractionStatus,
-        hasText: Boolean(item.extractedText), directions: [
-          ...this.listReferenceDirections(episodeId, { itemId }).map(({ id: directionId, use, messageId, requestId }) => ({ id: directionId, use, sourceType: "message", messageId, requestId })),
-          ...this.listReferencePromptDirections(episodeId, { itemId }).map(({ id: directionId, use, sourceType, cardId, episodeRevision, requestId }) => ({ id: directionId, use, sourceType, cardId, episodeRevision, requestId })),
-        ] };
+        hasText: Boolean(item.extractedText), directions: this.listReferenceDirections(episodeId, { itemId }).map(({ id: directionId, use, messageId, requestId }) => ({ id: directionId, use, messageId, requestId })) };
     };
     return {
       rule: REFERENCE_RULE,
-      episode: { scope: "episode", revision: episode.revision, prompt: episode.referencePrompt, items: episode.referenceItemIds.map(describe) },
+      episode: { scope: "episode", prompt: episode.referencePrompt, items: episode.referenceItemIds.map(describe) },
       cards: episode.cards
         .filter((card) => card.referencePrompt || card.referenceItemIds?.length || card.referenceUrls?.length)
-        .map((card) => ({ scope: "card", cardId: card.id, revision: episode.revision, title: card.title, prompt: card.referencePrompt ?? "",
+        .map((card) => ({ scope: "card", cardId: card.id, title: card.title, prompt: card.referencePrompt ?? "",
           items: (card.referenceItemIds || []).map(describe), legacyUrls: card.referenceUrls || [] })),
     };
   }

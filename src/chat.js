@@ -220,7 +220,8 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
         const providerStatus = params.turn?.status;
         const status = providerStatus === "completed" && unfinished.length ? "failed" : providerStatus;
         const state = status === "completed" ? "idle" : status === "interrupted" ? "interrupted" : "error";
-        const detail = unfinished.length ? `The assistant ended while ${unfinished.length} request-owned job(s) were still unfinished; no success was recorded.`
+        const detail = providerStatus === "interrupted" ? "Stopped by the creator; unfinished request-owned work was not reported as success."
+          : unfinished.length ? `The assistant ended while ${unfinished.length} request-owned job(s) were still unfinished; no success was recorded.`
           : state === "error" ? JSON.stringify(params.turn?.error || "Harness turn failed") : null;
         db.prepare("UPDATE conversation_messages SET state=?,updated_at=? WHERE id=?").run(status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed", now(), messageId);
         if (assistantId) db.prepare("UPDATE conversation_messages SET state=?,updated_at=? WHERE id=?").run(status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed", now(), assistantId);
@@ -337,16 +338,12 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     if (typeof text !== "string" || !text.trim()) throw error("Chat message must not be blank");
     // One active production request per conversation (the store does not refuse a second 'starting' run).
     if ((continuity?.persistence ?? requestPersistence)?.activeRuns?.(id).length) throw error("A request is already running in this conversation; let it finish or press Stop", 409);
-    // Origin is bound to the role by the store: a typed creator message (shortcuts are #27's handler).
+    // Typed messages are ordinary chat requests. Only app-owned shortcuts assign a production kind;
+    // typed Final intent is recognized and bound explicitly by the Final request service.
     const normalized = text.trim();
-    const productionVerb = /\b(?:create|make|build|render|produce|export|assemble)\b/i.test(normalized);
-    const kind = productionVerb && /\bfinal\b/i.test(normalized) ? "final"
-      : productionVerb && /\bdraft\b/i.test(normalized) ? "draft"
-      : productionVerb && /\b(?:animated|motion)\s+graphic\b/i.test(normalized) ? "animated_graphic"
-      : productionVerb && /\b(?:still|static)\s+graphic\b/i.test(normalized) ? "still_graphic" : "chat";
     const stamp = now(), messageId = store.addConversationMessage({ conversationId: id, role: "user", text: normalized, state: "queued" }).id;
     db.prepare("UPDATE conversations SET draft='',state='queued',error=NULL,updated_at=? WHERE id=?").run(stamp, id); emit(value, "status", { state: "queued" });
-    const task = execute(value, messageId, normalized, { kind, origin: "typed" }); tasks.add(task); task.finally(() => tasks.delete(task)); return project(episodeId, id);
+    const task = execute(value, messageId, normalized, { kind: "chat", origin: "typed" }); tasks.add(task); task.finally(() => tasks.delete(task)); return project(episodeId, id);
   };
   const productionText = (episodeId, kind, targetCardId, prompt) => {
     const current = episode(episodeId), card = targetCardId ? current.cards.find((item) => item.id === targetCardId) : null;
@@ -396,9 +393,17 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       throw error("A request is already active for this episode. Let it finish or press Stop; this retry was not queued.", 409);
     const old = db.prepare("SELECT text FROM conversation_messages WHERE id=? AND conversation_id=?").get(previous.originatingMessageId, id);
     if (!old) throw error("The original request message is unavailable", 409);
-    const message = store.addConversationMessage({ conversationId: id, role: "user", text: old.text, state: "queued", shortcut: true });
-    const created = store.retryProductionRun(runId, { clientRequestId, originatingMessageId: message.id, origin: "button" });
-    if (!created.created) return { ...project(episodeId, id), requestResult: created };
+    let message, created;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      message = store.addConversationMessage({ conversationId: id, role: "user", text: old.text, state: "queued", shortcut: true });
+      created = store.retryProductionRun(runId, { clientRequestId, originatingMessageId: message.id, origin: "button" });
+      if (!created.created) { db.exec("ROLLBACK"); return { ...project(episodeId, id), requestResult: created }; }
+      db.exec("COMMIT");
+    } catch (cause) {
+      if (db.isTransaction) db.exec("ROLLBACK");
+      throw cause;
+    }
     const result = dispatch(value, message.id, old.text, { id: created.run.id, kind: created.run.kind, origin: "button", targetCardId: created.run.targetCardId, existingRun: true, successorOf: runId });
     return { ...result, requestResult: created };
   };

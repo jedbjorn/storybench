@@ -77,6 +77,35 @@ test("duplicate transport IDs return the existing request, busy episodes refuse,
   assert.equal(retried.requestResult.run.successorOf, first.requestResult.run.id);
 });
 
+test("a refused Retry leaves no orphan visible queued message", async (t) => {
+  const { store, episode, chat } = fixture(t);
+  const conversation = chat.create(episode.id);
+  const message = store.addConversationMessage({ conversationId: conversation.id, role: "user", text: "Create final", shortcut: true });
+  const run = store.createProductionRun({ conversationId: conversation.id, kind: "final", origin: "button", originatingMessageId: message.id, harness: "codex" }).run;
+  store.updateProductionRun(run.id, { state: "running" });
+  const job = store.saveJob({ episodeId: episode.id, kind: "final", outputClass: "final", state: "completed", progress: 1,
+    revision: episode.revision, snapshot: {}, outputPath: "outputs/final.mp4", requestId: run.id });
+  store.publishFinalIntent(run.id, job.id);
+  store.updateProductionRun(run.id, { state: "completed" });
+  const before = chat.get(episode.id, conversation.id).messages.length;
+  await assert.rejects(chat.retry(episode.id, conversation.id, run.id, { clientRequestId: crypto.randomUUID() }), /published/);
+  const after = chat.get(episode.id, conversation.id).messages;
+  assert.equal(after.length, before);
+  assert.equal(after.filter((entry) => entry.state === "queued").length, 0);
+});
+
+test("typed messages always create chat requests even when they negate a Final", async (t) => {
+  const { store, episode, calls, chat } = fixture(t, { hold: true });
+  const conversation = chat.create(episode.id);
+  const text = "make a draft; do NOT create the final";
+  await chat.send(episode.id, conversation.id, text);
+  await until(() => calls.length && chat.get(episode.id, conversation.id).state === "running");
+  const run = store.listProductionRuns({ conversationId: conversation.id }).at(-1);
+  assert.equal(run.kind, "chat");
+  assert.deepEqual(calls[0].request, { text, messageId: run.originatingMessageId, kind: "chat", cardId: null });
+  await chat.interrupt(episode.id, conversation.id);
+});
+
 test("request jobs are linked; Stop cancels only owned work and completed partial assets survive failure", async (t) => {
   const { store, episode, calls, chat } = fixture(t, { hold: true });
   const conversation = chat.create(episode.id);
@@ -95,6 +124,20 @@ test("request jobs are linked; Stop cancels only owned work and completed partia
   // A registered/completed result is ordinary durable state and is not rolled back with its request.
   store.saveJob({ ...store.getJob(independent.id), state: "completed", outputPath: "outputs/partial.mp4" });
   assert.equal(store.getJob(independent.id).state, "completed");
+});
+
+test("Stop reports creator cancellation even when request-owned work is still unfinished", async (t) => {
+  const { store, episode, calls, renders, chat } = fixture(t, { hold: true });
+  const conversation = chat.create(episode.id);
+  const sent = await chat.sendProduction(episode.id, conversation.id, { kind: "draft", clientRequestId: crypto.randomUUID() });
+  await until(() => calls.length && chat.get(episode.id, conversation.id).state === "running");
+  store.saveJob({ id: "job_stopping", episodeId: episode.id, kind: "draft", outputClass: "draft", state: "queued", progress: 0,
+    revision: episode.revision, snapshot: {}, requestId: sent.requestResult.run.id, createdAt: new Date().toISOString() });
+  renders.cancelJob = (_episodeId, id) => store.saveJob({ ...store.getJob(id), state: "cancelling", error: "Cancellation requested" });
+  await chat.interrupt(episode.id, conversation.id);
+  await until(() => store.getProductionRun(sent.requestResult.run.id).state === "interrupted");
+  assert.match(chat.get(episode.id, conversation.id).error, /Stopped by the creator/);
+  assert.doesNotMatch(chat.get(episode.id, conversation.id).error, /assistant ended/);
 });
 
 test("await_job waits only for same-request work and move_final_to_drafts refuses ambiguity", async (t) => {

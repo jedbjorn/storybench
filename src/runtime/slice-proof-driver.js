@@ -183,8 +183,11 @@ async function productionRun(spec) {
   const conversation = chat.create(spec.episodeId, { name: `Production ${spec.harness}` });
   const settings = store.getConversation(conversation.id);
   store.updateConversationSettings(conversation.id, settings.settingsRevision, { harness: spec.harness, model: spec.model, effort: spec.effort ?? null });
+  const directionMessage = spec.directionText
+    ? store.addConversationMessage({ conversationId: conversation.id, role: "user", text: spec.directionText }) : null;
+  const prompt = String(spec.prompt ?? "").replaceAll("{{directionMessageId}}", String(directionMessage?.id ?? ""));
   const sent = await chat.sendProduction(spec.episodeId, conversation.id, { kind: spec.kind,
-    prompt: spec.prompt, targetCardId: spec.targetCardId ?? null, clientRequestId: `live-${spec.requestId}` });
+    prompt, targetCardId: spec.targetCardId ?? null, clientRequestId: `live-${spec.requestId}` });
   const requestId = sent.requestResult.run.id;
   let stopped = false;
   const deadline = Date.now() + (spec.timeoutMs ?? 300_000);
@@ -205,7 +208,8 @@ async function productionRun(spec) {
   const jobs = store.listRequestJobs(requestId);
   await chat.close(); await renders.close("production proof finished"); store.close();
   return { phase: "production", harness: spec.harness, model: spec.model, requestId, stopped, requests: requests.map((value) => ({ requestId: value.requestId, harness: value.harness })),
-    state: result.state, error: result.error ?? null, messages: result.messages, run: result.runs.find((value) => value.id === requestId), jobs };
+    state: result.state, error: result.error ?? null, directionMessageId: directionMessage?.id ?? null, messages: result.messages,
+    events: result.events.filter((event) => event.type === "tool.called"), run: result.runs.find((value) => value.id === requestId), jobs };
 }
 const randomUUIDLocal = () => globalThis.crypto.randomUUID();
 
