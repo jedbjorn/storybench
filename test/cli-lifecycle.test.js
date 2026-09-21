@@ -13,7 +13,7 @@ import { generateUnit, quoteArg, quoteEnvironment, unitName } from "../src/cli/u
 import { hostSystem } from "../src/cli/system.js";
 import { readLockOwner } from "../src/cli/lock.js";
 import { probeService } from "../src/cli/service.js";
-import { servicePath } from "../src/cli/lifecycle.js";
+import { servicePath, waitForHealth } from "../src/cli/lifecycle.js";
 import { createManifest } from "../src/runtime/manifest.js";
 import { createApp } from "../src/server.js";
 import { listenInRange } from "../test-support/loopback-port.js";
@@ -191,6 +191,15 @@ test("up refuses a port held by another program or another Storybench, and repor
   rmSync(noManifest.env.STORYBENCH_RELEASE_MANIFEST);
   result = await noManifest.run(["up"]);
   assert.match(result.stderr, /No release manifest is installed[\s\S]*release\.js build --out/);
+});
+
+test("health verification fails immediately when systemd reports an automatic restart", async () => {
+  let probes = 0;
+  const context = { system: { async unitState() { return { load: "loaded", active: "activating", sub: "auto-restart", restarts: 1 }; } },
+    probeService: async () => { probes++; return { state: "stopped" }; }, pollMs: 1000 };
+  const started = Date.now();
+  await assert.rejects(waitForHealth(context, { unit: "storybench-test.service", port: 18800, identity: null, dataRootId: null, timeoutMs: 180_000 }), /entered a restart loop \(1 restart\(s\)\)/);
+  assert.equal(probes, 1); assert.ok(Date.now() - started < 500, "restart-loop verification is fail-fast");
 });
 
 test("restart refuses while any channel is busy unless forced, and verifies the same release and root", async (t) => {

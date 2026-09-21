@@ -18,6 +18,7 @@ import { resolveXdg } from "../src/cli/xdg.js";
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const APP = `sha256:${"a".repeat(64)}`;
 const WORKER = `sha256:${"b".repeat(64)}`;
+const ORPHAN = `sha256:${"e".repeat(64)}`;
 
 function command(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: "utf8", ...options });
@@ -78,7 +79,9 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
     calls.push([executable, ...args]);
     callRecords.push({ executable, args, options });
     if (executable === "docker") {
+      if (args[0] === "image" && args[1] === "ls") return { code: 0, stdout: `${ORPHAN}\n`, stderr: "" };
       if (args[0] === "image" && args[1] === "inspect") {
+        if (args.at(-1).includes(".Config.Labels")) return { code: 0, stdout: args[2] === ORPHAN ? "sb-test\n" : "\n", stderr: "" };
         if (missingImageInspects > 0) { missingImageInspects--; return { code: 1, stdout: "", stderr: "missing" }; }
         return { code: 0, stdout: `${args[2]}\n`, stderr: "" };
       }
@@ -265,6 +268,11 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
   const sourceCheck = callRecords.findLast((call) => call.executable === "git" && call.args[0] === "ls-remote");
   assert.equal(sourceCheck.args.at(-1), "HEAD", "detached commit refs probe a real remote ref");
   assert.equal(sourceCheck.options.env.GIT_TERMINAL_PROMPT, "0");
+  assert.equal(sourceCheck.options.env.GIT_SSH_COMMAND, "ssh -oBatchMode=yes");
+  for (const call of callRecords.filter((value) => value.executable === "git")) {
+    assert.equal(call.options.env.GIT_TERMINAL_PROMPT, "0", call.args.join(" "));
+    assert.equal(call.options.env.GIT_SSH_COMMAND, "ssh -oBatchMode=yes", call.args.join(" "));
+  }
 
   const held = await acquireLock(s.xdg.lockDir, { operation: "test uninstall guard" });
   stdout = ""; stderr = "";
@@ -284,6 +292,7 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
     assert.equal(existsSync(kept), true, kept);
   assert.deepEqual(systemCalls, ["reload", "reload", "stop", "reload"]);
   assert.ok(calls.some((call) => call.includes(`label=io.storybench.install=sb-test`)), "only the configured installation label is removed");
+  assert.ok(calls.some((call) => call[0] === "docker" && call[1] === "image" && call[2] === "rm" && call[3] === ORPHAN), "orphaned installation-labeled images are removed");
   assert.ok(!calls.some((call) => call[0] === "docker" && call[1] === "system"), "no global Docker prune/system operation");
 });
 
