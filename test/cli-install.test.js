@@ -9,7 +9,7 @@ import { createManifest, readReleaseManifest } from "../src/runtime/manifest.js"
 import { SCHEMA_VERSION } from "../src/store.js";
 import { initDataRoot } from "../src/services/data-root.js";
 import { writeConfigAtomic } from "../src/cli/config.js";
-import { activateSymlink, installFromSource, launcherText } from "../src/cli/install.js";
+import { activateSymlink, installFromSource, launcherText, readInstallReceipt } from "../src/cli/install.js";
 import { main } from "../src/cli/main.js";
 import { runCommand } from "../src/cli/system.js";
 import { resolveXdg } from "../src/cli/xdg.js";
@@ -126,6 +126,10 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
   assert.equal(installed.manifest.images.worker.id, WORKER);
   assert.match(installed.manifest.images.app.base, /^node:24-/);
   assert.equal(installed.manifest.database.supportedSchema.max, SCHEMA_VERSION);
+  const receipt = readInstallReceipt(path.join(s.xdg.releases, s.commit, "install.json"), installed.manifest);
+  assert.equal(receipt.ok, true);
+  assert.equal(receipt.receipt.packageVersion, "0.1.0");
+  assert.deepEqual(receipt.receipt.source, { remote: s.remote, ref: "main" });
   assert.match(output, /Next: `storybench init \[DIR\]`, then `storybench up`/);
   const tracked = [path.join(s.xdg.releases, s.commit, "manifest.json"), s.xdg.current, s.xdg.executable, path.join(s.env.STORYBENCH_UNIT_DIR, s.env.STORYBENCH_UNIT_NAME)];
   const times = tracked.map((file) => lstatSync(file).mtimeMs);
@@ -152,7 +156,7 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
   let code = await main(["doctor"], { env: s.env, home: s.home, system, runCommand: fakeRun, probeService: async () => ({ state: "stopped" }),
     stdout: { write: (text) => { stdout += text; } }, stderr: { write: (text) => { stderr += text; } } });
   assert.equal(code, 0, `${stdout}\n${stderr}`);
-  for (const label of ["release manifest", "source access", "app image", "worker image", "data root", "codex production", "claude production", "editor readiness"])
+  for (const label of ["release manifest", "install receipt", "source access", "app image", "worker image", "data root", "codex production", "claude production", "editor readiness"])
     assert.match(stdout, new RegExp(`PASS ${label}`));
   assert.doesNotMatch(stdout, /fixture-only/, "doctor never prints credential content");
 

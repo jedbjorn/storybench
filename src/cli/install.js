@@ -94,6 +94,17 @@ export async function reusableRelease(file, commit, run = runCommand) {
   return found.ok && found.manifest.source.commit === commit && await imagesPresent(run, found.manifest) ? found.manifest : null;
 }
 
+export function readInstallReceipt(file, manifest = null) {
+  let value;
+  try { value = JSON.parse(readFileSync(file, "utf8")); }
+  catch (error) { return { ok: false, reason: error.code === "ENOENT" ? "No install receipt is present" : "The install receipt is not valid JSON" }; }
+  if (value?.schema !== "storybench.install/1" || !COMMIT.test(value.commit ?? "") || !Number.isFinite(Date.parse(value.installedAt ?? "")))
+    return { ok: false, reason: "The install receipt has invalid identity or time fields" };
+  if (manifest && (value.commit !== manifest.source.commit || value.manifestId !== manifest.id || value.images?.app !== manifest.images.app.id || value.images?.worker !== manifest.images.worker.id))
+    return { ok: false, reason: "The install receipt does not match the release manifest" };
+  return { ok: true, receipt: value };
+}
+
 async function seedMirror(run, source, mirror, remote) {
   if (!existsSync(mirror)) await checked(run, "git", ["clone", "--mirror", "--no-hardlinks", source, mirror], { timeoutMs: 120_000 });
   const current = await checked(run, "git", ["--git-dir", mirror, "remote", "get-url", "origin"]).catch(() => "");
@@ -159,20 +170,29 @@ export async function stageRelease(context, metadata, adapters = {}) {
       worker: await probeImage(run, manifest.images.worker.id, "worker"),
     };
     const manifestModule = await import(`${pathToFileURL(path.join(stage, "src", "runtime", "manifest.js")).href}?install=${crypto.randomUUID()}`);
+    const installedAt = new Date().toISOString();
+    const installer = { node: process.version, npm: firstLine(await checked(run, "npm", ["--version"])), git: firstLine(await checked(run, "git", ["--version"])), docker: metadata.dockerVersion ?? "unknown" };
     manifest = {
       ...manifest,
       source: { ...manifest.source, commit: metadata.commit, ref: metadata.ref, remote: metadata.remote },
-      installedAt: new Date().toISOString(),
       images: {
         app: { ...manifest.images.app, base: nodeBaseIdentity(stage) },
         worker: { ...manifest.images.worker, base: nodeBaseIdentity(stage) },
       },
       runtime: { ...manifest.runtime, tools },
-      installer: { node: process.version, npm: firstLine(await checked(run, "npm", ["--version"])), git: firstLine(await checked(run, "git", ["--version"])), docker: metadata.dockerVersion ?? "unknown" },
     };
     manifest.id = manifestModule.manifestId(manifest);
     manifestModule.validateManifest(manifest);
     writeFileSync(path.join(stage, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+    const receipt = {
+      schema: "storybench.install/1", installedAt, packageVersion: manifest.package.version, commit: metadata.commit,
+      source: { remote: metadata.remote, ref: metadata.ref }, manifestId: manifest.id,
+      supportedSchema: { ...manifest.database.supportedSchema },
+      images: { app: manifest.images.app.id, worker: manifest.images.worker.id },
+      baseImages: { app: manifest.images.app.base, worker: manifest.images.worker.base },
+      tools, installer,
+    };
+    writeFileSync(path.join(stage, "install.json"), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
     detach(); detach = () => {};
     if (existsSync(final)) rmSync(final, { recursive: true, force: true });
     renameSync(stage, final);

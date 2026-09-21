@@ -7,6 +7,7 @@ import { readCredential } from "../runtime/credentials.js";
 import { readReleaseManifest } from "../runtime/manifest.js";
 import { readConfig } from "./config.js";
 import { EXIT } from "./errors.js";
+import { readInstallReceipt } from "./install.js";
 import { manifestFile } from "./release.js";
 import { runCommand } from "./system.js";
 import { unitName } from "./unit.js";
@@ -56,6 +57,8 @@ export async function runDoctor(context) {
   if (!release.ok) report("FAIL", "release manifest", release.reason);
   else {
     report("PASS", "release manifest", `${release.manifest.id} (commit ${release.manifest.source.commit})`);
+    const receipt = readInstallReceipt(path.join(path.dirname(file), "install.json"), release.manifest);
+    report(receipt.ok ? "PASS" : "FAIL", "install receipt", receipt.ok ? `installed ${receipt.receipt.installedAt}` : receipt.reason);
     try {
       const active = realpathSync(context.xdg.current);
       const runningFrom = realpathSync(path.dirname(file));
