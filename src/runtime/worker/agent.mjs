@@ -22,10 +22,10 @@ const CODEX_DISABLED = ["apps", "plugins", "browser_use", "computer_use", "in_ap
 export function launchArgv(header) {
   if (!header || typeof header !== "object") throw new Error("Launch header must be an object");
   if (header.harness !== HARNESS) throw new Error(`This worker only runs ${HARNESS}`);
-  const extra = Object.keys(header).filter((key) => !["harness", "model", "resume"].includes(key));
+  const extra = Object.keys(header).filter((key) => !["harness", "model", "resume", "sessionId", "effort"].includes(key));
   if (extra.length) throw new Error(`Unexpected launch fields: ${extra.join(", ")}`);
   if (header.harness === "codex") {
-    if (header.model !== undefined || header.resume !== undefined) throw new Error("Codex model and thread are selected over the app-server protocol");
+    if (header.model !== undefined || header.resume !== undefined || header.sessionId !== undefined || header.effort !== undefined) throw new Error("Codex model, effort and thread are selected over the app-server protocol");
     // Storybench tools reach Codex through the same request-scoped MCP bridge as Claude: in
     // code mode an MCP tool returns a structured CallToolResult whose image blocks the model
     // forwards with image(...), whereas a dynamic tool's output is flattened to a string.
@@ -37,11 +37,16 @@ export function launchArgv(header) {
   if (header.harness === "claude") {
     if (!MODEL.test(header.model ?? "")) throw new Error("Claude launch needs a plain model identifier");
     if (header.resume !== undefined && header.resume !== null && !SESSION.test(header.resume)) throw new Error("Claude resume must be a session UUID");
+    if (header.sessionId !== undefined && !SESSION.test(header.sessionId)) throw new Error("Claude sessionId must be a UUID");
+    if (header.sessionId !== undefined && header.resume) throw new Error("Give either resume or sessionId, not both");
+    if (header.effort !== undefined && !/^[a-z]{2,12}$/.test(header.effort)) throw new Error("Claude effort must be a plain level name");
     return ["claude", [
       "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose",
       "--model", header.model, "--mcp-config", MCP_CONFIG, "--strict-mcp-config",
       "--dangerously-skip-permissions",
       ...(header.resume ? ["--resume", header.resume] : []),
+      ...(header.sessionId ? ["--session-id", header.sessionId] : []),
+      ...(header.effort ? ["--effort", header.effort] : []),
     ]];
   }
   throw new Error("Unsupported harness");

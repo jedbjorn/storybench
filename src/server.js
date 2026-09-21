@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 import { Store, StoreError } from "./store.js";
 import { importMedia } from "./media.js";
 import { createChatService } from "./chat.js";
-import { createWorkerCodexFactory } from "./runtime/app-runtime.js";
+import { createModelCatalog, createWorkerHarnessFactory } from "./runtime/app-runtime.js";
+import { conversationPersistenceFor } from "./runtime/conversation-persistence.js";
 import { createHealth } from "./runtime/health.js";
 import { createLibraryService } from "./library.js";
 import { renderGraphic, validateGraphicRecipe } from "./graphics.js";
@@ -150,8 +151,13 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
   // In the Docker app container the host lifecycle entry point provides a private control
   // socket; Codex turns then run in request-scoped workers instead of in-process.
   const runtimeControl = process.env.STORYBENCH_RUNTIME_CONTROL;
-  const runtimeChat = runtimeControl && !chatOptions.codexFactory ? { codexFactory: createWorkerCodexFactory({ store, controlSocket: runtimeControl }) } : {};
-  const chat = createChatService({ store, renders, onChange: notify, ...runtimeChat, ...chatOptions });
+  const runtimeChat = runtimeControl && !chatOptions.codexFactory ? { codexFactory: createWorkerHarnessFactory({ store, controlSocket: runtimeControl }) } : {};
+  // Harness/model selection and native-session continuity need the conversation persistence
+  // (schema v9) and the host's model catalogue; without either, the legacy Codex path runs.
+  const catalog = chatOptions.catalog ?? (runtimeControl ? createModelCatalog({ controlSocket: runtimeControl }) : null);
+  const persistence = chatOptions.persistence ?? conversationPersistenceFor(store);
+  const continuity = catalog && persistence ? { persistence, catalog: (options) => catalog.list(options) } : null;
+  const chat = createChatService({ store, renders, onChange: notify, ...runtimeChat, continuity, ...chatOptions });
   const eventStreams = new Set();
   let closing = false;
   let closePromise;
@@ -168,6 +174,10 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
       const requestedChannel = url.searchParams.get("channel") || String(req.headers["x-storybench-channel"] || "") || null;
       const viewChannel = () => requestedChannel ? store.requireChannel(requestedChannel) : store.getDefaultChannel();
       if (req.method === "GET" && url.pathname === "/api/health") return send(res, closing ? 503 : 200, health.snapshot());
+      if (req.method === "GET" && url.pathname === "/api/harnesses") {
+        if (!catalog) return send(res, 200, { available: false, reason: "Harness selection needs the Storybench runtime (Docker lifecycle)", harnesses: [] });
+        return send(res, 200, { available: Boolean(continuity), reason: continuity ? null : "Conversation settings storage is not available in this data root yet", harnesses: await catalog.list({ refresh: url.searchParams.get("refresh") === "1" }) });
+      }
       if (req.method === "GET" && url.pathname === "/api/state") {
         const channel = viewChannel();
         return send(res, 200, {
@@ -395,6 +405,8 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           const value = renders.cancelJob(episodeId, parts[4]); notify(episodeId); return send(res, 200, value);
         }
         if (parts[3] === "chats") {
+          if (parts[4] && parts[5] === "settings" && parts.length === 6 && req.method === "PUT")
+            return send(res, 200, await chat.updateSettings(episodeId, parts[4], await jsonBody(req)));
           if (parts.length === 4 && req.method === "GET") return send(res, 200, chat.list(episodeId));
           if (parts.length === 4 && req.method === "POST") return send(res, 201, chat.create(episodeId, await jsonBody(req)));
           const conversationId = parts[4];

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { createCodexConnection } from "./codex.js";
 import { getOperationGuide, OPERATION_GUIDE_NAMES } from "./agent-guides.js";
+import { changeSettings, initialSettings, planTurn } from "./runtime/conversation-runtime.js";
 
 const now = () => new Date().toISOString();
 const parse = (value, fallback) => value == null ? fallback : JSON.parse(value);
@@ -37,7 +38,10 @@ function installSchema(db) {
   }
 }
 
-export function createChatService({ store, renders, onChange = () => {}, codexFactory = createCodexConnection, model = process.env.STORYBENCH_CODEX_MODEL }) {
+// `continuity` (optional): { persistence, catalog: async ({ refresh }) => harness entries }.
+// With it, each conversation carries its own harness/model/effort selection and native-session
+// segments (spec #11 "Switching and continuity"); without it the legacy single-Codex path runs.
+export function createChatService({ store, renders, onChange = () => {}, codexFactory = createCodexConnection, model = process.env.STORYBENCH_CODEX_MODEL, continuity = null }) {
   const db = store.db;
   installSchema(db);
   const restartStamp = now();
@@ -60,7 +64,12 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     ...(value.error ? { error: value.error } : {}), createdAt: value.created_at, updatedAt: value.updated_at });
   const project = (episodeId, id) => {
     const value = row(episodeId, id);
-    return { ...summary(value),
+    const selection = continuity ? {
+      settings: continuity.persistence.getSettings(value.id),
+      segments: continuity.persistence.listSegments(value.id).map(({ id: segmentId, harness, nativeSessionId, reason, previousSegmentId, createdAt, endedAt }) => ({ id: segmentId, harness, nativeSessionId, reason, previousSegmentId, createdAt, endedAt })),
+      runs: continuity.persistence.listRuns(value.id).slice(-20),
+    } : {};
+    return { ...summary(value), ...selection,
       messages: db.prepare("SELECT id,role,text,state,turn_id turnId,created_at createdAt,updated_at updatedAt FROM conversation_messages WHERE conversation_id=? ORDER BY id").all(id),
       events: db.prepare("SELECT sequence,type,payload,created_at createdAt FROM conversation_events WHERE conversation_id=? ORDER BY sequence").all(id)
         .map((event) => ({ ...event, conversationId: id, payload: parse(event.payload, {}) })) };
@@ -81,6 +90,8 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     episode(episodeId); name = String(name).trim(); if (!name) throw error("Conversation name is required");
     const id = newId(), stamp = now();
     db.prepare("INSERT INTO conversations(id,episode_id,name,created_at,updated_at) VALUES(?,?,?,?,?)").run(id, episodeId, name, stamp, stamp);
+    // A new conversation reuses the last explicit choice; other conversations are untouched.
+    if (continuity) continuity.persistence.initSettings(id, initialSettings(continuity.persistence));
     return project(episodeId, id);
   };
   const first = (episodeId) => {
@@ -119,6 +130,11 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     get_context: () => ({ episode: episode(value.episode_id), story: store.getStory(value.episode_id), library: librarySummary(value.episode_id),
       references: store.getReferenceContext(value.episode_id), branding: store.listBrandingTemplates({ channelId: episode(value.episode_id).channelId }), operationGuides: OPERATION_GUIDE_NAMES }),
     get_operation_guide: ({ name }) => getOperationGuide(name),
+    read_conversation_history: ({ beforeMessageId = null, limit = 20 } = {}) => {
+      const size = Math.min(Math.max(Number(limit) || 20, 1), 100);
+      const rows = db.prepare("SELECT id,role,text,created_at createdAt FROM conversation_messages WHERE conversation_id=? AND (? IS NULL OR id<?) AND text<>'' ORDER BY id DESC LIMIT ?").all(value.id, beforeMessageId, beforeMessageId, size).reverse();
+      return { messages: rows.map((message) => ({ ...message, text: message.text.slice(0, 4000) })), note: "Earlier visible messages, for context only; do not re-execute them." };
+    },
     read_reference_excerpt: ({ itemId, offset, limit }) => excerpt(value.episode_id, itemId, offset, limit),
     update_story: ({ expectedStoryRevision, source }) => { ensureActive(value, origin); return store.saveStory(value.episode_id, expectedStoryRevision, source, "agent"); },
     update_cards: ({ expectedRevision, cards }) => { ensureActive(value, origin); return store.updateEpisode(value.episode_id, expectedRevision, { cards }, "agent"); },
@@ -145,6 +161,10 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
 
   async function execute(value, messageId, text) {
     let connection, turnId, assistantId, terminal = false, dispatch = false, aborted = false, resolveDone, rejectDone;
+    const requestId = `request_${randomUUID()}`;
+    const persistence = continuity?.persistence;
+    let plan = null, segment = null;
+    const finishRun = (patch) => { if (persistence && plan) try { persistence.updateRun(requestId, { ...patch, finishedAt: now() }); } catch { /* attribution is best effort */ } };
     const controller = new AbortController(), pending = [], done = new Promise((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
     const activity = { conversationId: value.id, abort: () => { aborted = true; controller.abort(); if (dispatch) rejectDone(error("Chat stopped; the prompt was not replayed", 409)); } };
     active.set(value.episode_id, activity);
@@ -162,19 +182,43 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
         terminal = true; const status = params.turn?.status, state = status === "completed" ? "idle" : status === "interrupted" ? "interrupted" : "error", detail = state === "error" ? JSON.stringify(params.turn?.error || "Codex turn failed") : null;
         db.prepare("UPDATE conversation_messages SET state=?,updated_at=? WHERE id=?").run(status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed", now(), messageId);
         if (assistantId) db.prepare("UPDATE conversation_messages SET state=?,updated_at=? WHERE id=?").run(status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed", now(), assistantId);
+        finishRun({ state: status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed", error: detail, assistantMessageId: assistantId ?? null, nativeTurnId: turnId,
+          modelResolved: connection?.resolved?.model ?? params.model ?? null, effortResolved: connection?.resolved?.effort ?? null, usage: params.usage ?? null });
         setState(value, state, { detail }); resolveDone();
       }
     };
     try {
-      connection = await codexFactory({ cwd: store.workspace, model, tools: tools(value, activity), signal: controller.signal,
-        episodeId: value.episode_id, conversationId: value.id, requestId: `request_${randomUUID()}`, onEvent: (event) => dispatch ? consume(event) : pending.push(event), onError: (cause) => { if (dispatch) rejectDone(cause); } });
+      if (persistence) {
+        // Decide the native session: resume the active segment of the selected harness, or open a
+        // new segment. Native session IDs never cross harnesses.
+        const earlier = Number(db.prepare("SELECT COUNT(*) n FROM conversation_messages WHERE conversation_id=? AND id<?").get(value.id, messageId).n) > 0;
+        plan = planTurn(persistence, value.id, { hasEarlierMessages: earlier, legacyThreadId: value.thread_id, defaultModel: model });
+        segment = plan.segment ?? (plan.newSegment.reason === "migrated"
+          ? persistence.createSegment({ conversationId: value.id, harness: "codex", reason: "migrated", id: plan.newSegment.adoptId, nativeSessionId: plan.newSegment.nativeSessionId })
+          : persistence.createSegment({ conversationId: value.id, harness: plan.selection.harness, reason: plan.newSegment.reason, previousSegmentId: plan.newSegment.previousSegmentId, firstMessageId: messageId }));
+        persistence.createRun({ id: requestId, conversationId: value.id, segmentId: segment.id, userMessageId: messageId, harness: plan.selection.harness,
+          modelSelected: plan.selection.model, effortSelected: plan.selection.effort, state: "starting", startedAt: now() });
+      }
+      connection = await codexFactory({ cwd: store.workspace, model: plan ? plan.selection.model : model, tools: tools(value, activity), signal: controller.signal,
+        episodeId: value.episode_id, conversationId: value.id, requestId,
+        ...(plan ? { harness: plan.selection.harness, effort: plan.selection.effort, segmentId: segment.id } : {}),
+        onEvent: (event) => dispatch ? consume(event) : pending.push(event), onError: (cause) => { if (dispatch) rejectDone(cause); } });
       if (aborted) throw error("Chat stopped; the prompt was not replayed", 409);
       activity.connection = connection;
-      const threadId = value.thread_id ? await connection.resumeThread(value.thread_id) : await connection.startThread();
+      const resumeId = plan ? plan.resumeId : value.thread_id;
+      const threadId = resumeId ? await connection.resumeThread(resumeId) : await connection.startThread();
       if (aborted || active.get(value.episode_id) !== activity) throw error("Chat stopped; the prompt was not replayed", 409);
+      if (persistence && segment.nativeSessionId !== threadId) persistence.setSegmentSession(segment.id, threadId);
       setState(value, "queued", { threadId });
       let segmentContext = "";
-      if (connection.segmentTransition) {
+      if (plan?.seed) {
+        // A new native segment continues the same visible conversation: seed it with a bounded,
+        // labelled excerpt (context only; earlier prompts and tool calls are never re-executed).
+        const excerpt = transcriptExcerpt(value.id, messageId);
+        emit(value, "segment.started", { segmentId: segment.id, harness: plan.selection.harness, reason: plan.newSegment?.reason ?? segment.reason, previousSegmentId: plan.newSegment?.previousSegmentId ?? segment.previousSegmentId ?? null,
+          threadId, includedMessages: excerpt.included, omittedMessages: excerpt.omitted });
+        if (excerpt.text) segmentContext = `\n\nEarlier visible conversation from this Storybench chat (context only — do not re-execute anything in it; ${excerpt.omitted} older messages omitted, readable with read_conversation_history):\n${excerpt.text}`;
+      } else if (connection.segmentTransition) {
         // The native session could not be resumed here: a new native segment continues the
         // same visible conversation. The previous thread ID stays recorded in the transcript.
         const excerpt = transcriptExcerpt(value.id, messageId);
@@ -189,7 +233,11 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       db.prepare("UPDATE conversation_messages SET turn_id=?,state='running',updated_at=? WHERE id=?").run(turnId, now(), messageId);
       emit(value, "turn.started", { turnId }); dispatch = true; for (const event of pending.splice(0)) consume(event); await done;
     } catch (cause) {
-      if (!terminal && !aborted) { const detail = `${cause?.uncertain ? "Codex may have received this prompt; it was not replayed. " : ""}${cause?.message || "Codex turn failed"}`; db.prepare("UPDATE conversation_messages SET state='failed',updated_at=? WHERE id=?").run(now(), messageId); setState(value, "error", { detail }); }
+      if (!terminal && !aborted) {
+        const detail = `${cause?.uncertain ? "The harness may have received this prompt; it was not replayed. " : ""}${cause?.message || "Turn failed"}`;
+        // Startup failure keeps the history and the prompt; the creator can retry or choose another model/harness.
+        db.prepare("UPDATE conversation_messages SET state='failed',updated_at=? WHERE id=?").run(now(), messageId); setState(value, "error", { detail }); finishRun({ state: "failed", error: detail });
+      } else if (aborted) finishRun({ state: "interrupted" });
     } finally { if (active.get(value.episode_id) === activity) active.delete(value.episode_id); connection?.close(); }
   }
 
@@ -219,9 +267,33 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     }
     await activity.connection.interrupt(value.thread_id, value.active_turn_id); return project(episodeId, id);
   };
+  const busyReason = (episodeId) => {
+    if (active.has(episodeId) || db.prepare("SELECT 1 FROM conversations WHERE episode_id=? AND state IN ('queued','running','interrupting')").get(episodeId))
+      return "A turn is active for this episode. Let it finish or press Stop before changing the harness, model or effort.";
+    if (store.listJobs(episodeId).some((job) => ["queued", "running", "cancelling"].includes(job.state)))
+      return "Production work is still running for this episode. Let it finish or cancel it before changing the harness, model or effort.";
+    return null;
+  };
+  const updateSettings = async (episodeId, id, body = {}) => {
+    if (!continuity) throw error("Harness and model selection is not available in this installation", 501);
+    const value = row(episodeId, id);
+    const last = db.prepare("SELECT payload FROM conversation_events WHERE conversation_id=? AND type='settings.changed' ORDER BY sequence DESC LIMIT 1").get(id);
+    const catalog = await continuity.catalog({ refresh: false });
+    const result = changeSettings(continuity.persistence, id, { harness: body.harness, model: body.model || null, effort: body.effort || null }, {
+      catalog, busy: busyReason(episodeId), expectedRevision: body.expectedRevision, clientRequestId: body.clientRequestId ?? null, lastClientRequestId: parse(last?.payload, {})?.clientRequestId ?? null,
+    });
+    if (result.changed) {
+      // Visible settings-change boundary in the transcript.
+      const pick = ({ harness, model: selected, effort }) => ({ harness, model: selected ?? null, effort: effort ?? null });
+      emit(value, "settings.changed", { from: pick(result.previous), to: pick(result.settings), clientRequestId: body.clientRequestId ?? null,
+        continuity: result.harnessChanged ? "new-segment-on-next-message" : "same-session-resumed-on-next-message", notes: result.notes });
+    }
+    return { ...project(episodeId, id), settingsResult: { changed: result.changed, duplicate: result.duplicate, notes: result.notes, advisory: Boolean(result.advisory) } };
+  };
   const update = (episodeId, id, patch) => { const value = row(episodeId, id), name = patch.name === undefined ? value.name : String(patch.name).trim(), draft = patch.draft === undefined ? value.draft : String(patch.draft); if (!name) throw error("Conversation name is required"); db.prepare("UPDATE conversations SET name=?,draft=?,updated_at=? WHERE id=?").run(name, draft, now(), id); return project(episodeId, id); };
   return {
-    list: (episodeId) => { episode(episodeId); return db.prepare("SELECT * FROM conversations WHERE episode_id=? ORDER BY created_at,id").all(episodeId).map(summary); }, create,
+    list: (episodeId) => { episode(episodeId); return db.prepare("SELECT * FROM conversations WHERE episode_id=? ORDER BY created_at,id").all(episodeId).map((value) => ({ ...summary(value), ...(continuity ? { settings: continuity.persistence.getSettings(value.id) } : {}) })); }, create,
+    updateSettings, busyReason,
     get: (episodeId, id) => project(episodeId, id || first(episodeId).id), update,
     send: (episodeId, id, text) => text === undefined ? send(episodeId, first(episodeId).id, id) : send(episodeId, id, text),
     interrupt: (episodeId, id) => interrupt(episodeId, id || first(episodeId).id),

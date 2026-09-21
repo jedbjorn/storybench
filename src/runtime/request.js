@@ -10,7 +10,7 @@ import path from "node:path";
 import { renderEpisodeBoot } from "./boot.js";
 import { startBridge } from "./bridge.js";
 import { connectHarness, controlRequest } from "./channel.js";
-import { ClaudeStreamSession, WorkerCodexConnection } from "./harnesses.js";
+import { ClaudeChatConnection, ClaudeStreamSession, WorkerCodexConnection } from "./harnesses.js";
 import { BRIDGE_SOCKET_NAME, DATA_MOUNT, WORKER_REQUEST_MOUNT } from "./layout.js";
 import { createScopedTools, defaultIsShortcutMessage } from "./tools.js";
 import { RuntimeError, assertModel, assertSessionId, parseEpisodeDir } from "./validate.js";
@@ -91,10 +91,15 @@ async function openHeldRequest({
 
   return {
     started, render, scope, tools,
-    async codex({ model, onEvent, onError, requestTimeout } = {}) {
+    async codex({ model, effort = null, onEvent, onError, requestTimeout } = {}) {
       const child = await connectHarness(started.harnessSocket, { harness: "codex" });
-      const connection = new WorkerCodexConnection({ child, tools, cwd: started.episodeDir, model: model ? assertModel(model) : undefined, onEvent, onError, requestTimeout });
+      const connection = new WorkerCodexConnection({ child, tools, cwd: started.episodeDir, model: model ? assertModel(model) : undefined, effort, onEvent, onError, requestTimeout });
       return connection.open();
+    },
+    // Production Claude chat connection (same interface as the Codex connection).
+    claudeConnection({ model, effort = null, onEvent, onError } = {}) {
+      return new ClaudeChatConnection({ model: model ? assertModel(model) : null, effort, onEvent, onError,
+        spawnSession: (header) => connectHarness(started.harnessSocket, Object.fromEntries(Object.entries(header).filter(([, value]) => value != null))) });
     },
     async claude({ model, resume, onEvent } = {}) {
       const child = await connectHarness(started.harnessSocket, { harness: "claude", model: assertModel(model), ...(resume ? { resume: assertSessionId(resume) } : {}) });
