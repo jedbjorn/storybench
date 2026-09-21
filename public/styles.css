@@ -307,6 +307,7 @@ h2 {
 .branding-template > div { display: flex; gap: 8px; flex-direction: column; }
 .branding-template > div:last-child { flex-direction: row; }
 .drag {
+  cursor: grab;
   color: #a4aaa7;
   font-size: 20px;
 }
@@ -671,7 +672,7 @@ h2 {
 #toast.show {
   opacity: 1;
 }
-@media (max-width: 1000px) {
+@media (max-width: 1100px) {
   main {
     grid-template-columns: 180px 1fr;
   }
@@ -765,8 +766,8 @@ button.danger:disabled { opacity: .5; }
 
 /* Channel-level pages share the episode shell and preserve its state. */
 [hidden] { display: none !important; }
-header { justify-content: flex-start; gap: 18px; }
-header .page-nav { display: flex; align-self: stretch; align-items: center; gap: 24px; margin-left: auto; padding: 0; }
+header { position: relative; justify-content: flex-start; gap: 18px; }
+header .page-nav { display: flex; align-self: stretch; align-items: center; gap: 24px; position: absolute; left: 50%; transform: translateX(-50%); padding: 0; }
 .page-nav a { color: var(--muted); text-decoration: none; padding: 20px 0 17px; border-bottom: 3px solid transparent; font-weight: 650; }
 .page-nav a[aria-current="page"] { color: var(--deep); border-bottom-color: var(--deep); }
 #saveState { margin-left: auto; white-space: nowrap; }
@@ -788,10 +789,12 @@ header .page-nav { display: flex; align-self: stretch; align-items: center; gap:
 #defaultModelEditor { max-width: 560px; }
 #defaultModelEditor fieldset { border: 0; padding: 0; display: grid; gap: 16px; }
 #defaultModelEditor .chat-settings-actions { margin-top: 18px; }
-@media (max-width: 760px) {
+@media (max-width: 1100px) {
   header { height: auto; min-height: 66px; gap: 10px; flex-wrap: wrap; padding: 10px 14px; }
-  header .page-nav { order: 4; width: 100%; justify-content: center; }
+  header .page-nav { position: static; transform: none; order: 4; width: 100%; justify-content: center; }
   .page-nav a { padding: 8px 0; }
+}
+@media (max-width: 760px) {
   .settings-page { padding: 20px 16px; }
   .standards-grid { grid-template-columns: 1fr; }
   .settings-card { padding: 18px; }

@@ -884,20 +884,24 @@ export class Store {
   getBrandStandards(channelId) {
     this.requireChannel(channelId);
     const row = this.db.prepare("SELECT * FROM channel_standards WHERE channel_id=?").get(channelId);
-    return { channelId, colors: parse(row?.colors, []), fonts: parse(row?.fonts, []), stylePrompt: row?.style_prompt ?? "", revision: row?.revision ?? 1 };
+    const colors = parse(row?.colors, []), fonts = parse(row?.fonts, []);
+    return { channelId, colors, fonts,
+      colorRoles: { base: colors[0] ?? null, accent: colors[1] ?? null, background: colors[2] ?? null },
+      fontRoles: { base: fonts[0] ?? null, accent: fonts[1] ?? null, alternate: fonts[2] ?? null },
+      stylePrompt: row?.style_prompt ?? "", revision: row?.revision ?? 1 };
   }
   saveBrandStandards(channelId, expectedRevision, { colors, fonts, stylePrompt } = {}) {
     const current = this.getBrandStandards(channelId);
     if (!Number.isInteger(expectedRevision) || expectedRevision !== current.revision)
       throw new StoreError("Brand standards changed in another view. Reload before saving.", 409, { current });
-    if (!Array.isArray(colors) || colors.length > 3 || colors.some((color) => typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color)))
+    if (!Array.isArray(colors) || colors.length > 3 || colors.some((color) => color !== null && (typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color))))
       throw new StoreError("Choose up to three colors using six-digit hex values (for example #1255FF)");
-    if (!Array.isArray(fonts) || fonts.length > 3 || fonts.some((family) => !fontForFamily(family)) || new Set(fonts).size !== fonts.length)
+    if (!Array.isArray(fonts) || fonts.length > 3 || fonts.some((family) => family !== null && !fontForFamily(family)) || new Set(fonts.filter(Boolean)).size !== fonts.filter(Boolean).length)
       throw new StoreError("Choose up to three different supported fonts");
     if (typeof stylePrompt !== "string" || stylePrompt.length > 10000) throw new StoreError("Style prompt must be text of at most 10000 characters");
     const result = this.db.prepare(`INSERT INTO channel_standards(channel_id,colors,fonts,style_prompt,revision) VALUES(?,?,?,?,?)
       ON CONFLICT(channel_id) DO UPDATE SET colors=excluded.colors,fonts=excluded.fonts,style_prompt=excluded.style_prompt,revision=excluded.revision WHERE channel_standards.revision=?`)
-      .run(channelId, JSON.stringify(colors.map((color) => color.toUpperCase())), JSON.stringify(fonts), stylePrompt, current.revision + 1, expectedRevision);
+      .run(channelId, JSON.stringify(colors.map((color) => color?.toUpperCase() ?? null)), JSON.stringify(fonts), stylePrompt, current.revision + 1, expectedRevision);
     if (!result.changes) throw new StoreError("Brand standards changed in another view. Reload before saving.", 409, { current: this.getBrandStandards(channelId) });
     return this.getBrandStandards(channelId);
   }
