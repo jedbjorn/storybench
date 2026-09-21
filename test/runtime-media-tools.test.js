@@ -276,5 +276,14 @@ test("media tools time out instead of hanging", async (t) => {
   await assert.rejects(frameAt(fifo, null, { timeoutMs: 300 }), { code: "FRAME_TIMEOUT" });
 });
 
-// Review item 5: wired once the v9 message origin/kind marker lands (#26/#27).
-test.todo("a shortcut-originated message (v9 message origin marker) is refused as reference direction");
+test("a shortcut-originated creator message is refused as reference direction; a typed one is accepted", async (t) => {
+  const f = await fixture(t);
+  const tools = f.tools();
+  const button = f.store.addConversationMessage({ conversationId: f.conversation.id, role: "user", text: "Create a draft from the current story, cards and available material.", shortcut: true });
+  assert.equal(button.origin, "button");
+  const args = { sourceEpisodeId: f.epB.id, sourceItemId: f.reference.id };
+  await assert.rejects(tools.call("reuse_project_item", { ...args, direction: { messageId: button.id } }), { code: "DIRECTION_SHORTCUT" });
+  const typed = f.store.addConversationMessage({ conversationId: f.conversation.id, role: "user", text: "Use the Blue mood still directly." });
+  assert.equal(typed.origin, "typed");
+  assert.equal(JSON.parse((await tools.call("reuse_project_item", { ...args, direction: { messageId: typed.id } })).text).reference, true);
+});

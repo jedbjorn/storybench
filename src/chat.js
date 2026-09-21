@@ -172,9 +172,12 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       const params = event.params || {}, eventTurn = params.turnId || params.turn?.id;
       if (turnId && eventTurn && eventTurn !== turnId) return;
       if (!turnId && eventTurn) turnId = eventTurn;
-      if (event.method === "turn/started") { db.prepare("UPDATE conversation_messages SET state='running',updated_at=? WHERE id=?").run(now(), messageId); setState(value, "running", { turnId }); }
+      if (event.method === "turn/started") {
+        db.prepare("UPDATE conversation_messages SET state='running',updated_at=? WHERE id=?").run(now(), messageId); setState(value, "running", { turnId });
+        if (persistence && plan) try { persistence.updateRun(requestId, { state: "running", nativeTurnId: turnId ?? null }); } catch { /* already running */ }
+      }
       else if (event.method === "item/agentMessage/delta" && typeof params.delta === "string") {
-        if (!assistantId) { const stamp = now(); assistantId = Number(db.prepare("INSERT INTO conversation_messages(conversation_id,role,text,state,turn_id,created_at,updated_at) VALUES(?,'assistant','','streaming',?,?,?)").run(value.id, turnId, stamp, stamp).lastInsertRowid); }
+        if (!assistantId) assistantId = store.addConversationMessage({ conversationId: value.id, role: "assistant", text: "", state: "streaming", turnId }).id;
         db.prepare("UPDATE conversation_messages SET text=text||?,updated_at=? WHERE id=?").run(params.delta, now(), assistantId);
         emit(value, "assistant.delta", { messageId: assistantId, text: params.delta, turnId });
       } else if (["item/started", "item/completed"].includes(event.method) && ["dynamicToolCall", "mcpToolCall"].includes(params.item?.type)) emit(value, event.method === "item/started" ? "tool.started" : "tool.completed", { name: params.item.tool || params.item.name, status: params.item.status, turnId });
@@ -208,6 +211,12 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       const resumeId = plan ? plan.resumeId : value.thread_id;
       const threadId = resumeId ? await connection.resumeThread(resumeId) : await connection.startThread();
       if (aborted || active.get(value.episode_id) !== activity) throw error("Chat stopped; the prompt was not replayed", 409);
+      if (persistence && connection.segmentTransition && segment.nativeSessionId && segment.nativeSessionId !== threadId) {
+        // The harness could not resume this segment's native session: continue in a new segment of
+        // the same harness for this request (the store allows it for the dispatched request only).
+        segment = persistence.createSegment({ conversationId: value.id, harness: plan.selection.harness, reason: "resume-unavailable", previousSegmentId: segment.id, firstMessageId: messageId, exceptRunId: requestId });
+        persistence.updateRun(requestId, { segmentId: segment.id });
+      }
       if (persistence && segment.nativeSessionId !== threadId) persistence.setSegmentSession(segment.id, threadId);
       setState(value, "queued", { threadId });
       let segmentContext = "";
@@ -215,6 +224,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
         // A new native segment continues the same visible conversation: seed it with a bounded,
         // labelled excerpt (context only; earlier prompts and tool calls are never re-executed).
         const excerpt = transcriptExcerpt(value.id, messageId);
+        persistence.updateSegmentSeed?.(segment.id, { firstMessageId: messageId, seedIncluded: excerpt.included, seedOmitted: excerpt.omitted });
         emit(value, "segment.started", { segmentId: segment.id, harness: plan.selection.harness, reason: plan.newSegment?.reason ?? segment.reason, previousSegmentId: plan.newSegment?.previousSegmentId ?? segment.previousSegmentId ?? null,
           threadId, includedMessages: excerpt.included, omittedMessages: excerpt.omitted });
         if (excerpt.text) segmentContext = `\n\nEarlier visible conversation from this Storybench chat (context only — do not re-execute anything in it; ${excerpt.omitted} older messages omitted, readable with read_conversation_history):\n${excerpt.text}`;
@@ -245,7 +255,10 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     const value = row(episodeId, id);
     if (active.has(episodeId) || db.prepare("SELECT 1 FROM conversations WHERE episode_id=? AND state IN ('queued','running','interrupting')").get(episodeId)) throw error("A Codex turn is already active for this episode", 409);
     if (typeof text !== "string" || !text.trim()) throw error("Chat message must not be blank");
-    const stamp = now(), messageId = Number(db.prepare("INSERT INTO conversation_messages(conversation_id,role,text,state,created_at,updated_at) VALUES(?,'user',?,'queued',?,?)").run(id, text.trim(), stamp, stamp).lastInsertRowid);
+    // One active production request per conversation (the store does not refuse a second 'starting' run).
+    if (continuity && continuity.persistence.activeRuns?.(id).length) throw error("A request is already running in this conversation; let it finish or press Stop", 409);
+    // Origin is bound to the role by the store: a typed creator message (shortcuts are #27's handler).
+    const stamp = now(), messageId = store.addConversationMessage({ conversationId: id, role: "user", text: text.trim(), state: "queued" }).id;
     db.prepare("UPDATE conversations SET draft='',state='queued',error=NULL,updated_at=? WHERE id=?").run(stamp, id); emit(value, "status", { state: "queued" });
     const task = execute(value, messageId, text.trim()); tasks.add(task); task.finally(() => tasks.delete(task)); return project(episodeId, id);
   };

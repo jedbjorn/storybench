@@ -14,7 +14,8 @@
 //   listSegments(conversationId) -> segment[] (oldest first)
 //   createSegment({ conversationId, harness, reason, previousSegmentId, firstMessageId, seedIncluded, seedOmitted }) -> segment
 //   setSegmentSession(segmentId, nativeSessionId)
-//   endSegment(segmentId)
+//   updateSegmentSeed(segmentId, { firstMessageId, seedIncluded, seedOmitted })
+//   activeRuns(conversationId) -> runs still starting/running
 //   createRun(run) / updateRun(id, patch) / listRuns(conversationId)
 import { randomUUID } from "node:crypto";
 
@@ -90,13 +91,10 @@ export function changeSettings(persistence, conversationId, requested, { catalog
     throw new SelectionError("SETTINGS_CONFLICT", "These settings changed in another view; reopen them and choose again", 409, { current });
   const next = validateSelection(catalog, requested);
   if (same(next, current)) return { settings: current, changed: false, duplicate: false, notes: next.notes };
+  // The active segment is left as is: the next turn resumes it when its harness matches the
+  // selection, and opens a new segment otherwise (planTurn).
   const settings = persistence.saveSettings(conversationId, { harness: next.harness, model: next.model, effort: next.effort }, { expectedRevision });
-  let endedSegment = null;
-  if (current.harness !== next.harness) {
-    const active = persistence.activeSegment(conversationId);
-    if (active) { persistence.endSegment(active.id); endedSegment = active.id; }
-  }
-  return { settings, previous: current, changed: true, duplicate: false, notes: next.notes, advisory: next.advisory, harnessChanged: current.harness !== next.harness, endedSegment };
+  return { settings, previous: current, changed: true, duplicate: false, notes: next.notes, advisory: next.advisory, harnessChanged: current.harness !== next.harness };
 }
 
 // Initial settings for a new conversation: the last explicit choice, else the defaults.
@@ -139,7 +137,8 @@ export function createMemoryConversationPersistence({ now = () => new Date().toI
         throw new SelectionError("SESSION_REUSED", "A native session belongs to exactly one segment", 409);
       segment.nativeSessionId = nativeSessionId;
     },
-    endSegment(segmentId) { const segment = segments.find((candidate) => candidate.id === segmentId); if (segment && !segment.endedAt) segment.endedAt = now(); },
+    updateSegmentSeed(segmentId, seed) { Object.assign(segments.find((candidate) => candidate.id === segmentId) ?? {}, seed); },
+    activeRuns: (conversationId) => [...runs.values()].filter((run) => run.conversationId === conversationId && ["starting", "running"].includes(run.state)),
     createRun(run) { runs.set(run.id, { ...run }); return runs.get(run.id); },
     updateRun(id, patch) { runs.set(id, { ...runs.get(id), ...patch }); return runs.get(id); },
     listRuns: (conversationId) => [...runs.values()].filter((run) => run.conversationId === conversationId),

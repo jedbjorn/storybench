@@ -225,3 +225,62 @@ test("Claude exiting before a result completes the turn as failed, plainly", asy
   assert.match(events.at(-1).params.turn.error, /exited before the turn completed/);
   assert.ok(SelectionError);
 });
+
+test("the real v9 store persistence carries selection, segments and request attribution", async (t) => {
+  const { createV9ConversationPersistence } = await import("../src/runtime/conversation-persistence.js");
+  const root = mkdtempSync(path.join(os.tmpdir(), "sb-cont-v9-"));
+  const store = new Store(root);
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  const persistence = createV9ConversationPersistence(store);
+  const fake = harnessFactory();
+  const chat = createChatService({ store, codexFactory: fake.factory, continuity: { persistence, catalog: async () => catalog } });
+  t.after(() => chat.close());
+  const episode = store.createEpisode();
+  const c = chat.create(episode.id, { name: "v9" });
+  await chat.send(episode.id, c.id, "First");
+  await idle(chat, episode.id, c.id);
+  await chat.updateSettings(episode.id, c.id, { harness: "codex", model: "gpt-5.6-luna", effort: "low", expectedRevision: 1 });
+  await chat.send(episode.id, c.id, "Second");
+  await idle(chat, episode.id, c.id);
+  await chat.updateSettings(episode.id, c.id, { harness: "claude", model: "sonnet", expectedRevision: 2 });
+  await chat.send(episode.id, c.id, "Third");
+  await idle(chat, episode.id, c.id);
+  await chat.updateSettings(episode.id, c.id, { harness: "codex", model: "gpt-5.6-terra", expectedRevision: 3 });
+  await chat.send(episode.id, c.id, "Fourth");
+  const final = await idle(chat, episode.id, c.id);
+  assert.equal(fake.log[1].resumed, fake.log[0].started, "same-harness change resumes the exact session");
+  assert.equal(fake.log[2].resumed, null);
+  assert.equal(fake.log[3].resumed, null, "returning to Codex starts fresh");
+  assert.deepEqual(store.listSegments(c.id).map((segment) => [segment.harness, segment.reason, Boolean(segment.endedAt)]), [["codex", "initial", true], ["claude", "harness-switch", true], ["codex", "harness-return", false]]);
+  const claudeSegment = store.listSegments(c.id)[1];
+  assert.ok(claudeSegment.seedIncludedMessages >= 2, "seed recorded on the segment");
+  const runs = store.listProductionRuns({ conversationId: c.id });
+  assert.deepEqual(runs.map((run) => [run.harness, run.modelSelected, run.modelResolved, run.state]), [
+    ["codex", null, "default-resolved", "completed"], ["codex", "gpt-5.6-luna", "gpt-5.6-luna-resolved", "completed"],
+    ["claude", "sonnet", "sonnet-resolved", "completed"], ["codex", "gpt-5.6-terra", "gpt-5.6-terra-resolved", "completed"]]);
+  assert.ok(runs.every((run) => run.originatingMessageId && run.assistantMessageId && run.segmentId));
+  assert.deepEqual(final.messages.map((message) => message.role), ["user", "assistant", "user", "assistant", "user", "assistant", "user", "assistant"]);
+  const origins = store.db.prepare("SELECT role, origin FROM conversation_messages WHERE conversation_id=? ORDER BY id").all(c.id).map((row) => `${row.role}:${row.origin}`);
+  assert.deepEqual([...new Set(origins)], ["user:typed", "assistant:agent"]);
+  // A new conversation preselects the last explicit choice.
+  const next = chat.create(episode.id, { name: "next" });
+  assert.deepEqual([next.settings.harness, next.settings.model], ["codex", "gpt-5.6-terra"]);
+});
+
+test("one active request per conversation and a request never opens another harness's segment", async (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "sb-cont-guard-"));
+  const store = new Store(root);
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  const { createV9ConversationPersistence } = await import("../src/runtime/conversation-persistence.js");
+  const persistence = createV9ConversationPersistence(store);
+  const chat = createChatService({ store, codexFactory: async () => { throw new Error("unused"); }, continuity: { persistence, catalog: async () => catalog } });
+  t.after(() => chat.close());
+  const episode = store.createEpisode();
+  const c = chat.create(episode.id, { name: "guard" });
+  const message = store.addConversationMessage({ conversationId: c.id, role: "user", text: "x" });
+  const segment = store.createSegment({ conversationId: c.id, harness: "codex", reason: "initial" });
+  const run = store.createProductionRun({ conversationId: c.id, harness: "codex", segmentId: segment.id, originatingMessageId: message.id }).run;
+  await assert.rejects(chat.send(episode.id, c.id, "second request"), { statusCode: 409, message: /already running in this conversation/ });
+  assert.throws(() => store.createSegment({ conversationId: c.id, harness: "claude", reason: "resume-unavailable", exceptRunId: run.id }), { statusCode: 409, message: /codex request cannot open a claude segment/ });
+  assert.equal(store.createSegment({ conversationId: c.id, harness: "codex", reason: "resume-unavailable", exceptRunId: run.id }).harness, "codex");
+});

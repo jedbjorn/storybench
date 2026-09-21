@@ -1963,6 +1963,13 @@ export class Store {
   createSegment({ conversationId, harness, reason, previousSegmentId, firstMessageId = null, seedIncludedMessages = null, seedOmittedMessages = null, exceptRunId = null } = {}) {
     const conversation = this.assertConversationIdle(conversationId, { exceptRunId });
     if (!HARNESSES.includes(harness)) throw new StoreError(`harness must be one of ${HARNESSES.join(", ")}`);
+    // A segment created on behalf of a dispatched request (exceptRunId) must be for that request's own
+    // conversation and harness: the exemption never lets a request open another harness's segment.
+    if (exceptRunId != null) {
+      const run = this.getProductionRun(exceptRunId);
+      if (!run || run.conversationId !== conversationId) throw new StoreError("The dispatched request is not in this conversation", 404);
+      if (run.harness !== harness) throw new StoreError(`A ${run.harness} request cannot open a ${harness} segment`, 409, { requestId: run.id });
+    }
     if (!SEGMENT_REASONS.includes(reason)) throw new StoreError(`reason must be one of ${SEGMENT_REASONS.join(", ")}`);
     const previous = previousSegmentId === undefined ? conversation.activeSegmentId : previousSegmentId;
     for (const [value, field] of [[firstMessageId, "firstMessageId"], [seedIncludedMessages, "seedIncludedMessages"], [seedOmittedMessages, "seedOmittedMessages"]])
