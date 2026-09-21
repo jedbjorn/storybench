@@ -286,13 +286,19 @@ export class Store {
     this.beforeGraphicMembership = beforeGraphicMembership;
     // A legacy single-workspace open keeps the prototype's root folders; an initialized data root only gets shared ones.
     const rootDirs = legacyWorkspace ? ["", "media", "cache", "exports", "imports", "branding/assets", "channels"] : ["", "cache", "imports", "channels"];
-    for (const dir of rootDirs) mkdirSync(path.join(this.workspace, dir), { recursive: true });
+    mkdirSync(this.workspace, { recursive: true });
     const databasePath = path.join(this.workspace, "storybench.sqlite");
     const existingDatabase = existsSync(databasePath);
     this.db = new DatabaseSync(databasePath);
     try {
       this.db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
       this.migrate(existingDatabase, { firstChannelName, origin: origin || (legacyWorkspace ? "workspace" : "init") });
+      // A root explicitly initialized or adopted as a shared data root is never reopened as a prototype
+      // workspace: that would silently add a channel and prototype folders.
+      const rootOrigin = this.dataRootIdentity()?.origin;
+      if (legacyWorkspace && ["init", "adopt"].includes(rootOrigin))
+        throw new StoreError(`This is an initialized Storybench data root (origin ${rootOrigin}); open it with --data-root instead of --workspace`, 409);
+      for (const dir of rootDirs) mkdirSync(path.join(this.workspace, dir), { recursive: true });
       this.db.exec("PRAGMA foreign_keys=ON");
       if (Number(this.db.prepare("PRAGMA foreign_keys").get().foreign_keys) !== 1)
         throw new StoreError("SQLite foreign-key enforcement could not be enabled", 500);
@@ -340,7 +346,7 @@ export class Store {
       const backupPath = path.join(this.workspace, "storybench.pre-v6.sqlite");
       if (!existsSync(backupPath)) this.backupDatabase(backupPath);
     }
-    this.migrateV6({ firstChannelName, origin: existingDatabase && hadLegacySchema ? "migration" : origin });
+    this.migrateV6({ firstChannelName, origin: existingDatabase && hadLegacySchema ? (origin === "adopt" ? "adopt" : "migration") : origin });
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -652,6 +658,7 @@ export class Store {
     return rows[0].id;
   }
   assertEpisodeChannel(episodeId, channelId) {
+    if (channelId != null && channelId !== "") this.requireChannel(channelId);
     const episode = this.getEpisode(episodeId);
     if (!episode) throw new StoreError("Episode not found", 404);
     if (channelId != null && channelId !== "" && episode.channelId !== channelId)
@@ -1284,22 +1291,29 @@ export class Store {
       id: asset.id || id("asset"),
       createdAt: asset.createdAt || now(),
     };
-    this.db
-      .prepare("INSERT INTO assets(id,channel_id,name,hash,kind,path,duration,width,height,metadata,thumbnail_path,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
-      .run(
-        value.id,
-        channelId,
-        value.name,
-        value.hash,
-        value.kind,
-        value.path,
-        value.duration ?? null,
-        value.width ?? null,
-        value.height ?? null,
-        JSON.stringify(value.metadata || {}),
-        value.thumbnailPath ?? null,
-        value.createdAt,
-      );
+    try {
+      this.db
+        .prepare("INSERT INTO assets(id,channel_id,name,hash,kind,path,duration,width,height,metadata,thumbnail_path,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
+        .run(
+          value.id,
+          channelId,
+          value.name,
+          value.hash,
+          value.kind,
+          value.path,
+          value.duration ?? null,
+          value.width ?? null,
+          value.height ?? null,
+          JSON.stringify(value.metadata || {}),
+          value.thumbnailPath ?? null,
+          value.createdAt,
+        );
+    } catch (error) {
+      // A concurrent writer registered the same bytes in this channel first: return that asset.
+      const winner = /UNIQUE/.test(error.message) ? this.getAssetByHash(asset.hash, channelId) : null;
+      if (winner) return winner;
+      throw error;
+    }
     return this.getAsset(value.id);
   }
   repairReferenceAssetAsMedia(assetId, detected) {

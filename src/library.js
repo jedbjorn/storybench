@@ -291,6 +291,8 @@ export function createLibraryService({ workspace, store, fetchImpl = null, dnsLo
   // (deduplicated by content within that channel); provenance records the exact origin. An optional card
   // assignment is revision-checked; if it conflicts the reused item stays in the destination library.
   async function reuseItem({ source = {}, destination: target = {}, category: requestedCategory = null, label = null, requestId = null, actor = "human" } = {}) {
+    for (const [field, value] of [["source.episodeId", source.episodeId], ["source.itemId", source.itemId], ["destination.episodeId", target.episodeId]])
+      if (typeof value !== "string" || !value.trim()) throw new StoreError(`${field} is required`, 400);
     return serialized(async () => {
       const sourceEpisode = store.getEpisode(source.episodeId);
       if (!sourceEpisode) throw new StoreError("Source episode not found", 404);

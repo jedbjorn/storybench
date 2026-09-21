@@ -398,3 +398,70 @@ test("cross-channel reuse registers in the destination with provenance and keeps
   assert.equal(JSON.stringify([store.getLibraryItem(source.id, sourceItem.id), store.getAsset(sourceItem.assetId), store.getLibraryItem(source.id, reference.id)]), sourceSnapshot);
   assert.equal(sha(readFileSync(path.join(root, sourceItem.asset.path))), sourceHash);
 });
+
+test("--workspace refuses an initialized or adopted data root instead of silently adding a channel", async (t) => {
+  const base = tempDir(t);
+  const initialized = path.join(base, "initialized");
+  initDataRoot(initialized);
+  assert.throws(() => new Store(initialized), (error) => error.statusCode === 409 && /--data-root/.test(error.message));
+  await assert.rejects(createApp({ workspace: initialized }), /--data-root/);
+  assert.equal(existsSync(path.join(initialized, "media")), false, "no prototype folders were added");
+  assert.deepEqual(listChannels(initialized).channels, []);
+  assert.equal(inspectDataRoot(initialized).identity.origin, "init");
+  const adopted = path.join(base, "adopted");
+  mkdirSync(adopted);
+  legacyWorkspace(adopted);
+  adoptWorkspace(adopted);
+  assert.equal(inspectDataRoot(adopted).identity.origin, "adopt");
+  assert.throws(() => new Store(adopted), /--data-root/);
+  assert.equal(listChannels(adopted).channels.length, 1);
+  // A genuine prototype workspace still opens and gets its first channel.
+  const prototype = path.join(base, "prototype");
+  const store = new Store(prototype);
+  assert.deepEqual(store.listChannels().map((channel) => channel.name), ["Main"]);
+  assert.equal(store.dataRootIdentity().origin, "workspace");
+  store.close();
+  const reopened = new Store(prototype);
+  assert.equal(reopened.listChannels().length, 1);
+  reopened.close();
+});
+
+test("reuse rejects missing identities with 400 before any lookup", async (t) => {
+  const { store, a, library } = twoChannelRoot(t);
+  const episode = store.createEpisode({ title: "A", channelId: a.id });
+  await assert.rejects(library.reuseItem({}), (error) => error.statusCode === 400 && /source.episodeId/.test(error.message));
+  await assert.rejects(library.reuseItem({ source: { episodeId: episode.id }, destination: { episodeId: episode.id } }), (error) => error.statusCode === 400 && /source.itemId/.test(error.message));
+  await assert.rejects(library.reuseItem({ source: { episodeId: episode.id, itemId: "x" }, destination: { episodeId: "" } }), (error) => error.statusCode === 400 && /destination.episodeId/.test(error.message));
+  const app = await createApp({ dataRoot: store.workspace });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => app.close());
+  const response = await fetch(`http://127.0.0.1:${app.server.address().port}/api/episodes/${episode.id}/library/reuse`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /source.episodeId is required/);
+});
+
+test("an unknown channel on an episode operation is 404, a different one is 409", async (t) => {
+  const { store, a, b } = twoChannelRoot(t);
+  const episode = store.createEpisode({ title: "A", channelId: a.id });
+  assert.throws(() => store.assertEpisodeChannel(episode.id, "channel_missing"), (error) => error.statusCode === 404);
+  assert.throws(() => store.assertEpisodeChannel(episode.id, b.id), (error) => error.statusCode === 409);
+  const app = await createApp({ dataRoot: store.workspace });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => app.close());
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  assert.equal((await fetch(`${base}/api/episodes/${episode.id}?channel=channel_missing`)).status, 404);
+  assert.equal((await fetch(`${base}/api/episodes/${episode.id}?channel=${b.id}`)).status, 409);
+});
+
+test("saveAsset returns the winning row when a concurrent insert takes the channel hash first", (t) => {
+  const { store, a } = twoChannelRoot(t);
+  const winner = store.saveAsset({ channelId: a.id, name: "first", hash: "race", kind: "video", path: "p1", metadata: {} });
+  const original = store.getAssetByHash.bind(store);
+  let calls = 0;
+  // The first dedup check misses, as if the competing insert landed between the check and this insert.
+  store.getAssetByHash = (...args) => (calls++ === 0 ? null : original(...args));
+  const result = store.saveAsset({ channelId: a.id, name: "second", hash: "race", kind: "video", path: "p2", metadata: {} });
+  store.getAssetByHash = original;
+  assert.equal(result.id, winner.id);
+  assert.equal(store.listAssets({ channelId: a.id }).length, 1);
+});
