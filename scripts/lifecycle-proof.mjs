@@ -67,7 +67,9 @@ function installation(name, dataRoot, stateRoot) {
       const deadline = Date.now() + 150_000;
       let health = null;
       while (Date.now() < deadline) {
-        const response = await api("GET", "/api/health").catch(() => null);
+        // Only this unit's own app counts (a crashed host's app may still answer until reconciled).
+        const own = /"event":"app\.healthy"/.test((await run("journalctl", ["--user", "-u", unit, "--no-pager", "-o", "cat"], { allowFail: true })).stdout);
+        const response = own ? await api("GET", "/api/health").catch(() => null) : null;
         if (response?.status === 200) { health = response.json; break; }
         const state = (await run("systemctl", ["--user", "show", unit, "-p", "ActiveState", "--value"], { allowFail: true })).stdout.trim();
         if (["failed", "inactive"].includes(state)) break;
