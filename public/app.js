@@ -4,7 +4,7 @@ import { attachMediaToCard, categoryForCardMedia, duplicateCard, setCardType } f
 import { linkReference, referencePanelHTML, unlinkReference } from "/reference-workspace.js";
 import { ChatWorkspace } from "/chat-workspace.js";
 import { formatBytes, jobsForOutputView, refreshJobStatus, releasePlayer, renderJobList } from "/job-status.js";
-import { cleanupRowsHTML, selectedTotal } from "/draft-cleanup.js";
+import { cleanupRowsHTML, selectedTotal, toggleSelection } from "/draft-cleanup.js";
 
 const $ = (s) => document.querySelector(s);
 let state = { episodes: [], assets: [], jobs: [] },
@@ -686,7 +686,7 @@ document.querySelectorAll("[data-cleanup-close]").forEach((button) => button.onc
 $("#draftCleanupRows").onchange = (event) => {
   const id = event.target.dataset.cleanupSelect;
   if (!id) return;
-  if (event.target.checked) cleanupSelected.add(id); else cleanupSelected.delete(id);
+  cleanupSelected = toggleSelection(cleanupRows, cleanupSelected, id, event.target.checked);
   renderCleanup();
 };
 $("#draftCleanupForm").onsubmit = async (event) => {

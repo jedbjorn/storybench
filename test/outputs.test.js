@@ -9,8 +9,8 @@ import { JSDOM } from "jsdom";
 import { Store, SCHEMA_VERSION } from "../src/store.js";
 import { createApp } from "../src/server.js";
 import { initDataRoot, openDataRoot } from "../src/services/data-root.js";
-import { deleteDraftOutputs, listDraftCleanup, moveFinalToDrafts } from "../src/services/outputs.js";
-import { cleanupRowsHTML, selectedTotal } from "../public/draft-cleanup.js";
+import { deleteDraftOutputs, isDeletableOutputPath, listDraftCleanup, moveFinalToDrafts } from "../src/services/outputs.js";
+import { cleanupRowsHTML, selectedTotal, toggleSelection } from "../public/draft-cleanup.js";
 import { jobsForOutputView, renderJobList } from "../public/job-status.js";
 
 const sha = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
@@ -105,7 +105,14 @@ test("cleanup lists only present assembled drafts, with size, designation and bl
   assert.equal(byId.job_demoted.designation, "draft");
   assert.equal(byId.job_registered.eligible, false);
   assert.match(byId.job_registered.blockers[0], /registered as library or branding media/);
-  assert.match(byId.job_shared_a.blockers[0], /shared with a retained output \(job_shared_b\)/);
+  // F1: drafts sharing one file only with each other are selectable together, with a note.
+  assert.deepEqual({ eligible: byId.job_shared_a.eligible, sharedWith: byId.job_shared_a.sharedWith }, { eligible: true, sharedWith: ["job_shared_b"] });
+  assert.match(byId.job_shared_a.note, /Also removes the file of job_shared_b; the shared file is counted once/);
+  assert.deepEqual(byId.job_shared_b.sharedWith, ["job_shared_a"]);
+  const grouped = toggleSelection(rows, new Set(), "job_shared_a", true);
+  assert.deepEqual([...grouped].sort(), ["job_shared_a", "job_shared_b"], "selecting one selects the drafts that share its file");
+  assert.deepEqual([...toggleSelection(rows, grouped, "job_shared_b", false)], []);
+  assert.match(new JSDOM(cleanupRowsHTML(rows)).window.document.querySelector('[data-cleanup-row="job_shared_a"]').textContent, /counted once/);
   const document = new JSDOM(cleanupRowsHTML(rows)).window.document;
   assert.equal(document.querySelectorAll("[data-cleanup-select]:checked").length, 0, "nothing starts selected");
   assert.equal(document.querySelector('[data-cleanup-select="job_registered"]').disabled, true);
@@ -281,4 +288,63 @@ test("schema 8 migrates outputs from schema 7 repeatably with designation defaul
   store = f.reopen({ startup: false });
   assert.equal(store.getJob("job_demoted").designation, "draft");
   assert.equal(store.getJob("job_demoted").recordRevision, 2);
+});
+
+test("F1: a file shared with a retained non-draft owner stays blocked even when shared with a listed draft", async (t) => {
+  const f = workspace(t);
+  // job_shared_b's file is now also the file of a final: the drafts may not remove it.
+  f.output("job_final_shared", "final", f.sharedA.outputPath, null);
+  const rows = Object.fromEntries((await listDraftCleanup(f.store, f.episode.id)).map((row) => [row.id, row]));
+  assert.equal(rows.job_shared_a.eligible, false);
+  assert.match(rows.job_shared_a.blockers.join(), /job_final_shared/);
+  assert.deepEqual(rows.job_shared_a.sharedWith, ["job_shared_b"]);
+});
+
+test("F2: if a sibling sharing the file changes before marking, the whole group is kept and released for retry", async (t) => {
+  const f = workspace(t);
+  const store = f.store;
+  const file = path.join(f.root, f.sharedA.outputPath);
+  const report = await deleteDraftOutputs(store, { episodeId: f.episode.id, outputs: [{ id: "job_shared_a", expectedRevision: 1 }, { id: "job_shared_b", expectedRevision: 1 }] },
+    { beforeMark: () => { store.db.prepare("UPDATE jobs SET record_revision=record_revision+1 WHERE id='job_shared_b'").run(); } });
+  const status = Object.fromEntries(report.results.map((result) => [result.id, result]));
+  assert.equal(status.job_shared_b.status, "refused");
+  assert.equal(status.job_shared_a.status, "refused");
+  assert.match(status.job_shared_a.reason, /shared with a retained output \(job_shared_b\)/);
+  assert.equal(report.bytesReclaimed, 0);
+  assert.ok(existsSync(file), "the shared file is preserved");
+  assert.deepEqual([store.getJob("job_shared_a").deletionState, store.getJob("job_shared_b").deletionState], ["present", "present"]);
+  const retry = await deleteDraftOutputs(store, { episodeId: f.episode.id, outputs: [{ id: "job_shared_a", expectedRevision: revisionOf(store, "job_shared_a") }, { id: "job_shared_b", expectedRevision: revisionOf(store, "job_shared_b") }] });
+  assert.deepEqual(retry.results.map((result) => result.status), ["deleted", "deleted"]);
+  assert.equal(retry.bytesReclaimed, 70);
+});
+
+test("F3: only files in managed output locations of the record's own episode can be deleted", async (t) => {
+  const f = workspace(t);
+  const store = f.store;
+  const other = store.createEpisode({ title: "Other", channelId: f.channel.id });
+  const otherDraft = f.write(path.relative(f.root, path.join(store.episodeOutputDirectory(other.id, "drafts"), "theirs.mp4")), "theirs");
+  const legacyEpisode = `episodes/${f.episode.id}/final/old-final.mp4`;
+  f.write(legacyEpisode, "legacy final dir, now a draft");
+  f.output("job_media", "draft", f.sentinel, null);
+  f.output("job_foreign", "draft", otherDraft, null);
+  f.output("job_graphics_dir", "draft", f.write(f.rel("outputs", "graphics", "g.mp4"), "g"), null);
+  f.output("job_legacy_final_dir", "draft", legacyEpisode, null);
+  const job = store.getJob("job_draft");
+  assert.equal(isDeletableOutputPath(f.draft.outputPath, job), true);
+  assert.equal(isDeletableOutputPath(f.retained.outputPath, job), true, "final/ is a managed root; designation decides");
+  assert.equal(isDeletableOutputPath("exports/legacy-preview.mp4", job), true);
+  assert.equal(isDeletableOutputPath(legacyEpisode, job), true);
+  for (const outside of [f.sentinel, otherDraft, f.rel("outputs", "graphics", "g.mp4"), f.rel("work", "x.mp4"), "media/abc", "storybench.sqlite", `episodes/${f.episode.id}/reference/r.mp4`])
+    assert.equal(isDeletableOutputPath(outside, job), false, outside);
+  const rows = Object.fromEntries((await listDraftCleanup(store, f.episode.id)).map((row) => [row.id, row]));
+  for (const id of ["job_media", "job_foreign", "job_graphics_dir"]) {
+    assert.equal(rows[id].eligible, false, id);
+    assert.match(rows[id].blockers.join(), /not in a managed output location/);
+  }
+  const report = await deleteDraftOutputs(store, { episodeId: f.episode.id, outputs: ["job_media", "job_foreign", "job_graphics_dir", "job_legacy_final_dir"].map((id) => ({ id, expectedRevision: 1 })) });
+  assert.deepEqual(Object.fromEntries(report.results.map((result) => [result.id, result.status])),
+    { job_media: "refused", job_foreign: "refused", job_graphics_dir: "refused", job_legacy_final_dir: "deleted" });
+  assert.equal(sha(path.join(f.root, f.sentinel)), f.sentinelHash, "source media untouched");
+  assert.ok(existsSync(path.join(f.root, otherDraft)));
+  assert.equal(existsSync(path.join(f.root, legacyEpisode)), false);
 });
