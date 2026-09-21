@@ -9,9 +9,10 @@ import { assertOwnedWritable } from "./fs-safety.js";
 export const DEFAULT_PORT = 4173;
 export const CONFIG_VERSION = 1;
 
-export function validatePort(value) {
+// The one port rule for the CLI and the configuration (the host publishes on a non-privileged loopback port).
+export function validatePort(value, { exitCode = undefined } = {}) {
   const port = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new CliError("The port must be an integer from 1 to 65535");
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new CliError("The port must be an integer from 1024 to 65535", exitCode === undefined ? {} : { exitCode });
   return port;
 }
 
@@ -20,7 +21,17 @@ export function validateConfig(value) {
   if (value.version !== CONFIG_VERSION) throw new CliError(`Unsupported configuration version ${JSON.stringify(value.version)}`);
   if (typeof value.dataRoot !== "string" || !path.isAbsolute(value.dataRoot)) throw new CliError("The configured data root must be an absolute path");
   if (value.dataRootId != null && typeof value.dataRootId !== "string") throw new CliError("The configured data-root identity is invalid");
-  return { version: CONFIG_VERSION, dataRoot: path.resolve(value.dataRoot), dataRootId: value.dataRootId ?? null, port: validatePort(value.port ?? DEFAULT_PORT) };
+  if (value.installId != null && (typeof value.installId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(value.installId)))
+    throw new CliError("The configured installation ID is invalid");
+  const credentials = {};
+  for (const harness of ["codex", "claude"]) {
+    const file = value.credentials?.[harness];
+    if (file == null) continue;
+    if (typeof file !== "string" || !path.isAbsolute(file)) throw new CliError(`The configured ${harness} login path must be absolute`);
+    credentials[harness] = path.resolve(file);
+  }
+  return { version: CONFIG_VERSION, dataRoot: path.resolve(value.dataRoot), dataRootId: value.dataRootId ?? null, port: validatePort(value.port ?? DEFAULT_PORT),
+    ...(value.installId ? { installId: value.installId } : {}), ...(Object.keys(credentials).length ? { credentials } : {}) };
 }
 
 export function readConfig(file) {

@@ -18,6 +18,8 @@ import { listenInRange } from "../test-support/loopback-port.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const stopped = async () => ({ state: "stopped" });
+// A systemd user manager with no Storybench unit loaded; lifecycle tests use their own fakes.
+const idleSystem = { unitState: async () => ({ load: "not-found", active: "inactive", sub: "dead", pid: null }), containers: async () => [] };
 
 function sandbox(t) {
   const home = mkdtempSync(path.join(os.tmpdir(), "storybench-cli-"));
@@ -26,7 +28,7 @@ function sandbox(t) {
   mkdirSync(env.XDG_RUNTIME_DIR, { recursive: true });
   const run = async (args, overrides = {}) => {
     let stdout = "", stderr = "";
-    const code = await main(args, { env, home, cwd: overrides.cwd ?? home, lockTimeoutMs: 300, probeService: overrides.probeService ?? stopped,
+    const code = await main(args, { env, home, cwd: overrides.cwd ?? home, lockTimeoutMs: 300, probeService: overrides.probeService ?? stopped, system: overrides.system ?? idleSystem,
       stdout: { write: (text) => { stdout += text; } }, stderr: { write: (text) => { stderr += text; } }, ...overrides });
     return { code, stdout, stderr };
   };
@@ -156,8 +158,8 @@ test("help works at every level with exit 0; invalid invocations exit 2; unavail
     assert.equal(result.stderr, "");
   }
   const top = (await run(["help"])).stdout;
-  for (const name of ["init", "channel", "version", "help"]) assert.match(top, new RegExp(`\\n  ${name} `));
-  for (const name of ["up", "down", "restart", "status", "open", "logs", "doctor", "update", "rollback", "backup", "uninstall"]) {
+  for (const name of ["init", "channel", "version", "up", "down", "restart", "status", "open", "logs", "help"]) assert.match(top, new RegExp(`\\n  ${name} `));
+  for (const name of ["doctor", "update", "rollback", "backup", "uninstall"]) {
     assert.doesNotMatch(top, new RegExp(`\\n  ${name} `), `${name} hidden`);
     const result = await run([name]);
     assert.deepEqual({ code: result.code, stderr: result.stderr.trim() }, { code: 2, stderr: `storybench: ${name} is not available in this build.` });
@@ -220,7 +222,10 @@ test("init --adopt on a legacy workspace twice: migrates once, then changes noth
   legacyWorkspace(legacy);
   const blocked = await run(["init", legacy, "--adopt"], { probeService: async () => ({ state: "running", dataRootId: "x", schemaVersion: 8 }) });
   assert.equal(blocked.code, 1);
-  assert.match(blocked.stderr, /running on port 4173[\s\S]*Stop it before adopting/);
+  assert.match(blocked.stderr, /answering on port 4173[\s\S]*Stop it before adopting/);
+  const unitActive = await run(["init", legacy, "--adopt"], { system: { unitState: async () => ({ load: "loaded", active: "active", sub: "running", pid: 42 }) } });
+  assert.equal(unitActive.code, 1);
+  assert.match(unitActive.stderr, /Storybench service \(storybench\.service\) is active[\s\S]*storybench down/);
   const first = await run(["init", legacy, "--adopt", "--channel-name", "Prototype"]);
   assert.equal(first.code, 0, first.stderr);
   assert.match(first.stdout, /Adopted the prototype workspace .* \(schema 0 -> 8\)/);
@@ -342,7 +347,7 @@ test("the installed bin entry runs as a process with only the environment it is 
   const bin = path.join(REPO, JSON.parse(readFileSync(path.join(REPO, "package.json"), "utf8")).bin.storybench);
   const run = (...args) => spawnSync(process.execPath, [bin, ...args], { env: { ...env, PATH: process.env.PATH }, cwd: home, encoding: "utf8" });
   assert.equal(run("help").status, 0);
-  assert.equal(run("up").status, 2);
+  assert.equal(run("doctor").status, 2);
   assert.equal(run("init", "root").status, 0);
   assert.equal(run("channel", "create", "Main").status, 0);
   const current = run("channel", "current");
@@ -407,11 +412,14 @@ test("offline commands never migrate: an older or newer database schema is refus
   assert.equal(version(), 99);
 });
 
-test("the executor seam receives the port and service probe for a later running-app executor", async (t) => {
+test("the executor seam picks the running app, the offline path, or refuses, from the probe and the unit state", async () => {
   const { selectExecutor } = await import("../src/cli/executor.js");
-  const probe = async () => ({ state: "stopped" });
-  const executor = await selectExecutor({ dataRoot: "/nowhere", lockDir: "/nowhere/lock", lockTimeoutMs: 1, port: 4173, probeService: probe });
-  assert.equal(executor.kind, "offline");
-  const commands = readFileSync(path.join(REPO, "src/cli/commands.js"), "utf8");
-  assert.match(commands, /selectExecutor\(\{[^}]*port: config\.port, probeService: context\.probeService \}\)/);
+  const base = { dataRoot: "/nowhere", dataRootId: "root_x", lockDir: "/nowhere/lock", lockTimeoutMs: 1, port: 4173, unit: "storybench.service" };
+  const unitIs = (active) => ({ unitState: async () => ({ active }) });
+  const running = await selectExecutor({ ...base, probeService: async () => ({ state: "running", dataRootId: "root_x" }), system: unitIs("active") });
+  assert.equal(running.kind, "running-app");
+  const offline = await selectExecutor({ ...base, probeService: async () => ({ state: "stopped" }), system: unitIs("inactive") });
+  assert.equal(offline.kind, "offline");
+  await assert.rejects(selectExecutor({ ...base, probeService: async () => ({ state: "stopped" }), system: unitIs("activating") }), /service is activating/);
+  await assert.rejects(selectExecutor({ ...base, probeService: async () => ({ state: "running", dataRootId: "root_other" }), system: unitIs("active") }), /different data root/);
 });
