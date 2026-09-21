@@ -13,6 +13,8 @@ import { PACKAGE_ROOT, manifestFile } from "./release.js";
 import { activeWork, probeService, requestJson, serviceStatus } from "./service.js";
 import { SERVICE_BUSY_STATES } from "./executor.js";
 import { generateUnit, unitName, writeUnitAtomic } from "./unit.js";
+import { interruptedTransitionHint, reconcileInterruptedTransition } from "./receipts.js";
+import { ensureInstallationId } from "./installation.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const APP_STOP_TIMEOUT_S = 30;
@@ -30,8 +32,8 @@ export function lifecyclePaths(context, config) {
   };
 }
 
-async function expectedRelease(context) {
-  const file = manifestFile({ env: context.env });
+export async function expectedRelease(context, explicitFile = null) {
+  const file = explicitFile ?? manifestFile({ env: context.env });
   if (!existsSync(file)) throw new CliError("No release manifest is installed for this Storybench", {
     hint: `Install a release, or for a development checkout build one: node src/runtime/release.js build --out ${file}` });
   const result = await readReleaseManifest(file);
@@ -67,11 +69,13 @@ export async function assertServiceStopped(context, config, action) {
   }
 }
 
-async function waitForHealth(context, { unit, port, identity, dataRootId, timeoutMs }) {
+export async function waitForHealth(context, { unit, port, identity, dataRootId, timeoutMs }) {
   const deadline = Date.now() + timeoutMs;
   let last;
   for (;;) {
     last = await serviceStatus({ system: context.system, unit, port, identity, dataRootId, probe: context.probeService });
+    if ((last.unit.restarts ?? 0) > 0)
+      throw new CliError(`The Storybench service entered a restart loop (${last.unit.restarts} restart(s))`, { hint: "See `storybench logs`." });
     if (last.state === "healthy") return last;
     if (last.state === "failed" || (last.unit.active === "inactive" && Date.now() > deadline - timeoutMs + 3000))
       throw new CliError(`The Storybench service did not start (${last.unit.active}${last.unit.result && last.unit.result !== "success" ? `, ${last.unit.result}` : ""})`, { hint: "See `storybench logs`." });
@@ -82,8 +86,9 @@ async function waitForHealth(context, { unit, port, identity, dataRootId, timeou
 }
 
 // Writes the host configuration and the unit for the current release; returns what to expect from health.
-async function prepareService(context, config) {
-  const release = await expectedRelease(context);
+export async function prepareService(context, config, { releaseRoot = null, manifestPath = null } = {}) {
+  const root = releaseRoot ?? PACKAGE_ROOT;
+  const release = await expectedRelease(context, manifestPath);
   const paths = lifecyclePaths(context, config);
   if (!paths.runtimeRoot) throw new CliError("A systemd user session is required ($XDG_RUNTIME_DIR is not set)", { hint: "Run Storybench from a normal login session." });
   const home = context.home;
@@ -96,8 +101,8 @@ async function prepareService(context, config) {
   writeConfigFile(paths.hostConfig, hostConfig);
   const environment = { PATH: servicePath(context.env.PATH, context.nodePath ?? process.execPath) };
   for (const key of ["DOCKER_HOST", "DOCKER_CONTEXT"]) if (context.env[key]) environment[key] = context.env[key];
-  const content = generateUnit({ node: context.nodePath ?? process.execPath, hostEntry: path.join(PACKAGE_ROOT, "src", "runtime", "host.js"),
-    hostConfig: paths.hostConfig, workingDirectory: PACKAGE_ROOT, stopTimeoutS: APP_STOP_TIMEOUT_S + 60, environment });
+  const content = generateUnit({ node: context.nodePath ?? process.execPath, hostEntry: path.join(root, "src", "runtime", "host.js"),
+    hostConfig: paths.hostConfig, workingDirectory: root, stopTimeoutS: APP_STOP_TIMEOUT_S + 60, environment });
   if (writeUnitAtomic(paths.unitFile, content)) {
     const reload = await context.system.daemonReload();
     if (reload.code !== 0) throw new CliError("The systemd user manager could not reload units", { hint: reload.stderr.trim().split("\n")[0] || "Check `systemctl --user status`." });
@@ -113,7 +118,7 @@ function writeConfigFile(file, value) {
   renameSync(temporary, file);
 }
 
-async function startAndVerify(context, config, { release, paths }) {
+export async function startAndVerify(context, config, { release, paths }) {
   const state = await context.system.unitState(paths.unit).catch(() => ({ active: "unknown" }));
   if (state.active === "failed") await context.system.resetFailed(paths.unit);
   const started = await context.system.start(paths.unit);
@@ -146,7 +151,7 @@ export async function runUp(context, { options }, configuredRoot) {
       if (listener.state === "other" || listener.state === "unreachable") throw new CliError(`Port ${target} is already in use by another program`, { hint: "Free it, or choose another port with `storybench up --port N`." });
     }
     if (port !== null || !config.installId) {
-      config = { ...readConfig(context.xdg.configFile), port: target, installId: config.installId ?? `sb${crypto.randomBytes(5).toString("hex")}` };
+      config = { ...readConfig(context.xdg.configFile), port: target, installId: config.installId ?? ensureInstallationId(context.xdg) };
       writeConfigAtomic(context.xdg.configFile, config);
     }
     const prepared = await prepareService(context, config);
@@ -158,7 +163,7 @@ export async function runUp(context, { options }, configuredRoot) {
 }
 
 // down, status and logs need only the configuration: a missing or unusable data root must not stop them.
-function loadConfig(context) {
+export function loadConfig(context) {
   const config = readConfig(context.xdg.configFile);
   if (!config) throw new CliError("Storybench is not initialized on this account", { hint: "Run `storybench init [DIR]`." });
   return config;
@@ -231,6 +236,7 @@ export async function runOpen(context, _parsed, configuredRoot) {
 
 export async function runStatus(context) {
   const config = loadConfig(context);
+  const interrupted = reconcileInterruptedTransition(context);
   const unit = unitName(context.env);
   let rootProblem = null;
   try { verifiedRoot(context); } catch (error) { rootProblem = `${error.message}${error.hint ? ` — ${error.hint}` : ""}`; }
@@ -238,6 +244,7 @@ export async function runStatus(context) {
   try { release = await expectedRelease(context); } catch (error) { release = { error: error.message }; }
   const status = await serviceStatus({ system: context.system, unit, port: config.port, identity: release.identity ?? null, dataRootId: config.dataRootId, probe: context.probeService });
   const lines = [`Status: ${status.state}`, `Unit: ${unit} (${status.unit.load ?? "unknown"}, ${status.unit.active ?? "unknown"}${status.unit.sub ? `/${status.unit.sub}` : ""})`];
+  if (interrupted) lines.push(`Recovery: ${interruptedTransitionHint(interrupted)}`);
   if (status.unit.pid) lines.push(`Process: host PID ${status.unit.pid}${status.unit.startedAt ? ` since ${status.unit.startedAt}` : ""}`);
   let predates = false;
   if (config.installId) {

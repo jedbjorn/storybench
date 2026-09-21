@@ -50,7 +50,8 @@ export function healthProblems(health, { identity = null, dataRootId = null } = 
     if (release.commit !== identity.commit) problems.push(`it runs commit ${release.commit ?? "(unknown)"}, not ${identity.commit}`);
     if (release.images?.app !== identity.images.app || release.images?.worker !== identity.images.worker) problems.push("its app/worker images differ from the release");
   }
-  if (health.schema && health.schema.current > health.schema.supported?.max) problems.push(`its database schema ${health.schema.current} is newer than it supports`);
+  if (health.schema && (health.schema.current < health.schema.supported?.min || health.schema.current > health.schema.supported?.max))
+    problems.push(`its database schema ${health.schema.current} is outside its supported range ${health.schema.supported?.min}-${health.schema.supported?.max}`);
   return problems;
 }
 

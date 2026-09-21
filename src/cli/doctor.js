@@ -8,9 +8,10 @@ import { readReleaseManifest } from "../runtime/manifest.js";
 import { readConfig } from "./config.js";
 import { EXIT } from "./errors.js";
 import { readInstallReceipt } from "./install.js";
+import { interruptedTransitionHint, reconcileInterruptedTransition } from "./receipts.js";
 import { manifestFile } from "./release.js";
 import { healthProblems } from "./service.js";
-import { runCommand } from "./system.js";
+import { nonInteractiveGitEnv, runCommand } from "./system.js";
 import { unitName } from "./unit.js";
 
 function oneLine(value) { return String(value || "").trim().split("\n")[0]; }
@@ -23,9 +24,11 @@ export async function runDoctor(context) {
     if (level === "WARN") warnings++;
     context.out(`${level} ${label}: ${detail}`);
   };
+  const interrupted = reconcileInterruptedTransition(context);
+  if (interrupted) report("WARN", "recovery", interruptedTransitionHint(interrupted));
   const command = async (name, args, validate = () => true) => {
     try {
-      const result = await run(name, args, { timeoutMs: 30_000, env: context.env });
+      const result = await run(name, args, { timeoutMs: 30_000, env: name === "git" ? nonInteractiveGitEnv(context.env) : context.env });
       if (result.code !== 0 || !validate(result.stdout)) report("FAIL", name, `unavailable (${oneLine(result.stderr) || `exit ${result.code}`})`);
       else report("PASS", name, oneLine(result.stdout) || "available");
       return result;
@@ -66,7 +69,7 @@ export async function runDoctor(context) {
       report(active === runningFrom ? "PASS" : "FAIL", "release pointer", active === runningFrom ? active : `current selects ${active}, CLI runs ${runningFrom}`);
     } catch (error) { report("FAIL", "release pointer", `cannot resolve current (${error.code || error.message})`); }
     const remote = release.manifest.source.remote;
-    const mirror = await run("git", ["--git-dir", context.xdg.mirror, "cat-file", "-e", `${release.manifest.source.commit}^{commit}`], { timeoutMs: 30_000, env: context.env })
+    const mirror = await run("git", ["--git-dir", context.xdg.mirror, "cat-file", "-e", `${release.manifest.source.commit}^{commit}`], { timeoutMs: 30_000, env: nonInteractiveGitEnv(context.env) })
       .catch(() => ({ code: 1 }));
     report(mirror.code === 0 ? "PASS" : "FAIL", "source mirror", mirror.code === 0 ? "exact release commit is available for updates" : "exact release commit is missing from the app-owned mirror");
     if (!remote) report("WARN", "source access", "the release does not record an origin URL");
@@ -74,7 +77,7 @@ export async function runDoctor(context) {
       const recordedRef = release.manifest.source.ref || "HEAD";
       const ref = recordedRef.startsWith("commit/") ? "HEAD" : recordedRef;
       const result = await run("git", ["ls-remote", "--exit-code", remote, ref], {
-        timeoutMs: 30_000, env: { ...context.env, GIT_TERMINAL_PROMPT: "0" },
+        timeoutMs: 30_000, env: nonInteractiveGitEnv(context.env),
       }).catch((error) => ({ code: 1, stderr: error.code || error.message }));
       report(result.code === 0 ? "PASS" : "FAIL", "source access", result.code === 0 ? "recorded origin/ref is readable" : `recorded origin/ref is not readable (git ls-remote exit ${result.code})`);
     }
@@ -126,7 +129,8 @@ export async function runDoctor(context) {
       report(problems.length ? "FAIL" : "PASS", "health", problems.length ? `running service mismatch: ${problems.join("; ")}` : `healthy on 127.0.0.1:${config.port}`);
     } else if (health.state === "other" || health.state === "unreachable") report("FAIL", "health", `port ${config.port} is occupied by another or unreachable service`);
     else report("PASS", "health", "service is stopped (editor can be started with `storybench up`)");
-    if (!failures) report("PASS", "editor readiness", "installation and configured data root are ready");
+    if (interrupted) report("WARN", "editor readiness", "installation needs interrupted-transition recovery before it is ready");
+    else if (!failures) report("PASS", "editor readiness", "installation and configured data root are ready");
   }
   context.out(`Doctor summary: ${failures} failure(s), ${warnings} warning(s).`);
   return failures ? EXIT.FAILED : EXIT.OK;

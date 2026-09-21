@@ -149,27 +149,20 @@ test("12 concurrent processes never overlap, and a kill -9 of the holder frees t
   release();
 });
 
-test("help works at every level with exit 0; invalid invocations exit 2; unfinished commands stay hidden", async (t) => {
+test("help works at every level with exit 0; invalid invocations exit 2; recovery commands are documented", async (t) => {
   const { run } = sandbox(t);
   for (const args of [[], ["--help"], ["-h"], ["help"], ["help", "init"], ["help", "channel"], ["help", "channel", "use"], ["init", "--help"], ["channel", "--help"],
     ["channel", "create", "--help"], ["channel", "list", "--help"], ["channel", "current", "-h"], ["channel", "use", "--help"], ["version", "--help"], ["help", "version"],
-    ["doctor", "--help"], ["help", "doctor"], ["uninstall", "--help"], ["help", "uninstall"], ["__install", "--help"]]) {
+    ["doctor", "--help"], ["help", "doctor"], ["backup", "--help"], ["help", "backup"], ["update", "--help"], ["help", "update"],
+    ["rollback", "--help"], ["help", "rollback"], ["uninstall", "--help"], ["help", "uninstall"], ["__install", "--help"]]) {
     const result = await run(args);
     assert.equal(result.code, 0, args.join(" "));
     assert.match(result.stdout, /Usage: storybench/, args.join(" "));
     assert.equal(result.stderr, "");
   }
   const top = (await run(["help"])).stdout;
-  for (const name of ["init", "channel", "version", "up", "down", "restart", "status", "open", "logs", "doctor", "uninstall", "help"]) assert.match(top, new RegExp(`\\n  ${name} `));
+  for (const name of ["init", "channel", "version", "up", "down", "restart", "status", "open", "logs", "doctor", "backup", "update", "rollback", "uninstall", "help"]) assert.match(top, new RegExp(`\\n  ${name} `));
   assert.doesNotMatch(top, /\n  __install /, "internal installer stays hidden");
-  for (const name of ["update", "rollback", "backup"]) {
-    assert.doesNotMatch(top, new RegExp(`\\n  ${name} `), `${name} hidden`);
-    const result = await run([name]);
-    assert.deepEqual({ code: result.code, stderr: result.stderr.trim() }, { code: 2, stderr: `storybench: ${name} is not available in this build.` });
-    assert.equal((await run([name, "--help"])).code, 2);
-    const help = await run(["help", name]);
-    assert.deepEqual({ code: help.code, stderr: help.stderr.trim() }, { code: 2, stderr: `storybench: ${name} is not available in this build.` });
-  }
   assert.match((await run(["channel", "use", "--help"])).stdout, /open views keep their channel/);
   for (const args of [["bogus"], ["init", "--bogus"], ["init", "a", "b"], ["channel"], ["channel", "delete"], ["channel", "create"], ["channel", "use", "a", "b"],
     ["channel", "list", "extra"], ["version", "x"], ["help", "bogus"], ["help", "channel", "bogus"], ["init", "--adopt=yes"], ["init", "--channel-name"], ["init", "--channel-name", "X"]]) {

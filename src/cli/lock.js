@@ -18,6 +18,21 @@ export function readLockOwner(lockDir) {
   catch { return null; }
 }
 
+export function processIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error.code === "EPERM"; }
+}
+
+export function clearStaleLockOwner(lockDir) {
+  const owner = readLockOwner(lockDir);
+  if (!owner?.token || processIsAlive(owner.pid)) return false;
+  const current = readLockOwner(lockDir);
+  if (current?.token !== owner.token || processIsAlive(current.pid)) return false;
+  rmSync(path.join(lockDir, "owner.json"), { force: true });
+  return true;
+}
+
 function writeOwner(lockDir, owner) {
   const file = path.join(lockDir, "owner.json");
   const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;

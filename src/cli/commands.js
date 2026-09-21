@@ -12,8 +12,11 @@ import { assertServiceStopped, runDown, runLogs, runOpen, runRestart, runStatus,
 import { unitName } from "./unit.js";
 import { configuredRoot, restoreHint } from "./root.js";
 import { installFromSource } from "./install.js";
+import { ensureInstallationId } from "./installation.js";
 import { runDoctor } from "./doctor.js";
 import { runUninstall } from "./uninstall.js";
+import { runBackup } from "./backup.js";
+import { runRollback, runUpdate } from "./update.js";
 
 export { configuredRoot };
 import { assertOwnedWritable } from "./fs-safety.js";
@@ -74,7 +77,8 @@ async function runInit(context, { positionals: [dir], options }) {
     if (!options.adopt && /adopt it instead/.test(mapped.message)) mapped.hint = `Run \`storybench init ${target} --adopt\`.`;
     throw mapped;
   }
-  writeConfigAtomic(context.xdg.configFile, { version: 1, dataRoot: target, dataRootId: result.identity.id, port });
+  const installId = ensureInstallationId(context.xdg, existing?.installId ?? null);
+  writeConfigAtomic(context.xdg.configFile, { version: 1, dataRoot: target, dataRootId: result.identity.id, port, installId });
   const out = context.out;
   if (options.adopt) {
     if (result.adopted) out(`Adopted the prototype workspace at ${target} (schema ${result.previousSchemaVersion} -> ${result.identity.schemaVersion}).\nMetadata backup: ${result.backupPath}`);
@@ -160,6 +164,12 @@ async function runInstall(context, { options }) {
   }, context.installAdapters);
 }
 
+async function updateCommand(context, parsed) {
+  if (parsed.options.check && parsed.options.force)
+    throw new CliError("--check and --force cannot be used together", { exitCode: EXIT.USAGE, hint: "Use `storybench update --check` for a read-only comparison, or `storybench update --force` to activate." });
+  return runUpdate(context, parsed);
+}
+
 const CHANNEL_SUBCOMMANDS = {
   create: { usage: "storybench channel create NAME", summary: "Add a channel; the first channel becomes the default", args: [1, 1],
     description: "Adds a channel record and its managed folders beneath the configured data root. Names are unique regardless of case; the channel's ID never changes.",
@@ -216,6 +226,24 @@ export const COMMANDS = {
       "the configured database, exact release images and packaged tools, live login-file validity, and health when running.\n" +
       "Provider-login warnings do not make the editor itself unavailable; real installation failures exit nonzero.",
     examples: ["storybench doctor"], run: runDoctor },
+  backup: { usage: "storybench backup", summary: "Back up shared SQLite metadata and configuration (media excluded)", args: [0, 0],
+    description: "Creates a timestamped, integrity-checked SQLite backup plus the app configuration under the XDG state directory.\n" +
+      "If the service is running and idle, it is stopped safely and restarted after the backup. Active work is refused.\n" +
+      "Channel and episode media are explicitly excluded; use a separate media backup for complete disaster recovery.",
+    examples: ["storybench backup"], run: runBackup },
+  update: { usage: "storybench update [--check | --force]", summary: "Check or atomically activate the recorded origin/ref", args: [0, 0],
+    description: "Fetches the recorded private origin/ref through the host's existing Git credentials. --check reports local, current and available\n" +
+      "commits without changing the release or data. A real update builds and verifies both images before downtime, protects metadata,\n" +
+      "switches atomically and proves exact health. Failure restores the prior pointer, image pair and metadata.\n" +
+      "--force bypasses only the active-work gate; it never bypasses release, backup, schema or health checks.",
+    options: { check: { type: "boolean", help: "Fetch and compare commits without staging or activating" },
+      force: { type: "boolean", help: "Interrupt active renders/agent turns; all other safety checks remain" } },
+    examples: ["storybench update --check", "storybench update", "storybench update --force"], run: updateCommand },
+  rollback: { usage: "storybench rollback", summary: "Activate the previous retained release when its schema range is compatible", args: [0, 0],
+    description: "Selects the previous exact app/worker pair, stops safely, backs up metadata, switches atomically and proves health.\n" +
+      "If the previous release cannot read the current schema, rollback refuses and names the relevant backup and recovery boundary.\n" +
+      "It never restores an older database backup implicitly or hides the resulting metadata loss.",
+    examples: ["storybench rollback"], run: runRollback },
   uninstall: { usage: "storybench uninstall [--yes]", summary: "Remove the app while preserving all user data and login state", args: [0, 0],
     description: "Stops only this installation, removes its launcher, unit, source mirror, releases, owned containers and safe-to-remove images.\n" +
       "The configured data root, configuration, backups, native sessions, and host Codex/Claude credentials are always preserved.\n" +
@@ -233,4 +261,4 @@ export const COMMANDS = {
 };
 
 // Registered for a stable surface; hidden from help until their tasks land.
-export const UNAVAILABLE = ["update", "rollback", "backup"];
+export const UNAVAILABLE = [];
