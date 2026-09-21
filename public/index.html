@@ -109,6 +109,7 @@
                 <h2>Drafts</h2>
                 <p>Draft outputs, graphics, and active production jobs.</p>
               </div>
+              <button id="openDraftCleanup">Clean up drafts</button>
             </div>
             <div id="draftJobs" data-jobs-list></div>
           </div>
@@ -125,6 +126,16 @@
       </section>
       <aside class="chat" id="chatWorkspace" hidden></aside>
     </main>
+    <dialog id="draftCleanupModal" class="library-modal">
+      <form id="draftCleanupForm">
+        <div class="modal-heading"><h2>Clean up drafts</h2><button type="button" data-cleanup-close aria-label="Close">×</button></div>
+        <p>Choose rendered drafts to delete. Finals, graphics, library media and project state are never included.</p>
+        <div id="draftCleanupRows" class="cleanup-rows"></div>
+        <p class="cleanup-total">Selected: <b id="draftCleanupTotal">0 B</b></p>
+        <p id="draftCleanupSummary" class="cleanup-summary" aria-live="polite"></p>
+        <div class="modal-actions"><button type="button" data-cleanup-close>Close</button><button id="draftCleanupSubmit" class="danger" disabled>Delete selected drafts</button></div>
+      </form>
+    </dialog>
     <dialog id="libraryImportModal" class="library-modal">
       <form method="dialog"><div class="modal-heading"><h2>Import to library</h2><button value="cancel" aria-label="Close">×</button></div></form>
       <label>Category <select id="libraryImportCategory"><option>Reference</option><option>B-roll</option><option>Narration</option><option>Graphics</option></select></label>
