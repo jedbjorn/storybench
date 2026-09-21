@@ -60,7 +60,7 @@ const cardProps = {
 };
 const directionProp = {
   type: "object", additionalProperties: false, required: ["messageId"],
-  description: "Required to use or edit reference material: cite the creator's own chat message that explicitly directs it.",
+  description: "Optional provenance: cite the creator's chat instruction to use or edit reference material.",
   properties: {
     messageId: { type: "integer", description: "ID of the creator's message in this conversation that gives the direction." },
     use: { type: "string", enum: ["direct-use", "edit"], description: "direct-use (default) or edit." },
@@ -118,14 +118,14 @@ export const TOOL_DEFINITIONS = Object.freeze([
       category: { type: "string", enum: ["Graphics", "B-roll", "Narration"], description: "Library category (default: Graphics for images, B-roll for video, Narration for audio)." },
       sourcePath: { type: "string", description: "Editable source in work/ that produced it (script, SVG, project file), recorded for later revision." },
       derivedFrom: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["itemId"], properties: { itemId: { type: "string" }, episodeId: { type: "string" } } },
-        description: "Library items this was made from. Reference items additionally need `direction`." },
+        description: "Library items this was made from." },
       direction: directionProp,
       ...cardProps,
     } },
   },
   {
     name: "reuse_project_item",
-    description: "Reuse an item from another episode or channel in this episode when the creator asks: registers it in this episode's library with origin provenance, deduplicated within this channel, without changing the source. Reference material needs `direction` citing the creator's explicit instruction. Optionally assigns it to a card (revision-checked).",
+    description: "Reuse an item from another episode or channel in this episode when the creator asks: registers it in this episode's library with origin provenance, deduplicated within this channel, without changing the source. A creator chat instruction may be cited in `direction` for provenance. Optionally assigns it to a card (revision-checked).",
     inputSchema: { type: "object", additionalProperties: false, required: ["sourceEpisodeId", "sourceItemId"], properties: {
       sourceEpisodeId: { type: "string" }, sourceItemId: { type: "string" },
       sourceChannelId: { type: "string", description: "Optional check that the source episode is in this channel." },
@@ -159,7 +159,7 @@ export function defaultIsShortcutMessage(row) {
 // this request's conversation (and so in this episode) and not a UI shortcut.
 export function validateDirection(store, scope, direction, { isShortcutMessage = defaultIsShortcutMessage } = {}) {
   if (!direction || !Number.isInteger(direction.messageId))
-    throw new RuntimeError("DIRECTION_REQUIRED", "This is reference material: using or editing it needs the creator's explicit instruction. Cite that message's ID in `direction.messageId`, or ask the creator.", { status: 403 });
+    throw new RuntimeError("INVALID_DIRECTION", "direction.messageId must cite a creator chat message");
   const use = direction.use ?? "direct-use";
   if (!["direct-use", "edit"].includes(use)) throw new RuntimeError("INVALID_DIRECTION", "direction.use must be direct-use or edit");
   const row = store.db.prepare(`SELECT m.* FROM conversation_messages m JOIN conversations c ON c.id=m.conversation_id
@@ -168,6 +168,12 @@ export function validateDirection(store, scope, direction, { isShortcutMessage =
   if (row.role !== "user") throw new RuntimeError("DIRECTION_NOT_CREATOR", "Only the creator's own message can direct reference use or edit", { status: 403 });
   if (isShortcutMessage(row)) throw new RuntimeError("DIRECTION_SHORTCUT", "A Create draft/final shortcut is not an explicit instruction to use reference material", { status: 403 });
   return { messageId: direction.messageId, use, note: typeof direction.note === "string" ? direction.note.slice(0, 500) : "" };
+}
+
+function recordDirection(store, scope, itemId, direction, fallbackNote = "") {
+  if (!direction) return null;
+  return store.recordReferenceDirection({ episodeId: scope.episodeId, itemId, use: direction.use, conversationId: scope.conversationId,
+    messageId: direction.messageId, requestId: scope.requestId, note: direction.note || fallbackNote });
 }
 
 // Revision-checked card assignment of an episode library item. Never overwrites a board the
@@ -231,13 +237,11 @@ export function createScopedTools(scope, { store, library = null, isShortcutMess
       if (args.cardId != null && typeof args.cardId !== "string") throw new RuntimeError("INVALID_CARD", "cardId must be a string");
       const editable = args.sourcePath == null ? null : await resolveWorkFile(scope.workDir, args.sourcePath, { base: scope.episodeDir });
       const derived = [];
-      let direction = null;
+      const direction = args.direction ? validateDirection(store, scope, args.direction, { isShortcutMessage }) : null;
       for (const entry of Array.isArray(args.derivedFrom) ? args.derivedFrom : []) {
         const episodeId = entry.episodeId ?? scope.episodeId;
         const item = getItem(store, episodeId, entry.itemId);
         const reference = isReferenceItem(store, episodeId, item);
-        if (reference && episodeId !== scope.episodeId) throw new RuntimeError("REUSE_FIRST", "Reuse that reference into this episode (with the creator's direction) before deriving from it", { status: 409 });
-        if (reference) direction ??= validateDirection(store, scope, args.direction, { isShortcutMessage });
         derived.push({ ...originOf(store, episodeId, item), reference });
       }
       const workspace = store.workspace;
@@ -267,8 +271,8 @@ export function createScopedTools(scope, { store, library = null, isShortcutMess
       // Same bytes already registered in this channel: keep that asset, drop the redundant copy.
       if (imported.createdFile && asset.path !== imported.path) await rm(path.join(workspace, imported.path), { force: true });
       const item = store.attachLibraryItem(scope.episodeId, asset.id, { category, label: name, sourceKind: "file", provenance });
-      const recorded = direction ? derived.filter((entry) => entry.reference).map((entry) => store.recordReferenceDirection({ episodeId: scope.episodeId, itemId: entry.item.id,
-        use: direction.use, conversationId: scope.conversationId, messageId: direction.messageId, requestId: scope.requestId, note: direction.note }).id) : [];
+      const recorded = direction ? derived.filter((entry) => entry.reference && entry.episode.id === scope.episodeId)
+        .map((entry) => recordDirection(store, scope, entry.item.id, direction).id) : [];
       const card = assignToCard(store, scope.episodeId, item.id, args);
       return json({ registered: true, libraryItemId: item.id, assetId: asset.id, category, kind: asset.kind, sha256: asset.hash, deduplicated,
         width: asset.width, height: asset.height, duration: asset.duration, editableSource: provenance.editableSource, referenceDirections: recorded, ...card });
@@ -277,15 +281,14 @@ export function createScopedTools(scope, { store, library = null, isShortcutMess
       if (!library) throw new RuntimeError("UNAVAILABLE", "Project reuse is not available in this request", { status: 501 });
       const sourceItem = getItem(store, args.sourceEpisodeId, args.sourceItemId);
       const reference = isReferenceItem(store, args.sourceEpisodeId, sourceItem);
-      const direction = reference ? validateDirection(store, scope, args.direction, { isShortcutMessage }) : null;
+      const direction = args.direction ? validateDirection(store, scope, args.direction, { isShortcutMessage }) : null;
       const result = await library.reuseItem({
         source: { channelId: args.sourceChannelId ?? null, episodeId: args.sourceEpisodeId, itemId: args.sourceItemId },
         destination: { channelId: scope.channelId, episodeId: scope.episodeId },
         category: args.category ?? null, label: args.label ?? null, requestId: scope.requestId, actor: "agent",
       });
       // Each directed request records its own direction, even when the item was reused before.
-      const recorded = direction ? store.recordReferenceDirection({ episodeId: scope.episodeId, itemId: result.item.id, use: direction.use,
-        conversationId: scope.conversationId, messageId: direction.messageId, requestId: scope.requestId, note: direction.note || `Reused from ${label(originOf(store, args.sourceEpisodeId, sourceItem))}` }) : null;
+      const recorded = reference && direction ? recordDirection(store, scope, result.item.id, direction, `Reused from ${label(originOf(store, args.sourceEpisodeId, sourceItem))}`) : null;
       const card = assignToCard(store, scope.episodeId, result.item.id, args);
       return json({ reused: true, libraryItemId: result.item.id, assetId: result.item.assetId, category: result.item.category, copiedBytes: result.copied,
         deduplicated: result.deduplicated, alreadyPresent: result.alreadyPresent, from: originOf(store, args.sourceEpisodeId, sourceItem), reference, referenceDirection: recorded?.id ?? null, ...card });

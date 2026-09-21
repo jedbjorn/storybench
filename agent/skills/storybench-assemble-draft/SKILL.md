@@ -37,7 +37,7 @@ get_job { "jobId": "job-…" }
 → { "state": "failed", "error": "…" }   |   { "state": "cancelling" | "cancelled" }
 ```
 
-Waiting inside your turn: a bounded wait tool is planned — `[PLACEHOLDER: await_job — exact tool name and arguments arrive with the jobs/continuation lane; until then poll get_job at a sensible interval]`. Do not tell the creator a draft exists until `state` is `completed`; a queued or running job is progress, not a result. `stale: true` on a completed draft means the project has changed since it rendered — still a valid earlier version, just not current. `cancel_job { "jobId": "…" }` stops a queued/running job you own.
+Wait inside your turn with `await_job { "jobId": "…", "timeoutSeconds": 120 }`. Do not tell the creator a draft exists until `state` is `completed`; a queued or running job is progress, not a result. `stale: true` on a completed draft means the project has changed since it rendered — still a valid earlier version, just not current. `cancel_job { "jobId": "…" }` stops a queued/running job you own.
 
 ## Look at the result
 

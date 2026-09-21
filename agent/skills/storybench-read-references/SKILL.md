@@ -59,12 +59,12 @@ Not an instruction: a draft/final request; an attached reference; a reference pr
 
 ## Recording a direction in the tools
 
-When a reference is involved in a result, `register_work_file` (`derivedFrom` includes a reference) and `reuse_project_item` (source is a reference) require:
+When a reference is involved in a result, `register_work_file` (`derivedFrom` includes a reference) and `reuse_project_item` (source is a reference) can optionally record:
 
 ```json
 "direction": { "messageId": 123, "use": "direct-use", "note": "creator asked for the reference clip as the opener" }
 ```
 
-`messageId` is the creator's own message in this conversation that gave the instruction (`use` is `direct-use` or `edit`). The tool refuses without it (`DIRECTION_REQUIRED`), refuses a non-creator message (`DIRECTION_NOT_CREATOR`) and refuses a Create draft/final shortcut message (`DIRECTION_SHORTCUT`). If the message ID of the creator's instruction is not available to you, say that the direction cannot be recorded and ask — do not invent an ID.
+`messageId` is the creator's own typed message in this conversation that gave the instruction (`use` is `direct-use` or `edit`). A clear chat instruction grants that use; reference prompts express feel only, and selecting card output media is ordinary creator selection. The tools do not block reference use when `direction` is absent: following the reference rule is your responsibility. When `direction` is supplied, the tool validates and records it; never invent an ID or cite a shortcut.
 
 An edit of a reference is done as a new derivative in `work/`, registered with `direction.use: "edit"`; the original reference stays unchanged.

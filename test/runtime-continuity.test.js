@@ -180,6 +180,39 @@ test("a failed startup keeps history and the unsent draft and never falls back t
   assert.equal(fake.log[1].segmentId, fake.log[0].segmentId);
 });
 
+test("a dispatched silent failure restores a typed request, but output or tool activity does not", async (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "sb-turn-failure-"));
+  const store = new Store(root), persistence = createMemoryConversationPersistence();
+  const modes = ["silent", "output", "tool"];
+  const factory = async (options) => {
+    const mode = modes.shift();
+    return {
+      async startThread() { return `thread-${mode}`; },
+      async startTurn() {
+        queueMicrotask(() => {
+          options.onEvent({ method: "turn/started", params: { turn: { id: `turn-${mode}` } } });
+          if (mode === "output") options.onEvent({ method: "item/agentMessage/delta", params: { turnId: `turn-${mode}`, delta: "I started answering." } });
+          if (mode === "tool") options.onEvent({ method: "item/started", params: { turnId: `turn-${mode}`, item: { type: "dynamicToolCall", tool: "get_context", status: "inProgress" } } });
+          options.onEvent({ method: "turn/completed", params: { turn: { id: `turn-${mode}`, status: "failed", error: { message: "unsupported model" } } } });
+        });
+        return `turn-${mode}`;
+      },
+      async interrupt() {}, close() {},
+    };
+  };
+  const chat = createChatService({ store, codexFactory: factory, continuity: { persistence, catalog: async () => catalog } });
+  t.after(async () => { await chat.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
+  const episode = store.createEpisode();
+  for (const [mode, expectedDraft] of [["silent", "request-silent"], ["output", ""], ["tool", ""]]) {
+    const conversation = chat.create(episode.id, { name: mode });
+    await chat.send(episode.id, conversation.id, `request-${mode}`);
+    const failed = await idle(chat, episode.id, conversation.id);
+    assert.equal(failed.state, "error");
+    assert.equal(failed.draft, expectedDraft, `${mode} failure draft`);
+    assert.equal(failed.events.some((event) => event.type === "turn.started"), true, `${mode} request was dispatched`);
+  }
+});
+
 test("reopening a conversation keeps its settings, segments and runs", async (t) => {
   const persistence = createMemoryConversationPersistence();
   const { chat, store, episode } = setup(t, { persistence });

@@ -395,7 +395,7 @@ export class Store {
     }
     if (version < 7) this.migrateV7();
     if (version < 8) this.migrateV8();
-    this.migrateV9();
+    if (version < 9) this.migrateV9();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {

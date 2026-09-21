@@ -53,9 +53,9 @@
             </div>
             <div class="actions">
               <button id="undo">↶ Undo</button
-              ><button id="openGraphic">Create graphic</button
-              ><button id="preview">Create draft</button
-              ><button id="export" class="primary">Create final</button>
+              ><button id="openGraphic" aria-label="Ask the assistant to build a graphic">Create graphic</button
+              ><button id="preview" aria-label="Ask the assistant to build a draft output">Create draft</button
+              ><button id="export" class="primary" aria-label="Ask the assistant to build the final output">Create final</button>
             </div>
           </div>
           <div class="tabs">
@@ -158,7 +158,7 @@
     </dialog>
     <dialog id="brandingModal" class="library-modal"><div class="modal-heading"><h2>Channel branding</h2><button type="button" data-branding-close>×</button></div><p>Reusable cards are copied into episodes with fresh card and library-item identities.</p><div id="brandingTemplates"></div><div class="modal-actions"><button type="button" data-branding-close>Close</button></div></dialog>
     <dialog id="promoteCardModal" class="library-modal"><form id="promoteCardForm"><div class="modal-heading"><h2>Promote card</h2><button type="button" data-promote-close>×</button></div><label>Name <input name="name" required></label><label>Standard role <select name="role"><option value="">Reusable only</option><option value="intro">Standard intro</option><option value="outro">Standard outro</option></select></label><div class="modal-actions"><button type="button" data-promote-close>Cancel</button><button class="primary">Promote</button></div><div class="error" data-promote-error></div></form></dialog>
-    <dialog id="graphicModal" class="library-modal"><form id="graphicForm"><div class="modal-heading"><h2>Create graphic</h2><button type="button" data-graphic-close>×</button></div><label>Name <input name="name" value="Title graphic" required maxlength="120"></label><label>Kind <select name="kind"><option value="still">Still PNG</option><option value="motion">Motion MP4</option></select></label><label>Text <input name="text" value="Storybench" required maxlength="500"></label><div class="timing"><label>Background <input name="background" type="color" value="#18332f"></label><label>Text color <input name="fill" type="color" value="#ffffff"></label><label>Seconds <input name="duration" type="number" min="0.1" max="30" step="0.1" value="2"></label></div><label>Link to card <select name="cardId"><option value="">Library only</option></select></label><div class="modal-actions"><button type="button" data-graphic-close>Cancel</button><button class="primary">Create and render</button></div><div class="error" data-graphic-error></div></form></dialog>
+    <dialog id="graphicModal" class="library-modal"><form id="graphicForm"><div class="modal-heading"><h2>Ask for a graphic</h2><button type="button" data-graphic-close>×</button></div><label>Kind <select name="kind"><option value="still">Still graphic</option><option value="motion">Animated graphic</option></select></label><label>What should the assistant build? <textarea name="prompt" required maxlength="4000" placeholder="Describe the wording, look, motion, and purpose"></textarea></label><label>Target <select name="cardId"><option value="">Library only</option></select></label><p class="help">The assistant will create a visible request, build and render a recipe, then register the completed result. Use each card's timing and media controls for direct corrections.</p><div class="modal-actions"><button type="button" data-graphic-close>Cancel</button><button class="primary" aria-label="Ask the assistant to build this graphic">Ask assistant</button></div><div class="error" data-graphic-error></div></form></dialog>
     <div id="toast" role="status"></div>
     <script type="module" src="/app.js?v=round2-editor"></script>
   </body>

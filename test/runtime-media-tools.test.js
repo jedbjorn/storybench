@@ -153,7 +153,7 @@ test("registration validates format, category and editable source, records prove
   assert.match(wrongType.conflict.reason, /video/i);
 });
 
-test("reuse preserves the source, records provenance and requires cited creator direction for references", async (t) => {
+test("reuse preserves the source; reference direction is optional provenance and supplied citations are validated", async (t) => {
   const f = await fixture(t);
   const tools = f.tools();
   const sourceFile = path.join(f.root, f.ordinary.asset.path);
@@ -167,16 +167,20 @@ test("reuse preserves the source, records provenance and requires cited creator 
   assert.equal(item.provenance.actor, "agent");
   assert.equal(await sha(sourceFile), before, "source bytes unchanged");
   assert.ok(f.store.getLibraryItem(f.epB.id, f.ordinary.id), "source membership kept");
-  // Reference material: refused without a direction, with a non-creator or foreign message, or a shortcut.
+  // Reference material is reusable without a mechanical permission gate.
   const args = { sourceEpisodeId: f.epB.id, sourceItemId: f.reference.id };
-  await assert.rejects(tools.call("reuse_project_item", args), { code: "DIRECTION_REQUIRED" });
+  const withoutDirection = await call(tools, "reuse_project_item", args);
+  assert.equal(withoutDirection.reference, true);
+  assert.equal(withoutDirection.referenceDirection, null);
+  assert.equal(f.store.listReferenceDirections(f.epA.id, { itemId: withoutDirection.libraryItemId }).length, 0);
+  // When optional provenance is supplied, it must cite this conversation's typed creator message.
   const assistant = f.message(f.conversation.id, "assistant", "I will use it");
   await assert.rejects(tools.call("reuse_project_item", { ...args, direction: { messageId: assistant } }), { code: "DIRECTION_NOT_CREATOR" });
   const elsewhere = f.message(f.other.id, "user", "use the blue mood still directly");
   await assert.rejects(tools.call("reuse_project_item", { ...args, direction: { messageId: elsewhere } }), { code: "DIRECTION_NOT_FOUND" });
   const shortcut = f.message(f.conversation.id, "user", "Create a draft from the current story, cards and available material.");
   await assert.rejects(f.tools({ isShortcutMessage: (row) => row.id === shortcut }).call("reuse_project_item", { ...args, direction: { messageId: shortcut } }), { code: "DIRECTION_SHORTCUT" });
-  assert.equal(f.store.listEpisodeLibrary(f.epA.id).filter((entry) => entry.provenance?.reusedFrom?.itemId === f.reference.id).length, 0, "nothing reused while refused");
+  assert.equal(f.store.listEpisodeLibrary(f.epA.id).filter((entry) => entry.provenance?.reusedFrom?.itemId === f.reference.id).length, 1);
   const direct = f.message(f.conversation.id, "user", "Use the Blue mood still from Beta directly as the opening image.");
   const allowed = await call(tools, "reuse_project_item", { ...args, direction: { messageId: direct, use: "direct-use" } });
   assert.equal(allowed.reference, true);
@@ -191,14 +195,17 @@ test("reuse preserves the source, records provenance and requires cited creator 
   assert.equal(f.store.referenceDirectionFor(f.epA.id, allowed.libraryItemId, "direct-use").messageId, again);
 });
 
-test("deriving from a reference needs direction; the direction is recorded with the result", async (t) => {
+test("registering work derived from a reference never requires direction and records a valid optional citation", async (t) => {
   const f = await fixture(t);
   const tools = f.tools();
   const direct = f.message(f.conversation.id, "user", "Use the Blue mood still directly and make a title from it.");
-  const local = await call(tools, "reuse_project_item", { sourceEpisodeId: f.epB.id, sourceItemId: f.reference.id, direction: { messageId: direct } });
+  const local = await call(tools, "reuse_project_item", { sourceEpisodeId: f.epB.id, sourceItemId: f.reference.id });
   await exec("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=0x2040ff:s=80x48:d=1", "-frames:v", "1", path.join(f.scope.workDir, "from-ref.png")]);
-  await assert.rejects(tools.call("register_work_file", { path: "work/from-ref.png", derivedFrom: [{ itemId: local.libraryItemId }] }), { code: "DIRECTION_REQUIRED" });
-  await assert.rejects(tools.call("register_work_file", { path: "work/from-ref.png", derivedFrom: [{ episodeId: f.epB.id, itemId: f.reference.id }], direction: { messageId: direct } }), { code: "REUSE_FIRST" });
+  const withoutDirection = await call(tools, "register_work_file", { path: "work/from-ref.png", derivedFrom: [{ itemId: local.libraryItemId }] });
+  assert.deepEqual(withoutDirection.referenceDirections, []);
+  assert.equal(f.store.getLibraryItem(f.epA.id, withoutDirection.libraryItemId).provenance.referenceDirection, null);
+  const crossProject = await call(tools, "register_work_file", { path: "work/from-ref.png", derivedFrom: [{ episodeId: f.epB.id, itemId: f.reference.id }] });
+  assert.deepEqual(crossProject.referenceDirections, [], "cross-project reference derivation is not mechanically gated");
   const done = await call(tools, "register_work_file", { path: "work/from-ref.png", derivedFrom: [{ itemId: local.libraryItemId }], direction: { messageId: direct, use: "edit" } });
   assert.equal(done.referenceDirections.length, 1);
   const item = f.store.getLibraryItem(f.epA.id, done.libraryItemId);

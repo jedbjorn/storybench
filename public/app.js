@@ -122,7 +122,7 @@ const storyEditor = new StoryEditor({
   onSaved: () => refreshJobs().catch((error) => toast(error.message)),
 });
 const libraryWorkspace = new LibraryWorkspace({ api, toast, getEpisode: () => episode, refreshState: () => load(episode?.id), onMutation: () => refreshJobs().catch((error) => toast(error.message)) });
-const chatWorkspace = new ChatWorkspace({ root: $("#chatWorkspace"), api, toast, getEpisode: () => episode });
+const chatWorkspace = new ChatWorkspace({ root: $("#chatWorkspace"), api, toast, getEpisode: () => episode, onBusyChange: setProductionBusy });
 async function syncChat() {
   if (episode?.id === chatWorkspace.episodeId) return;
   if (episode) await chatWorkspace.open();
@@ -132,6 +132,21 @@ async function syncChat() {
 async function leaveStory() {
   const choice = await storyEditor.requestLeave();
   return choice !== "stay";
+}
+function setProductionBusy(busy) {
+  const explanation = busy ? "A request is already active for this episode. Let it finish or press Stop." : "";
+  for (const button of document.querySelectorAll("#openGraphic, #preview, #export, [data-card-build]")) {
+    button.disabled = busy;
+    button.title = explanation || button.getAttribute("aria-label") || "";
+  }
+}
+async function askAssistant(kind, { targetCardId = null, prompt = "" } = {}) {
+  if (!episode) return false;
+  if (!(await leaveStory())) return false;
+  await flushDraft();
+  await chatWorkspace.sendProduction({ kind, targetCardId, prompt });
+  toast("Request sent to the episode assistant");
+  return true;
 }
 const cardTypes = ["Video/Audio", "Video", "Audio", "Static Graphic", "Video Graphic"];
 function renderCards() {
@@ -191,7 +206,7 @@ function preview(card) {
 }
 function cardHTML(c, i) {
   const visualCards = episode.cards.filter((value) => value.id !== c.id && value.type !== "Audio");
-  return `<article class="story-card typed-card" draggable="true" data-index="${i}" data-card-id="${c.id}"><div class="drag">⋮⋮</div><div class="card-main"><div class="card-primary"><select data-key="type">${cardTypes.map((type) => `<option ${type === c.type ? "selected" : ""}>${type}</option>`).join("")}</select><input class="card-title" data-key="title" value="${esc(c.title)}" placeholder="Card title"><select data-key="sectionId">${sectionOptions(c)}</select></div><textarea data-key="prompt" placeholder="What should this card accomplish?">${esc(c.prompt)}</textarea>${preview(c)}<div class="card-media-controls"><label>Output media (footage)<select data-key="itemId">${itemOptions(c)}</select></label><div class="card-media-dropzone" data-card-media-drop tabindex="0">Drop footage/output media here or <button type="button" data-card-media-pick>choose a file</button><input data-card-media-file type="file" hidden></div></div><div class="card-media-status" data-card-media-status aria-live="polite"></div><details class="card-references" data-card-references ${openReferenceCards.has(c.id) ? "open" : ""}><summary>References${(c.referenceItemIds || []).length || c.referencePrompt ? ` (${(c.referenceItemIds || []).length}${c.referencePrompt ? " + prompt" : ""})` : ""}</summary>${referencePanelHTML({ scope: "card", cardId: c.id, episodeId: episode.id, prompt: c.referencePrompt || "", itemIds: c.referenceItemIds || [], items: libraryForPanels() })}</details><details><summary>Timing, references and notes</summary><div class="timing"><label><span>In</span><input data-key="in" type="number" min="0" step=".033" value="${c.in ?? ""}"></label><label><span>Out</span><input data-key="out" type="number" min="0" step=".033" value="${c.out ?? ""}"></label><label><span>Duration</span><input data-key="duration" type="number" min=".033" step=".033" value="${c.duration ?? ""}"></label><label><span>Gain</span><input data-key="gain" type="number" min="0" max="8" step=".1" value="${c.gain ?? 1}"></label></div>${c.type === "Audio" ? `<div class="timing"><label>Role<select data-key="role">${["voiceover", "music", "sound effect", "other"].map((role) => `<option ${role === c.role ? "selected" : ""}>${role}</option>`).join("")}</select></label><label>Anchor<select data-key="anchorVisualCardId"><option value="">Choose visual</option>${visualCards.map((card) => `<option value="${card.id}" ${card.id === c.anchorVisualCardId ? "selected" : ""}>${esc(card.title)}</option>`).join("")}</select></label><label>Offset<input data-key="offset" type="number" min="0" step=".033" value="${c.offset ?? 0}"></label></div>` : ""}<label>Reference URLs<textarea data-key="referenceUrls" placeholder="One URL per line">${esc((c.referenceUrls || []).join("\n"))}</textarea></label><label>Notes<textarea data-key="notes">${esc(c.notes)}</textarea></label><label><input data-key="excluded" type="checkbox" ${c.excluded ? "checked" : ""}> Exclude from assembled cut</label></details></div><div class="card-tools"><button data-duplicate title="Duplicate card">⧉</button><button data-promote title="Promote to channel">☆</button><button data-move="-1" title="Move up">↑</button><button data-move="1" title="Move down">↓</button><button data-delete title="Delete">×</button></div></article>`;
+  return `<article class="story-card typed-card" draggable="true" data-index="${i}" data-card-id="${c.id}"><div class="drag">⋮⋮</div><div class="card-main"><div class="card-primary"><select data-key="type">${cardTypes.map((type) => `<option ${type === c.type ? "selected" : ""}>${type}</option>`).join("")}</select><input class="card-title" data-key="title" value="${esc(c.title)}" placeholder="Card title"><select data-key="sectionId">${sectionOptions(c)}</select></div><textarea data-key="prompt" placeholder="What should this card accomplish?">${esc(c.prompt)}</textarea>${preview(c)}<button type="button" data-card-build aria-label="Ask the assistant to ${c.itemId ? "revise" : "build"} the output for ${esc(c.title || "this card")}">${c.itemId ? "Revise" : "Build"} with assistant</button><div class="card-media-controls"><label>Output media (footage)<select data-key="itemId">${itemOptions(c)}</select></label><div class="card-media-dropzone" data-card-media-drop tabindex="0">Drop footage/output media here or <button type="button" data-card-media-pick>choose a file</button><input data-card-media-file type="file" hidden></div></div><div class="card-media-status" data-card-media-status aria-live="polite"></div><details class="card-references" data-card-references ${openReferenceCards.has(c.id) ? "open" : ""}><summary>References${(c.referenceItemIds || []).length || c.referencePrompt ? ` (${(c.referenceItemIds || []).length}${c.referencePrompt ? " + prompt" : ""})` : ""}</summary>${referencePanelHTML({ scope: "card", cardId: c.id, episodeId: episode.id, prompt: c.referencePrompt || "", itemIds: c.referenceItemIds || [], items: libraryForPanels() })}</details><details><summary>Timing, references and notes</summary><div class="timing"><label><span>In</span><input data-key="in" type="number" min="0" step=".033" value="${c.in ?? ""}"></label><label><span>Out</span><input data-key="out" type="number" min="0" step=".033" value="${c.out ?? ""}"></label><label><span>Duration</span><input data-key="duration" type="number" min=".033" step=".033" value="${c.duration ?? ""}"></label><label><span>Gain</span><input data-key="gain" type="number" min="0" max="8" step=".1" value="${c.gain ?? 1}"></label></div>${c.type === "Audio" ? `<div class="timing"><label>Role<select data-key="role">${["voiceover", "music", "sound effect", "other"].map((role) => `<option ${role === c.role ? "selected" : ""}>${role}</option>`).join("")}</select></label><label>Anchor<select data-key="anchorVisualCardId"><option value="">Choose visual</option>${visualCards.map((card) => `<option value="${card.id}" ${card.id === c.anchorVisualCardId ? "selected" : ""}>${esc(card.title)}</option>`).join("")}</select></label><label>Offset<input data-key="offset" type="number" min="0" step=".033" value="${c.offset ?? 0}"></label></div>` : ""}<label>Reference URLs<textarea data-key="referenceUrls" placeholder="One URL per line">${esc((c.referenceUrls || []).join("\n"))}</textarea></label><label>Notes<textarea data-key="notes">${esc(c.notes)}</textarea></label><label><input data-key="excluded" type="checkbox" ${c.excluded ? "checked" : ""}> Exclude from assembled cut</label></details></div><div class="card-tools"><button data-duplicate title="Duplicate card">⧉</button><button data-promote title="Promote to channel">☆</button><button data-move="-1" title="Move up">↑</button><button data-move="1" title="Move down">↓</button><button data-delete title="Delete">×</button></div></article>`;
 }
 async function loadBoardContext() {
   if (!episode) return;
@@ -509,6 +524,7 @@ $("#cards").onclick = (e) => {
   if (!wrap) return;
   const i = Number(wrap.dataset.index);
   if (handleReferenceClick(e)) return;
+  if (e.target.closest("[data-card-build]")) return askAssistant("card_build", { targetCardId: episode.cards[i].id }).catch((error) => toast(error.message));
   if (e.target.closest("[data-duplicate]")) { duplicateCard(episode.cards, episode.cards[i].id, crypto.randomUUID()); dirty = true; return save(); }
   if (e.target.closest("[data-card-media-pick]")) return wrap.querySelector("[data-card-media-file]").click();
   if (e.target.closest("[data-promote]")) return openPromote(episode.cards[i]);
@@ -603,23 +619,7 @@ document.querySelectorAll(".tabs > button").forEach((button) => {
 });
 async function renderJob(kind) {
   try {
-    await flushDraft();
-    const plan = await api(`/api/episodes/${episode.id}/render-plan`);
-    let finalGrantId = null, requestId = null, conversationId = null;
-    if (kind === "final") {
-      conversationId = chatWorkspace.currentId;
-      if (!conversationId) requestId = crypto.randomUUID();
-      const grant = await api(`/api/episodes/${episode.id}/final-authorizations`, { method: "POST",
-        body: JSON.stringify({ expectedRenderRevision: plan.renderRevision, conversationId, requestId }) });
-      finalGrantId = grant.id;
-    }
-    await api(`/api/episodes/${episode.id}/render`, {
-      method: "POST",
-      body: JSON.stringify({ outputClass: kind, expectedRenderRevision: plan.renderRevision, finalGrantId, conversationId, requestId }),
-    });
-    toast(`${kind === "final" ? "Final" : "Draft"} queued`);
-    await load(episode.id);
-    await showTab(kind === "final" ? "final" : "drafts", { confirmStory: false });
+    await askAssistant(kind);
   } catch (e) {
     toast(e.message);
   }
@@ -714,20 +714,10 @@ $("#openGraphic").onclick = () => {
 $("#graphicForm").onsubmit = async (event) => {
   event.preventDefault();
   const form = event.currentTarget, kind = form.elements.kind.value;
-  const duration = Number(form.elements.duration.value);
-  const layer = { kind: "text", text: form.elements.text.value, x: 640, y: 360, fontSize: 64,
-    fill: form.elements.fill.value, textAnchor: "middle", opacity: 1, z: 0,
-    ...(kind === "motion" ? { keyframes: { opacity: [{ time: 0, value: 0, easing: "linear" }, { time: duration, value: 1, easing: "linear" }] } } : {}) };
-  const recipe = { kind, width: 1280, height: 720, background: form.elements.background.value, layers: [layer],
-    ...(kind === "motion" ? { duration, fps: 30 } : {}) };
   try {
-    await flushDraft();
-    const graphic = await api(`/api/episodes/${episode.id}/graphics`, { method: "POST", body: JSON.stringify({
-      name: form.elements.name.value, cardId: form.elements.cardId.value || null, recipe }) });
-    await api(`/api/episodes/${episode.id}/graphics/${graphic.id}/render`, { method: "POST",
-      body: JSON.stringify({ expectedRecipeRevision: graphic.revision }) });
-    $("#graphicModal").close(); toast("Graphic queued"); await load(episode.id);
-    await showTab("drafts", { confirmStory: false });
+    const sent = await askAssistant(kind === "motion" ? "animated_graphic" : "still_graphic", {
+      targetCardId: form.elements.cardId.value || null, prompt: form.elements.prompt.value });
+    if (sent) { $("#graphicModal").close(); form.reset(); }
   } catch (error) { form.querySelector("[data-graphic-error]").textContent = error.message; }
 };
 setInterval(async () => {

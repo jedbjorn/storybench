@@ -43,13 +43,13 @@ Ordinary footage, graphics and narration need only the creator's request to borr
 
 ## Reference items are different
 
-If `search_project` shows `reference: true` (category Reference, or linked as an episode/card reference in its own episode), the reference rule follows it: the creator must explicitly direct that reference's use or edit, and the call needs `direction`:
+If `search_project` shows `reference: true` (category Reference, or linked as an episode/card reference in its own episode), the reference rule follows it: the creator must explicitly direct that reference's use or edit in chat. You may cite that instruction for provenance:
 
 ```json
 reuse_project_item { "sourceEpisodeId": "ep-3", "sourceItemId": "item-ref-7", "direction": { "messageId": 123, "use": "direct-use", "note": "creator asked to use the ep-3 mood clip as the opener" } }
 ```
 
-Without it the tool refuses (`DIRECTION_REQUIRED`). Copying it or giving it a non-Reference category does not grant permission; the direction is recorded with the reused item. To derive from a reference in another episode, reuse it here first (with direction), then `register_work_file` with `derivedFrom` and the same `direction` (`REUSE_FIRST` otherwise).
+The tool does not block the call when `direction` is absent; applying the reference rule is your responsibility. Reference prompts describe feel only. Copying or recategorising an item does not itself grant permission, while explicitly selecting it as card output media is ordinary creator selection. When supplied, `direction.messageId` must be the real typed creator instruction and is recorded with the reused item.
 
 ## Behaviour to expect
 

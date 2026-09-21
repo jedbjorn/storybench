@@ -59,7 +59,7 @@ register_work_file { "path": "work/broll/walk-12-18.mp4", "name": "Walk to windo
     "appliedToCard": true, "revision": 9 }
 ```
 
-- `category` defaults from the file kind (video → B-roll). `derivedFrom` records provenance; if a source is reference material the call also needs `direction` (see the read-references skill).
+- `category` defaults from the file kind (video → B-roll). `derivedFrom` records provenance; for reference material you may also cite the creator's chat instruction in `direction` (see the read-references skill).
 - The file must be complete, inside `work/`, not a symlink, and decodable. Refusals: `PATH_OUTSIDE_WORK`, `PATH_SYMLINK`, `FILE_NOT_COMPLETE` (still being written — finish, then register), `FILE_EMPTY`, `UNSUPPORTED_MEDIA`, `CATEGORY_MISMATCH`.
 - `deduplicated: true` means identical bytes already existed in this channel; the existing asset is reused.
 - Stale board: `appliedToCard: false` with `conflict.currentRevision` — the item is registered; re-read and assign with `update_cards`.
