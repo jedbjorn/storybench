@@ -95,6 +95,8 @@ export async function main(argv, overrides = {}) {
     home: overrides.home ?? env.HOME ?? os.homedir(),
     healthTimeoutMs: overrides.healthTimeoutMs ?? (Number(env.STORYBENCH_HEALTH_TIMEOUT_MS) || 180_000),
     pollMs: overrides.pollMs,
+    // The Node executable the generated unit runs (tests inject one; normally this process's own).
+    nodePath: overrides.nodePath ?? process.execPath,
     out: (text) => stdout.write(`${text}\n`),
   };
   try {

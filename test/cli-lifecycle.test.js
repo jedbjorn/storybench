@@ -16,6 +16,8 @@ import { createManifest } from "../src/runtime/manifest.js";
 import { createApp } from "../src/server.js";
 import { listenInRange } from "../test-support/loopback-port.js";
 
+// A Node path no real host uses, so the unit assertions cannot pass by matching the machine's own node.
+const FAKE_NODE = "/opt/storybench-test-node/bin/node";
 const release = createManifest({ packageName: "storybench", packageVersion: "0.1.0", commit: "0fcda47", ref: "main", builtAt: "2026-09-21T00:00:00Z",
   images: { app: `sha256:${"a".repeat(64)}`, worker: `sha256:${"b".repeat(64)}` }, schema: { min: 0, max: 8 } });
 
@@ -75,7 +77,7 @@ async function sandbox(t, systemOptions = {}) {
   const system = fakeSystem(t, { ...systemOptions, portOf: () => readConfig(path.join(env.XDG_CONFIG_HOME, "storybench", "config.json")).port });
   const run = async (args, overrides = {}) => {
     let stdout = "", stderr = "";
-    const code = await main(args, { env, home, cwd: home, lockTimeoutMs: 300, system, healthTimeoutMs: 3000, pollMs: 20, nodePath: "/usr/bin/node",
+    const code = await main(args, { env, home, cwd: home, lockTimeoutMs: 300, system, healthTimeoutMs: 3000, pollMs: 20, nodePath: FAKE_NODE,
       stdout: { write: (text) => { stdout += text; } }, stderr: { write: (text) => { stderr += text; } }, ...overrides });
     return { code, stdout, stderr };
   };
@@ -107,7 +109,9 @@ test("the unit is generated with quoted absolute paths, bounded restarts, drain 
     writeFileSync(path.join(dir, "storybench-verify.service"), generateUnit({ node: process.execPath, hostEntry: "/opt/story bench/host.js", hostConfig: "/opt/c.json", workingDirectory: "/", environment: { PATH: "/usr/bin" } }));
     const result = spawnSync("systemd-analyze", ["--user", "verify", path.join(dir, "storybench-verify.service")], { encoding: "utf8" });
     rmSync(dir, { recursive: true, force: true });
-    assert.doesNotMatch(result.stderr, /Unknown key|Failed to parse|Invalid|Missing/i, result.stderr);
+    // Only unit-file parse problems count; a runner without a user bus may report that separately.
+    const parseProblems = result.stderr.split("\n").filter((line) => /storybench-verify\.service/.test(line) && /Unknown key|Failed to parse|Invalid|Missing|not absolute/i.test(line));
+    assert.deepEqual(parseProblems, [], result.stderr);
   }
 });
 
@@ -121,7 +125,7 @@ test("up writes the host config and unit, starts it, waits for matching health, 
   assert.equal(config.port, s.port);
   assert.match(config.installId, /^sb[0-9a-f]{10}$/);
   const unit = readFileSync(path.join(s.env.STORYBENCH_UNIT_DIR, "storybench-test-life.service"), "utf8");
-  assert.match(unit, /ExecStart="\/usr\/bin\/node" ".*\/src\/runtime\/host\.js" "--config" ".*\/state\/storybench\/host-storybench-test-life\.json"/);
+  assert.ok(unit.includes(`ExecStart="${FAKE_NODE}" "${path.join(path.resolve(import.meta.dirname, ".."), "src", "runtime", "host.js")}" "--config" "${path.join(s.env.XDG_STATE_HOME, "storybench", "host-storybench-test-life.json")}"`), unit);
   const host = JSON.parse(readFileSync(path.join(s.env.XDG_STATE_HOME, "storybench", "host-storybench-test-life.json"), "utf8"));
   assert.deepEqual({ installId: host.installId, dataRoot: host.dataRoot, port: host.port, manifestPath: host.manifestPath, stateRoot: host.stateRoot, runtimeRoot: host.runtimeRoot },
     { installId: config.installId, dataRoot: s.root, port: s.port, manifestPath: s.env.STORYBENCH_RELEASE_MANIFEST, stateRoot: path.join(s.env.XDG_STATE_HOME, "storybench"),
@@ -132,7 +136,9 @@ test("up writes the host config and unit, starts it, waits for matching health, 
   mkdirSync(dockerHome);
   writeFileSync(path.join(dockerHome, "docker"), "#!/bin/sh\n", { mode: 0o755 });
   assert.equal(servicePath(`/home/me/.personal/bin:${dockerHome}:/usr/bin`, "/opt/node/bin/node"), `${dockerHome}:/opt/node/bin:/usr/local/bin:/usr/bin:/bin`);
-  assert.match(unit, /^Environment="PATH=(?:[^"]*:)?\/usr\/local\/bin:\/usr\/bin:\/bin"$/m);
+  const unitPath = unit.match(/^Environment="PATH=([^"]*)"$/m)[1].split(":");
+  assert.ok(unitPath.includes(path.dirname(FAKE_NODE)), "the unit PATH includes the injected Node's directory");
+  assert.deepEqual(unitPath.slice(-3), ["/usr/local/bin", "/usr/bin", "/bin"]);
   const again = await s.run(["up"]);
   assert.equal(again.code, 0);
   assert.match(again.stdout, /already running/);
