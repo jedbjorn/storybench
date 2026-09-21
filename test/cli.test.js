@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { main } from "../src/cli/main.js";
+import { SCHEMA_VERSION } from "../src/store.js";
 import { resolveXdg } from "../src/cli/xdg.js";
 import { readConfig, writeConfigAtomic } from "../src/cli/config.js";
 import { acquireLock } from "../src/cli/lock.js";
@@ -228,7 +229,7 @@ test("init --adopt on a legacy workspace twice: migrates once, then changes noth
   assert.match(unitActive.stderr, /Storybench service \(storybench\.service\) is active[\s\S]*storybench down/);
   const first = await run(["init", legacy, "--adopt", "--channel-name", "Prototype"]);
   assert.equal(first.code, 0, first.stderr);
-  assert.match(first.stdout, /Adopted the prototype workspace .* \(schema 0 -> 8\)/);
+  assert.match(first.stdout, new RegExp(`Adopted the prototype workspace .* \\(schema 0 -> ${SCHEMA_VERSION}\\)`));
   assert.match(first.stdout, /Metadata backup: .*storybench\.pre-v6\.sqlite/);
   assert.match(first.stdout, /Channels: Prototype \(default\)/);
   const second = await run(["init", legacy, "--adopt"]);
@@ -303,7 +304,7 @@ test("version works while stopped, reads a release manifest defensively and repo
   const { home, env, run } = sandbox(t);
   const dev = await run(["version"]);
   assert.equal(dev.code, 0);
-  assert.match(dev.stdout, /storybench 0\.1\.0[\s\S]*Release: development checkout \(no release manifest\)[\s\S]*Supported database schema: 0-8[\s\S]*not configured/);
+  assert.match(dev.stdout, new RegExp(`storybench 0\\.1\\.0[\\s\\S]*Release: development checkout \\(no release manifest\\)[\\s\\S]*Supported database schema: 0-${SCHEMA_VERSION}[\\s\\S]*not configured`));
   const manifest = path.join(home, "manifest.json");
   const { createManifest } = await import("../src/runtime/manifest.js");
   const release = createManifest({ packageName: "storybench", packageVersion: "0.1.0", commit: "71d30a6", ref: "main", builtAt: "2026-09-21T00:00:00Z",
@@ -395,14 +396,14 @@ test("offline commands never migrate: an older or newer database schema is refus
   for (const args of [["channel", "list"], ["channel", "current"], ["channel", "create", "Other"], ["channel", "use", "Main"], ["init", root]]) {
     const result = await run(args);
     assert.equal(result.code, 1, args.join(" "));
-    assert.match(result.stderr, /uses database schema 7; this release uses schema 8[\s\S]*storybench init .*root --adopt/);
+    assert.match(result.stderr, new RegExp(`uses database schema 7; this release uses schema ${SCHEMA_VERSION}[\\s\\S]*storybench init .*root --adopt`));
   }
   assert.equal(version(), 7, "nothing was migrated as a side effect");
   const upgraded = await run(["init", root, "--adopt"]);
   assert.equal(upgraded.code, 0, upgraded.stderr);
-  assert.match(upgraded.stdout, /already adopted; upgraded its database from schema 7 to 8\.\nMetadata backup: .*root\/storybench\.pre-v8\.sqlite/);
+  assert.match(upgraded.stdout, new RegExp(`already adopted; upgraded its database from schema 7 to ${SCHEMA_VERSION}\\.\\nMetadata backup: .*root\\/storybench\\.pre-v8\\.sqlite`));
   assert.doesNotMatch(upgraded.stdout, /nothing changed/);
-  assert.equal(version(), 8);
+  assert.equal(version(), SCHEMA_VERSION);
   assert.ok(existsSync(path.join(root, "storybench.pre-v8.sqlite")), "the explicit upgrade kept a backup");
   assert.equal((await run(["channel", "list"])).code, 0);
   setVersion(99);

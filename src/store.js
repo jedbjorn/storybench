@@ -24,13 +24,31 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 export const DEFAULT_CHANNEL_NAME = "Main";
 // IDs become directory names, so they must be single safe path segments.
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
 const LEGACY_EPISODE_SUBDIRS = ["reference", "b-roll", "narration", "graphics", "drafts", "final", "cache", "conflicts", "work"];
 const CHANNEL_EPISODE_SUBDIRS = ["work", "outputs", "outputs/drafts", "outputs/final", "outputs/graphics", "conflicts"];
 const channelNameKey = (name) => name.normalize("NFKC").toLowerCase();
+export const HARNESSES = Object.freeze(["codex", "claude"]);
+export const SEGMENT_REASONS = Object.freeze(["initial", "migrated", "harness-switch", "harness-return", "resume-unavailable"]);
+export const RUN_KINDS = Object.freeze(["chat", "card_build", "still_graphic", "animated_graphic", "draft", "final", "other"]);
+export const RUN_ORIGINS = Object.freeze(["typed", "button"]);
+export const MESSAGE_ORIGINS = Object.freeze(["typed", "button", "agent", "system"]);
+export const FINAL_END_REASONS = Object.freeze(["stopped", "cancelled", "failed", "restart", "unfulfilled"]);
+// How Final intent ends when its request reaches a terminal state without publishing.
+const FINAL_END_ON_TERMINAL = { failed: "failed", completed: "unfulfilled" };
+const INTERRUPTION_REASONS = ["stopped", "cancelled"];
+const RUN_TERMINAL = ["completed", "failed", "interrupted"];
+const RUN_TRANSITIONS = { starting: ["running", ...RUN_TERMINAL], running: RUN_TERMINAL, completed: [], failed: [], interrupted: [] };
+const hasControlCharacters = (value) => [...value].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127);
+// Optional short text (model, effort): null when empty; bounded and single-line otherwise.
+function shortText(value, field) {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string" || value.length > 200 || hasControlCharacters(value)) throw new StoreError(`${field} must be a short single-line text value`);
+  return value;
+}
 export const REFERENCE_DIRECTION_USES = Object.freeze(["direct-use", "edit"]);
 export const REFERENCE_RULE = "Reference material is read-only feel context. Do not edit it or directly use it in the production unless the creator explicitly asks for that use or edit.";
 
@@ -258,6 +276,7 @@ function jobRow(row) {
       id: row.id,
       episodeId: row.episode_id,
       channelId: row.channel_id ?? null,
+      requestId: row.request_id ?? null,
       kind: row.kind,
       state: row.state,
       progress: row.progress,
@@ -333,6 +352,7 @@ export class Store {
     if (!startup) return;
     this.recoverPendingStories();
     this.reconcileOutputDeletions();
+    this.reconcileProductionRuns();
     this.db
       .prepare(
         "UPDATE jobs SET state='failed', error='Render interrupted by server restart', updated_at=? WHERE state IN ('queued','running','cancelling')",
@@ -374,7 +394,8 @@ export class Store {
       if (!existsSync(backupPath)) this.backupDatabase(backupPath);
     }
     if (version < 7) this.migrateV7();
-    this.migrateV8();
+    if (version < 8) this.migrateV8();
+    this.migrateV9();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -707,6 +728,137 @@ export class Store {
           AND NOT EXISTS (SELECT 1 FROM output_designations d WHERE d.job_id=jobs.id)`).run(stamp);
       this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(8,?)").run(stamp);
       this.db.exec("PRAGMA user_version=8; COMMIT");
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  // Schema 9: store-owned conversations with per-conversation harness/model/effort selection, native-session
+  // segments, and production requests (one row per visible request: kind, origin, idempotent client request id,
+  // bound Final intent with its ending, retry lineage) that jobs link back to. Backfill: existing conversations
+  // become codex / migrated / model unknown; a conversation with a thread gets a migrated segment whose id equals
+  // the conversation id (existing session folders stay valid). No production_runs backfill.
+  migrateV9() {
+    const stamp = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      // The chat service used to create these lazily; create them here (same definitions) so they can be altered.
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY,episode_id TEXT NOT NULL,name TEXT NOT NULL,draft TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT 'idle',thread_id TEXT,active_turn_id TEXT,error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS conversations_episode ON conversations(episode_id,created_at);
+        CREATE TABLE IF NOT EXISTS conversation_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,role TEXT NOT NULL,text TEXT NOT NULL,state TEXT NOT NULL,turn_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS conversation_events(conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,sequence INTEGER NOT NULL,type TEXT NOT NULL,payload TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(conversation_id,sequence));
+        CREATE TABLE IF NOT EXISTS conversation_segments (
+          id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+          harness TEXT NOT NULL CHECK (harness IN ('codex','claude')),
+          native_session_id TEXT,
+          reason TEXT NOT NULL CHECK (reason IN ('initial','migrated','harness-switch','harness-return','resume-unavailable')),
+          previous_segment_id TEXT REFERENCES conversation_segments(id) ON DELETE SET NULL,
+          first_message_id INTEGER,
+          seed_included_messages INTEGER,
+          seed_omitted_messages INTEGER,
+          created_at TEXT NOT NULL,
+          ended_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS conversation_segments_conversation ON conversation_segments(conversation_id,created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS conversation_segments_native ON conversation_segments(harness,native_session_id) WHERE native_session_id IS NOT NULL;
+      `);
+      const conversationColumns = this.columns("conversations");
+      const addConversation = (name, definition) => { if (!conversationColumns.has(name)) this.db.exec(`ALTER TABLE conversations ADD COLUMN ${name} ${definition}`); };
+      const firstSelection = !conversationColumns.has("settings_source");
+      addConversation("harness", "TEXT NOT NULL DEFAULT 'codex' CHECK (harness IN ('codex','claude'))");
+      addConversation("model", "TEXT");
+      addConversation("effort", "TEXT");
+      addConversation("settings_source", "TEXT NOT NULL DEFAULT 'default' CHECK (settings_source IN ('default','migrated','explicit'))");
+      addConversation("settings_revision", "INTEGER NOT NULL DEFAULT 1");
+      addConversation("settings_updated_at", "TEXT");
+      addConversation("active_segment_id", "TEXT REFERENCES conversation_segments(id) ON DELETE SET NULL");
+      // Existing conversations: codex, model and effort unknown (historical models are never guessed).
+      if (firstSelection) this.db.exec("UPDATE conversations SET harness='codex',model=NULL,effort=NULL,settings_source='migrated'");
+      // Visible messages record where they came from: typed by the creator, a shortcut button, or the agent.
+      if (!this.columns("conversation_messages").has("origin")) {
+        this.db.exec("ALTER TABLE conversation_messages ADD COLUMN origin TEXT CHECK (origin IS NULL OR origin IN ('typed','button','agent','system'))");
+        this.db.exec("UPDATE conversation_messages SET origin=CASE role WHEN 'user' THEN 'typed' WHEN 'assistant' THEN 'agent' ELSE 'system' END");
+      }
+      // Migrated segments: id = conversation id, so <state>/harnesses/codex/<conversationId> stays the session folder.
+      this.db.prepare(`INSERT OR IGNORE INTO conversation_segments(id,conversation_id,harness,native_session_id,reason,created_at)
+        SELECT c.id,c.id,'codex',c.thread_id,'migrated',c.created_at FROM conversations c
+        WHERE c.thread_id IS NOT NULL AND c.active_segment_id IS NULL
+          AND NOT EXISTS (SELECT 1 FROM conversation_segments s WHERE s.harness='codex' AND s.native_session_id=c.thread_id)`).run();
+      this.db.exec(`UPDATE conversations SET active_segment_id=id WHERE active_segment_id IS NULL
+        AND EXISTS (SELECT 1 FROM conversation_segments s WHERE s.id=conversations.id AND s.conversation_id=conversations.id)`);
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS production_runs (
+          id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+          episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+          segment_id TEXT REFERENCES conversation_segments(id) ON DELETE SET NULL,
+          kind TEXT NOT NULL DEFAULT 'chat' CHECK (kind IN ('chat','card_build','still_graphic','animated_graphic','draft','final','other')),
+          origin TEXT NOT NULL DEFAULT 'typed' CHECK (origin IN ('typed','button')),
+          client_request_id TEXT,
+          target_card_id TEXT,
+          originating_message_id INTEGER REFERENCES conversation_messages(id) ON DELETE SET NULL,
+          assistant_message_id INTEGER REFERENCES conversation_messages(id) ON DELETE SET NULL,
+          harness TEXT NOT NULL CHECK (harness IN ('codex','claude')),
+          model_selected TEXT,
+          effort_selected TEXT,
+          model_resolved TEXT,
+          effort_resolved TEXT,
+          native_turn_id TEXT,
+          state TEXT NOT NULL DEFAULT 'starting' CHECK (state IN ('starting','running','completed','failed','interrupted')),
+          error TEXT,
+          usage TEXT,
+          final_intent TEXT NOT NULL DEFAULT 'none' CHECK (final_intent IN ('none','active','published','ended')),
+          final_ended_reason TEXT CHECK (final_ended_reason IS NULL OR final_ended_reason IN ('published','stopped','cancelled','failed','restart','unfulfilled')),
+          final_output_job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+          successor_of TEXT REFERENCES production_runs(id) ON DELETE SET NULL,
+          started_at TEXT NOT NULL,
+          finished_at TEXT,
+          updated_at TEXT NOT NULL,
+          CHECK ((final_intent IN ('published','ended')) = (final_ended_reason IS NOT NULL)),
+          CHECK ((final_intent = 'published') = (final_ended_reason IS 'published')),
+          -- A finished request never holds live Final authority.
+          CHECK (NOT (state IN ('completed','failed','interrupted') AND final_intent = 'active'))
+        );
+        CREATE INDEX IF NOT EXISTS production_runs_conversation ON production_runs(conversation_id,started_at);
+        CREATE INDEX IF NOT EXISTS production_runs_episode_state ON production_runs(episode_id,state);
+        CREATE UNIQUE INDEX IF NOT EXISTS production_runs_client_request ON production_runs(conversation_id,client_request_id) WHERE client_request_id IS NOT NULL;
+        -- Related IDs are validated together: the run's episode, segment and messages belong to its conversation.
+        -- Update triggers allow clearing to NULL: foreign-key ON DELETE SET NULL actions run as updates.
+        CREATE TRIGGER IF NOT EXISTS production_runs_scope BEFORE INSERT ON production_runs
+          WHEN (SELECT episode_id FROM conversations WHERE id=NEW.conversation_id) IS NOT NEW.episode_id
+            OR (NEW.segment_id IS NOT NULL AND (SELECT conversation_id FROM conversation_segments WHERE id=NEW.segment_id) IS NOT NEW.conversation_id)
+            OR (NEW.originating_message_id IS NOT NULL AND (SELECT conversation_id FROM conversation_messages WHERE id=NEW.originating_message_id) IS NOT NEW.conversation_id)
+          BEGIN SELECT RAISE(ABORT,'production run references another conversation or episode'); END;
+        CREATE TRIGGER IF NOT EXISTS production_runs_scope_update BEFORE UPDATE OF conversation_id,episode_id,segment_id,originating_message_id,assistant_message_id ON production_runs
+          WHEN NEW.conversation_id IS NOT OLD.conversation_id OR NEW.episode_id IS NOT OLD.episode_id
+            OR (NEW.originating_message_id IS NOT NULL AND NEW.originating_message_id IS NOT OLD.originating_message_id)
+            OR (NEW.segment_id IS NOT NULL AND (SELECT conversation_id FROM conversation_segments WHERE id=NEW.segment_id) IS NOT NEW.conversation_id)
+            OR (NEW.assistant_message_id IS NOT NULL AND (SELECT conversation_id FROM conversation_messages WHERE id=NEW.assistant_message_id) IS NOT NEW.conversation_id)
+          BEGIN SELECT RAISE(ABORT,'production run scope is immutable and must stay within its conversation'); END;
+        CREATE TRIGGER IF NOT EXISTS conversation_segments_previous BEFORE INSERT ON conversation_segments
+          WHEN NEW.previous_segment_id IS NOT NULL AND (SELECT conversation_id FROM conversation_segments WHERE id=NEW.previous_segment_id) IS NOT NEW.conversation_id
+          BEGIN SELECT RAISE(ABORT,'previous segment belongs to another conversation'); END;
+        CREATE TRIGGER IF NOT EXISTS conversations_active_segment BEFORE UPDATE OF active_segment_id ON conversations
+          WHEN NEW.active_segment_id IS NOT NULL AND (SELECT conversation_id FROM conversation_segments WHERE id=NEW.active_segment_id) IS NOT NEW.id
+          BEGIN SELECT RAISE(ABORT,'active segment belongs to another conversation'); END;
+      `);
+      if (!this.columns("jobs").has("request_id")) this.db.exec("ALTER TABLE jobs ADD COLUMN request_id TEXT REFERENCES production_runs(id) ON DELETE SET NULL");
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS jobs_request ON jobs(request_id) WHERE request_id IS NOT NULL;
+        CREATE TRIGGER IF NOT EXISTS jobs_request_scope_insert BEFORE INSERT ON jobs
+          WHEN NEW.request_id IS NOT NULL AND (SELECT episode_id FROM production_runs WHERE id=NEW.request_id) IS NOT NEW.episode_id
+          BEGIN SELECT RAISE(ABORT,'job request belongs to another episode'); END;
+        CREATE TRIGGER IF NOT EXISTS jobs_request_scope_update BEFORE UPDATE OF request_id ON jobs
+          WHEN NEW.request_id IS NOT NULL AND NEW.request_id IS NOT OLD.request_id
+            AND (OLD.request_id IS NOT NULL OR (SELECT episode_id FROM production_runs WHERE id=NEW.request_id) IS NOT NEW.episode_id)
+          BEGIN SELECT RAISE(ABORT,'a job request link is set once, within its episode'); END;
+      `);
+      const violations = this.db.prepare("PRAGMA foreign_key_check").all();
+      if (violations.length) throw new StoreError(`Schema 9 migration found ${violations.length} foreign-key violation(s); first: ${JSON.stringify(violations[0])}`, 500);
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(9,?)").run(stamp);
+      this.db.exec("PRAGMA user_version=9; COMMIT");
     } catch (error) {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
       throw error;
@@ -1748,9 +1900,290 @@ export class Store {
     }
     return outcomes;
   }
+  // ---- Schema 9 accessors: conversation selection, native-session segments, production requests ----
+  conversationRow(row) {
+    return row ? { id: row.id, episodeId: row.episode_id, name: row.name, state: row.state, threadId: row.thread_id ?? null,
+      harness: row.harness, model: row.model ?? null, effort: row.effort ?? null, settingsSource: row.settings_source,
+      settingsRevision: row.settings_revision, settingsUpdatedAt: row.settings_updated_at ?? null, activeSegmentId: row.active_segment_id ?? null,
+      createdAt: row.created_at, updatedAt: row.updated_at } : null;
+  }
+  getConversation(conversationId) {
+    return this.conversationRow(this.db.prepare("SELECT * FROM conversations WHERE id=?").get(String(conversationId ?? "")));
+  }
+  requireConversation(conversationId) {
+    const conversation = this.getConversation(conversationId);
+    if (!conversation) throw new StoreError("Conversation not found", 404);
+    return conversation;
+  }
+  // An explicit choice from the UI. Optimistic: expectedRevision must match settings_revision.
+  // Settings and segments change only between requests: refuse while a request of this conversation, or request-owned
+  // work on its episode, is unfinished. `exceptRunId` exempts the request being dispatched (e.g. its resume fallback).
+  assertConversationIdle(conversationId, { exceptRunId = null } = {}) {
+    const conversation = this.requireConversation(conversationId);
+    const busy = this.db.prepare("SELECT id FROM production_runs WHERE conversation_id=? AND state IN ('starting','running') AND id IS NOT ? LIMIT 1").get(conversationId, exceptRunId);
+    if (busy) throw new StoreError("A request is still running in this conversation; finish or stop it first", 409, { requestId: busy.id });
+    const work = this.db.prepare(`SELECT j.id,j.request_id FROM jobs j JOIN production_runs r ON r.id=j.request_id
+      WHERE r.episode_id=? AND j.state IN ('queued','running','cancelling') AND r.id IS NOT ? LIMIT 1`).get(conversation.episodeId, exceptRunId);
+    if (work) throw new StoreError("Request-owned production work is still running on this episode; finish or stop it first", 409, { jobId: work.id, requestId: work.request_id });
+    return conversation;
+  }
+  updateConversationSettings(conversationId, expectedRevision, { harness, model = null, effort = null } = {}) {
+    const current = this.requireConversation(conversationId);
+    if (!HARNESSES.includes(harness)) throw new StoreError(`harness must be one of ${HARNESSES.join(", ")}`);
+    const values = [harness, shortText(model, "model"), shortText(effort, "effort")];
+    if (!Number.isInteger(expectedRevision) || expectedRevision !== current.settingsRevision)
+      throw new StoreError(`Stale conversation settings: expected revision ${current.settingsRevision}`, 409, { current });
+    this.assertConversationIdle(conversationId);
+    const result = this.db.prepare(`UPDATE conversations SET harness=?,model=?,effort=?,settings_source='explicit',settings_revision=settings_revision+1,settings_updated_at=?
+      WHERE id=? AND settings_revision=?`).run(...values, now(), conversationId, expectedRevision);
+    if (!result.changes) throw new StoreError("Stale conversation settings", 409, { current: this.getConversation(conversationId) });
+    return this.getConversation(conversationId);
+  }
+  // The most recent explicit choice anywhere, used to preselect a new conversation.
+  lastExplicitSettings() {
+    const row = this.db.prepare("SELECT harness,model,effort FROM conversations WHERE settings_source='explicit' ORDER BY settings_updated_at DESC, id DESC LIMIT 1").get();
+    return row ? { harness: row.harness, model: row.model ?? null, effort: row.effort ?? null } : null;
+  }
+
+  segmentRow(row) {
+    return row ? { id: row.id, conversationId: row.conversation_id, harness: row.harness, nativeSessionId: row.native_session_id ?? null, reason: row.reason,
+      previousSegmentId: row.previous_segment_id ?? null, firstMessageId: row.first_message_id ?? null,
+      seedIncludedMessages: row.seed_included_messages ?? null, seedOmittedMessages: row.seed_omitted_messages ?? null, createdAt: row.created_at, endedAt: row.ended_at ?? null } : null;
+  }
+  getSegment(segmentId) { return this.segmentRow(this.db.prepare("SELECT * FROM conversation_segments WHERE id=?").get(String(segmentId ?? ""))); }
+  listSegments(conversationId) {
+    return this.db.prepare("SELECT * FROM conversation_segments WHERE conversation_id=? ORDER BY created_at,rowid").all(conversationId).map((row) => this.segmentRow(row));
+  }
+  getActiveSegment(conversationId) {
+    const conversation = this.requireConversation(conversationId);
+    return conversation.activeSegmentId ? this.getSegment(conversation.activeSegmentId) : null;
+  }
+  // Starts a new native-session segment and makes it active; the previous active segment ends. Native session IDs are
+  // never carried across harnesses: set the new one with setSegmentNativeSession once the harness reports it.
+  createSegment({ conversationId, harness, reason, previousSegmentId, firstMessageId = null, seedIncludedMessages = null, seedOmittedMessages = null, exceptRunId = null } = {}) {
+    const conversation = this.assertConversationIdle(conversationId, { exceptRunId });
+    if (!HARNESSES.includes(harness)) throw new StoreError(`harness must be one of ${HARNESSES.join(", ")}`);
+    if (!SEGMENT_REASONS.includes(reason)) throw new StoreError(`reason must be one of ${SEGMENT_REASONS.join(", ")}`);
+    const previous = previousSegmentId === undefined ? conversation.activeSegmentId : previousSegmentId;
+    for (const [value, field] of [[firstMessageId, "firstMessageId"], [seedIncludedMessages, "seedIncludedMessages"], [seedOmittedMessages, "seedOmittedMessages"]])
+      if (value != null && (!Number.isInteger(value) || value < 0)) throw new StoreError(`${field} must be a non-negative integer`);
+    const segmentId = id("segment"), stamp = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (previous) this.db.prepare("UPDATE conversation_segments SET ended_at=? WHERE id=? AND conversation_id=? AND ended_at IS NULL").run(stamp, previous, conversationId);
+      this.db.prepare(`INSERT INTO conversation_segments(id,conversation_id,harness,native_session_id,reason,previous_segment_id,first_message_id,seed_included_messages,seed_omitted_messages,created_at)
+        VALUES(?,?,?,NULL,?,?,?,?,?,?)`).run(segmentId, conversationId, harness, reason, previous ?? null, firstMessageId, seedIncludedMessages, seedOmittedMessages, stamp);
+      this.db.prepare("UPDATE conversations SET active_segment_id=?,updated_at=? WHERE id=?").run(segmentId, stamp, conversationId);
+      this.db.exec("COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+    return this.getSegment(segmentId);
+  }
+  setSegmentNativeSession(segmentId, nativeSessionId) {
+    const segment = this.getSegment(segmentId);
+    if (!segment) throw new StoreError("Segment not found", 404);
+    if (typeof nativeSessionId !== "string" || !nativeSessionId || nativeSessionId.length > 200) throw new StoreError("nativeSessionId must be a non-empty string");
+    if (segment.nativeSessionId === nativeSessionId) return segment;
+    if (segment.nativeSessionId) throw new StoreError("This segment already has a different native session", 409, { current: segment });
+    try { this.db.prepare("UPDATE conversation_segments SET native_session_id=? WHERE id=? AND native_session_id IS NULL").run(nativeSessionId, segmentId); }
+    catch (error) { if (/UNIQUE/.test(error.message)) throw new StoreError("That native session already belongs to another segment", 409); throw error; }
+    return this.getSegment(segmentId);
+  }
+  updateSegmentSeed(segmentId, { firstMessageId, seedIncludedMessages, seedOmittedMessages } = {}) {
+    if (!this.getSegment(segmentId)) throw new StoreError("Segment not found", 404);
+    const sets = [], values = [];
+    for (const [value, column] of [[firstMessageId, "first_message_id"], [seedIncludedMessages, "seed_included_messages"], [seedOmittedMessages, "seed_omitted_messages"]]) {
+      if (value === undefined) continue;
+      if (value !== null && (!Number.isInteger(value) || value < 0)) throw new StoreError(`${column} must be a non-negative integer`);
+      sets.push(`${column}=?`); values.push(value);
+    }
+    if (sets.length) this.db.prepare(`UPDATE conversation_segments SET ${sets.join(",")} WHERE id=?`).run(...values, segmentId);
+    return this.getSegment(segmentId);
+  }
+
+  // The only supported way to add a visible message: origin is derived from the role, never taken from a request
+  // body or a tool call. A creator (user) message is 'typed' unless the app's own shortcut button produced it.
+  addConversationMessage({ conversationId, role, text, state = "completed", turnId = null, shortcut = false } = {}) {
+    this.requireConversation(conversationId);
+    if (!["user", "assistant", "system"].includes(role)) throw new StoreError("role must be user, assistant or system");
+    if (typeof text !== "string") throw new StoreError("text must be a string");
+    if (shortcut && role !== "user") throw new StoreError("Only a user message can come from a shortcut button");
+    const origin = role === "user" ? (shortcut ? "button" : "typed") : role === "assistant" ? "agent" : "system";
+    const stamp = now();
+    const messageId = Number(this.db.prepare("INSERT INTO conversation_messages(conversation_id,role,text,state,turn_id,created_at,updated_at,origin) VALUES(?,?,?,?,?,?,?,?)")
+      .run(conversationId, role, text, String(state), turnId, stamp, stamp, origin).lastInsertRowid);
+    return { id: messageId, conversationId, role, text, state: String(state), turnId, origin, createdAt: stamp };
+  }
+  runRow(row) {
+    return row ? { id: row.id, conversationId: row.conversation_id, episodeId: row.episode_id, segmentId: row.segment_id ?? null, kind: row.kind, origin: row.origin,
+      clientRequestId: row.client_request_id ?? null, targetCardId: row.target_card_id ?? null, originatingMessageId: row.originating_message_id ?? null,
+      assistantMessageId: row.assistant_message_id ?? null, harness: row.harness, modelSelected: row.model_selected ?? null, effortSelected: row.effort_selected ?? null,
+      modelResolved: row.model_resolved ?? null, effortResolved: row.effort_resolved ?? null, nativeTurnId: row.native_turn_id ?? null, state: row.state,
+      error: row.error ?? null, usage: parse(row.usage, null), finalIntent: row.final_intent, finalEndedReason: row.final_ended_reason ?? null,
+      finalOutputJobId: row.final_output_job_id ?? null, successorOf: row.successor_of ?? null, startedAt: row.started_at, finishedAt: row.finished_at ?? null, updatedAt: row.updated_at } : null;
+  }
+  getProductionRun(runId) { return this.runRow(this.db.prepare("SELECT * FROM production_runs WHERE id=?").get(String(runId ?? ""))); }
+  getRunByClientRequestId(conversationId, clientRequestId) {
+    return this.runRow(this.db.prepare("SELECT * FROM production_runs WHERE conversation_id=? AND client_request_id=?").get(conversationId, clientRequestId));
+  }
+  listProductionRuns({ conversationId = null, episodeId = null, states = null } = {}) {
+    const where = [], values = [];
+    if (conversationId) { where.push("conversation_id=?"); values.push(conversationId); }
+    if (episodeId) { where.push("episode_id=?"); values.push(episodeId); }
+    if (states?.length) { where.push(`state IN (${states.map(() => "?").join(",")})`); values.push(...states); }
+    return this.db.prepare(`SELECT * FROM production_runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at,rowid`).all(...values).map((row) => this.runRow(row));
+  }
+  // One visible request. A repeated submission with the same clientRequestId in the conversation returns the
+  // existing row ({ created: false }). Final intent is bound to kind 'final' and starts 'active'.
+  createProductionRun({ id: runId = null, conversationId, kind = "chat", origin = "typed", clientRequestId = null, targetCardId = null,
+    originatingMessageId = null, segmentId = null, harness, modelSelected = null, effortSelected = null, successorOf = null } = {}) {
+    const conversation = this.requireConversation(conversationId);
+    if (clientRequestId != null) {
+      if (typeof clientRequestId !== "string" || !clientRequestId || clientRequestId.length > 200) throw new StoreError("clientRequestId must be a non-empty string");
+      const existing = this.getRunByClientRequestId(conversationId, clientRequestId);
+      if (existing) return { run: existing, created: false };
+    }
+    if (!RUN_KINDS.includes(kind)) throw new StoreError(`kind must be one of ${RUN_KINDS.join(", ")}`);
+    if (!RUN_ORIGINS.includes(origin)) throw new StoreError(`origin must be one of ${RUN_ORIGINS.join(", ")}`);
+    if (!HARNESSES.includes(harness)) throw new StoreError(`harness must be one of ${HARNESSES.join(", ")}`);
+    if (runId != null && (typeof runId !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(runId))) throw new StoreError("run id must be a plain identifier");
+    if (targetCardId != null && !this.getEpisode(conversation.episodeId).cards.some((card) => card.id === targetCardId))
+      throw new StoreError(`Target card not found in this episode: ${targetCardId}`, 404);
+    if (originatingMessageId != null) {
+      const message = this.db.prepare("SELECT conversation_id,role FROM conversation_messages WHERE id=?").get(originatingMessageId);
+      if (!message || message.conversation_id !== conversationId) throw new StoreError("The originating message is not in this conversation", 404);
+      if (message.role !== "user") throw new StoreError("A request originates from a creator (user) message", 400);
+    }
+    if (segmentId != null && this.getSegment(segmentId)?.conversationId !== conversationId) throw new StoreError("The segment is not in this conversation", 404);
+    if (successorOf != null) {
+      const previous = this.getProductionRun(successorOf);
+      if (!previous || previous.conversationId !== conversationId) throw new StoreError("The retried request is not in this conversation", 404);
+    }
+    if (runId != null && this.getProductionRun(runId)) throw new StoreError(`A request with id ${runId} already exists`, 409);
+    const stamp = now(), value = runId ?? id("request");
+    try {
+      this.db.prepare(`INSERT INTO production_runs(id,conversation_id,episode_id,segment_id,kind,origin,client_request_id,target_card_id,originating_message_id,
+        harness,model_selected,effort_selected,final_intent,successor_of,started_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(value, conversationId, conversation.episodeId, segmentId, kind, origin, clientRequestId, targetCardId, originatingMessageId,
+          harness, shortText(modelSelected, "modelSelected"), shortText(effortSelected, "effortSelected"), kind === "final" ? "active" : "none", successorOf, stamp, stamp);
+    } catch (error) {
+      // A concurrent identical submission won the insert: return that row.
+      if (clientRequestId != null && /UNIQUE/.test(error.message)) {
+        const existing = this.getRunByClientRequestId(conversationId, clientRequestId);
+        if (existing) return { run: existing, created: false };
+      }
+      throw error;
+    }
+    return { run: this.getProductionRun(value), created: true };
+  }
+  // Progress and attribution as the harness reports it. Terminal states are final.
+  updateProductionRun(runId, changes = {}) {
+    const current = this.getProductionRun(runId);
+    if (!current) throw new StoreError("Production request not found", 404);
+    const sets = [], values = [];
+    if (changes.finalEndReason !== undefined && !INTERRUPTION_REASONS.includes(changes.finalEndReason))
+      throw new StoreError(`finalEndReason must be one of ${INTERRUPTION_REASONS.join(", ")} (for an interrupted request)`);
+    if (changes.state !== undefined && changes.state !== current.state) {
+      if (!RUN_TRANSITIONS[current.state]?.includes(changes.state)) throw new StoreError(`A ${current.state} request cannot become ${changes.state}`, 409, { current });
+      sets.push("state=?"); values.push(changes.state);
+      if (RUN_TERMINAL.includes(changes.state)) {
+        sets.push("finished_at=?"); values.push(now());
+        // A request that finishes without publishing ends its Final intent in the same update.
+        if (current.finalIntent === "active") {
+          sets.push("final_intent='ended'", "final_ended_reason=?");
+          values.push(changes.state === "interrupted" ? changes.finalEndReason ?? "stopped" : FINAL_END_ON_TERMINAL[changes.state]);
+        }
+      }
+    }
+    if (changes.assistantMessageId != null) {
+      const message = this.db.prepare("SELECT conversation_id,role FROM conversation_messages WHERE id=?").get(changes.assistantMessageId);
+      if (!message || message.conversation_id !== current.conversationId) throw new StoreError("The assistant message is not in this conversation", 404);
+      if (message.role !== "assistant") throw new StoreError("assistantMessageId must be an assistant message", 400);
+    }
+    if (changes.segmentId != null && this.getSegment(changes.segmentId)?.conversationId !== current.conversationId)
+      throw new StoreError("The segment is not in this conversation", 404);
+    const text = { error: "error", modelResolved: "model_resolved", effortResolved: "effort_resolved", nativeTurnId: "native_turn_id" };
+    for (const [key, column] of Object.entries(text)) if (changes[key] !== undefined) { sets.push(`${column}=?`); values.push(changes[key] == null ? null : String(changes[key]).slice(0, 4000)); }
+    if (changes.usage !== undefined) { sets.push("usage=?"); values.push(changes.usage == null ? null : JSON.stringify(changes.usage)); }
+    for (const [key, column] of [["assistantMessageId", "assistant_message_id"], ["segmentId", "segment_id"]])
+      if (changes[key] !== undefined) { sets.push(`${column}=?`); values.push(changes[key]); }
+    if (!sets.length) return current;
+    sets.push("updated_at=?"); values.push(now());
+    // The state guard makes a concurrent transition lose cleanly instead of overwriting a terminal state.
+    const result = this.db.prepare(`UPDATE production_runs SET ${sets.join(",")} WHERE id=? AND state=?`).run(...values, runId, current.state);
+    if (!result.changes) throw new StoreError("The request changed concurrently", 409, { current: this.getProductionRun(runId) });
+    return this.getProductionRun(runId);
+  }
+  // Final intent ends exactly once: published (with the completed final output of this request) or with a reason.
+  publishFinalIntent(runId, jobId) {
+    const run = this.getProductionRun(runId);
+    if (!run) throw new StoreError("Production request not found", 404);
+    if (RUN_TERMINAL.includes(run.state)) throw new StoreError(`A ${run.state} request cannot publish a Final`, 409, { current: run });
+    const job = this.getJob(jobId);
+    if (!job || job.requestId !== runId) throw new StoreError("The output was not produced by this request", 409);
+    if (job.state !== "completed" || job.outputClass !== "final" || job.designation !== "final" || job.deletionState !== "present")
+      throw new StoreError("Only a completed, present Final output can publish a Final request", 409);
+    const result = this.db.prepare(`UPDATE production_runs SET final_intent='published',final_ended_reason='published',final_output_job_id=?,updated_at=?
+      WHERE id=? AND final_intent='active' AND state IN ('starting','running')`).run(jobId, now(), runId);
+    if (!result.changes) throw new StoreError(`This request has no active Final intent (${run.finalIntent})`, 409, { current: run });
+    return this.getProductionRun(runId);
+  }
+  endFinalIntent(runId, reason) {
+    if (!FINAL_END_REASONS.includes(reason)) throw new StoreError(`reason must be one of ${FINAL_END_REASONS.join(", ")}`);
+    const result = this.db.prepare("UPDATE production_runs SET final_intent='ended',final_ended_reason=?,updated_at=? WHERE id=? AND final_intent='active'").run(reason, now(), runId);
+    const run = this.getProductionRun(runId);
+    if (!run) throw new StoreError("Production request not found", 404);
+    if (!result.changes) throw new StoreError(`This request has no active Final intent (${run.finalIntent})`, 409, { current: run });
+    return run;
+  }
+  // An explicit user Retry of a finished request: a successor with the same kind and target, and Final intent again
+  // for a Final request that ended unpublished. A published Final is not retried; a new Final request is a new version.
+  // Harness, model and effort default to the conversation's current selection (it may have changed since).
+  retryProductionRun(runId, { clientRequestId = null, originatingMessageId = null, origin = "button", harness, modelSelected, effortSelected, segmentId = null } = {}) {
+    const previous = this.getProductionRun(runId);
+    if (!previous) throw new StoreError("Production request not found", 404);
+    if (!RUN_TERMINAL.includes(previous.state)) throw new StoreError("Only a finished request can be retried", 409, { current: previous });
+    if (previous.finalIntent === "published") throw new StoreError("This Final request was published; request a new Final instead of retrying it", 409, { current: previous });
+    if (previous.finalIntent === "active") throw new StoreError("This request's Final intent is still active", 409, { current: previous });
+    const selection = this.requireConversation(previous.conversationId);
+    return this.createProductionRun({ conversationId: previous.conversationId, kind: previous.kind, origin, clientRequestId, targetCardId: previous.targetCardId,
+      originatingMessageId, segmentId, harness: harness ?? selection.harness, modelSelected: modelSelected === undefined ? selection.model : modelSelected,
+      effortSelected: effortSelected === undefined ? selection.effort : effortSelected, successorOf: runId });
+  }
+  // Jobs owned by a request (set once; the episode must match). Stop cancels the active ones.
+  linkJobToRequest(jobId, runId) {
+    const job = this.getJob(jobId), run = this.getProductionRun(runId);
+    if (!job) throw new StoreError("Job not found", 404);
+    if (!run) throw new StoreError("Production request not found", 404);
+    if (job.requestId === runId) return job;
+    if (job.requestId) throw new StoreError("The job already belongs to another request", 409);
+    if (job.episodeId !== run.episodeId) throw new StoreError("The job belongs to another episode", 409);
+    if (RUN_TERMINAL.includes(run.state)) throw new StoreError(`A ${run.state} request cannot take on new work`, 409, { current: run });
+    this.db.prepare("UPDATE jobs SET request_id=? WHERE id=? AND request_id IS NULL").run(runId, jobId);
+    return this.getJob(jobId);
+  }
+  listRequestJobs(runId, { activeOnly = false } = {}) {
+    return this.db.prepare(`SELECT j.*,e.channel_id FROM jobs j LEFT JOIN episodes e ON e.id=j.episode_id WHERE j.request_id=?${activeOnly ? " AND j.state IN ('queued','running','cancelling')" : ""} ORDER BY j.created_at`)
+      .all(runId).map(jobRow);
+  }
+  // Startup: an application restart ends unfinished requests (interrupted, never replayed) and their Final intent.
+  reconcileProductionRuns() {
+    if (!this.tableExists("production_runs")) return;
+    const stamp = now();
+    this.db.prepare(`UPDATE production_runs SET state='interrupted',error=COALESCE(error,'Interrupted by an application restart'),finished_at=?,updated_at=?,
+      final_ended_reason=CASE WHEN final_intent='active' THEN 'restart' ELSE final_ended_reason END,
+      final_intent=CASE WHEN final_intent='active' THEN 'ended' ELSE final_intent END
+      WHERE state IN ('starting','running')`).run(stamp, stamp);
+  }
   saveJob(job) {
     const old = job.id && this.getJob(job.id);
     if (old?.state === "completed") throw new StoreError("Completed job records are immutable", 409);
+    // A new job may be created for a live request only; its episode must match (the trigger enforces it too).
+    if (!old && job.requestId != null) {
+      const run = this.getProductionRun(job.requestId);
+      if (!run) throw new StoreError("Production request not found", 404);
+      if (run.episodeId !== job.episodeId) throw new StoreError("The request belongs to another episode", 409);
+      if (RUN_TERMINAL.includes(run.state)) throw new StoreError(`A ${run.state} request cannot take on new work`, 409, { current: run });
+    }
     const value = {
       ...old,
       ...job,
@@ -1760,7 +2193,7 @@ export class Store {
     };
     this.db
       .prepare(
-        `INSERT INTO jobs(id,episode_id,kind,state,progress,revision,output_path,error,snapshot,created_at,updated_at,output_class) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,progress=excluded.progress,output_path=excluded.output_path,error=excluded.error,snapshot=excluded.snapshot,updated_at=excluded.updated_at,output_class=excluded.output_class`,
+        `INSERT INTO jobs(id,episode_id,kind,state,progress,revision,output_path,error,snapshot,created_at,updated_at,output_class,request_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,progress=excluded.progress,output_path=excluded.output_path,error=excluded.error,snapshot=excluded.snapshot,updated_at=excluded.updated_at,output_class=excluded.output_class`,
       )
       .run(
         value.id,
@@ -1775,6 +2208,8 @@ export class Store {
         value.createdAt,
         value.updatedAt,
         value.outputClass || "active",
+        // Set on insert only: the upsert never changes an existing job's request.
+        old ? old.requestId : value.requestId ?? null,
       );
     return this.getJob(value.id);
   }

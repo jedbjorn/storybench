@@ -266,7 +266,8 @@ test("schema 8 migrates outputs from schema 7 repeatably with designation defaul
   });
   let store = f.reopen({ startup: false });
   assert.equal(Number(store.db.prepare("PRAGMA user_version").get().user_version), SCHEMA_VERSION);
-  assert.equal(SCHEMA_VERSION, 8);
+  assert.ok(SCHEMA_VERSION >= 8);
+  assert.ok(store.db.prepare("SELECT 1 FROM migration_log WHERE version=8").get());
   assert.ok(existsSync(path.join(root, "storybench.pre-v8.sqlite")));
   const backup = new DatabaseSync(path.join(root, "storybench.pre-v8.sqlite"), { readOnly: true });
   assert.equal(Number(backup.prepare("PRAGMA user_version").get().user_version), 7);
