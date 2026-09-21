@@ -62,13 +62,25 @@ export function runningAppExecutor({ port }) {
   };
 }
 
-// context: { dataRoot, dataRootId, lockDir, lockTimeoutMs, port, probeService }.
+export const SERVICE_BUSY_STATES = Object.freeze(["active", "activating", "reloading", "deactivating"]);
+
+// context: { dataRoot, dataRootId, lockDir, lockTimeoutMs, port, probeService, system, unit }.
+// The offline path is used only when the unit is inactive, failed or not loaded: while systemd is running,
+// starting, restarting or stopping the service, the app owns the database even if it does not answer yet.
 export async function selectExecutor(context) {
   const answer = context.probeService ? await context.probeService(context.port) : { state: "stopped" };
   if (answer.state === "running") {
     if (context.dataRootId && answer.dataRootId && answer.dataRootId !== context.dataRootId)
       throw new CliError(`The Storybench service on port ${context.port} serves a different data root than the configured one`, { hint: "Check `storybench status`." });
     return runningAppExecutor(context);
+  }
+  if (context.system && context.unit) {
+    let state;
+    try { state = await context.system.unitState(context.unit); }
+    catch (error) { throw new CliError(`Cannot determine whether the Storybench service is running (${error.message})`, { hint: "Check `systemctl --user status`." }); }
+    if (SERVICE_BUSY_STATES.includes(state.active))
+      throw new CliError(`The Storybench service is ${state.active}${state.sub && state.sub !== state.active ? ` (${state.sub})` : ""} but its app is not answering`, {
+        hint: "Retry in a moment, or run `storybench down` to manage channels offline." });
   }
   return offlineExecutor(context);
 }

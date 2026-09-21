@@ -9,6 +9,10 @@ import { withLock } from "./lock.js";
 import { versionInfo } from "./release.js";
 import { assertCurrentSchema, selectExecutor } from "./executor.js";
 import { assertServiceStopped, runDown, runLogs, runOpen, runRestart, runStatus, runUp } from "./lifecycle.js";
+import { unitName } from "./unit.js";
+import { configuredRoot, restoreHint } from "./root.js";
+
+export { configuredRoot };
 import { assertOwnedWritable } from "./fs-safety.js";
 
 // Canonical absolute path: resolve symlinks of the longest existing prefix; the rest is kept as data.
@@ -31,21 +35,6 @@ function fromService(error) {
   return error;
 }
 
-// The configured data root, verified before any operation: never created or replaced implicitly.
-export function configuredRoot(context) {
-  const config = readConfig(context.xdg.configFile);
-  if (!config) throw new CliError("Storybench is not initialized on this account", { hint: "Run `storybench init [DIR]` (or `storybench init DIR --adopt` for a prototype workspace)." });
-  const info = inspectDataRoot(config.dataRoot);
-  if (info.state === "missing") throw new CliError(`The configured data root ${config.dataRoot} is missing`, { hint: restoreHint(config.dataRoot) });
-  if (info.state === "legacy") throw new CliError(`The configured data root ${config.dataRoot} is an unadopted prototype workspace`, { hint: `Run \`storybench init ${config.dataRoot} --adopt\`.` });
-  if (info.state !== "initialized") throw new CliError(`The configured data root ${config.dataRoot} is not a usable Storybench data root (${info.state})`, {
-    hint: "Check the path in the configuration; Storybench does not repair or replace it automatically." });
-  if (config.dataRootId && info.identity.id !== config.dataRootId) throw new CliError(`The data root at ${config.dataRoot} is a different Storybench installation than the one configured`, {
-    hint: restoreHint(config.dataRoot) });
-  return config;
-}
-
-const restoreHint = (root) => `Restore or remount the configured data root at ${root}. Storybench never creates or substitutes a replacement.`;
 
 async function runInit(context, { positionals: [dir], options }) {
   if (options["channel-name"] !== undefined && !options.adopt) throw new CliError("--channel-name only applies with --adopt", { exitCode: EXIT.USAGE, hint: "Usage: storybench init [DIR] [--adopt] [--channel-name NAME]" });
@@ -57,14 +46,13 @@ async function runInit(context, { positionals: [dir], options }) {
   const port = existing?.port ?? DEFAULT_PORT;
   assertOwnedWritable(target, "the data root");
   assertOwnedWritable(path.dirname(context.xdg.configFile), "the configuration directory");
-  if (options.adopt) {
-    // Adoption migrates the database in place, so no Storybench service may have it open.
-    await assertServiceStopped(context, existing ?? { port }, "adopting");
-  }
   const operation = options.adopt ? "init --adopt" : "init";
   let result;
   try {
     result = await withLock(context.xdg.lockDir, operation, async () => {
+      // Adoption migrates the database in place, so no Storybench service may have it open. Checked under the lock
+      // so `up` cannot start the service between this check and the migration.
+      if (options.adopt) await assertServiceStopped(context, existing ?? { port }, "adopting");
       // Decide from the current state before anything is written.
       const info = inspectDataRoot(target);
       if (existing?.dataRootId) {
@@ -100,7 +88,7 @@ async function runInit(context, { positionals: [dir], options }) {
 async function channelExecutor(context) {
   const config = configuredRoot(context);
   return selectExecutor({ dataRoot: config.dataRoot, dataRootId: config.dataRootId, lockDir: context.xdg.lockDir, lockTimeoutMs: context.lockTimeoutMs,
-    port: config.port, probeService: context.probeService });
+    port: config.port, probeService: context.probeService, system: context.system, unit: unitName(context.env) });
 }
 const channelLine = (channel) => `${channel.isDefault ? "*" : " "} ${channel.id}  ${channel.name}`;
 
@@ -198,8 +186,9 @@ export const COMMANDS = {
   open: { usage: "storybench open", summary: "Open the running Storybench in the browser", args: [0, 0],
     description: "Opens the healthy URL, on the default channel, with the desktop's opener. Fails with a hint when Storybench is stopped.",
     examples: ["storybench open"], run: (context, parsed) => runOpen(context, parsed, configuredRoot) },
-  logs: { usage: "storybench logs [-f]", summary: "Show this installation's service log", args: [0, 0],
-    description: "Shows only this service's journal (lifecycle, app and worker diagnostics).",
+  logs: { usage: "storybench logs [-f]", summary: "Show this installation's service journal", args: [0, 0],
+    description: "Shows only this service's journal: the lifecycle host's events (service start/stop, app start/health/stop, worker start/stop,\n" +
+      "credential sync). App and worker container output is not forwarded to the journal in this build.",
     options: { follow: { type: "boolean", short: "f", help: "Keep following new entries" } }, examples: ["storybench logs", "storybench logs -f"],
     run: (context, parsed) => runLogs(context, parsed, configuredRoot) },
   help: { usage: "storybench help [COMMAND [SUBCOMMAND]]", summary: "Show help for Storybench or one command", args: [0, 2], examples: ["storybench help channel use"] },

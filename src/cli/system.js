@@ -20,8 +20,18 @@ export function hostSystem({ env = process.env } = {}) {
   return {
     systemctl,
     async unitState(unit) {
-      const result = await systemctl(["show", unit, "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStartTimestamp,Result,FragmentPath"], { timeoutMs: 15_000 });
-      if (result.code !== 0) throw new Error(`systemctl --user show failed: ${result.stderr.trim() || result.code}`);
+      let result;
+      try { result = await systemctl(["show", unit, "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStartTimestamp,Result,FragmentPath"], { timeoutMs: 15_000 }); }
+      catch (error) {
+        // No systemctl at all: no user manager can be running the service.
+        if (error.code === "ENOENT") return { load: "not-found", active: "inactive", sub: "dead", pid: null, managerUnavailable: true };
+        throw error;
+      }
+      if (result.code !== 0) {
+        if (/Failed to connect to (user scope )?bus|No medium found|has not been booted|XDG_RUNTIME_DIR/i.test(result.stderr))
+          return { load: "not-found", active: "inactive", sub: "dead", pid: null, managerUnavailable: true };
+        throw new Error(`systemctl --user show failed: ${result.stderr.trim().split("\n")[0] || `exit ${result.code}`}`);
+      }
       const fields = Object.fromEntries(result.stdout.trim().split("\n").filter(Boolean).map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
       return { load: fields.LoadState, active: fields.ActiveState, sub: fields.SubState, pid: Number(fields.MainPID) || null,
         startedAt: fields.ExecMainStartTimestamp || null, result: fields.Result || null, fragment: fields.FragmentPath || null };

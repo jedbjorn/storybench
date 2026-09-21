@@ -3,13 +3,15 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { EventEmitter } from "node:events";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { main } from "../src/cli/main.js";
 import { readConfig } from "../src/cli/config.js";
 import { acquireLock } from "../src/cli/lock.js";
-import { generateUnit, quoteArg, unitName } from "../src/cli/unit.js";
+import { generateUnit, quoteArg, quoteEnvironment, unitName } from "../src/cli/unit.js";
+import { hostSystem } from "../src/cli/system.js";
+import { readLockOwner } from "../src/cli/lock.js";
 import { probeService } from "../src/cli/service.js";
 import { servicePath } from "../src/cli/lifecycle.js";
 import { createManifest } from "../src/runtime/manifest.js";
@@ -262,4 +264,118 @@ test("while the service is healthy, channel changes go through the running app, 
   assert.equal(duplicate.code, 1);
   assert.match(duplicate.stderr, /already exists/);
   assert.equal((await probeService(port)).state, "running");
+});
+
+// A system adapter frozen in one unit state, recording calls.
+function stateSystem(active, extra = {}) {
+  const calls = [];
+  return { calls, async unitState(unit) { calls.push(["show", unit]); if (extra.fail) throw new Error(extra.fail); return { load: "loaded", active, sub: extra.sub ?? active, pid: active === "inactive" ? null : 77, fragment: extra.fragment ?? null }; },
+    async stop(unit) { calls.push(["stop", unit]); return { code: 0 }; }, async start(unit) { calls.push(["start", unit]); return { code: 0 }; }, async daemonReload() { return { code: 0 }; },
+    async resetFailed() { return { code: 0 }; }, async containers() { return []; }, journal(unit) { calls.push(["journal", unit]); const child = new EventEmitter(); setImmediate(() => child.emit("close", 0)); return child; } };
+}
+
+test("R1: channel commands never fall back to offline while the unit is active, starting, restarting or stopping", async (t) => {
+  const s = await sandbox(t);
+  const stoppedProbe = async () => ({ state: "stopped" });
+  for (const [active, sub] of [["active", "running"], ["activating", "auto-restart"], ["activating", "start"], ["reloading", "reload"], ["deactivating", "stop-sigterm"]]) {
+    const result = await s.run(["channel", "create", `X-${active}-${sub}`], { system: stateSystem(active, { sub }), probeService: stoppedProbe });
+    assert.equal(result.code, 1, `${active}/${sub}`);
+    assert.match(result.stderr, new RegExp(`service is ${active}[\\s\\S]*storybench down\` to manage channels offline`));
+  }
+  const unknown = await s.run(["channel", "list"], { system: stateSystem("active", { fail: "Access denied" }), probeService: stoppedProbe });
+  assert.match(unknown.stderr, /Cannot determine whether the Storybench service is running \(Access denied\)/);
+  for (const active of ["inactive", "failed"]) assert.equal((await s.run(["channel", "create", `Y-${active}`], { system: stateSystem(active), probeService: stoppedProbe })).code, 0, active);
+  const list = await s.run(["channel", "list"], { system: stateSystem("inactive"), probeService: stoppedProbe });
+  assert.doesNotMatch(list.stdout, /X-/, "no refused create reached the database");
+  assert.match(list.stdout, /Y-inactive[\s\S]*Y-failed|Y-failed[\s\S]*Y-inactive/);
+});
+
+test("R1: an unavailable user manager means not running; other systemctl failures are surfaced", async (t) => {
+  const bin = mkdtempSync(path.join(os.tmpdir(), "storybench-fake-systemctl-"));
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  const script = (text, code) => { writeFileSync(path.join(bin, "systemctl"), `#!/bin/sh\necho '${text}' >&2\nexit ${code}\n`, { mode: 0o755 }); };
+  script("Failed to connect to bus: No medium found", 1);
+  assert.deepEqual(await hostSystem({ env: { PATH: bin } }).unitState("storybench.service"), { load: "not-found", active: "inactive", sub: "dead", pid: null, managerUnavailable: true });
+  script("Failed to get properties: Access denied", 1);
+  await assert.rejects(hostSystem({ env: { PATH: bin } }).unitState("storybench.service"), /Access denied/);
+  await assert.doesNotReject(hostSystem({ env: { PATH: path.join(bin, "none") } }).unitState("storybench.service"));
+});
+
+test("R2: restart fails closed when the service is up but reports no activity", async (t) => {
+  const s = await sandbox(t);
+  for (const active of ["active", "activating"]) {
+    const system = stateSystem(active);
+    const refused = await s.run(["restart"], { system, probeService: async () => ({ state: "unreachable" }) });
+    assert.equal(refused.code, 1);
+    assert.match(refused.stderr, new RegExp(`Cannot confirm the Storybench service is idle: it is ${active}[\\s\\S]*restart --force`));
+    assert.equal(system.calls.filter(([name]) => name === "stop").length, 0, "nothing was stopped");
+  }
+  const system = stateSystem("active");
+  await s.run(["restart", "--force"], { system, probeService: async () => ({ state: "unreachable" }) });
+  assert.equal(system.calls.filter(([name]) => name === "stop").length, 1, "--force proceeds to stop");
+  let seen = null;
+  await s.run(["restart"], { system: stateSystem("inactive"), probeService: async (port, options) => { seen ??= options; return { state: "stopped" }; } });
+  assert.deepEqual(seen, { timeoutMs: 10_000 }, "restart waits longer for the busy check");
+});
+
+test("R3: down, status and logs work when the configured data root is missing; up and restart refuse", async (t) => {
+  const s = await sandbox(t);
+  await s.run(["up", "--port", String(s.port)]);
+  renameSync(s.root, `${s.root}-moved`);
+  const status = await s.run(["status"]);
+  assert.equal(status.code, 0);
+  assert.match(status.stdout, /^Status: healthy$/m);
+  assert.match(status.stdout, /^Data root problem: The configured data root .* is missing — Restore or remount/m);
+  assert.equal((await s.run(["logs"])).code, 0);
+  const down = await s.run(["down"]);
+  assert.equal(down.code, 0, down.stderr);
+  assert.match(down.stdout, /Storybench stopped/);
+  assert.match((await s.run(["up"])).stderr, /is missing/);
+  assert.match((await s.run(["restart"])).stderr, /is missing/);
+  assert.equal(existsSync(s.root), false);
+});
+
+test("R4: Environment= values keep $ (only Exec* lines expand variables)", () => {
+  assert.equal(quoteEnvironment('PATH=/a$b:/c%d"e\\f'), '"PATH=/a$b:/c%%d\\"e\\\\f"');
+  const unit = generateUnit({ node: "/usr/bin/node", hostEntry: "/opt/h$x.js", hostConfig: "/opt/c.json", workingDirectory: "/opt", environment: { DOCKER_HOST: "unix:///run/user/1000/do$cker.sock" } });
+  assert.match(unit, /^Environment="DOCKER_HOST=unix:\/\/\/run\/user\/1000\/do\$cker\.sock"$/m);
+  assert.match(unit, /"\/opt\/h\$\$x\.js"/, "Exec* still escapes $");
+});
+
+test("R5: adopt checks the service under the lifecycle lock and surfaces unit-state failures", async (t) => {
+  const s = await sandbox(t);
+  let ownerDuringCheck = null;
+  const system = { ...stateSystem("inactive"), async unitState() { ownerDuringCheck = readLockOwner(path.join(s.env.XDG_RUNTIME_DIR, "storybench")); return { active: "inactive" }; } };
+  assert.equal((await s.run(["init", s.root, "--adopt"], { system, probeService: async () => ({ state: "stopped" }) })).code, 0);
+  assert.equal(ownerDuringCheck?.operation, "init --adopt", "the stopped check ran while holding the lock");
+  const failed = await s.run(["init", s.root, "--adopt"], { system: stateSystem("inactive", { fail: "Connection timed out" }) });
+  assert.equal(failed.code, 1);
+  assert.match(failed.stderr, /Cannot determine whether the Storybench service is running \(Connection timed out\)/);
+});
+
+test("R6: one port rule (1024-65535): invalid --port is a usage error, a bad configured port is refused", async (t) => {
+  const s = await sandbox(t);
+  for (const value of ["80", "0", "70000", "abc", "1023"]) {
+    const result = await s.run(["up", "--port", value]);
+    assert.deepEqual({ code: result.code, message: result.stderr.split("\n")[0] }, { code: 2, message: "storybench: The port must be an integer from 1024 to 65535" }, value);
+  }
+  const configFile = path.join(s.env.XDG_CONFIG_HOME, "storybench", "config.json");
+  writeFileSync(configFile, JSON.stringify({ ...readConfig(configFile), port: 80 }));
+  const result = await s.run(["status"]);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /1024 to 65535/);
+});
+
+test("R7 and notes: logs help is accurate; status words other answers by unit state and flags a foreign unit file", async (t) => {
+  const s = await sandbox(t);
+  assert.match((await s.run(["logs", "--help"])).stdout, /container output is not forwarded to the journal in this build/);
+  const answering = async () => ({ state: "running", health: healthBody({ databaseId: s.config.dataRootId }), dataRootId: s.config.dataRootId, schemaVersion: 8 });
+  let status = await s.run(["status"], { system: stateSystem("deactivating", { sub: "stop-sigterm" }), probeService: answering });
+  assert.match(status.stdout, /Note: the service's own app is answering while the unit is deactivating \(stop-sigterm\)/);
+  status = await s.run(["status"], { system: stateSystem("inactive"), probeService: answering });
+  assert.match(status.stdout, /Note: a Storybench server not managed by storybench-test-life\.service answers/);
+  status = await s.run(["status"], { system: stateSystem("active", { fragment: "/etc/systemd/user/storybench-test-life.service" }), probeService: answering });
+  assert.match(status.stdout, /Mismatch: systemd loads storybench-test-life\.service from \/etc\/systemd\/user\/storybench-test-life\.service, not from .*units\/storybench-test-life\.service/);
+  const busy = await s.run(["up"], { system: stateSystem("activating", { sub: "auto-restart" }), probeService: async () => ({ state: "stopped" }) });
+  assert.match(busy.stderr, /service is activating \(auto-restart\)[\s\S]*Wait for it to settle/);
 });

@@ -6,10 +6,12 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { readReleaseManifest } from "../runtime/manifest.js";
 import { DEFAULT_PORT, readConfig, validatePort, writeConfigAtomic } from "./config.js";
+import { configuredRoot as verifiedRoot } from "./root.js";
 import { CliError, EXIT } from "./errors.js";
 import { withLock } from "./lock.js";
 import { PACKAGE_ROOT, manifestFile } from "./release.js";
 import { activeWork, probeService, requestJson, serviceStatus } from "./service.js";
+import { SERVICE_BUSY_STATES } from "./executor.js";
 import { generateUnit, unitName, writeUnitAtomic } from "./unit.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -54,11 +56,11 @@ const urlFor = (port, channelId = null) => `http://127.0.0.1:${port}/${channelId
 // configured port or the default port (for example a manually started prototype). Used by adopt, later backup.
 export async function assertServiceStopped(context, config, action) {
   const unit = unitName(context.env);
-  try {
-    const state = await context.system.unitState(unit);
-    if (["active", "activating", "reloading", "deactivating"].includes(state.active))
-      throw new CliError(`The Storybench service (${unit}) is ${state.active}`, { hint: `Run \`storybench down\` before ${action}.` });
-  } catch (error) { if (error instanceof CliError) throw error; }
+  let state;
+  try { state = await context.system.unitState(unit); }
+  catch (error) { throw new CliError(`Cannot determine whether the Storybench service is running (${error.message})`, { hint: "Check `systemctl --user status`, then retry." }); }
+  if (SERVICE_BUSY_STATES.includes(state.active))
+    throw new CliError(`The Storybench service (${unit}) is ${state.active}`, { hint: `Run \`storybench down\` before ${action}.` });
   for (const port of new Set([config?.port ?? DEFAULT_PORT, DEFAULT_PORT])) {
     const answer = await context.probeService(port);
     if (answer.state === "running") throw new CliError(`A Storybench server is answering on port ${port}`, { hint: `Stop it before ${action}.` });
@@ -120,8 +122,7 @@ async function startAndVerify(context, config, { release, paths }) {
 }
 
 export async function runUp(context, { options }, configuredRoot) {
-  const port = options.port === undefined ? null : validatePort(options.port);
-  if (port !== null && port < 1024) throw new CliError("The port must be from 1024 to 65535", { exitCode: EXIT.USAGE });
+  const port = options.port === undefined ? null : validatePort(options.port, { exitCode: EXIT.USAGE });
   let config = configuredRoot(context);
   return withLock(context.xdg.lockDir, "up", async () => {
     const unit = unitName(context.env);
@@ -137,6 +138,8 @@ export async function runUp(context, { options }, configuredRoot) {
       if (current.state === "mismatched") throw new CliError(`Storybench is running but ${current.problems.join("; ")}`, { hint: "Run `storybench restart` to serve the configured release and data root." });
     }
     const target = port ?? config.port;
+    if (["activating", "reloading", "deactivating"].includes(current.unit.active))
+      throw new CliError(`The Storybench service is ${current.unit.active}${current.unit.sub ? ` (${current.unit.sub})` : ""}`, { hint: "Wait for it to settle, then run `storybench up` again (or `storybench status`)." });
     if (current.unit.active !== "active") {
       const listener = await context.probeService(target);
       if (listener.state === "running") throw new CliError(`Another Storybench server (not ${unit}) answers on port ${target}`, { hint: "Stop it, or choose another port with `storybench up --port N`." });
@@ -154,8 +157,15 @@ export async function runUp(context, { options }, configuredRoot) {
   }, { timeoutMs: context.lockTimeoutMs });
 }
 
-export async function runDown(context, _parsed, configuredRoot) {
-  const config = configuredRoot(context);
+// down, status and logs need only the configuration: a missing or unusable data root must not stop them.
+function loadConfig(context) {
+  const config = readConfig(context.xdg.configFile);
+  if (!config) throw new CliError("Storybench is not initialized on this account", { hint: "Run `storybench init [DIR]`." });
+  return config;
+}
+
+export async function runDown(context) {
+  const config = loadConfig(context);
   return withLock(context.xdg.lockDir, "down", async () => {
     const unit = unitName(context.env);
     const state = await context.system.unitState(unit);
@@ -177,7 +187,12 @@ export async function runRestart(context, { options }, configuredRoot) {
   return withLock(context.xdg.lockDir, options.force ? "restart --force" : "restart", async () => {
     const unit = unitName(context.env);
     const release = await expectedRelease(context);
-    const before = await serviceStatus({ system: context.system, unit, port: config.port, identity: release.identity, dataRootId: config.dataRootId, probe: context.probeService });
+    const before = await serviceStatus({ system: context.system, unit, port: config.port, identity: release.identity, dataRootId: config.dataRootId,
+      probe: (port) => context.probeService(port, { timeoutMs: 10_000 }) });
+    // Fail closed: if the service is up but its activity cannot be read, it may be busy.
+    if (!before.health && SERVICE_BUSY_STATES.includes(before.unit.active) && !options.force)
+      throw new CliError(`Cannot confirm the Storybench service is idle: it is ${before.unit.active} but did not report its activity`, {
+        hint: "Retry in a moment, or run `storybench restart --force` to restart anyway (interrupted work is not replayed)." });
     if (before.health) {
       const work = activeWork(before.health);
       if (work.busy && !options.force) throw new CliError(`Storybench is busy: ${work.renders} render job(s) and ${work.agents} agent turn(s) are active across all channels`, {
@@ -214,9 +229,11 @@ export async function runOpen(context, _parsed, configuredRoot) {
   return EXIT.OK;
 }
 
-export async function runStatus(context, _parsed, configuredRoot) {
-  const config = configuredRoot(context);
+export async function runStatus(context) {
+  const config = loadConfig(context);
   const unit = unitName(context.env);
+  let rootProblem = null;
+  try { verifiedRoot(context); } catch (error) { rootProblem = `${error.message}${error.hint ? ` — ${error.hint}` : ""}`; }
   let release = null;
   try { release = await expectedRelease(context); } catch (error) { release = { error: error.message }; }
   const status = await serviceStatus({ system: context.system, unit, port: config.port, identity: release.identity ?? null, dataRootId: config.dataRootId, probe: context.probeService });
@@ -238,15 +255,20 @@ export async function runStatus(context, _parsed, configuredRoot) {
   }
   lines.push(`Data root: configured ${config.dataRootId ?? "(unknown)"}${status.health ? `, served ${status.health.database?.id ?? "(unknown)"}` : ""}`);
   if (channel) lines.push(`Default channel: ${channel.name} (${channel.id})`);
+  if (rootProblem) lines.push(`Data root problem: ${rootProblem}`);
   for (const problem of status.problems) lines.push(`Mismatch: ${problem}`);
-  if (status.unit.active !== "active" && status.answer.state === "running") lines.push(`Note: a Storybench server not managed by ${unit} answers on port ${config.port}`);
+  const expectedUnitFile = lifecyclePaths(context, config).unitFile;
+  if (status.unit.fragment && status.unit.fragment !== expectedUnitFile) lines.push(`Mismatch: systemd loads ${unit} from ${status.unit.fragment}, not from ${expectedUnitFile}`);
+  if (status.answer.state === "running" && status.unit.active !== "active") {
+    if (["activating", "deactivating", "reloading"].includes(status.unit.active)) lines.push(`Note: the service's own app is answering while the unit is ${status.unit.active}${status.unit.sub ? ` (${status.unit.sub})` : ""}`);
+    else lines.push(`Note: a Storybench server not managed by ${unit} answers on port ${config.port}`);
+  }
   if (status.state === "failed") lines.push("Hint: see `storybench logs`, then `storybench up`.");
   context.out(lines.join("\n"));
   return EXIT.OK;
 }
 
-export async function runLogs(context, { options }, configuredRoot) {
-  configuredRoot(context);
+export async function runLogs(context, { options }) {
   const unit = unitName(context.env);
   const child = context.system.journal(unit, { follow: Boolean(options.follow) });
   const code = await new Promise((resolve) => { child.on("close", (value) => resolve(value ?? 0)); child.on("error", () => resolve(1)); });
