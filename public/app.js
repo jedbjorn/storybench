@@ -3,7 +3,8 @@ import { LibraryWorkspace, episodeNavigatorHTML, uploadLibraryFile } from "/libr
 import { attachMediaToCard, categoryForCardMedia, duplicateCard, setCardType } from "/card-workspace.js";
 import { linkReference, referencePanelHTML, unlinkReference } from "/reference-workspace.js";
 import { ChatWorkspace } from "/chat-workspace.js";
-import { jobsForOutputView, refreshJobStatus, renderJobList } from "/job-status.js";
+import { formatBytes, jobsForOutputView, refreshJobStatus, releasePlayer, renderJobList } from "/job-status.js";
+import { cleanupRowsHTML, selectedTotal } from "/draft-cleanup.js";
 
 const $ = (s) => document.querySelector(s);
 let state = { episodes: [], assets: [], jobs: [] },
@@ -625,12 +626,84 @@ async function renderJob(kind) {
 }
 $("#preview").onclick = () => renderJob("draft");
 $("#export").onclick = () => renderJob("final");
+function releaseOutputPlayers(ids) {
+  for (const id of ids) releasePlayer(document.querySelector(`[data-jobs-list] [data-job-id="${CSS.escape(id)}"] video`));
+}
+function summarizeDeletion(report) {
+  const parts = [`${report.deleted} deleted`, `${formatBytes(report.bytesReclaimed)} reclaimed`];
+  if (report.failed) parts.push(`${report.failed} failed`);
+  if (report.refused) parts.push(`${report.refused} not deleted`);
+  return parts.join(" · ");
+}
+async function deleteOutputs(outputs) {
+  const target = episode.id;
+  releaseOutputPlayers(outputs.map((output) => output.id));
+  const report = await api(`/api/episodes/${target}/outputs/delete`, { method: "POST", body: JSON.stringify({ outputs }) });
+  if (episode?.id === target) await load(target);
+  return report;
+}
 document.querySelectorAll("[data-jobs-list]").forEach((list) => list.onclick = async (event) => {
+  const move = event.target.closest("[data-move-to-drafts]");
+  const remove = event.target.closest("[data-delete-output]");
+  if ((move || remove) && episode) {
+    try {
+      if (move) {
+        await api(`/api/episodes/${episode.id}/outputs/${move.dataset.moveToDrafts}/move-to-drafts`, { method: "POST", body: JSON.stringify({ expectedRevision: Number(move.dataset.revision) }) });
+        await load(episode.id);
+        toast("Moved to Drafts. The video and its history are unchanged.");
+      } else {
+        if (!confirm("Delete this draft render? The file is removed; its history stays.")) return;
+        const report = await deleteOutputs([{ id: remove.dataset.deleteOutput, expectedRevision: Number(remove.dataset.revision) }]);
+        const [result] = report.results;
+        toast(result?.status === "deleted" || result?.status === "absent" ? summarizeDeletion(report) : `Not deleted: ${result?.reason || "unknown reason"}`);
+      }
+    } catch (error) { toast(error.message); await load(episode.id); }
+    return;
+  }
   const id = event.target.closest("[data-cancel-job]")?.dataset.cancelJob;
   if (!id || !episode) return;
   try { await api(`/api/episodes/${episode.id}/jobs/${id}/cancel`, { method: "POST", body: "{}" }); await load(episode.id); }
   catch (error) { toast(error.message); }
 });
+let cleanupRows = [], cleanupSelected = new Set(), cleanupOutcomes = new Map();
+function renderCleanup() {
+  $("#draftCleanupRows").innerHTML = cleanupRowsHTML(cleanupRows, cleanupSelected, cleanupOutcomes);
+  $("#draftCleanupTotal").textContent = `${formatBytes(selectedTotal(cleanupRows, cleanupSelected))} (${cleanupSelected.size} selected)`;
+  $("#draftCleanupSubmit").disabled = !cleanupSelected.size;
+}
+async function refreshCleanup() {
+  cleanupRows = await api(`/api/episodes/${episode.id}/outputs/cleanup`);
+  const present = new Set(cleanupRows.filter((row) => row.eligible).map((row) => row.id));
+  cleanupSelected = new Set([...cleanupSelected].filter((id) => present.has(id)));
+  renderCleanup();
+}
+$("#openDraftCleanup").onclick = async () => {
+  if (!episode) return;
+  cleanupSelected = new Set(); cleanupOutcomes = new Map(); $("#draftCleanupSummary").textContent = "";
+  try { await refreshCleanup(); $("#draftCleanupModal").showModal(); } catch (error) { toast(error.message); }
+};
+document.querySelectorAll("[data-cleanup-close]").forEach((button) => button.onclick = () => $("#draftCleanupModal").close());
+$("#draftCleanupRows").onchange = (event) => {
+  const id = event.target.dataset.cleanupSelect;
+  if (!id) return;
+  if (event.target.checked) cleanupSelected.add(id); else cleanupSelected.delete(id);
+  renderCleanup();
+};
+$("#draftCleanupForm").onsubmit = async (event) => {
+  event.preventDefault();
+  if (!episode || !cleanupSelected.size) return;
+  const outputs = cleanupRows.filter((row) => cleanupSelected.has(row.id)).map((row) => ({ id: row.id, expectedRevision: row.recordRevision }));
+  $("#draftCleanupSubmit").disabled = true;
+  try {
+    const report = await deleteOutputs(outputs);
+    cleanupOutcomes = new Map(report.results.map((result) => [result.id, result]));
+    // Successful items leave the list; failed or refused ones stay selected for a retry.
+    const retained = new Set(report.results.filter((result) => !["deleted", "absent", "alreadyDeleted"].includes(result.status)).map((result) => result.id));
+    cleanupSelected = new Set([...cleanupSelected].filter((id) => retained.has(id)));
+    $("#draftCleanupSummary").textContent = summarizeDeletion(report);
+    await refreshCleanup();
+  } catch (error) { $("#draftCleanupSummary").textContent = error.message; renderCleanup(); }
+};
 $("#openGraphic").onclick = () => {
   if (!episode) return;
   const form = $("#graphicForm");
