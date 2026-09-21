@@ -119,13 +119,14 @@ test("container templates keep Docker control, the database and CLI homes out", 
   assert.match(app, /--data-root \/storybench\/data/);
   assert.doesNotMatch(app, /docker\.sock|--privileged/);
   const request = validateControlRequest(start);
-  assert.deepEqual(PROJECT_ROOTS, ["channels", "episodes", "media"]);
-  const args = workerRunArgs(config, request, { presentRoots: ["channels", "media", "branding"], credentialFile: "/run/user/1000/sb/credentials/req-1/auth.json" });
+  assert.deepEqual(PROJECT_ROOTS, ["channels", "episodes", "media", "branding"]);
+  const args = workerRunArgs(config, request, { presentRoots: ["channels", "media", "branding", "imports", "cache"], credentialFile: "/run/user/1000/sb/credentials/req-1/auth.json" });
   const joined = args.join(" ");
   const mounts = args.filter((_, i) => args[i - 1] === "--mount");
   assert.doesNotMatch(joined, /docker\.sock|--privileged|storybench\.sqlite|\.codex[/ ]|\.claude[/ ]/);
   assert.ok(!mounts.some((m) => m.includes("source=/srv/sb/data,")), "data root itself is not mounted");
-  assert.ok(!mounts.some((m) => m.includes("/branding")), "only project roots are mounted");
+  assert.ok(mounts.includes("type=bind,source=/srv/sb/data/branding,target=/storybench/data/branding,readonly"), "legacy branding is read-only project material");
+  assert.ok(!mounts.some((m) => m.includes("/imports") || m.includes("/cache")), "imports (app-only staging) and cache are never mounted");
   assert.ok(mounts.includes("type=bind,source=/srv/sb/data/channels,target=/storybench/data/channels,readonly"));
   assert.ok(mounts.includes("type=bind,source=/srv/sb/data/media,target=/storybench/data/media,readonly"));
   assert.ok(mounts.includes("type=bind,source=/srv/sb/data/channels/ch-a/episodes/ep-1/work,target=/storybench/data/channels/ch-a/episodes/ep-1/work"));

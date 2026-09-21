@@ -78,7 +78,7 @@ async function prepareData(images) {
   await mkdir(stateRoot, { recursive: true });
   // Initialize the disposable data root offline with the app image's shared services.
   const seedOut = await run("docker", ["run", "--rm", "--network", "none", "--user", "0:0", "--cap-drop", "ALL",
-    "--mount", `type=bind,source=${dataRoot},target=/storybench/data`, images.app, "node", "src/runtime/slice-proof-driver.js", JSON.stringify({ phase: "seed" })]);
+    "--mount", `type=bind,source=${dataRoot},target=/storybench/data`, ...DRIVER_MOUNT, images.app, "node", "src/runtime/slice-proof-driver.js", JSON.stringify({ phase: "seed" })]);
   const seed = JSON.parse(seedOut.stdout.trim().split("\n").pop());
   await save("seed.json", seed);
   const [a, b] = seed.episodes;
@@ -147,7 +147,13 @@ async function startHost(images) {
 }
 
 const appName = () => `storybench-${installId}-app`;
+// The proof driver is excluded from release images; it is supplied only to proof containers.
+const DRIVER = path.join(repo, "src/runtime/slice-proof-driver.js");
+const DRIVER_MOUNT = ["--mount", `type=bind,source=${DRIVER},target=/opt/storybench/app/src/runtime/slice-proof-driver.js,readonly`];
+let driverCopiedTo = null;
 async function driver(spec, { timeout = 900_000 } = {}) {
+  const appId = (await run("docker", ["inspect", appName(), "--format", "{{.Id}}"], { allowFail: true })).stdout.trim();
+  if (appId && driverCopiedTo !== appId) { await run("docker", ["cp", DRIVER, `${appName()}:/opt/storybench/app/src/runtime/slice-proof-driver.js`]); driverCopiedTo = appId; }
   const out = await run("docker", ["exec", appName(), "node", "src/runtime/slice-proof-driver.js", JSON.stringify(spec)], { allowFail: true, timeout });
   try { return JSON.parse(out.stdout.trim().split("\n").pop()); }
   catch { return { fatal: `driver output unparseable: ${out.stdout.slice(-2000)} ${out.stderr.slice(-2000)}` }; }

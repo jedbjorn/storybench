@@ -43,6 +43,19 @@ export class WorkerCodexConnection extends CodexConnection {
     } catch (error) { this.startingEvents = null; throw error; }
   }
 
+  // Resume the exact native thread; if the harness cannot resume it in this worker (the
+  // record is absent or belongs to another workspace path), start a fresh native segment
+  // and expose the transition instead of silently dropping or relabelling history.
+  async resumeThread(threadId) {
+    try { return await super.resumeThread(threadId); }
+    catch (error) {
+      if (!["CODEX_SESSION_LOST", "CODEX_SESSION_MISMATCH", "CODEX_PROTOCOL_ERROR"].includes(error.code)) throw error;
+      const fresh = await this.startThread();
+      this.segmentTransition = { previousThreadId: threadId, threadId: fresh, reason: error.code, detail: String(error.message).slice(0, 300) };
+      return fresh;
+    }
+  }
+
   listSkills() { return this.request("skills/list", { cwds: [this.cwd], forceReload: true }); }
 }
 

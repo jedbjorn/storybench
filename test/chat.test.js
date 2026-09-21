@@ -80,7 +80,7 @@ test('interrupt targets exact turn and restart never replays an active prompt', 
   store.db.prepare("UPDATE conversations SET state='running',active_turn_id='lost_turn' WHERE episode_id=?").run(episode.id);
   chat = createChatService({ store, codexFactory: async () => { throw new Error('must not launch'); } });
   const recovered = chat.get(episode.id);
-  assert.equal(recovered.state, 'error');
+  assert.equal(recovered.state, 'interrupted');
   assert.match(recovered.error, /not replayed/i);
   await chat.close(); store.close(); rmSync(root, { recursive: true, force: true });
 });

@@ -2,7 +2,8 @@
 // containers. Pure functions from validated config + request to `docker` argv, so the
 // mount contract is reviewable and unit-tested without Docker.
 import path from "node:path";
-import { RuntimeError, assertId, assertHarness, isInside } from "./validate.js";
+import { RuntimeError, assertId, assertHarness, assertModel, isInside } from "./validate.js";
+import { releaseIdentity, validateManifest } from "./manifest.js";
 
 // Stable in-container paths. The app and the worker see project files at the same
 // paths, so a path the agent reports is a path the app can validate.
@@ -16,10 +17,11 @@ export const HARNESS_SOCKET = `${WORKER_REQUEST_MOUNT}/worker/harness.sock`;
 export const BRIDGE_SOCKET_NAME = "bridge.sock";
 
 // Top-level data-root entries that are project material: channel-owned trees plus the
-// legacy adopted-episode and legacy media roots. Everything else in the data root
-// (storybench.sqlite and its sidecars, backups, cache, imports) is never mounted into
-// workers, and the data root itself is not mounted.
-export const PROJECT_ROOTS = Object.freeze(["channels", "episodes", "media"]);
+// legacy adopted-episode, legacy media and legacy branding roots (read-only reference
+// material for older projects). Everything else in the data root (storybench.sqlite and
+// its sidecars, backups, cache, imports — the app-only staging area) is never mounted
+// into workers, and the data root itself is not mounted.
+export const PROJECT_ROOTS = Object.freeze(["channels", "episodes", "media", "branding"]);
 
 export const LABEL = Object.freeze({
   install: "io.storybench.install",
@@ -50,11 +52,21 @@ export function validateHostConfig(input) {
     port: Number(input.port),
     images: {},
     credentials: {},
+    manifest: null,
+    codexModel: input.codexModel == null ? null : assertModel(input.codexModel),
     healthTimeoutMs: Number(input.healthTimeoutMs ?? 30_000),
+    appStopTimeoutS: Number(input.appStopTimeoutS ?? 30),
   };
+  if (!Number.isInteger(config.appStopTimeoutS) || config.appStopTimeoutS < 1 || config.appStopTimeoutS > 300) throw new RuntimeError("INVALID_CONFIG", "appStopTimeoutS must be 1-300");
   if (!Number.isInteger(config.port) || config.port < 1024 || config.port > 65535) throw new RuntimeError("INVALID_CONFIG", "port must be 1024-65535");
+  // A release manifest is the image identity; bare `images` are accepted for development only.
+  if (input.manifest) {
+    try { config.manifest = validateManifest(input.manifest); }
+    catch (error) { throw new RuntimeError("INVALID_CONFIG", error.message); }
+    if (input.images) throw new RuntimeError("INVALID_CONFIG", "Give either a release manifest or images, not both");
+  }
   for (const role of ["app", "worker"]) {
-    const image = input.images?.[role];
+    const image = config.manifest ? config.manifest.images[role].id : input.images?.[role];
     if (typeof image !== "string" || !IMAGE_ID.test(image)) throw new RuntimeError("INVALID_CONFIG", `images.${role} must be an exact sha256 image ID`);
     config.images[role] = image;
   }
@@ -101,6 +113,8 @@ export function appRunArgs(config) {
     "--env", "STORYBENCH_BIND_HOST=0.0.0.0",
     "--env", `STORYBENCH_RUNTIME_CONTROL=${APP_CONTROL_MOUNT}/${CONTROL_SOCKET_NAME}`,
     "--env", `STORYBENCH_RUNTIME_REQUESTS=${APP_REQUESTS_MOUNT}`,
+    ...(config.manifest ? ["--env", `STORYBENCH_RELEASE=${JSON.stringify(releaseIdentity(config.manifest))}`] : []),
+    ...(config.codexModel ? ["--env", `STORYBENCH_CODEX_MODEL=${config.codexModel}`] : []),
     ...bind(config.dataRoot, DATA_MOUNT),
     ...bind(p.controlDir, APP_CONTROL_MOUNT),
     ...bind(p.requestsDir, APP_REQUESTS_MOUNT),

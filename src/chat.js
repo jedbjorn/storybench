@@ -41,8 +41,10 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
   const db = store.db;
   installSchema(db);
   const restartStamp = now();
-  db.prepare("UPDATE conversation_messages SET state='failed',updated_at=? WHERE state IN ('queued','running','streaming')").run(restartStamp);
-  db.prepare(`UPDATE conversations SET state='error',active_turn_id=NULL,error='The previous Codex turn was interrupted by an application restart. It was not replayed; send a new message to continue the saved thread.',updated_at=? WHERE state IN ('queued','running','interrupting')`).run(restartStamp);
+  // Unfinished turns from a previous process (crash, restart, reconciled worker) are marked
+  // interrupted and never replayed.
+  db.prepare("UPDATE conversation_messages SET state='interrupted',updated_at=? WHERE state IN ('queued','running','streaming')").run(restartStamp);
+  db.prepare(`UPDATE conversations SET state='interrupted',active_turn_id=NULL,error='The previous Codex turn was interrupted by an application restart. It was not replayed; send a new message to continue the saved thread.',updated_at=? WHERE state IN ('queued','running','interrupting')`).run(restartStamp);
 
   const active = new Map(), tasks = new Set(), listeners = new Map();
   let closing = false;
@@ -103,6 +105,14 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
   const librarySummary = (episodeId) => store.listEpisodeLibrary(episodeId).map((item) => ({ id: item.id, revision: item.revision, label: item.label,
     category: item.category, sourceKind: item.sourceKind, extractionStatus: item.extractionStatus,
     asset: item.asset && { id: item.asset.id, name: item.asset.name, kind: item.asset.kind, duration: item.asset.duration, width: item.asset.width, height: item.asset.height } }));
+  // Bounded, labelled excerpt of the visible transcript for a fresh native segment.
+  const transcriptExcerpt = (conversationId, beforeMessageId, { messages = 12, chars = 6000 } = {}) => {
+    const rows = db.prepare("SELECT role,text FROM conversation_messages WHERE conversation_id=? AND id<? AND text<>'' ORDER BY id DESC LIMIT ?").all(conversationId, beforeMessageId, messages).reverse();
+    const total = Number(db.prepare("SELECT COUNT(*) n FROM conversation_messages WHERE conversation_id=? AND id<?").get(conversationId, beforeMessageId).n);
+    let text = rows.map((message) => `${message.role}: ${message.text}`).join("\n");
+    if (text.length > chars) text = `…${text.slice(-chars)}`;
+    return { text, included: rows.length, omitted: Math.max(0, total - rows.length) };
+  };
   const bootText = (value) => { const currentEpisode = episode(value.episode_id), story = store.getStory(value.episode_id);
     return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires the user's one-use Storybench authorization.`; };
   const tools = (value, origin) => ({
@@ -156,13 +166,22 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       }
     };
     try {
-      connection = await codexFactory({ cwd: store.workspace, model, tools: tools(value, activity), signal: controller.signal, onEvent: (event) => dispatch ? consume(event) : pending.push(event), onError: (cause) => { if (dispatch) rejectDone(cause); } });
+      connection = await codexFactory({ cwd: store.workspace, model, tools: tools(value, activity), signal: controller.signal,
+        episodeId: value.episode_id, conversationId: value.id, requestId: `request_${randomUUID()}`, onEvent: (event) => dispatch ? consume(event) : pending.push(event), onError: (cause) => { if (dispatch) rejectDone(cause); } });
       if (aborted) throw error("Chat stopped; the prompt was not replayed", 409);
       activity.connection = connection;
       const threadId = value.thread_id ? await connection.resumeThread(value.thread_id) : await connection.startThread();
       if (aborted || active.get(value.episode_id) !== activity) throw error("Chat stopped; the prompt was not replayed", 409);
       setState(value, "queued", { threadId });
-      const returned = await connection.startTurn(threadId, `${bootText(value)}\n\nUser request:\n${text}`);
+      let segmentContext = "";
+      if (connection.segmentTransition) {
+        // The native session could not be resumed here: a new native segment continues the
+        // same visible conversation. The previous thread ID stays recorded in the transcript.
+        const excerpt = transcriptExcerpt(value.id, messageId);
+        emit(value, "segment.started", { previousThreadId: connection.segmentTransition.previousThreadId, threadId, reason: connection.segmentTransition.reason, includedMessages: excerpt.included, omittedMessages: excerpt.omitted });
+        if (excerpt.text) segmentContext = `\n\nEarlier visible conversation (context only — do not re-execute; ${excerpt.omitted} older messages omitted):\n${excerpt.text}`;
+      }
+      const returned = await connection.startTurn(threadId, `${bootText(value)}${segmentContext}\n\nUser request:\n${text}`);
       if (aborted || active.get(value.episode_id) !== activity) throw error("Chat stopped; the prompt was not replayed", 409);
       if (turnId && turnId !== returned) throw new Error("Codex returned inconsistent turn identities");
       turnId = returned; activity.threadId = threadId; activity.turnId = turnId;
@@ -186,7 +205,19 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     const value = row(episodeId, id), activity = active.get(episodeId);
     if (!activity || activity.conversationId !== id || !["queued", "running"].includes(value.state)) throw error("This conversation has no active Codex turn", 409);
     if (!activity.connection || !value.thread_id || !value.active_turn_id) { activity.abort(); db.prepare("UPDATE conversation_messages SET state='interrupted',updated_at=? WHERE conversation_id=? AND state IN ('queued','running','streaming')").run(now(), id); setState(value, "interrupted"); return project(episodeId, id); }
-    setState(value, "interrupting", { threadId: value.thread_id, turnId: value.active_turn_id }); await activity.connection.interrupt(value.thread_id, value.active_turn_id); return project(episodeId, id);
+    setState(value, "interrupting", { threadId: value.thread_id, turnId: value.active_turn_id });
+    if (activity.connection.workerRequest) {
+      // Worker-backed turn: if the harness has not ended the turn shortly, remove its worker,
+      // which terminates every descendant command.
+      const force = setTimeout(() => {
+        if (active.get(episodeId) !== activity) return;
+        activity.abort(); activity.connection.close();
+        db.prepare("UPDATE conversation_messages SET state='interrupted',updated_at=? WHERE conversation_id=? AND state IN ('queued','running','streaming')").run(now(), id);
+        setState(value, "interrupted", { detail: "Stopped; the turn's worker and its commands were terminated. The prompt was not replayed." });
+      }, 10_000);
+      force.unref?.();
+    }
+    await activity.connection.interrupt(value.thread_id, value.active_turn_id); return project(episodeId, id);
   };
   const update = (episodeId, id, patch) => { const value = row(episodeId, id), name = patch.name === undefined ? value.name : String(patch.name).trim(), draft = patch.draft === undefined ? value.draft : String(patch.draft); if (!name) throw error("Conversation name is required"); db.prepare("UPDATE conversations SET name=?,draft=?,updated_at=? WHERE id=?").run(name, draft, now(), id); return project(episodeId, id); };
   return {
@@ -196,7 +227,16 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     interrupt: (episodeId, id) => interrupt(episodeId, id || first(episodeId).id),
     getLegacy: (episodeId) => project(episodeId, first(episodeId).id), sendLegacy: (episodeId, text) => send(episodeId, first(episodeId).id, text), interruptLegacy: (episodeId) => interrupt(episodeId, first(episodeId).id),
     subscribe(episodeId, listener) { episode(episodeId); const set = listeners.get(episodeId) || new Set(); set.add(listener); listeners.set(episodeId, set); return () => { set.delete(listener); if (!set.size) listeners.delete(episodeId); }; },
-    async close() { closing = true; for (const item of active.values()) { item.connection?.close(); item.abort(); } await Promise.allSettled([...tasks]); active.clear(); }
+    async close() {
+      closing = true;
+      const stops = [];
+      for (const [episodeId, item] of active) {
+        const value = db.isOpen ? db.prepare("SELECT * FROM conversations WHERE id=? AND episode_id=?").get(item.conversationId, episodeId) : null;
+        if (value) { db.prepare("UPDATE conversation_messages SET state='interrupted',updated_at=? WHERE conversation_id=? AND state IN ('queued','running','streaming')").run(now(), value.id); setState(value, "interrupted", { detail: "Stopped because Storybench shut down; the prompt was not replayed." }); }
+        stops.push(item.connection?.close()); item.abort();
+      }
+      await Promise.allSettled([...tasks, ...stops]); active.clear();
+    }
   };
 }
 

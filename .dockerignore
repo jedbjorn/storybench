@@ -5,3 +5,5 @@
 !src/
 !public/
 !agent/
+# Proof-only tooling never ships in release images.
+src/runtime/slice-proof-driver.js

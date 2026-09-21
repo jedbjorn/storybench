@@ -272,7 +272,7 @@ test("story HTTP contract returns conflicts, bounds source, and keeps unknown ro
   assert.equal((await response.json()).current.storyRevision, accepted.storyRevision);
   assert.equal((await request("x".repeat(1024 * 1024 + 1), accepted.storyRevision)).status, 413);
   assert.equal((await fetch(`${base}/api/episodes/missing/story`)).status, 404);
-  assert.equal((await fetch(`${base}/api/health`)).status, 404);
+  assert.equal((await fetch(`${base}/api/not-a-route`)).status, 404);
   assert.equal((await fetch(`${base}/favicon.ico`)).status, 404);
   assert.equal((await fetch(`${base}/api/state`)).status, 200);
 });
