@@ -16,7 +16,7 @@ async function launch() {
   catch { return existsSync("/usr/bin/chromium") ? chromium.launch({ executablePath: "/usr/bin/chromium" }).catch(() => null) : null; }
 }
 
-test("outputs UI moves a final to Drafts, deletes one draft and cleans up a selection in a real browser", { timeout: 180_000 }, async (t) => {
+test("outputs UI moves a final to Drafts, deletes one draft and cleans up a selection in a real browser", { timeout: 120_000 }, async (t) => {
   const browser = await launch();
   if (!browser) return t.skip("No launchable Chromium on this seat");
   t.after(() => browser.close());
@@ -55,14 +55,32 @@ test("outputs UI moves a final to Drafts, deletes one draft and cleans up a sele
   if (evidence) mkdirSync(evidence, { recursive: true });
   const shot = (page, name) => evidence ? page.screenshot({ path: path.join(evidence, `${name}.png`), fullPage: true }) : null;
   const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
-  page.setDefaultTimeout(60_000);
-  const errors = [];
+  page.setDefaultTimeout(20_000);
+  const errors = [], consoleLines = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => consoleLines.push(`${message.type()}: ${message.text()}`));
+  // On any failure, dump what the page and the store actually looked like so CI failures are diagnosable.
+  const diagnose = async (stepName, error) => {
+    const dom = await page.evaluate(() => ({
+      url: location.href,
+      drafts: document.querySelector("#draftJobs")?.outerHTML.slice(0, 4000),
+      finals: document.querySelector("#finalJobs")?.outerHTML.slice(0, 2000),
+      cleanup: document.querySelector("#draftCleanupModal")?.outerHTML.slice(0, 3000),
+      videos: [...document.querySelectorAll("video")].map((video) => ({ src: video.getAttribute("src"), readyState: video.readyState, networkState: video.networkState, error: video.error?.code ?? null })),
+      toast: document.querySelector("#toast")?.textContent,
+    })).catch((cause) => ({ unavailable: cause.message }));
+    const jobs = store.listJobs(episode.id).map(({ id, state, designation, recordRevision, deletionState, deletionNote, outputPath }) => ({ id, state, designation, recordRevision, deletionState, deletionNote, outputPath }));
+    const dump = { step: stepName, error: error.message, browser: browser.version(), dom, jobs, pageErrors: errors, console: consoleLines.slice(-50) };
+    if (evidence) await import("node:fs/promises").then(({ writeFile }) => writeFile(path.join(evidence, "failure-diagnostics.json"), JSON.stringify(dump, null, 2)));
+    throw new Error(`Step "${stepName}" failed: ${error.message}\n--- diagnostics ---\n${JSON.stringify(dump, null, 2)}`, { cause: error });
+  };
+  const step = async (name, fn) => { try { return await fn(); } catch (error) { return diagnose(name, error); } };
   page.on("dialog", (dialog) => dialog.accept());
   await page.goto(`http://127.0.0.1:${PORT}/?channel=${channel.id}`);
   await page.click(`#episodes [data-id="${episode.id}"] [data-episode-select]`);
 
   // Move to Drafts from the Final view.
+  await step("move to drafts", async () => {
   await page.click('.tabs [data-tab="final"]');
   await page.waitForSelector('#finalJobs [data-move-to-drafts="job_final"]');
   const finalBytes = statSync(path.join(root, finalPath)).size;
@@ -74,17 +92,27 @@ test("outputs UI moves a final to Drafts, deletes one draft and cleans up a sele
   await page.waitForSelector('#draftJobs [data-job-id="job_final"] video[src="/api/jobs/job_final/file"]');
   assert.match(await page.textContent('#draftJobs [data-job-id="job_final"]'), /Draft \(rendered as Final\)/);
   await shot(page, "1-moved-final-in-drafts");
+  });
 
-  // Individual Delete releases only that row's player; another player keeps working.
-  await page.waitForFunction(() => document.querySelector('#draftJobs [data-job-id="job_draft_two"] video')?.readyState >= 1);
+  // Individual Delete releases only that row's player; another player keeps working. This is asserted on
+  // DOM identity/attributes and HTTP, not on media decoding (readyState), which depends on the browser's codecs.
+  await step("individual delete", async () => {
+  await page.waitForSelector('#draftJobs [data-job-id="job_draft_two"] video[src="/api/jobs/job_draft_two/file"]');
+  await page.$eval('#draftJobs [data-job-id="job_draft_two"] video', (element) => { element.dataset.probe = "kept"; });
   await page.click('#draftJobs [data-delete-output="job_draft_one"]');
-  await page.waitForFunction(() => /deleted/.test(document.querySelector('#draftJobs [data-job-id="job_draft_one"]')?.textContent || ""));
-  assert.equal(await page.$('#draftJobs [data-job-id="job_draft_one"] video'), null, "the deleted draft has no player");
-  assert.equal(await page.$eval('#draftJobs [data-job-id="job_draft_two"] video', (element) => element.isConnected && element.getAttribute("src")), "/api/jobs/job_draft_two/file");
+  // Deterministic end state: the server record is deleted and the row re-rendered from it.
+  await page.waitForSelector('#draftJobs [data-job-id="job_draft_one"] [data-job-status]:has-text("deleted")');
   assert.equal(store.getJob("job_draft_one").deletionState, "deleted");
+  assert.equal(await page.$('#draftJobs [data-job-id="job_draft_one"] video'), null, "the deleted draft has no player");
+  const kept = await page.$eval('#draftJobs [data-job-id="job_draft_two"] video', async (element) => ({ probe: element.dataset.probe, src: element.getAttribute("src"),
+    status: (await fetch(element.getAttribute("src"), { headers: { range: "bytes=0-1" } })).status }));
+  assert.deepEqual(kept, { probe: "kept", src: "/api/jobs/job_draft_two/file", status: 206 }, "the other player is the same element, still attached to a served file");
+  assert.equal(await page.evaluate(() => fetch("/api/jobs/job_draft_one/file").then((response) => response.status)), 410);
   await shot(page, "2-individual-delete");
+  });
 
   // Clean up drafts: starts with nothing selected, shows blockers, totals the selection and deletes it in one submit.
+  await step("clean up drafts", async () => {
   await page.click("#openDraftCleanup");
   await page.waitForSelector("#draftCleanupModal[open] [data-cleanup-select]");
   assert.equal(await page.$$eval("#draftCleanupRows [data-cleanup-select]:checked", (items) => items.length), 0);
@@ -97,7 +125,7 @@ test("outputs UI moves a final to Drafts, deletes one draft and cleans up a sele
   assert.match(await page.textContent("#draftCleanupTotal"), /2 selected/);
   await shot(page, "3-cleanup-selection");
   await page.click("#draftCleanupSubmit");
-  await page.waitForFunction(() => /2 deleted/.test(document.querySelector("#draftCleanupSummary")?.textContent || ""));
+  await page.waitForSelector('#draftCleanupSummary:has-text("2 deleted")');
   assert.equal(await page.$('[data-cleanup-row="job_final"]'), null);
   assert.equal(existsSync(path.join(root, finalPath)), false);
   assert.equal(existsSync(path.join(root, "exports/legacy.mp4")), false);
@@ -108,4 +136,5 @@ test("outputs UI moves a final to Drafts, deletes one draft and cleans up a sele
   await shot(page, "4-cleanup-result");
   assert.equal((await fetch(`http://127.0.0.1:${PORT}/api/jobs/job_final/file`)).status, 410);
   assert.deepEqual(errors, []);
+  });
 });
