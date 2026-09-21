@@ -11,13 +11,37 @@ import { connectHarness, controlRequest } from "./channel.js";
 import { ClaudeStreamSession, WorkerCodexConnection } from "./harnesses.js";
 import { BRIDGE_SOCKET_NAME, DATA_MOUNT, WORKER_REQUEST_MOUNT } from "./layout.js";
 import { createScopedTools } from "./tools.js";
-import { assertModel, assertSessionId, parseEpisodeDir } from "./validate.js";
+import { RuntimeError, assertModel, assertSessionId, parseEpisodeDir } from "./validate.js";
 
 export const MCP_BRIDGE_SCRIPT = "/opt/storybench/app/src/runtime/worker/mcp-bridge.mjs";
 
+// Episode directory -> requestId holding its boot/skill renders. A render never replaces
+// the instructions of another request that is still active on the same episode.
+const activeRenders = new Map();
+export const activeRenderHolder = (episodeDirectory) => activeRenders.get(episodeDirectory) ?? null;
+
+// Claim an episode's renders for one request; returns the release function.
+export function claimEpisodeRenders(directory, requestId) {
+  const holder = activeRenders.get(directory);
+  if (holder && holder !== requestId)
+    throw new RuntimeError("EPISODE_BUSY", "Another request is active for this episode; its instructions are not replaced mid-turn", { status: 409 });
+  activeRenders.set(directory, requestId);
+  return () => { if (activeRenders.get(directory) === requestId) activeRenders.delete(directory); };
+}
+
 // store: the app's open Store. All paths come from its path API (episodeLocation,
 // episodeWorkDirectory), for both channel-owned and legacy adopted episode layouts.
-export async function openWorkerRequest({
+export async function openWorkerRequest(options) {
+  const release = claimEpisodeRenders(options.store.episodeLocation(options.episodeId).directory, options.requestId);
+  let request;
+  try { request = await openHeldRequest(options); }
+  catch (error) { release(); throw error; }
+  const stop = request.stop;
+  request.stop = async () => { try { return await stop(); } finally { release(); } };
+  return request;
+}
+
+async function openHeldRequest({
   controlSocket, store, requestId, conversationId, harness, segmentId, episodeId,
   bootContext = {}, templates, onToolCall = () => {}, wrapTools = (tools) => tools,
 }) {

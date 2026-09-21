@@ -13,7 +13,8 @@ import { createServer } from "node:net";
 import { chmod, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { docker, ensureNetwork, inspectContainer, listByLabels } from "./docker.js";
+import * as dockerCli from "./docker.js";
+import { RUNTIME_PROTOCOL, checkCompatibility, manifestId, validateManifest } from "./manifest.js";
 import { CredentialLink, CREDENTIAL_FILES, harnessAvailability, shouldLogSyncAction } from "./credentials.js";
 import {
   APP_REQUESTS_MOUNT, BRIDGE_SOCKET_NAME, DATA_MOUNT, LABEL, PROJECT_ROOTS,
@@ -23,12 +24,17 @@ import { RuntimeError, resolveEpisodeDirectory, validateControlRequest } from ".
 
 const MAX_CONTROL_BYTES = 64 * 1024;
 
-export function createHost(rawConfig, { log = (event) => console.log(JSON.stringify({ at: new Date().toISOString(), ...event })), syncIntervalMs = 2000 } = {}) {
+export function createHost(rawConfig, { log = (event) => console.log(JSON.stringify({ at: new Date().toISOString(), ...event })), syncIntervalMs = 2000, dockerApi = dockerCli } = {}) {
+  const { docker, ensureNetwork, inspectContainer, listByLabels } = dockerApi;
   const config = validateHostConfig(rawConfig);
+  if (config.manifest) {
+    const compatibility = checkCompatibility(config.manifest, { hostProtocol: RUNTIME_PROTOCOL });
+    if (!compatibility.compatible) throw new RuntimeError("INCOMPATIBLE_RELEASE", compatibility.problems.join("; "));
+  }
   const paths = hostPaths(config);
   const n = names(config.installId);
   const workers = new Map();
-  let server, syncTimer, appId, stopping = false;
+  let server, syncTimer, appId, stopped, stopping = false;
 
   async function presentRoots() {
     const present = [];
@@ -50,14 +56,25 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     throw new RuntimeError("STOP_FAILED", `Container ${id.slice(0, 12)} is still present after stop`, { status: 500 });
   }
 
-  async function reconcile() {
+  // Remove every container this installation owns (left by a crash or an unclean stop) and
+  // the per-request runtime state. Requests whose workers are removed here are unfinished;
+  // the restarted app marks them interrupted and never replays them.
+  async function reconcile({ reason = "start" } = {}) {
     const owned = await listByLabels({ [LABEL.install]: config.installId });
+    const removed = [];
     for (const id of owned) {
-      log({ event: "reconcile.remove", container: id.slice(0, 12) });
+      const info = await inspectContainer(id);
+      const labels = info?.Config?.Labels ?? {};
+      const entry = { container: id.slice(0, 12), role: labels[LABEL.role] ?? "unknown", requestId: labels[LABEL.request] ?? null, harness: labels[LABEL.harness] ?? null, state: info?.State?.Status ?? "absent" };
+      log({ event: "reconcile.remove", reason, ...entry });
       await removeContainer(id);
+      removed.push(entry);
     }
     await rm(paths.requestsDir, { recursive: true, force: true });
     await rm(path.join(config.runtimeRoot, "credentials"), { recursive: true, force: true });
+    const orphanRequests = removed.filter((entry) => entry.role === "worker").map((entry) => entry.requestId);
+    if (removed.length) log({ event: "reconcile.done", reason, removed: removed.length, orphanRequests });
+    return { removed, orphanRequests };
   }
 
   function statusOf(requestId, worker, info) {
@@ -135,7 +152,8 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
 
   async function handle(raw) {
     const request = validateControlRequest(raw);
-    if (stopping) throw new RuntimeError("STOPPING", "Storybench is shutting down", { status: 503 });
+    // While draining, the app may still stop and inspect its workers, but nothing new starts.
+    if (stopping && request.op === "worker.start") throw new RuntimeError("STOPPING", "Storybench is shutting down", { status: 503 });
     if (request.op === "harness.availability") return harnessAvailability(config.credentials);
     if (request.op === "worker.start") return startWorker(request);
     if (request.op === "worker.stop") return stopWorker(request.requestId);
@@ -176,9 +194,15 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     const deadline = Date.now() + config.healthTimeoutMs;
     while (Date.now() < deadline) {
       try {
-        const response = await fetch(`http://127.0.0.1:${config.port}/`, { signal: AbortSignal.timeout(2000) });
-        if (response.ok) return;
-      } catch { /* not ready */ }
+        const response = await fetch(`http://127.0.0.1:${config.port}/api/health`, { signal: AbortSignal.timeout(2000) });
+        if (response.ok) {
+          const health = await response.json();
+          // The app must report the exact release this host started.
+          if (config.manifest && health.release?.manifestId !== (config.manifest.id ?? manifestId(config.manifest)))
+            throw new RuntimeError("RELEASE_MISMATCH", "The app reports a different release than the host started", { status: 500 });
+          return health;
+        }
+      } catch (error) { if (error.code === "RELEASE_MISMATCH") throw error; }
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     throw new RuntimeError("APP_UNHEALTHY", `App did not become healthy on 127.0.0.1:${config.port}`, { status: 500 });
@@ -198,8 +222,8 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     await serveControl();
     appId = await docker(appRunArgs(config));
     log({ event: "app.started", container: appId.slice(0, 12), port: config.port });
-    await waitHealthy();
-    log({ event: "app.healthy", port: config.port });
+    const health = await waitHealthy();
+    log({ event: "app.healthy", port: config.port, release: health.release?.manifestId ?? null, schema: health.schema?.current ?? null, database: health.database?.id ?? null });
     syncTimer = setInterval(async () => {
       for (const worker of workers.values()) {
         const action = await worker.credential.sync().catch((error) => `error: ${error.message}`);
@@ -211,29 +235,47 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     return { appId };
   }
 
+  // Graceful stop: the app drains first (SIGTERM: it interrupts its active turns, which
+  // stop their workers through the still-open control channel, and cancels render jobs);
+  // then any remaining worker is removed with its descendants, and termination of every
+  // installation-owned container is confirmed.
   async function stop() {
-    if (stopping) return;
+    if (stopping) return stopped;
     stopping = true;
     clearInterval(syncTimer);
-    for (const requestId of [...workers.keys()]) await stopWorker(requestId).catch((error) => log({ event: "worker.stop.failed", requestId, error: error.message }));
-    if (appId) {
-      await docker(["stop", "--time", "15", appId]).catch(() => {});
-      await docker(["rm", "--force", appId]).catch(() => {});
-    }
-    await reconcile().catch(() => {});
-    await new Promise((resolve) => (server ? server.close(() => resolve()) : resolve()));
-    await rm(paths.controlSocket, { force: true });
-    for (const network of [n.appNetwork, n.workerNetwork]) await docker(["network", "rm", network]).catch(() => {});
-    log({ event: "host.stopped" });
+    stopped = (async () => {
+      log({ event: "host.stopping", activeWorkers: workers.size });
+      if (appId) {
+        await docker(["stop", "--time", String(config.appStopTimeoutS), appId], { timeout: (config.appStopTimeoutS + 30) * 1000 }).catch((error) => log({ event: "app.stop.failed", error: error.message }));
+        const info = await inspectContainer(appId).catch(() => null);
+        log({ event: "app.stopped", exitCode: info?.State?.ExitCode ?? null });
+        await docker(["rm", "--force", appId]).catch(() => {});
+      }
+      for (const requestId of [...workers.keys()]) await stopWorker(requestId).catch((error) => log({ event: "worker.stop.failed", requestId, error: error.message }));
+      await reconcile({ reason: "stop" }).catch((error) => log({ event: "reconcile.failed", error: error.message }));
+      const remaining = await listByLabels({ [LABEL.install]: config.installId }).catch(() => ["unknown"]);
+      await new Promise((resolve) => (server ? server.close(() => resolve()) : resolve()));
+      await rm(paths.controlDir, { recursive: true, force: true });
+      for (const network of [n.appNetwork, n.workerNetwork]) await docker(["network", "rm", network]).catch(() => {});
+      log({ event: "host.stopped", containersRemaining: remaining.length });
+      return { containersRemaining: remaining.length };
+    })();
+    return stopped;
   }
 
-  return { config, start, stop, handle, workers, get appId() { return appId; } };
+  return { config, start, stop, handle, reconcile, workers, get appId() { return appId; } };
 }
 
 async function main(argv) {
   const index = argv.indexOf("--config");
   if (index < 0 || !argv[index + 1]) throw new Error("Usage: host.js --config /absolute/config.json");
-  const host = createHost(JSON.parse(await readFile(argv[index + 1], "utf8")));
+  const config = JSON.parse(await readFile(argv[index + 1], "utf8"));
+  // `manifestPath` names the release manifest written by src/runtime/release.js.
+  if (typeof config.manifestPath === "string") {
+    config.manifest = validateManifest(JSON.parse(await readFile(config.manifestPath, "utf8")));
+    delete config.manifestPath;
+  }
+  const host = createHost(config);
   let exiting = false;
   const shutdown = async (code) => {
     if (exiting) return;
@@ -250,7 +292,7 @@ async function main(argv) {
     return;
   }
   // Exit (and let the service manager decide) if the app container dies unexpectedly.
-  docker(["wait", host.appId], { timeout: 0 }).then((code) => {
+  dockerCli.docker(["wait", host.appId], { timeout: 0 }).then((code) => {
     if (!exiting) { console.error(JSON.stringify({ event: "app.exited", code })); shutdown(1); }
   }, () => {});
 }
