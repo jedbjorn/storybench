@@ -95,7 +95,7 @@ test("new episodes start with the editable story template and mapped beats", (t)
   assert.deepEqual(story.sections.map((section) => section.title), ["Intro", "Beat", "Outro"]);
   assert.match(story.source, /# Overview[\s\S]*# Hook[\s\S]*# Sections/);
   assert.notEqual(story.source, STARTER_STORY, "registered section markers are inserted into the template");
-  assert.equal(readFileSync(path.join(root, "episodes", episode.id, "story.md"), "utf8"), story.source);
+  assert.equal(readFileSync(path.join(store.episodeDirectory(episode.id), "story.md"), "utf8"), story.source);
 });
 
 test("story sections keep stable identities, ignore fences, and retire mappings atomically", (t) => {
@@ -150,7 +150,7 @@ test("marker insertion cannot grow accepted source beyond the 1 MiB bound", (t) 
     (error) => error.statusCode === 413,
   );
   assert.deepEqual(store.getStory(episode.id), before);
-  assert.equal(readFileSync(path.join(root, "episodes", episode.id, "story.md"), "utf8"), before.source);
+  assert.equal(readFileSync(path.join(store.episodeDirectory(episode.id), "story.md"), "utf8"), before.source);
 });
 
 test("section parsing follows fence closers and Setext heading structure", (t) => {
@@ -178,7 +178,7 @@ test("publication failure exposes committed pending state and startup recovery p
   store.close();
   store = new Store(root);
   assert.equal(store.getStory(episode.id).publicationStatus, "published");
-  assert.equal(readFileSync(path.join(root, "episodes", episode.id, "story.md"), "utf8"), pending.source);
+  assert.equal(readFileSync(path.join(store.episodeDirectory(episode.id), "story.md"), "utf8"), pending.source);
   assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM story_history WHERE episode_id=?").get(episode.id).n, 2);
   assert.throws(() => store.saveStory(episode.id, 1, "retry"), /Stale/);
   store.close();
@@ -228,7 +228,7 @@ test("startup recognizes a committed file after a crash between rename and publi
   const episode = store.createEpisode();
   store.afterStoryRename = () => { throw new Error("crash after rename"); };
   assert.throws(() => store.saveStory(episode.id, 1, "renamed bytes"), (error) => error.statusCode === 503);
-  assert.equal(readFileSync(path.join(root, "episodes", episode.id, "story.md"), "utf8"), "renamed bytes");
+  assert.equal(readFileSync(path.join(store.episodeDirectory(episode.id), "story.md"), "utf8"), "renamed bytes");
   assert.equal(store.getStory(episode.id).publicationPending, true);
   store.close();
   store = new Store(root);
@@ -244,7 +244,7 @@ test("external story changes are preserved and never overwritten", (t) => {
   t.after(() => store.close());
   const episode = store.createEpisode();
   const saved = store.saveStory(episode.id, 1, "known");
-  const file = path.join(root, "episodes", episode.id, "story.md");
+  const file = path.join(store.episodeDirectory(episode.id), "story.md");
   writeFileSync(file, "unexpected");
   assert.throws(() => store.saveStory(episode.id, saved.storyRevision, "new committed"), (error) => Boolean(error.statusCode === 409 && error.conflictPath));
   assert.equal(readFileSync(file, "utf8"), "unexpected");
@@ -283,8 +283,9 @@ test("registered story paths reject legacy traversal and symlink escape", (t) =>
   const store = new Store(root);
   assert.throws(() => store.ensureEpisodeDirectories("../escape"), /Invalid registered/);
   const episode = store.createEpisode();
+  const directory = store.episodeDirectory(episode.id);
   store.close();
-  rmSync(path.join(root, "episodes", episode.id), { recursive: true, force: true });
-  symlinkSync(outside, path.join(root, "episodes", episode.id));
+  rmSync(directory, { recursive: true, force: true });
+  symlinkSync(outside, directory);
   assert.throws(() => new Store(root), /escapes the workspace/);
 });

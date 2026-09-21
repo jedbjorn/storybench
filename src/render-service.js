@@ -66,12 +66,19 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
     return store.createFinalAuthorization({ episodeId, renderRevision: snapshot.renderRevision, conversationId, requestId });
   }
 
-  function queueRender(job) {
+  // The destination (channel, episode and managed output folder) is fixed when work is dispatched and travels
+  // with the job; later navigation or default-channel changes cannot retarget it.
+  function captureDestination(episodeId, channelId, kind) {
+    const episode = store.assertEpisodeChannel(episodeId, channelId);
+    return { channelId: episode.channelId, episodeId: episode.id,
+      outputDirectory: path.relative(root, inside(root, store.episodeOutputDirectory(episode.id, kind))) };
+  }
+
+  function queueRender(job, destination) {
     worker.enqueue(job.id, async (signal) => {
       let current = store.saveJob({ ...job, state: "running" });
       try {
-        const folderName = job.outputClass === "final" ? "final" : "drafts";
-        const folder = inside(root, path.join(root, "episodes", job.episodeId, folderName));
+        const folder = inside(root, path.join(root, destination.outputDirectory));
         await mkdir(folder, { recursive: true });
         const outputPath = inside(folder, path.join(folder, `${job.id}.mp4`));
         const result = await renderCompositionImpl({
@@ -89,10 +96,12 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
     (error) => store.saveJob({ ...job, state: "failed", error: error.message || String(error), outputPath: null }));
   }
 
-  function enqueueRender({ episodeId, outputClass, expectedRenderRevision, finalGrantId = null, conversationId = null, requestId = null }) {
+  function enqueueRender({ episodeId, channelId = null, outputClass, expectedRenderRevision, finalGrantId = null, conversationId = null, requestId = null }) {
     worker.assertOpen();
     if (!["draft", "final"].includes(outputClass)) throw new StoreError("outputClass must be draft or final");
-    const snapshot = getRenderSnapshot(episodeId);
+    const destination = captureDestination(episodeId, channelId, outputClass === "final" ? "final" : "drafts");
+    const rendered = getRenderSnapshot(episodeId);
+    const snapshot = { ...rendered, destination };
     if (snapshot.renderRevision !== expectedRenderRevision)
       throw new StoreError("Render inputs changed; validate the current cut and try again", 409, { currentRenderRevision: snapshot.renderRevision });
     const createdAt = now();
@@ -101,7 +110,7 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
     const job = outputClass === "final"
       ? store.saveAuthorizedFinalJob(finalGrantId, { episodeId, renderRevision: snapshot.renderRevision, conversationId, requestId }, value)
       : store.saveJob(value);
-    queueRender(job);
+    queueRender(job, destination);
     return job;
   }
 
@@ -139,9 +148,10 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
     return store.updateGraphicRecipe(episodeId, recipeId, expectedRevision, { ...input, recipe: normalized }, actor);
   }
 
-  function enqueueGraphic({ episodeId, recipeId, expectedRecipeRevision }) {
+  function enqueueGraphic({ episodeId, channelId = null, recipeId, expectedRecipeRevision }) {
     worker.assertOpen();
     if (!renderGraphic) throw new StoreError("Graphics capability is unavailable", 503);
+    const destination = captureDestination(episodeId, channelId, "graphics");
     const recipe = store.getGraphicRecipe(episodeId, recipeId);
     if (!recipe) throw new StoreError("Graphic recipe not found", 404);
     if (recipe.revision !== expectedRecipeRevision) throw new StoreError(`Stale graphic revision: expected ${recipe.revision}`, 409, { current: recipe });
@@ -150,11 +160,11 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
     const snapshot = { recipe: { id: recipe.id, revision: recipe.revision, recipe: recipe.recipe },
       episodeRevision: episode.revision, targetCard: targetCard && { id: targetCard.id, type: targetCard.type, itemId: targetCard.itemId } };
     const value = store.saveJob({ id: jobId(), episodeId, kind: `graphic-${recipe.kind}`, outputClass: "graphic",
-      state: "queued", progress: 0, revision: episode.revision, snapshot: { ...snapshot, renderRevision: renderFingerprint(snapshot) } });
+      state: "queued", progress: 0, revision: episode.revision, snapshot: { ...snapshot, renderRevision: renderFingerprint(snapshot), destination } });
     worker.enqueue(value.id, async (signal) => {
       let current = store.saveJob({ ...value, state: "running" });
       const extension = recipe.kind === "still" ? "png" : "mp4";
-      const folder = inside(root, path.join(root, "episodes", episodeId, "graphics"));
+      const folder = inside(root, path.join(root, destination.outputDirectory));
       const outputPath = inside(folder, path.join(folder, `${recipe.id}-r${recipe.revision}-${value.id}.${extension}`));
       let published = false;
       try {
