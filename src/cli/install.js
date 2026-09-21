@@ -12,6 +12,7 @@ import { DEFAULT_PORT, readConfig } from "./config.js";
 import { CliError, EXIT } from "./errors.js";
 import { ensurePrivateDirectory } from "./fs-safety.js";
 import { withLock } from "./lock.js";
+import { ensureInstallationId } from "./installation.js";
 import { probeService } from "./service.js";
 import { nonInteractiveGitEnv, runCommand } from "./system.js";
 import { generateUnit, unitName, writeUnitAtomic } from "./unit.js";
@@ -105,6 +106,8 @@ export function readInstallReceipt(file, manifest = null) {
   catch (error) { return { ok: false, reason: error.code === "ENOENT" ? "No install receipt is present" : "The install receipt is not valid JSON" }; }
   if (value?.schema !== "storybench.install/1" || !COMMIT.test(value.commit ?? "") || !Number.isFinite(Date.parse(value.installedAt ?? "")))
     return { ok: false, reason: "The install receipt has invalid identity or time fields" };
+  if (value.installationId != null && !/^[A-Za-z0-9_-]{1,64}$/.test(value.installationId))
+    return { ok: false, reason: "The install receipt has an invalid installation identity" };
   if (manifest && (value.commit !== manifest.source.commit || value.manifestId !== manifest.id || value.images?.app !== manifest.images.app.id || value.images?.worker !== manifest.images.worker.id))
     return { ok: false, reason: "The install receipt does not match the release manifest" };
   return { ok: true, receipt: value };
@@ -178,7 +181,9 @@ export async function stageRelease(context, metadata, adapters = {}) {
     await checked(run, "npm", ["ci", "--omit=dev", "--ignore-scripts=false"], { cwd: stage, timeoutMs: 600_000 });
     const module = await import(`${pathToFileURL(path.join(stage, "src", "runtime", "release.js")).href}?install=${crypto.randomUUID()}`);
     const buildRelease = adapters.buildRelease ?? module.buildRelease;
-    let manifest = await buildRelease({ repo: stage, tag: `storybench-${metadata.commit.slice(0, 12)}`, log: (line) => context.out(`  ${line}`) });
+    const installId = ensureInstallationId(context.xdg, readConfig(context.xdg.configFile)?.installId ?? null);
+    let manifest = await buildRelease({ repo: stage, tag: `storybench-${metadata.commit.slice(0, 12)}`, installId,
+      log: (line) => context.out(`  ${line}`) });
     const roleTools = {
       app: await probeImage(run, manifest.images.app.id, "app"),
       worker: await probeImage(run, manifest.images.worker.id, "worker"),
@@ -204,7 +209,7 @@ export async function stageRelease(context, metadata, adapters = {}) {
       supportedSchema: { ...manifest.database.supportedSchema },
       images: { app: manifest.images.app.id, worker: manifest.images.worker.id },
       baseImages: { app: manifest.images.app.base, worker: manifest.images.worker.base },
-      tools: roleTools, installer,
+      installationId: installId, tools: roleTools, installer,
     };
     writeFileSync(path.join(stage, "install.json"), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
     detach(); detach = () => {};
@@ -295,6 +300,7 @@ export async function installFromSource(context, metadata, adapters = {}) {
   if (remote !== metadata.remote) throw new CliError("The source origin changed after installer preflight; retry ./install.sh");
   return withLock(context.xdg.lockDir, "install", async () => {
   for (const directory of [context.xdg.share, context.xdg.releases, context.xdg.state]) ensurePrivateDirectory(directory);
+  ensureInstallationId(context.xdg, readConfig(context.xdg.configFile)?.installId ?? null);
   mkdirSync(context.xdg.bin, { recursive: true, mode: 0o755 });
   await seedMirror(run, metadata.source, context.xdg.mirror, metadata.remote, context.env);
   if ((await run("git", ["--git-dir", context.xdg.mirror, "cat-file", "-e", `${metadata.commit}^{commit}`], gitOptions(context.env))).code !== 0)

@@ -151,6 +151,32 @@ test("reconciliation removes this installation's orphans only and reports their 
   await assert.rejects(stat(path.join(runtimeRoot, "credentials")));
 });
 
+test("host startup fails immediately when the app exits before health", async (t) => {
+  const root = await tempDir(t, "sb-app-exit-");
+  const runtimeRoot = path.join(root, "runtime"), stateRoot = path.join(root, "state"), dataRoot = path.join(root, "data");
+  await mkdir(dataRoot);
+  const appId = "a".repeat(64), calls = [];
+  const api = {
+    async docker(args) {
+      calls.push(args);
+      if (args[0] === "run") return appId;
+      if (args[0] === "wait") { await new Promise((resolve) => setTimeout(resolve, 20)); return "23"; }
+      return "";
+    },
+    async listByLabels() { return []; },
+    async inspectContainer() { return { State: { Status: "exited", ExitCode: 23 } }; },
+    async ensureNetwork() {},
+  };
+  const host = createHost({ installId: "exit-test", dataRoot, stateRoot, runtimeRoot, port: 18853, images: { app: A, worker: B },
+    healthTimeoutMs: 120_000, credentials: { codex: path.join(root, "codex.json"), claude: path.join(root, "claude.json") } },
+  { dockerApi: api, followLogs: () => ({ stop() {} }), log: () => {} });
+  const started = Date.now();
+  await assert.rejects(host.start(), (error) => error.code === "APP_EXITED" && /exit 23/.test(error.message));
+  assert.ok(Date.now() - started < 1000, "the 120 second health timeout is not awaited");
+  assert.ok(calls.some((args) => args[0] === "wait" && args[1] === appId));
+  await host.stop();
+});
+
 test("the app marks turns left unfinished by a crash interrupted and never replays them", async (t) => {
   const root = await tempDir(t);
   const store = new Store(root);

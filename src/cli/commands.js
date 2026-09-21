@@ -12,6 +12,7 @@ import { assertServiceStopped, runDown, runLogs, runOpen, runRestart, runStatus,
 import { unitName } from "./unit.js";
 import { configuredRoot, restoreHint } from "./root.js";
 import { installFromSource } from "./install.js";
+import { ensureInstallationId } from "./installation.js";
 import { runDoctor } from "./doctor.js";
 import { runUninstall } from "./uninstall.js";
 import { runBackup } from "./backup.js";
@@ -76,7 +77,8 @@ async function runInit(context, { positionals: [dir], options }) {
     if (!options.adopt && /adopt it instead/.test(mapped.message)) mapped.hint = `Run \`storybench init ${target} --adopt\`.`;
     throw mapped;
   }
-  writeConfigAtomic(context.xdg.configFile, { version: 1, dataRoot: target, dataRootId: result.identity.id, port });
+  const installId = ensureInstallationId(context.xdg, existing?.installId ?? null);
+  writeConfigAtomic(context.xdg.configFile, { version: 1, dataRoot: target, dataRootId: result.identity.id, port, installId });
   const out = context.out;
   if (options.adopt) {
     if (result.adopted) out(`Adopted the prototype workspace at ${target} (schema ${result.previousSchemaVersion} -> ${result.identity.schemaVersion}).\nMetadata backup: ${result.backupPath}`);

@@ -7,6 +7,7 @@ import { readReleaseManifest } from "../runtime/manifest.js";
 import { readConfig } from "./config.js";
 import { CliError, EXIT } from "./errors.js";
 import { installationLabeledImages, removeImagesIfUnused } from "./images.js";
+import { installedOrConfiguredId, installationIdFile } from "./installation.js";
 import { withLock } from "./lock.js";
 import { runCommand } from "./system.js";
 import { unitName } from "./unit.js";
@@ -66,9 +67,10 @@ export async function runUninstall(context, { options }) {
   }
   let config = null;
   try { config = readConfig(context.xdg.configFile); } catch { /* preserve even invalid config */ }
+  const installId = installedOrConfiguredId(context.xdg, config?.installId ?? null);
   const images = await installedImages(context.xdg);
-  const removedContainers = await removeOwnedContainers(run, config?.installId, context.env);
-  for (const image of await installationLabeledImages(run, config?.installId, context.env)) images.add(image);
+  const removedContainers = await removeOwnedContainers(run, installId, context.env);
+  for (const image of await installationLabeledImages(run, installId, context.env)) images.add(image);
 
   const executable = context.xdg.executable;
   if (existsSync(executable)) {
@@ -85,7 +87,8 @@ export async function runUninstall(context, { options }) {
   rmSync(context.xdg.mirror, { recursive: true, force: true });
   rmSync(context.xdg.releases, { recursive: true, force: true });
 
-  const removedImages = await removeImagesIfUnused(run, images, { installId: config?.installId ?? null, env: context.env });
+  const removedImages = await removeImagesIfUnused(run, images, { installId, env: context.env });
+  rmSync(installationIdFile(context.xdg), { force: true });
   try { rmdirSync(context.xdg.share); } catch (error) { if (!["ENOENT", "ENOTEMPTY"].includes(error.code)) throw error; }
   context.out(`Uninstalled Storybench application (${removedContainers} container(s), ${removedImages} unreferenced image(s)).`);
   context.out(`Preserved configuration: ${context.xdg.configFile}`);

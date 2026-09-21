@@ -12,8 +12,11 @@ import { writeConfigAtomic } from "../src/cli/config.js";
 import { activateSymlink, installFromSource, launcherText, readInstallReceipt } from "../src/cli/install.js";
 import { acquireLock } from "../src/cli/lock.js";
 import { main } from "../src/cli/main.js";
-import { runCommand } from "../src/cli/system.js";
+import { nonInteractiveGitEnv, runCommand } from "../src/cli/system.js";
 import { resolveXdg } from "../src/cli/xdg.js";
+import { ensureInstallationId } from "../src/cli/installation.js";
+import { removeImagesIfUnused } from "../src/cli/images.js";
+import { imageBuildLabels, imageBuildTag } from "../src/runtime/release.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const APP = `sha256:${"a".repeat(64)}`;
@@ -75,13 +78,14 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
   let builds = 0;
   let missingImageInspects = 0;
   let failPointerVerification = false;
+  let buildInstallId;
   const fakeRun = async (executable, args, options = {}) => {
     calls.push([executable, ...args]);
     callRecords.push({ executable, args, options });
     if (executable === "docker") {
       if (args[0] === "image" && args[1] === "ls") return { code: 0, stdout: `${ORPHAN}\n`, stderr: "" };
       if (args[0] === "image" && args[1] === "inspect") {
-        if (args.at(-1).includes(".Config.Labels")) return { code: 0, stdout: args[2] === ORPHAN ? "sb-test\n" : "\n", stderr: "" };
+        if (args.at(-1).includes(".Config.Labels")) return { code: 0, stdout: args[2] === ORPHAN ? `${buildInstallId}\n` : "\n", stderr: "" };
         if (missingImageInspects > 0) { missingImageInspects--; return { code: 1, stdout: "", stderr: "missing" }; }
         return { code: 0, stdout: `${args[2]}\n`, stderr: "" };
       }
@@ -99,7 +103,7 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
         return { code: 0, stdout, stderr: "" };
       }
       if (args[0] === "ps") {
-        if (args.includes(`label=io.storybench.install=sb-test`)) return { code: 0, stdout: "owned-container\n", stderr: "" };
+        if (args.includes(`label=io.storybench.install=${buildInstallId}`)) return { code: 0, stdout: "owned-container\n", stderr: "" };
         return { code: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "network" && args[1] === "ls") return { code: 0, stdout: "", stderr: "" };
@@ -127,8 +131,11 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
   let probeAnswer = { state: "stopped" };
   const context = { env: s.env, home: s.home, xdg: s.xdg, nodePath: process.execPath, runCommand: fakeRun, system,
     probeService: async () => probeAnswer, out: (line) => { output += `${line}\n`; } };
-  const buildRelease = async ({ repo }) => {
+  const buildRelease = async ({ repo, installId }) => {
     builds++;
+    if (buildInstallId) assert.equal(installId, buildInstallId, "re-staging reuses the installation identity");
+    else buildInstallId = installId;
+    assert.match(installId, /^sb[0-9a-f]{10}$/);
     assert.equal(path.basename(repo).startsWith(".stage-"), true, "the image context is the materialized release tree");
     assert.equal(command("git", ["-C", repo, "status", "--porcelain", "--untracked-files=no"]), "", "the archive export is the exact clean commit");
     const commit = command("git", ["-C", repo, "rev-parse", "HEAD"]);
@@ -166,6 +173,7 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
   const receipt = readInstallReceipt(path.join(s.xdg.releases, s.commit, "install.json"), installed.manifest);
   assert.equal(receipt.ok, true);
   assert.equal(receipt.receipt.packageVersion, "0.1.0");
+  assert.equal(receipt.receipt.installationId, buildInstallId);
   assert.deepEqual(receipt.receipt.source, { remote: s.remote, ref: "main" });
   assert.deepEqual(Object.keys(receipt.receipt.tools).sort(), ["app", "worker"], "per-role probes live only in the install receipt");
   assert.match(output, /Next: `storybench init \[DIR\]`, then `storybench up`/);
@@ -207,7 +215,7 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
   const root = path.join(s.home, "creator-data");
   const initialized = initDataRoot(root);
   writeFileSync(path.join(root, "sentinel"), "keep");
-  writeConfigAtomic(s.xdg.configFile, { version: 1, dataRoot: root, dataRootId: initialized.identity.id, port: 18842, installId: "sb-test",
+  writeConfigAtomic(s.xdg.configFile, { version: 1, dataRoot: root, dataRootId: initialized.identity.id, port: 18842, installId: buildInstallId,
     credentials: { codex: path.join(s.home, ".codex", "auth.json"), claude: path.join(s.home, ".claude", ".credentials.json") } });
   mkdirSync(path.join(s.home, ".codex"), { recursive: true });
   mkdirSync(path.join(s.home, ".claude"), { recursive: true });
@@ -291,9 +299,39 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
   for (const kept of [s.xdg.configFile, path.join(root, "sentinel"), path.join(s.xdg.state, "backups", "sentinel"), path.join(s.xdg.state, "harnesses"), path.join(s.home, ".codex", "auth.json"), path.join(s.home, ".claude", ".credentials.json")])
     assert.equal(existsSync(kept), true, kept);
   assert.deepEqual(systemCalls, ["reload", "reload", "stop", "reload"]);
-  assert.ok(calls.some((call) => call.includes(`label=io.storybench.install=sb-test`)), "only the configured installation label is removed");
+  assert.ok(calls.some((call) => call.includes(`label=io.storybench.install=${buildInstallId}`)), "only the configured installation label is removed");
   assert.ok(calls.some((call) => call[0] === "docker" && call[1] === "image" && call[2] === "rm" && call[3] === ORPHAN), "orphaned installation-labeled images are removed");
   assert.ok(!calls.some((call) => call[0] === "docker" && call[1] === "system"), "no global Docker prune/system operation");
+});
+
+test("per-install image labels keep another installation's identical commit images", async (t) => {
+  const base = mkdtempSync(path.join(os.tmpdir(), "storybench-image-owner-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const xdgA = resolveXdg({ env: { HOME: path.join(base, "a"), XDG_DATA_HOME: path.join(base, "a-data") }, home: path.join(base, "a") });
+  const xdgB = resolveXdg({ env: { HOME: path.join(base, "b"), XDG_DATA_HOME: path.join(base, "b-data") }, home: path.join(base, "b") });
+  const a = ensureInstallationId(xdgA), b = ensureInstallationId(xdgB);
+  assert.notEqual(a, b);
+  const commit = "1".repeat(40);
+  assert.ok(imageBuildLabels(commit, a).includes(`io.storybench.install=${a}`));
+  assert.ok(imageBuildLabels(commit, b).includes(`io.storybench.install=${b}`));
+  assert.notEqual(imageBuildTag("storybench", "app", commit, a), imageBuildTag("storybench", "app", commit, b),
+    "one installation's build cannot retag the other's image");
+
+  const removed = [], owner = new Map([[APP, a], [WORKER, b]]);
+  const run = async (_command, args) => {
+    if (args[0] === "ps") return { code: 0, stdout: "", stderr: "" };
+    if (args[0] === "image" && args[1] === "inspect") return { code: 0, stdout: `${owner.get(args[2]) ?? ""}\n`, stderr: "" };
+    if (args[0] === "image" && args[1] === "rm") { removed.push(args[2]); return { code: 0, stdout: "", stderr: "" }; }
+    throw new Error(`unexpected docker call: ${args.join(" ")}`);
+  };
+  await removeImagesIfUnused(run, [APP, WORKER], { installId: a, env: {} });
+  assert.deepEqual(removed, [APP], "installation A cannot remove installation B's image");
+});
+
+test("non-interactive Git preserves an existing SSH command", () => {
+  const env = nonInteractiveGitEnv({ GIT_SSH_COMMAND: "ssh -F /tmp/fixture-config" });
+  assert.equal(env.GIT_TERMINAL_PROMPT, "0");
+  assert.equal(env.GIT_SSH_COMMAND, "ssh -F /tmp/fixture-config -oBatchMode=yes");
 });
 
 test("version exits quietly when a pipeline closes stdout", () => {

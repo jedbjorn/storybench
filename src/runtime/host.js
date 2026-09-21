@@ -37,7 +37,7 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
   const n = names(config.installId);
   const workers = new Map();
   const discovery = createModelDiscovery({ config, stageRoot: path.join(config.runtimeRoot, "credentials") });
-  let server, syncTimer, appId, appLogs, stopped, stopping = false;
+  let server, syncTimer, appId, appExit, appLogs, stopped, stopping = false;
 
   async function presentRoots() {
     const present = [];
@@ -208,9 +208,9 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     });
   }
 
-  async function waitHealthy() {
+  async function waitHealthy(cancelled = () => false) {
     const deadline = Date.now() + config.healthTimeoutMs;
-    while (Date.now() < deadline) {
+    while (!cancelled() && Date.now() < deadline) {
       try {
         const response = await fetch(`http://127.0.0.1:${config.port}/api/health`, { signal: AbortSignal.timeout(2000) });
         if (response.ok) {
@@ -223,6 +223,7 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
       } catch (error) { if (error.code === "RELEASE_MISMATCH") throw error; }
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
+    if (cancelled()) return null;
     throw new RuntimeError("APP_UNHEALTHY", `App did not become healthy on 127.0.0.1:${config.port}`, { status: 500 });
   }
 
@@ -241,7 +242,17 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     appId = await docker(appRunArgs(config));
     log({ event: "app.started", container: appId.slice(0, 12), port: config.port });
     appLogs = followLogs({ containerId: appId, event: "app.output", log });
-    const health = await waitHealthy();
+    appExit = docker(["wait", appId], { timeout: 0 });
+    let cancelHealth = false;
+    const ready = await Promise.race([
+      waitHealthy(() => cancelHealth).then((health) => ({ health })),
+      appExit.then((code) => ({ exitCode: Number(code) })),
+    ]);
+    if (Object.hasOwn(ready, "exitCode")) {
+      cancelHealth = true;
+      throw new RuntimeError("APP_EXITED", `App container exited before becoming healthy (exit ${Number.isFinite(ready.exitCode) ? ready.exitCode : "unknown"})`, { status: 500 });
+    }
+    const { health } = ready;
     log({ event: "app.healthy", port: config.port, release: health.release?.manifestId ?? null, schema: health.schema?.current ?? null, database: health.database?.id ?? null });
     syncTimer = setInterval(async () => {
       for (const worker of workers.values()) {
@@ -287,7 +298,8 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
 
   // Kill every log follower (used on process exit so no `docker logs` child outlives the host).
   const killFollowers = () => { appLogs?.stop(); for (const worker of workers.values()) worker.logs?.stop(); };
-  return { config, start, stop, handle, reconcile, killFollowers, workers, get appId() { return appId; } };
+  return { config, start, stop, handle, reconcile, killFollowers, workers,
+    get appId() { return appId; }, get appExit() { return appExit; } };
 }
 
 async function main(argv) {
@@ -318,7 +330,7 @@ async function main(argv) {
     return;
   }
   // Exit (and let the service manager decide) if the app container dies unexpectedly.
-  dockerCli.docker(["wait", host.appId], { timeout: 0 }).then((code) => {
+  host.appExit.then((code) => {
     if (!exiting) { console.error(JSON.stringify({ event: "app.exited", code })); shutdown(1); }
   }, () => {});
 }

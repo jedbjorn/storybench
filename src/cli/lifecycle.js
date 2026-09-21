@@ -14,6 +14,7 @@ import { activeWork, probeService, requestJson, serviceStatus } from "./service.
 import { SERVICE_BUSY_STATES } from "./executor.js";
 import { generateUnit, unitName, writeUnitAtomic } from "./unit.js";
 import { interruptedTransitionHint, reconcileInterruptedTransition } from "./receipts.js";
+import { ensureInstallationId } from "./installation.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const APP_STOP_TIMEOUT_S = 30;
@@ -150,7 +151,7 @@ export async function runUp(context, { options }, configuredRoot) {
       if (listener.state === "other" || listener.state === "unreachable") throw new CliError(`Port ${target} is already in use by another program`, { hint: "Free it, or choose another port with `storybench up --port N`." });
     }
     if (port !== null || !config.installId) {
-      config = { ...readConfig(context.xdg.configFile), port: target, installId: config.installId ?? `sb${crypto.randomBytes(5).toString("hex")}` };
+      config = { ...readConfig(context.xdg.configFile), port: target, installId: config.installId ?? ensureInstallationId(context.xdg) };
       writeConfigAtomic(context.xdg.configFile, config);
     }
     const prepared = await prepareService(context, config);

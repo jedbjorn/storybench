@@ -6,6 +6,7 @@
 //   node src/runtime/release.js build --out /path/manifest.json [--tag storybench] [--allow-dirty] [--rebuild]
 //   (an existing manifest at --out for the same commit, with its images present, is reused)
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,9 +30,9 @@ const TOOL_PROBE = [
 
 // Release idempotency is defined by the manifest: an existing valid manifest for the same
 // commit whose exact images are still present is the release, and is returned unchanged.
-// (Image IDs are reproducible for one commit when the build cache is warm, but a cold
-// rebuild can differ — distro package drift and file timestamps — so IDs alone are not
-// relied on for idempotency.)
+// (Image IDs are reproducible for one commit and installation when the build cache is
+// warm, but a cold rebuild can differ — distro package drift and file timestamps — so
+// IDs alone are not relied on for idempotency.)
 export async function findReusableRelease(manifestPath, commit) {
   if (!manifestPath) return null;
   const found = await readReleaseManifest(manifestPath);
@@ -43,7 +44,17 @@ export async function findReusableRelease(manifestPath, commit) {
   return found.manifest;
 }
 
-export async function buildRelease({ repo = REPO_ROOT, tag = "storybench", allowDirty = false, reuseManifestPath = null, log = () => {} } = {}) {
+export function imageBuildLabels(commit, installId = null) {
+  if (installId != null && !/^[A-Za-z0-9_-]{1,64}$/.test(installId)) throw new Error("Invalid Storybench installation ID for image build");
+  return ["--label", `io.storybench.commit=${commit}`, ...(installId ? ["--label", `io.storybench.install=${installId}`] : [])];
+}
+
+export function imageBuildTag(tag, target, commit, installId = null) {
+  const owner = installId ? `-${createHash("sha256").update(installId).digest("hex").slice(0, 12)}` : "";
+  return `${tag}${owner}-${target}:${commit.slice(0, 12)}`;
+}
+
+export async function buildRelease({ repo = REPO_ROOT, tag = "storybench", allowDirty = false, reuseManifestPath = null, installId = null, log = () => {} } = {}) {
   const git = (...args) => run("git", ["-C", repo, ...args]).then((out) => out.stdout.trim());
   const commit = await git("rev-parse", "HEAD");
   // The dirty-tree refusal applies to reuse as well as to a fresh build.
@@ -59,11 +70,12 @@ export async function buildRelease({ repo = REPO_ROOT, tag = "storybench", allow
   const images = {};
   for (const target of ["app", "worker"]) {
     log(`building ${target}`);
-    const imageTag = `${tag}-${target}:${commit.slice(0, 12)}`;
+    const imageTag = imageBuildTag(tag, target, commit, installId);
     // No provenance/SBOM attestations (they embed build-time metadata) and a fixed
-    // SOURCE_DATE_EPOCH (the commit time) so rebuilding one commit reproduces the same IDs.
+    // SOURCE_DATE_EPOCH (the commit time) so rebuilding one commit for one installation
+    // reproduces the same IDs.
     await run("docker", ["build", "-f", DOCKERFILE, "--target", target, "--provenance=false", "--sbom=false",
-      "--build-arg", `SOURCE_DATE_EPOCH=${epoch}`, "--label", `io.storybench.commit=${commit}`, "-t", imageTag, repo],
+      "--build-arg", `SOURCE_DATE_EPOCH=${epoch}`, ...imageBuildLabels(commit, installId), "-t", imageTag, repo],
       { maxBuffer: 64 * 1024 * 1024, env: { ...process.env, SOURCE_DATE_EPOCH: epoch } });
     images[target] = (await run("docker", ["image", "inspect", imageTag, "--format", "{{.Id}}"])).stdout.trim();
   }

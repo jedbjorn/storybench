@@ -335,7 +335,7 @@ test("retention keeps proven activations and never ranks a failed build by built
   const removed = [];
   await retainReleases({ xdg: s.xdg, env: s.env, runCommand: async (command, args) => {
     if (command === "docker" && args[0] === "ps") return { code: 0, stdout: "", stderr: "" };
-    if (command === "docker" && args[0] === "image" && args[1] === "inspect") return { code: 0, stdout: "\n", stderr: "" };
+    if (command === "docker" && args[0] === "image" && args[1] === "inspect") return { code: 0, stdout: "sb-update-test\n", stderr: "" };
     if (command === "docker" && args[0] === "image" && args[1] === "rm") { removed.push(args[2]); return { code: 0, stdout: args[2], stderr: "" }; }
     throw new Error(`unexpected command ${command} ${args.join(" ")}`);
   } }, NEW, OLD, 9);

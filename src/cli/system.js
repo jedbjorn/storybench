@@ -3,7 +3,8 @@
 import { spawn } from "node:child_process";
 
 export function nonInteractiveGitEnv(env = process.env) {
-  return { ...env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -oBatchMode=yes" };
+  const ssh = String(env.GIT_SSH_COMMAND || "ssh").trim();
+  return { ...env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: `${ssh} -oBatchMode=yes` };
 }
 
 export function runCommand(command, args, { timeoutMs = 120_000, env = process.env, input = null, cwd = undefined } = {}) {

@@ -20,7 +20,9 @@ export async function removeImagesIfUnused(run, candidates, { retained = new Set
     if (used.code !== 0 || used.stdout.trim()) continue;
     const label = await imageInstallLabel(run, image, env);
     if (label === null) continue;
-    if (label && (!installId || label !== installId)) continue;
+    // Unlabeled pre-ownership images may be shared by another installation. Only an
+    // exact ownership label authorizes removal.
+    if (!label || !installId || label !== installId) continue;
     const result = await run("docker", ["image", "rm", image], { timeoutMs: 120_000, env });
     if (result.code === 0) removed++;
   }

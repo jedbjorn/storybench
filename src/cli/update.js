@@ -13,6 +13,7 @@ import { withLock } from "./lock.js";
 import { interruptedTransitionHint, markTransitionRecoveryHandled, readReceipts, receiptName, reconcileInterruptedTransition, transitionDirectory, writeJsonAtomic } from "./receipts.js";
 import { activeWork, healthProblems, serviceStatus } from "./service.js";
 import { nonInteractiveGitEnv } from "./system.js";
+import { ensureInstallationId } from "./installation.js";
 import { unitName } from "./unit.js";
 import { configuredRoot } from "./root.js";
 import { readConfig, writeConfigAtomic } from "./config.js";
@@ -286,7 +287,7 @@ export async function runUpdate(context, { options }) {
     }
     let config = configuredRoot(context);
     if (!config.installId) {
-      config = { ...config, installId: `sb${crypto.randomBytes(5).toString("hex")}` };
+      config = { ...config, installId: ensureInstallationId(context.xdg) };
       writeConfigAtomic(context.xdg.configFile, config);
     }
     await recoverInterruptedTransition(context, config, interrupted);
@@ -362,7 +363,7 @@ export async function runRollback(context) {
     const interrupted = reconcileInterruptedTransition(context);
     let config = configuredRoot(context);
     if (!config.installId) {
-      config = { ...config, installId: `sb${crypto.randomBytes(5).toString("hex")}` };
+      config = { ...config, installId: ensureInstallationId(context.xdg) };
       writeConfigAtomic(context.xdg.configFile, config);
     }
     await recoverInterruptedTransition(context, config, interrupted);
