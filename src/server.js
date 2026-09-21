@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { Store, StoreError } from "./store.js";
 import { importMedia } from "./media.js";
 import { createChatService } from "./chat.js";
+import { createWorkerCodexFactory } from "./runtime/app-runtime.js";
+import { createHealth } from "./runtime/health.js";
 import { createLibraryService } from "./library.js";
 import { renderGraphic, validateGraphicRecipe } from "./graphics.js";
 import { createRenderService } from "./render-service.js";
@@ -145,10 +147,15 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
   const notify = (episodeId) => listeners.get(episodeId)?.forEach((fn) => fn());
   const library = createLibraryService({ workspace, store });
   const renders = createRenderService({ workspace, store, renderGraphic, validateGraphicRecipe, ...renderOptions });
-  const chat = createChatService({ store, renders, onChange: notify, ...chatOptions });
+  // In the Docker app container the host lifecycle entry point provides a private control
+  // socket; Codex turns then run in request-scoped workers instead of in-process.
+  const runtimeControl = process.env.STORYBENCH_RUNTIME_CONTROL;
+  const runtimeChat = runtimeControl && !chatOptions.codexFactory ? { codexFactory: createWorkerCodexFactory({ store, controlSocket: runtimeControl }) } : {};
+  const chat = createChatService({ store, renders, onChange: notify, ...runtimeChat, ...chatOptions });
   const eventStreams = new Set();
   let closing = false;
   let closePromise;
+  const health = createHealth({ store, getState: () => (closing ? "draining" : "ready") });
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -160,6 +167,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
       // default is only a fallback for navigation entry; it never retargets an explicitly scoped request.
       const requestedChannel = url.searchParams.get("channel") || String(req.headers["x-storybench-channel"] || "") || null;
       const viewChannel = () => requestedChannel ? store.requireChannel(requestedChannel) : store.getDefaultChannel();
+      if (req.method === "GET" && url.pathname === "/api/health") return send(res, closing ? 503 : 200, health.snapshot());
       if (req.method === "GET" && url.pathname === "/api/state") {
         const channel = viewChannel();
         return send(res, 200, {
@@ -533,7 +541,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
       await Promise.allSettled([stopped, renders.close("Job cancelled during server shutdown"), chat.close()]);
       store.close();
     })());
-  return { server, store, chat, renders, close };
+  return { server, store, chat, renders, close, health };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
