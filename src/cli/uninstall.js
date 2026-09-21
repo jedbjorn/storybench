@@ -6,6 +6,7 @@ import path from "node:path";
 import { readReleaseManifest } from "../runtime/manifest.js";
 import { readConfig } from "./config.js";
 import { CliError, EXIT } from "./errors.js";
+import { withLock } from "./lock.js";
 import { runCommand } from "./system.js";
 import { unitName } from "./unit.js";
 
@@ -48,6 +49,7 @@ async function removeOwnedContainers(run, installId, env) {
 }
 
 export async function runUninstall(context, { options }) {
+  return withLock(context.xdg.lockDir, "uninstall", async () => {
   if (!options.yes && !await confirm(context)) { context.out("Uninstall cancelled; nothing changed."); return EXIT.OK; }
   const run = context.runCommand ?? runCommand;
   const unit = unitName(context.env);
@@ -95,4 +97,5 @@ export async function runUninstall(context, { options }) {
   context.out(`Preserved data root: ${config?.dataRoot ?? "not configured"}`);
   context.out("Host Codex and Claude login files were not read, changed or removed.");
   return EXIT.OK;
+  }, { timeoutMs: context.lockTimeoutMs ?? 10_000 });
 }

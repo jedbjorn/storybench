@@ -8,14 +8,17 @@ import {
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { readReleaseManifest } from "../runtime/manifest.js";
+import { DEFAULT_PORT, readConfig } from "./config.js";
 import { CliError, EXIT } from "./errors.js";
 import { ensurePrivateDirectory } from "./fs-safety.js";
 import { withLock } from "./lock.js";
+import { probeService } from "./service.js";
 import { runCommand } from "./system.js";
 import { generateUnit, unitName, writeUnitAtomic } from "./unit.js";
 
 const COMMIT = /^[0-9a-f]{40}$/;
 const MIN_FREE_BYTES = 5 * 1024 * 1024 * 1024;
+const ACTIVE_UNIT_STATES = new Set(["active", "activating", "reloading", "deactivating"]);
 
 function firstLine(value) { return String(value || "").trim().split("\n")[0]; }
 
@@ -167,7 +170,7 @@ export async function stageRelease(context, metadata, adapters = {}) {
     const module = await import(`${pathToFileURL(path.join(stage, "src", "runtime", "release.js")).href}?install=${crypto.randomUUID()}`);
     const buildRelease = adapters.buildRelease ?? module.buildRelease;
     let manifest = await buildRelease({ repo: stage, tag: `storybench-${metadata.commit.slice(0, 12)}`, log: (line) => context.out(`  ${line}`) });
-    const tools = {
+    const roleTools = {
       app: await probeImage(run, manifest.images.app.id, "app"),
       worker: await probeImage(run, manifest.images.worker.id, "worker"),
     };
@@ -181,7 +184,6 @@ export async function stageRelease(context, metadata, adapters = {}) {
         app: { ...manifest.images.app, base: nodeBaseIdentity(stage) },
         worker: { ...manifest.images.worker, base: nodeBaseIdentity(stage) },
       },
-      runtime: { ...manifest.runtime, tools },
     };
     manifest.id = manifestModule.manifestId(manifest);
     manifestModule.validateManifest(manifest);
@@ -192,12 +194,23 @@ export async function stageRelease(context, metadata, adapters = {}) {
       supportedSchema: { ...manifest.database.supportedSchema },
       images: { app: manifest.images.app.id, worker: manifest.images.worker.id },
       baseImages: { app: manifest.images.app.base, worker: manifest.images.worker.base },
-      tools, installer,
+      tools: roleTools, installer,
     };
     writeFileSync(path.join(stage, "install.json"), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
     detach(); detach = () => {};
-    if (existsSync(final)) rmSync(final, { recursive: true, force: true });
-    renameSync(stage, final);
+    let retired = null;
+    if (existsSync(final)) {
+      retired = `${final}.retired-${crypto.randomUUID()}`;
+      renameSync(final, retired);
+      try {
+        await adapters.afterRetire?.({ final, retired, stage });
+        renameSync(stage, final);
+      } catch (error) {
+        if (!existsSync(final) && existsSync(retired)) renameSync(retired, final);
+        throw error;
+      }
+      rmSync(retired, { recursive: true, force: true });
+    } else renameSync(stage, final);
     return { release: final, manifest, reused: false };
   } catch (error) {
     rmSync(stage, { recursive: true, force: true });
@@ -219,20 +232,41 @@ function servicePath(callerPath, node) {
   return [...new Set([...extra, ...standard])].join(":");
 }
 
-function installUnit(context, release) {
+function unitText(context, release) {
   const unit = unitName(context.env);
   const hostConfig = path.join(context.xdg.state, `host-${unit.replace(/\.service$/, "")}.json`);
   const node = context.nodePath ?? process.execPath;
   const environment = { PATH: servicePath(context.env.PATH, node) };
   for (const key of ["DOCKER_HOST", "DOCKER_CONTEXT"]) if (context.env[key]) environment[key] = context.env[key];
-  const content = generateUnit({
+  return generateUnit({
     node,
     hostEntry: path.join(release, "src", "runtime", "host.js"),
     hostConfig,
     workingDirectory: release,
     environment,
   });
-  return writeUnitAtomic(unitFile(context), content);
+}
+
+async function assertActivationStopped(context, current, release) {
+  if (current === release) return;
+  const unit = unitName(context.env);
+  let state;
+  try { state = await context.system.unitState(unit); }
+  catch (error) {
+    throw new CliError(`Cannot determine whether ${unit} is running (${error.message}); activation was not changed`, {
+      hint: "Check `systemctl --user status`, then retry.",
+    });
+  }
+  const hint = "Run `storybench down` first; staged in-place updates arrive with `storybench update`.";
+  if (ACTIVE_UNIT_STATES.has(state.active))
+    throw new CliError(`Cannot activate the staged release while ${unit} is ${state.active}`, { hint });
+  const config = readConfig(context.xdg.configFile);
+  const probe = context.probeService ?? probeService;
+  for (const port of new Set([config?.port ?? DEFAULT_PORT, DEFAULT_PORT])) {
+    const answer = await probe(port);
+    if (answer.state === "running")
+      throw new CliError(`Cannot activate the staged release while a Storybench app is answering on port ${port}`, { hint });
+  }
 }
 
 export async function installFromSource(context, metadata, adapters = {}) {
@@ -249,7 +283,8 @@ export async function installFromSource(context, metadata, adapters = {}) {
   if (status) throw new CliError("The source checkout is not clean; commit, stash or remove every change before installing");
   if (remote !== metadata.remote) throw new CliError("The source origin changed after installer preflight; retry ./install.sh");
   return withLock(context.xdg.lockDir, "install", async () => {
-  for (const directory of [context.xdg.share, context.xdg.releases, context.xdg.bin, context.xdg.state]) ensurePrivateDirectory(directory);
+  for (const directory of [context.xdg.share, context.xdg.releases, context.xdg.state]) ensurePrivateDirectory(directory);
+  mkdirSync(context.xdg.bin, { recursive: true, mode: 0o755 });
   await seedMirror(run, metadata.source, context.xdg.mirror, metadata.remote);
   if ((await run("git", ["--git-dir", context.xdg.mirror, "cat-file", "-e", `${metadata.commit}^{commit}`])).code !== 0)
     await checked(run, "git", ["--git-dir", context.xdg.mirror, "fetch", "--no-tags", metadata.source, metadata.commit], { timeoutMs: 120_000 });
@@ -259,26 +294,29 @@ export async function installFromSource(context, metadata, adapters = {}) {
     timeoutMs: 30_000, env: { ...context.env, STORYBENCH_RELEASE_MANIFEST: path.join(staged.release, "manifest.json") },
   });
   if (direct.code !== 0 || !direct.stdout.includes(metadata.commit)) throw new CliError("The staged Storybench CLI did not report its exact commit; activation was not changed");
-  const launcherChanged = writeAtomic(context.xdg.executable, launcherText(context.nodePath ?? process.execPath, context.xdg.current), 0o755);
-  const unitChanged = installUnit(context, staged.release);
-  if (unitChanged) {
-    const result = await context.system.daemonReload();
-    if (result.code !== 0) throw new CliError(`The systemd user manager could not reload units: ${firstLine(result.stderr) || `exit ${result.code}`}`);
-  }
   let previous = null;
   try { if (lstatSync(context.xdg.current).isSymbolicLink()) previous = path.resolve(path.dirname(context.xdg.current), readlinkSync(context.xdg.current)); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
+  await assertActivationStopped(context, previous, staged.release);
   const pointerChanged = activateSymlink(context.xdg.current, staged.release);
-  const verified = await run(context.xdg.executable, ["version"], { timeoutMs: 30_000, env: context.env });
+  const verified = await run(context.nodePath ?? process.execPath, [path.join(context.xdg.current, "bin", "storybench.mjs"), "version"], {
+    timeoutMs: 30_000, env: { ...context.env, STORYBENCH_RELEASE_MANIFEST: path.join(context.xdg.current, "manifest.json") },
+  });
   if (verified.code !== 0 || !verified.stdout.includes(metadata.commit)) {
     if (previous) activateSymlink(context.xdg.current, previous); else rmSync(context.xdg.current, { force: true });
     throw new CliError("The installed Storybench CLI did not report the staged commit; the previous release pointer was restored");
+  }
+  const launcherChanged = writeAtomic(context.xdg.executable, launcherText(context.nodePath ?? process.execPath, context.xdg.current), 0o755);
+  const unitChanged = writeUnitAtomic(unitFile(context), unitText(context, staged.release));
+  if (unitChanged) {
+    const result = await context.system.daemonReload();
+    if (result.code !== 0) throw new CliError(`The systemd user manager could not reload units: ${firstLine(result.stderr) || `exit ${result.code}`}`);
   }
   const pathReady = String(context.env.PATH || "").split(":").map((entry) => path.resolve(entry || ".")).includes(path.resolve(context.xdg.bin));
   context.out(`${staged.reused && !pointerChanged && !launcherChanged && !unitChanged ? "Already installed" : "Installed"}: ${staged.release}`);
   context.out(`Release: ${staged.manifest.id}\nImages: app ${staged.manifest.images.app.id}, worker ${staged.manifest.images.worker.id}`);
   context.out(pathReady ? `${context.xdg.bin} is on PATH.` : `PATH notice: add ${context.xdg.bin} to PATH in your preferred shell configuration.`);
-  context.out("Next: `storybench init [DIR]`, then `storybench up`.");
+  context.out(readConfig(context.xdg.configFile) ? "Next: `storybench up`." : "Next: `storybench init [DIR]`, then `storybench up`.");
   return EXIT.OK;
   }, { timeoutMs: context.lockTimeoutMs ?? 10_000 });
 }
