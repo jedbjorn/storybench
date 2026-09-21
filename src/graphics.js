@@ -1,5 +1,6 @@
+import { fontForFamily, fontPath } from './fonts.js';
 import { spawn } from 'node:child_process';
-import { access, link, lstat, mkdir, readFile, realpath, unlink, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, readFile, realpath, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { Resvg } from '@resvg/resvg-js';
@@ -80,7 +81,8 @@ function layer(input, index, duration) {
   if (kind === 'text') {
     const requestedFont = string(input.fontFamily, DEFAULT_GRAPHIC_FONT.family, `${p}.fontFamily`, { max: 200 });
     if (!/^[\p{L}\p{N} ._-]+$/u.test(requestedFont)) fail('INVALID_FONT_FAMILY', 'fontFamily contains unsupported characters', `${p}.fontFamily`);
-    Object.assign(out, { text: string(input.text, undefined, `${p}.text`, { max: 10000 }), fontSize: number(input.fontSize ?? 48, `${p}.fontSize`, { positive: true, max: 1000 }), fontFamily: DEFAULT_GRAPHIC_FONT.family, fontWeight: number(input.fontWeight ?? 400, `${p}.fontWeight`, { min: 100, max: 900, integer: true }), fill: color(input.fill, '#fff', `${p}.fill`), textAnchor: string(input.textAnchor, 'start', `${p}.textAnchor`, { choices: ['start', 'middle', 'end'] }) });
+    if (!fontForFamily(requestedFont)) fail('UNKNOWN_FONT', `Unsupported font: ${requestedFont}. Choose a font from the channel font catalogue.`, `${p}.fontFamily`);
+    Object.assign(out, { text: string(input.text, undefined, `${p}.text`, { max: 10000 }), fontSize: number(input.fontSize ?? 48, `${p}.fontSize`, { positive: true, max: 1000 }), fontFamily: requestedFont, fontWeight: number(input.fontWeight ?? 400, `${p}.fontWeight`, { min: 100, max: 900, integer: true }), fill: color(input.fill, '#fff', `${p}.fill`), textAnchor: string(input.textAnchor, 'start', `${p}.textAnchor`, { choices: ['start', 'middle', 'end'] }) });
   }
   if (kind === 'rectangle') { out.width = number(input.width, `${p}.width`, { positive: true, max: 7680 }); out.height = number(input.height, `${p}.height`, { positive: true, max: 4320 }); out.rx = number(input.rx ?? 0, `${p}.rx`, { min: 0, max: 7680 }); paint(out, input, p, '#fff'); }
   if (kind === 'ellipse') { out.rx = number(input.rx, `${p}.rx`, { positive: true, max: 3840 }); out.ry = number(input.ry, `${p}.ry`, { positive: true, max: 2160 }); paint(out, input, p, '#fff'); }
@@ -173,31 +175,36 @@ function svg(plan, images, time) {
   }).join('');
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${plan.width}" height="${plan.height}" viewBox="0 0 ${plan.width} ${plan.height}"><rect width="100%" height="100%" fill="${xml(plan.background)}"/>${body}</svg>`;
 }
-async function resolveGraphicFontPath() {
-  for (const path of DEFAULT_GRAPHIC_FONT.paths) if (await access(path).then(() => true, () => false)) return path;
-  fail('FONT_UNAVAILABLE', `Fallback font is unavailable; checked: ${DEFAULT_GRAPHIC_FONT.paths.join(', ')}`, 'font');
+function resolveGraphicFonts(plan) {
+  const families = [...new Set([DEFAULT_GRAPHIC_FONT.family, ...plan.layers.filter((layer) => layer.kind === 'text').map((layer) => layer.fontFamily)])];
+  const files = families.flatMap((family) => ['regular', 'bold'].map((weight) => {
+    const file = fontPath(fontForFamily(family), weight);
+    if (!file) fail('FONT_UNAVAILABLE', `${family} ${weight} is unavailable. Install the packaged Storybench fonts.`, 'font');
+    return file;
+  }));
+  return { families, files };
 }
-function raster(plan, images, time, fontPath) { try { return new Resvg(svg(plan, images, time), { fitTo: { mode: 'original' }, font: { fontFiles: [fontPath], loadSystemFonts: false, defaultFontFamily: DEFAULT_GRAPHIC_FONT.family } }).render().asPng(); } catch (cause) { const error = new GraphicValidationError('RASTERIZE_FAILED', `Graphic rasterization failed: ${cause.message}`); error.cause = cause; throw error; } }
+function raster(plan, images, time, fonts) { try { return new Resvg(svg(plan, images, time), { fitTo: { mode: 'original' }, font: { fontFiles: fonts.files, loadSystemFonts: false, defaultFontFamily: DEFAULT_GRAPHIC_FONT.family } }).render().asPng(); } catch (cause) { const error = new GraphicValidationError('RASTERIZE_FAILED', `Graphic rasterization failed: ${cause.message}`); error.cause = cause; throw error; } }
 const aborted = () => Object.assign(new Error('Graphic rendering cancelled'), { name: 'AbortError', code: 'ABORT_ERR' });
-async function motion(plan, images, target, signal, progress, fontPath) {
+async function motion(plan, images, target, signal, progress, fonts) {
   const child = spawn('ffmpeg', ['-v', 'error', '-threads', '2', '-f', 'image2pipe', '-framerate', String(plan.fps), '-vcodec', 'png', '-i', 'pipe:0', '-an', '-r', String(plan.fps), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-y', target], { stdio: ['pipe', 'ignore', 'pipe'] });
   let stderr = ''; child.stderr.setEncoding('utf8'); child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-16000); });
   const exit = new Promise((ok, bad) => { child.on('error', bad); child.on('close', code => code === 0 ? ok() : bad(new Error(`ffmpeg exited with code ${code}: ${stderr.trim() || 'no diagnostics'}`))); });
   const abort = () => child.kill('SIGTERM'); signal?.addEventListener('abort', abort, { once: true });
   const frames = Math.round(plan.duration * plan.fps);
-  try { for (let frame = 0; frame < frames; frame++) { if (signal?.aborted) throw aborted(); const png = raster(plan, images, frame / plan.fps, fontPath); if (!child.stdin.write(png)) await new Promise((ok, bad) => { child.stdin.once('drain', ok); child.stdin.once('error', bad); }); progress?.((frame + 1) / frames); } child.stdin.end(); await exit; if (signal?.aborted) throw aborted(); return frames; }
+  try { for (let frame = 0; frame < frames; frame++) { if (signal?.aborted) throw aborted(); const png = raster(plan, images, frame / plan.fps, fonts); if (!child.stdin.write(png)) await new Promise((ok, bad) => { child.stdin.once('drain', ok); child.stdin.once('error', bad); }); progress?.((frame + 1) / frames); } child.stdin.end(); await exit; if (signal?.aborted) throw aborted(); return frames; }
   catch (error) { child.stdin.destroy(); child.kill('SIGTERM'); await exit.catch(() => {}); if (signal?.aborted && error.name !== 'AbortError') throw aborted(); throw error; }
   finally { signal?.removeEventListener('abort', abort); }
 }
 
 export async function renderGraphic({ workspace, recipe, outputPath, resolveImage, signal, onProgress } = {}) {
   const plan = validateGraphicRecipe(recipe, { resolveImage }); if (signal?.aborted) throw aborted();
-  const fontPath = await resolveGraphicFontPath();
+  const fonts = resolveGraphicFonts(plan);
   const { root, images } = await loadImages(plan, workspace, resolveImage); const output = resolve(outputPath); const parent = dirname(output);
   if (!within(root, output)) fail('OUTPUT_PATH_ESCAPE', 'outputPath must be inside workspace', 'outputPath'); await mkdir(parent, { recursive: true });
   if (!within(root, await realpath(parent))) fail('OUTPUT_PATH_ESCAPE', 'outputPath parent escapes workspace', 'outputPath');
   if (await lstat(output).catch(() => null)) fail('OUTPUT_EXISTS', 'outputPath already exists', 'outputPath');
   const temporary = resolve(parent, `.graphic-${randomUUID()}${plan.kind === 'still' ? '.png' : '.mp4'}`);
-  try { let frames = 1; if (plan.kind === 'still') { await writeFile(temporary, raster(plan, images, 0, fontPath), { flag: 'wx', mode: 0o600 }); onProgress?.(1); } else frames = await motion(plan, images, temporary, signal, onProgress, fontPath); if (signal?.aborted) throw aborted(); await link(temporary, output); await unlink(temporary); return { path: output, kind: plan.kind === 'still' ? 'image' : 'video', width: plan.width, height: plan.height, ...(plan.kind === 'motion' ? { duration: plan.duration } : {}), metadata: { frames, ...(plan.kind === 'motion' ? { fps: plan.fps } : {}), fontFallback: DEFAULT_GRAPHIC_FONT.family } }; }
+  try { let frames = 1; if (plan.kind === 'still') { await writeFile(temporary, raster(plan, images, 0, fonts), { flag: 'wx', mode: 0o600 }); onProgress?.(1); } else frames = await motion(plan, images, temporary, signal, onProgress, fonts); if (signal?.aborted) throw aborted(); await link(temporary, output); await unlink(temporary); return { path: output, kind: plan.kind === 'still' ? 'image' : 'video', width: plan.width, height: plan.height, ...(plan.kind === 'motion' ? { duration: plan.duration } : {}), metadata: { frames, ...(plan.kind === 'motion' ? { fps: plan.fps } : {}), fonts: fonts.families, fontFallback: DEFAULT_GRAPHIC_FONT.family } }; }
   finally { await unlink(temporary).catch(() => {}); }
 }

@@ -748,3 +748,37 @@ button.danger:disabled { opacity: .5; }
 .chat-settings-actions { display: flex; gap: 6px; justify-content: flex-end; }
 [data-chat-messages] > p.chat-boundary { max-width: 100%; margin: 6px auto 14px; text-align: center; }
 [data-chat-messages] > p.chat-boundary > span { background: transparent; border: 1px dashed var(--line); color: var(--muted); font-size: 11px; }
+
+/* Channel-level pages share the episode shell and preserve its state. */
+[hidden] { display: none !important; }
+header { justify-content: flex-start; gap: 18px; }
+header .page-nav { display: flex; align-self: stretch; align-items: center; gap: 24px; margin-left: auto; padding: 0; }
+.page-nav a { color: var(--muted); text-decoration: none; padding: 20px 0 17px; border-bottom: 3px solid transparent; font-weight: 650; }
+.page-nav a[aria-current="page"] { color: var(--deep); border-bottom-color: var(--deep); }
+#saveState { margin-left: auto; white-space: nowrap; }
+.channel-pill { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-page { max-width: 1100px; margin: 0 auto; padding: 28px 32px 64px; }
+.settings-page h1 { margin: 0; font: bold 30px Georgia, serif; }
+.settings-page h2 { margin: 0 0 16px; font-size: 18px; }
+.settings-page h2 small { font: normal 12px system-ui; color: var(--muted); margin-left: 8px; }
+.settings-card { border: 1px solid var(--line); background: var(--card); border-radius: 14px; padding: 24px; margin: 18px 0; }
+.standards-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; margin-bottom: 28px; }
+.settings-page label { display: flex; flex-direction: column; gap: 8px; color: var(--ink); }
+.settings-page input, .settings-page select, .settings-page textarea { min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 9px; background: white; color: var(--ink); }
+.settings-page textarea { resize: vertical; }
+.color-field { display: flex; gap: 6px; }
+.color-field input[type="color"] { padding: 3px; width: 42px; height: 40px; flex-shrink: 0; }
+.color-field input[data-color] { width: 100%; }
+.font-preview { display: block; margin-top: 10px; font-size: 21px; min-height: 64px; color: var(--deep); }
+.settings-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+#defaultModelEditor { max-width: 560px; }
+#defaultModelEditor fieldset { border: 0; padding: 0; display: grid; gap: 16px; }
+#defaultModelEditor .chat-settings-actions { margin-top: 18px; }
+@media (max-width: 760px) {
+  header { height: auto; min-height: 66px; gap: 10px; flex-wrap: wrap; padding: 10px 14px; }
+  header .page-nav { order: 4; width: 100%; justify-content: center; }
+  .page-nav a { padding: 8px 0; }
+  .settings-page { padding: 20px 16px; }
+  .standards-grid { grid-template-columns: 1fr; }
+  .settings-card { padding: 18px; }
+}

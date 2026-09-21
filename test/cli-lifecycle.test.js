@@ -132,7 +132,8 @@ test("the unit is generated with quoted absolute paths, bounded restarts, drain 
 
 test("up writes the host config and unit, starts it, waits for matching health, and is idempotent", async (t) => {
   const s = await sandbox(t);
-  assert.equal((await s.run(["channel", "create", "Alpha"])).code, 0);
+  const created = await s.run(["channel", "create", "Alpha"], { probeService: async () => ({ state: "stopped" }) });
+  assert.equal(created.code, 0, created.stderr);
   const up = await s.run(["up", "--port", String(s.port)]);
   assert.equal(up.code, 0, up.stderr);
   assert.match(up.stdout, new RegExp(`running: http://127\\.0\\.0\\.1:${s.port}/\\nRelease ${release.id} \\(commit 0fcda47\\)`));
