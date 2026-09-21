@@ -76,13 +76,13 @@ export function mergeTools(runtimeTools, chatHandlers = {}) {
 // request-scoped worker whose session directory is that segment's. Without a segment
 // (legacy single-Codex path) the conversation ID is the segment.
 export function createWorkerHarnessFactory({ store, controlSocket, templates, segmentFor = defaultSegmentFor, bootContextFor = defaultBootContextFor, onRequest = () => {} }) {
-  return async function workerHarnessFactory({ episodeId, conversationId, requestId, harness = "codex", model, effort = null, segmentId = null, request: turnRequest = {}, tools, onEvent, onError }) {
+  return async function workerHarnessFactory({ episodeId, conversationId, requestId, harness = "codex", model, effort = null, segmentId = null, request: turnRequest = {}, tools, onEvent, onError, onToolCall = () => {} }) {
     if (!episodeId || !conversationId || !requestId) throw new Error("Worker-backed turns need episode, conversation and request identity");
     if (!["codex", "claude"].includes(harness)) throw new Error(`Unsupported harness: ${harness}`);
     const request = await openWorkerRequest({
       controlSocket, store, requestId, conversationId, harness, segmentId: segmentId ?? segmentFor(conversationId), episodeId, templates,
       bootContext: bootContextFor(store, { episodeId, conversationId, model, effort, harness, request: turnRequest }), model,
-      wrapTools: (runtimeTools) => mergeTools(runtimeTools, tools),
+      wrapTools: (runtimeTools) => mergeTools(runtimeTools, tools), onToolCall,
     });
     onRequest({ requestId, episodeId, conversationId, harness, containerId: request.started.containerId, render: request.render });
     let connection;

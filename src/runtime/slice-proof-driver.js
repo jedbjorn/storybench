@@ -12,6 +12,7 @@ import { importMedia } from "../media.js";
 import { controlRequest } from "./channel.js";
 import { DATA_MOUNT, APP_CONTROL_MOUNT, CONTROL_SOCKET_NAME } from "./layout.js";
 import { openWorkerRequest } from "./request.js";
+import { defaultBootContextFor } from "./app-runtime.js";
 
 const CONTROL = process.env.STORYBENCH_RUNTIME_CONTROL || `${APP_CONTROL_MOUNT}/${CONTROL_SOCKET_NAME}`;
 const clip = (value, max = 600) => (typeof value === "string" && value.length > max ? `${value.slice(0, max)}…[${value.length} chars]` : value);
@@ -73,11 +74,14 @@ async function runTurn(spec) {
   const out = { phase: spec.phase, harness: spec.harness, requestId: spec.requestId, events, toolCalls: trace };
   const request = await openWorkerRequest({
     controlSocket: CONTROL, store, requestId: spec.requestId, conversationId: spec.conversationId,
-    harness: spec.harness, segmentId: spec.segmentId, episodeId: spec.episodeId, bootContext: spec.bootContext, model: spec.model,
+    harness: spec.harness, segmentId: spec.segmentId, episodeId: spec.episodeId, model: spec.model,
+    // The app's real boot context (all template variables), as production requests build it.
+    bootContext: defaultBootContextFor(store, { episodeId: spec.episodeId, conversationId: spec.conversationId, model: spec.model, harness: spec.harness, request: { text: spec.prompt, kind: "chat" } }),
     wrapTools: (tools) => withTracing(tools, trace),
   });
   out.worker = { containerId: request.started.containerId, state: request.started.state };
   out.render = { templateVersion: request.render.templateVersion, bootSha256: request.render.bootSha256, files: request.render.files, removed: request.render.removed };
+  out.skillsRendered = [...new Set(request.render.files.map((file) => file.path.split("/")[2]).filter(Boolean))];
   const deadline = spec.timeoutMs ?? 300_000;
   try {
     if (spec.harness === "codex") {
@@ -178,7 +182,7 @@ async function main() {
     // Offline (no server): initialize a disposable data root with two channels and one
     // episode each, returning locations from the store path API.
     initDataRoot(DATA_MOUNT);
-    const channels = [createChannel(DATA_MOUNT, "Slice A"), createChannel(DATA_MOUNT, "Slice B")];
+    const channels = [createChannel(DATA_MOUNT, `Slice A${spec.nameSuffix ? ` ${spec.nameSuffix}` : ""}`), createChannel(DATA_MOUNT, `Slice B${spec.nameSuffix ? ` ${spec.nameSuffix}` : ""}`)];
     const store = openDataRoot(DATA_MOUNT, { startup: false });
     const rel = (value) => path.relative(DATA_MOUNT, value);
     const episodes = channels.map((channel) => {

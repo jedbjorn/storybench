@@ -204,6 +204,8 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       }
       connection = await codexFactory({ cwd: store.workspace, model: plan ? plan.selection.model : model, tools: tools(value, activity), signal: controller.signal,
         episodeId: value.episode_id, conversationId: value.id, requestId, request: { text, messageId, kind: "chat", cardId: null },
+        // Every Storybench tool call of a worker-backed turn arrives through the request bridge.
+        onToolCall: (call) => { try { emit(value, "tool.called", { name: call.name, requestId }); } catch { /* conversation gone */ } },
         ...(plan ? { harness: plan.selection.harness, effort: plan.selection.effort, segmentId: segment.id } : {}),
         onEvent: (event) => dispatch ? consume(event) : pending.push(event), onError: (cause) => { if (dispatch) rejectDone(cause); } });
       if (aborted) throw error("Chat stopped; the prompt was not replayed", 409);
