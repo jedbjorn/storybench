@@ -83,10 +83,21 @@ test("renders refuse to replace symlinks and templates reject unknown placeholde
   assert.throws(() => fillTemplate("{{runtime.missing}}", context), /no value for \{\{runtime\.missing\}\}/);
 });
 
-test("the shipped placeholder templates render", async (t) => {
+test("the shipped templates render with the app's boot context and cover the skill roster", async (t) => {
   const dir = await tempDir(t);
   const result = await renderEpisodeBoot({ episodeDir: dir, context });
-  assert.ok(result.files.some((file) => file.path === ".agents/skills/storybench-runtime-check/SKILL.md"));
+  const roster = ["storybench-understand-project", "storybench-read-references", "storybench-edit-story-cards", "storybench-edit-broll",
+    "storybench-create-graphics", "storybench-reuse-project-assets", "storybench-assemble-draft", "storybench-finish-video"];
+  for (const name of roster) for (const root of [".claude/skills", ".agents/skills"])
+    assert.ok(result.files.some((file) => file.path === `${root}/${name}/SKILL.md`), `${root}/${name} rendered`);
+  const loaded = await loadTemplates();
+  assert.deepEqual(loaded.skills.map((skill) => skill.name).sort(), [...roster].sort());
+  for (const skill of loaded.skills) assert.ok(skill.description.length > 20 && skill.description.length < 400, `${skill.name} has a usable description`);
+  const boot = await readFile(path.join(dir, "AGENTS.md"), "utf8");
+  assert.equal(boot, await readFile(path.join(dir, "CLAUDE.md"), "utf8"));
+  assert.match(boot, /Reference material is read-only feel context\. Do not edit it or directly use it in the production unless the creator explicitly asks for that use or edit\./);
+  for (const name of roster) assert.ok(boot.includes(`.claude/skills/${name}/SKILL.md`), `boot indexes ${name}`);
+  assert.ok(!/\{\{/.test(boot), "no unfilled placeholders in the boot");
 });
 
 function bridgeCall(socketPath, message) {

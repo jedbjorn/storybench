@@ -5,7 +5,7 @@ const guides = {
   create_still_graphic: "Create a bounded still graphic recipe from text, shapes, and registered images. Validate and render it, then use the resulting registered Graphics item on a card.",
   create_animated_graphic: "Create a bounded motion recipe with explicit duration and numeric keyframes. Validate and render it before assigning the registered result to a card.",
   create_draft: "Validate the current render plan, note its render revision, then enqueue a draft using that exact revision. Draft rendering does not change episode state.",
-  create_final: "A final needs a one-use authorization created by the user's Final action for this conversation and exact render revision. Validate first; if no matching authorization is available, request that action instead of claiming a final was created.",
+  create_final: "The creator's explicit Final request (the Final action or a plain request to finish) authorizes taking the current saved project through the remaining edits, graphics and renders to publication without another exact-cut approval. Validate, publish with the exact current render revision, and report completion only when the job is completed. Until the request-bound Final form ships, create_final still takes the finalGrantId minted by the Final action; if the tool reports missing authorization, say so and report what remains rather than minting or guessing one.",
 };
 
 export function getOperationGuide(name) {
