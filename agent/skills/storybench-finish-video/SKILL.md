@@ -25,7 +25,7 @@ get_job { "jobId": "job-…" }                          → … { "state": "comp
 
 `[PLACEHOLDER: Final request binding — today create_final also takes finalGrantId from a one-use grant minted by the Final button; the request-bound form under decision #34 (the creator's Final request carries the authority for this request's whole preparation and job continuation) lands with the Final lane. If the tool reports missing authorization, say so and report what remains; do not mint or guess a grant.]`
 
-Publication validates and pins the exact current saved inputs at that moment. A moved `renderRevision` means something changed during preparation — validate again and resubmit; concurrent creator edits are handled as normal conflicts, never by publishing stale inputs. A queued/running job is not a finished final; report completion only when `get_job` says `completed` and an output file exists. Waiting: `[PLACEHOLDER: await_job — see the assemble-draft skill]`.
+Publication validates and pins the exact current saved inputs at that moment. A moved `renderRevision` means something changed during preparation — validate again and resubmit; concurrent creator edits are handled as normal conflicts, never by publishing stale inputs. A queued/running job is not a finished final; report completion only when `get_job` says `completed` and an output file exists. Wait with `await_job { "jobId": "…", "timeoutSeconds": 120 }`.
 
 ## After publication
 
@@ -37,7 +37,7 @@ Publication validates and pins the exact current saved inputs at that moment. A 
 
 When the creator says to move an identified final back to Drafts ("move the Tuesday final back to drafts", "demote that final"), use the reclassification operation:
 
-`[PLACEHOLDER: move_final_to_drafts — the agent tool over the shared operation moveFinalToDrafts({ episodeId, outputId, expectedRevision }) ships with the outputs lane; arguments: the output (job) ID and its current record revision from get_job.]`
+`move_final_to_drafts { "outputId": "job-…", "expectedRevision": 1 }` wraps the shared operation `moveFinalToDrafts({ episodeId, outputId, expectedRevision })`; omit `outputId` only when exactly one completed Final exists.
 
 Behaviour of the operation: same output ID, bytes, resolution, creation time and original render snapshot; a recorded reclassification with actor and time; the file stays where it is and the same playback link works. Its original production class (`outputClass: "final"`) remains part of provenance; `designation` becomes `draft`, which makes it eligible for the creator's draft cleanup. If the request is ambiguous about which final (several exist), identify it first — `get_job` on candidates, dates, durations — rather than guessing. Reclassification alone does not roll back cards, story or source files; to edit that older version, read its job `snapshot` alongside the current state and make explicit revision-checked changes.
 

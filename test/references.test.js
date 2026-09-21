@@ -166,7 +166,7 @@ test("creator direction for reference use/edit is recorded only from a creator m
   const { store, episode, attach } = fixture(t);
   const other = store.createEpisode({ title: "Other" });
   const ref = attach(episode.id, "mood.mp4", "video", "Reference");
-  const current = store.updateEpisode(episode.id, episode.revision, { referenceItemIds: [ref.id], referencePrompt: "keep this pace",
+  store.updateEpisode(episode.id, episode.revision, { referenceItemIds: [ref.id], referencePrompt: "keep this pace",
     cards: [card("open", "Video", { referencePrompt: "card feel", referenceItemIds: [ref.id] })] });
   let options;
   const factory = async (value) => { options = value; return { startThread: async () => "thread", startTurn: async () => "turn", interrupt: async () => {}, close() {} }; };
@@ -200,7 +200,7 @@ test("creator direction for reference use/edit is recorded only from a creator m
   assert.throws(() => store.recordReferenceDirection({ episodeId: episode.id, itemId: ref.id, use: "edit" }), (error) => error.statusCode === 400);
   // Recategorizing or relinking creates no direction.
   store.updateLibraryItem(episode.id, ref.id, ref.revision, { category: "B-roll" });
-  store.updateEpisode(episode.id, current.revision, { referenceItemIds: [] });
+  store.updateEpisode(episode.id, store.getEpisode(episode.id).revision, { referenceItemIds: [] });
   assert.equal(store.listReferenceDirections(episode.id).length, 1);
   assert.equal(store.listReferenceDirections(episode.id, { requestId: "req-2" }).length, 0);
 });

@@ -106,7 +106,7 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
       throw new StoreError("Render inputs changed; validate the current cut and try again", 409, { currentRenderRevision: snapshot.renderRevision });
     const createdAt = now();
     const value = { id: jobId(), episodeId, kind: outputClass, outputClass, state: "queued", progress: 0,
-      revision: snapshot.episode.revision, snapshot, createdAt };
+      revision: snapshot.episode.revision, snapshot, requestId, createdAt };
     const job = outputClass === "final"
       ? store.saveAuthorizedFinalJob(finalGrantId, { episodeId, renderRevision: snapshot.renderRevision, conversationId, requestId }, value)
       : store.saveJob(value);
@@ -148,7 +148,7 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
     return store.updateGraphicRecipe(episodeId, recipeId, expectedRevision, { ...input, recipe: normalized }, actor);
   }
 
-  function enqueueGraphic({ episodeId, channelId = null, recipeId, expectedRecipeRevision }) {
+  function enqueueGraphic({ episodeId, channelId = null, recipeId, expectedRecipeRevision, requestId = null }) {
     worker.assertOpen();
     if (!renderGraphic) throw new StoreError("Graphics capability is unavailable", 503);
     const destination = captureDestination(episodeId, channelId, "graphics");
@@ -159,7 +159,7 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
     const targetCard = recipe.cardId ? episode.cards.find((card) => card.id === recipe.cardId) : null;
     const snapshot = { recipe: { id: recipe.id, revision: recipe.revision, recipe: recipe.recipe },
       episodeRevision: episode.revision, targetCard: targetCard && { id: targetCard.id, type: targetCard.type, itemId: targetCard.itemId } };
-    const value = store.saveJob({ id: jobId(), episodeId, kind: `graphic-${recipe.kind}`, outputClass: "graphic",
+    const value = store.saveJob({ id: jobId(), episodeId, kind: `graphic-${recipe.kind}`, outputClass: "graphic", requestId,
       state: "queued", progress: 0, revision: episode.revision, snapshot: { ...snapshot, renderRevision: renderFingerprint(snapshot), destination } });
     worker.enqueue(value.id, async (signal) => {
       let current = store.saveJob({ ...value, state: "running" });

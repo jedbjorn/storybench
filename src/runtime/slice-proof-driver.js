@@ -166,6 +166,51 @@ async function continuityRun(spec) {
     events: final.events.filter((event) => ["settings.changed", "segment.started", "tool.started", "turn.started"].includes(event.type)).map(({ type, payload, createdAt }) => ({ type, payload, createdAt })),
     runs: final.runs };
 }
+
+// Disposable live proof for task #27: enter through the same shortcut service as the UI,
+// then observe request/job attribution and (optionally) stop while its render is active.
+async function productionRun(spec) {
+  const { createRenderService } = await import("../render-service.js");
+  const { renderGraphic, validateGraphicRecipe } = await import("../graphics.js");
+  const { createModelCatalog, createWorkerHarnessFactory } = await import("./app-runtime.js");
+  const { createV9ConversationPersistence } = await import("./conversation-persistence.js");
+  const store = openDataRoot(DATA_MOUNT, { startup: false });
+  const renders = createRenderService({ workspace: DATA_MOUNT, store, renderGraphic, validateGraphicRecipe });
+  const catalog = createModelCatalog({ controlSocket: CONTROL });
+  const requests = [];
+  const chat = createChatService({ store, renders, continuity: { persistence: createV9ConversationPersistence(store), catalog: (options) => catalog.list(options) },
+    codexFactory: createWorkerHarnessFactory({ store, controlSocket: CONTROL, onRequest: (info) => requests.push(info) }) });
+  const conversation = chat.create(spec.episodeId, { name: `Production ${spec.harness}` });
+  const settings = store.getConversation(conversation.id);
+  store.updateConversationSettings(conversation.id, settings.settingsRevision, { harness: spec.harness, model: spec.model, effort: spec.effort ?? null });
+  const directionMessage = spec.directionText
+    ? store.addConversationMessage({ conversationId: conversation.id, role: "user", text: spec.directionText }) : null;
+  const prompt = String(spec.prompt ?? "").replaceAll("{{directionMessageId}}", String(directionMessage?.id ?? ""));
+  const sent = await chat.sendProduction(spec.episodeId, conversation.id, { kind: spec.kind,
+    prompt, targetCardId: spec.targetCardId ?? null, clientRequestId: `live-${spec.requestId}` });
+  const requestId = sent.requestResult.run.id;
+  let stopped = false;
+  const deadline = Date.now() + (spec.timeoutMs ?? 300_000);
+  while (Date.now() < deadline) {
+    const activeJobs = store.listRequestJobs(requestId, { activeOnly: true });
+    if (spec.stopWhenJobActive && activeJobs.length) {
+      await chat.interrupt(spec.episodeId, conversation.id); stopped = true; break;
+    }
+    const state = chat.get(spec.episodeId, conversation.id).state;
+    if (["idle", "error", "interrupted"].includes(state)) break;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  if (stopped) {
+    while (Date.now() < deadline && !["interrupted", "error"].includes(chat.get(spec.episodeId, conversation.id).state)) await new Promise((resolve) => setTimeout(resolve, 100));
+    while (Date.now() < deadline && store.listRequestJobs(requestId, { activeOnly: true }).length) await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const result = chat.get(spec.episodeId, conversation.id);
+  const jobs = store.listRequestJobs(requestId);
+  await chat.close(); await renders.close("production proof finished"); store.close();
+  return { phase: "production", harness: spec.harness, model: spec.model, requestId, stopped, requests: requests.map((value) => ({ requestId: value.requestId, harness: value.harness })),
+    state: result.state, error: result.error ?? null, directionMessageId: directionMessage?.id ?? null, messages: result.messages,
+    events: result.events.filter((event) => event.type === "tool.called"), run: result.runs.find((value) => value.id === requestId), jobs };
+}
 const randomUUIDLocal = () => globalThis.crypto.randomUUID();
 
 async function main() {
@@ -247,6 +292,8 @@ async function main() {
     result = { phase: "episode-state", revision: episode.revision, cards: episode.cards.map(({ id, type, itemId, referenceItemIds }) => ({ id, type, itemId, referenceItemIds })), library, directions };
   } else if (spec.phase === "continuity") {
     result = await continuityRun(spec);
+  } else if (spec.phase === "production") {
+    result = await productionRun(spec);
   } else result = await runTurn(spec);
   process.stdout.write(JSON.stringify(result) + "\n");
   process.exit(0);
