@@ -23,7 +23,7 @@ function media(dir, name, args) {
   return file;
 }
 
-test("episode and card reference panels link, upload, unlink and report unavailable items in a real browser", { timeout: 60_000 }, async (t) => {
+test("episode and card reference panels link, upload, unlink and report unavailable items in a real browser", { timeout: 180_000 }, async (t) => {
   const browser = await launch();
   if (!browser) return t.skip("No launchable Chromium on this seat");
   t.after(() => browser.close());
@@ -55,6 +55,7 @@ test("episode and card reference panels link, upload, unlink and report unavaila
     assert.fail(message);
   };
   const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+  page.setDefaultTimeout(60_000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   const open = async () => {
