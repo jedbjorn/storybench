@@ -58,7 +58,11 @@ function handle(socket) {
     socket.pause();
     let command, args;
     try { [command, args] = launchArgv(JSON.parse(buffer.subarray(0, newline).toString("utf8"))); }
-    catch (error) { socket.end(JSON.stringify({ storybench: "error", code: "INVALID_LAUNCH", error: error.message }) + "\n"); return; }
+    catch (error) {
+      console.error(JSON.stringify({ event: "launch.rejected", harness: HARNESS }));
+      socket.end(JSON.stringify({ storybench: "error", code: "INVALID_LAUNCH", error: error.message }) + "\n");
+      return;
+    }
     const rest = buffer.subarray(newline + 1);
     const child = spawn(command, args, { cwd: process.cwd(), env: process.env, stdio: ["pipe", "pipe", "inherit"], detached: true });
     const killGroup = (signal) => { try { process.kill(-child.pid, signal); } catch { /* gone */ } };
