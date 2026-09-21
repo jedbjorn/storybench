@@ -42,7 +42,7 @@ test("a v8 database (conversations created by the v8 chat code) migrates to v9 w
   assert.equal(original.conversations.filter((row) => row.thread_id).length, 1);
   let store = new Store(root, { legacyWorkspace: false, startup: false });
   assert.equal(Number(store.db.prepare("PRAGMA user_version").get().user_version), SCHEMA_VERSION);
-  assert.equal(SCHEMA_VERSION, 9);
+  assert.equal(SCHEMA_VERSION, 10);
   const backup = new DatabaseSync(path.join(root, "storybench.pre-v9.sqlite"), { readOnly: true });
   assert.equal(Number(backup.prepare("PRAGMA user_version").get().user_version), 8);
   backup.close();
@@ -87,8 +87,8 @@ test("a v5 database (pre-channel conversations) migrates straight through to v9"
   before.close();
   const store = new Store(root, { startup: false });
   t.after(() => store.close());
-  assert.equal(Number(store.db.prepare("PRAGMA user_version").get().user_version), 9);
-  assert.deepEqual(rows(store, "SELECT version FROM migration_log ORDER BY version").map((row) => row.version), [5, 6, 7, 8, 9]);
+  assert.equal(Number(store.db.prepare("PRAGMA user_version").get().user_version), 10);
+  assert.deepEqual(rows(store, "SELECT version FROM migration_log ORDER BY version").map((row) => row.version), [5, 6, 7, 8, 9, 10]);
   assert.ok(existsSync(path.join(root, "storybench.pre-v6.sqlite")));
   assert.equal(store.listChannels().length, 1);
   assert.deepEqual(rows(store, "SELECT id,native_session_id FROM conversation_segments").map((row) => ({ id: row.id, thread_id: row.native_session_id })), threads);
@@ -107,6 +107,28 @@ test("a fresh database gets the tables before any chat service runs, and the cha
   t.after(() => chat.close());
   const conversation = chat.create(episode.id, { name: "New" });
   assert.deepEqual((({ harness, settingsSource, model }) => ({ harness, settingsSource, model }))(store.getConversation(conversation.id)), { harness: "codex", settingsSource: "default", model: null });
+});
+
+test("a v9 database migrates transactionally to v10 with a pre-v10 backup and reopens idempotently", (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "storybench-v10-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let store = new Store(root, { startup: false });
+  store.db.exec("DROP TABLE reference_prompt_directions; DELETE FROM migration_log WHERE version=10; PRAGMA user_version=9");
+  store.close();
+  store = new Store(root, { startup: false });
+  assert.equal(Number(store.db.prepare("PRAGMA user_version").get().user_version), 10);
+  assert.ok(store.tableExists("reference_prompt_directions"));
+  const backupPath = path.join(root, "storybench.pre-v10.sqlite");
+  assert.ok(existsSync(backupPath));
+  const backup = new DatabaseSync(backupPath, { readOnly: true });
+  assert.equal(Number(backup.prepare("PRAGMA user_version").get().user_version), 9);
+  assert.equal(backup.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='reference_prompt_directions'").get(), undefined);
+  backup.close();
+  store.close();
+  store = new Store(root, { startup: false });
+  t.after(() => store.close());
+  assert.equal(store.db.prepare("SELECT COUNT(*) n FROM migration_log WHERE version=10").get().n, 1);
+  assert.deepEqual(store.db.prepare("PRAGMA foreign_key_check").all(), []);
 });
 
 // A v9 store with one episode, two conversations and a user message in the first.

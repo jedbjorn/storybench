@@ -4,8 +4,8 @@ const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character
 const working = (state) => ["queued", "running", "interrupting"].includes(state);
 
 export class ChatWorkspace {
-  constructor({ root, api, getEpisode, toast = () => {} }) {
-    Object.assign(this, { root, api, getEpisode, toast });
+  constructor({ root, api, getEpisode, toast = () => {}, onBusyChange = () => {} }) {
+    Object.assign(this, { root, api, getEpisode, toast, onBusyChange });
     this.conversations = [];
     this.currentId = null;
     this.generation = 0;
@@ -56,6 +56,19 @@ export class ChatWorkspace {
   }
   itemUrl(episodeId = this.episodeId, conversationId = this.currentId) { return `/api/episodes/${episodeId}/chats/${conversationId}`; }
   draftField() { return this.root.querySelector("[data-chat-draft]"); }
+  isBusy() { return this.conversations.some((item) => working(item.state)); }
+
+  async sendProduction({ kind, targetCardId = null, prompt = "", clientRequestId = crypto.randomUUID() }) {
+    if (!this.episodeId || !this.currentId) await this.open();
+    if (!this.episodeId || !this.currentId) throw new Error("Open an episode before asking the assistant");
+    if (this.isBusy()) throw new Error("A request is already active for this episode. Let it finish or press Stop; this request was not queued.");
+    const episodeId = this.episodeId, conversationId = this.currentId;
+    await this.flushDraft();
+    const value = await this.api(`${this.itemUrl(episodeId, conversationId)}/production-requests`, { method: "POST",
+      body: JSON.stringify({ kind, targetCardId, prompt, clientRequestId }) });
+    if (this.isCurrent(this.generation, episodeId, conversationId)) await this.refreshList(this.generation, episodeId, { preserveSelection: true });
+    return value;
+  }
 
   setHistoryOpen(open) {
     this.historyOpen = Boolean(open);
@@ -159,6 +172,16 @@ export class ChatWorkspace {
       try { await this.api(`${this.itemUrl(episodeId, conversationId)}/interrupt`, { method: "POST", body: "{}" }); if (this.isCurrent(generation, episodeId, conversationId)) await this.refresh(generation, episodeId, conversationId); }
       catch (cause) { this.toast(cause.message); }
     };
+    this.root.querySelector("[data-chat-messages]").onclick = async (event) => {
+      const button = event.target.closest("[data-chat-retry]");
+      if (!button || this.isBusy()) return;
+      const conversationId = this.currentId;
+      try {
+        await this.flushDraft();
+        await this.api(`${this.itemUrl(episodeId, conversationId)}/production-requests/${button.dataset.chatRetry}/retry`, { method: "POST", body: JSON.stringify({ clientRequestId: crypto.randomUUID() }) });
+        if (this.isCurrent(generation, episodeId, conversationId)) await this.refreshList(generation, episodeId, { preserveSelection: true });
+      } catch (cause) { this.toast(cause.message); }
+    };
     this.outsideClick = (event) => {
       if (!this.historyOpen || drawer.contains(event.target) || toggle.contains(event.target)) return;
       this.setHistoryOpen(false);
@@ -198,7 +221,8 @@ export class ChatWorkspace {
     chip.dataset.selectable = value.settings ? "true" : "false";
     // Messages and visible boundaries (settings changes, new native sessions) in time order.
     const boundaries = (value.events ?? []).map((event) => ({ at: event.createdAt, text: boundaryText(event) })).filter((entry) => entry.text);
-    const items = [...value.messages.map((message) => ({ at: message.createdAt, html: `<p class="chat-${escapeHtml(message.role)}"><b>${message.role === "user" ? "You" : "Assistant"}</b><span>${escapeHtml(message.text)}</span></p>` })),
+    const retryByMessage = new Map((value.runs ?? []).filter((run) => ["failed", "interrupted"].includes(run.state)).map((run) => [run.originatingMessageId, run.id]));
+    const items = [...value.messages.map((message) => ({ at: message.createdAt, html: `<p class="chat-${escapeHtml(message.role)}" data-message-id="${message.id}"><b>${message.role === "user" ? "You" : "Assistant"}</b><span>${escapeHtml(message.text)}</span>${retryByMessage.has(message.id) ? `<button type="button" data-chat-retry="${escapeHtml(retryByMessage.get(message.id))}" aria-label="Retry this request as a new explicit request">Retry</button>` : ""}</p>` })),
       ...boundaries.map((entry) => ({ at: entry.at, html: `<p class="chat-boundary" role="note"><span>${escapeHtml(entry.text)}</span></p>` }))]
       .sort((a, b) => String(a.at ?? "").localeCompare(String(b.at ?? "")));
     this.root.querySelector("[data-chat-messages]").innerHTML = items.map((item) => item.html).join("") || "<p>Start a conversation about this episode.</p>";
@@ -207,6 +231,7 @@ export class ChatWorkspace {
     const busy = this.conversations.some((item) => working(item.state));
     const send = this.root.querySelector("[data-chat-send]"); send.disabled = busy; send.title = busy ? "Another conversation is working for this episode" : "";
     const stop = this.root.querySelector("[data-chat-stop]"); stop.hidden = !working(value.state); stop.disabled = value.state === "interrupting";
+    this.onBusyChange(busy);
   }
 }
 

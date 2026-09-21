@@ -3,6 +3,7 @@ import path from "node:path";
 import { createCodexConnection } from "./codex.js";
 import { getOperationGuide, OPERATION_GUIDE_NAMES } from "./agent-guides.js";
 import { changeSettings, initialSettings, planTurn } from "./runtime/conversation-runtime.js";
+import { moveFinalToDrafts } from "./services/outputs.js";
 
 const now = () => new Date().toISOString();
 const parse = (value, fallback) => value == null ? fallback : JSON.parse(value);
@@ -41,7 +42,7 @@ function installSchema(db) {
 // `continuity` (optional): { persistence, catalog: async ({ refresh }) => harness entries }.
 // With it, each conversation carries its own harness/model/effort selection and native-session
 // segments (spec #11 "Switching and continuity"); without it the legacy single-Codex path runs.
-export function createChatService({ store, renders, onChange = () => {}, codexFactory = createCodexConnection, model = process.env.STORYBENCH_CODEX_MODEL, continuity = null }) {
+export function createChatService({ store, renders, onChange = () => {}, codexFactory = createCodexConnection, model = process.env.STORYBENCH_CODEX_MODEL, continuity = null, requestPersistence = null }) {
   const db = store.db;
   installSchema(db);
   const restartStamp = now();
@@ -64,13 +65,14 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     ...(value.error ? { error: value.error } : {}), createdAt: value.created_at, updatedAt: value.updated_at });
   const project = (episodeId, id) => {
     const value = row(episodeId, id);
-    const selection = continuity ? {
-      settings: continuity.persistence.getSettings(value.id),
-      segments: continuity.persistence.listSegments(value.id).map(({ id: segmentId, harness, nativeSessionId, reason, previousSegmentId, createdAt, endedAt }) => ({ id: segmentId, harness, nativeSessionId, reason, previousSegmentId, createdAt, endedAt })),
-      runs: continuity.persistence.listRuns(value.id).slice(-20),
+    const persistence = continuity?.persistence ?? requestPersistence;
+    const selection = persistence ? {
+      ...(continuity ? { settings: persistence.getSettings(value.id) } : {}),
+      segments: persistence.listSegments(value.id).map(({ id: segmentId, harness, nativeSessionId, reason, previousSegmentId, createdAt, endedAt }) => ({ id: segmentId, harness, nativeSessionId, reason, previousSegmentId, createdAt, endedAt })),
+      runs: persistence.listRuns(value.id).slice(-20),
     } : {};
     return { ...summary(value), ...selection,
-      messages: db.prepare("SELECT id,role,text,state,turn_id turnId,created_at createdAt,updated_at updatedAt FROM conversation_messages WHERE conversation_id=? ORDER BY id").all(id),
+      messages: db.prepare("SELECT id,role,text,state,turn_id turnId,origin,created_at createdAt,updated_at updatedAt FROM conversation_messages WHERE conversation_id=? ORDER BY id").all(id),
       events: db.prepare("SELECT sequence,type,payload,created_at createdAt FROM conversation_events WHERE conversation_id=? ORDER BY sequence").all(id)
         .map((event) => ({ ...event, conversationId: id, payload: parse(event.payload, {}) })) };
   };
@@ -91,7 +93,8 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     const id = newId(), stamp = now();
     db.prepare("INSERT INTO conversations(id,episode_id,name,created_at,updated_at) VALUES(?,?,?,?,?)").run(id, episodeId, name, stamp, stamp);
     // A new conversation reuses the last explicit choice; other conversations are untouched.
-    if (continuity) continuity.persistence.initSettings(id, initialSettings(continuity.persistence));
+    const persistence = continuity?.persistence ?? requestPersistence;
+    if (persistence) persistence.initSettings(id, initialSettings(persistence));
     return project(episodeId, id);
   };
   const first = (episodeId) => {
@@ -139,16 +142,36 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     update_story: ({ expectedStoryRevision, source }) => { ensureActive(value, origin); return store.saveStory(value.episode_id, expectedStoryRevision, source, "agent"); },
     update_cards: ({ expectedRevision, cards }) => { ensureActive(value, origin); return store.updateEpisode(value.episode_id, expectedRevision, { cards }, "agent"); },
     validate_render: () => renders.validateRender(value.episode_id),
-    create_draft: ({ expectedRenderRevision }) => { ensureActive(value, origin); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "draft", expectedRenderRevision, conversationId: value.id }); },
+    create_draft: ({ expectedRenderRevision }) => { ensureActive(value, origin); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "draft", expectedRenderRevision, conversationId: value.id, requestId: origin.requestId }); },
     request_final: () => ({ requiredAction: "Use Create final in Storybench", conversationId: value.id, renderRevision: renders.validateRender(value.episode_id).renderRevision }),
-    create_final: ({ expectedRenderRevision, finalGrantId }) => { ensureActive(value, origin); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "final", expectedRenderRevision, finalGrantId, conversationId: value.id }); },
+    create_final: ({ expectedRenderRevision, finalGrantId }) => { ensureActive(value, origin); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "final", expectedRenderRevision, finalGrantId, conversationId: value.id, requestId: origin.requestId }); },
     get_job: ({ jobId }) => renders.getJob(value.episode_id, jobId),
+    await_job: async ({ jobId, timeoutSeconds = 120 }) => {
+      const timeout = Math.min(300, Math.max(1, Number(timeoutSeconds) || 120)) * 1000;
+      const owned = store.getJob(jobId);
+      if (!owned || owned.episodeId !== value.episode_id) throw error("Job not found", 404);
+      if (owned.requestId !== origin.requestId) throw error("This job is not owned by the active request", 403);
+      const started = Date.now();
+      while (Date.now() - started < timeout) {
+        ensureActive(value, origin);
+        const job = renders.getJob(value.episode_id, jobId);
+        if (["completed", "failed", "cancelled"].includes(job.state)) return job;
+        await new Promise((resolve, reject) => {
+          const stopped = () => { clearTimeout(timer); reject(error("Request stopped while waiting for its job", 409)); };
+          const timer = setTimeout(() => { origin.signal.removeEventListener("abort", stopped); resolve(); }, 250);
+          origin.signal.addEventListener("abort", stopped, { once: true });
+        });
+      }
+      const job = renders.getJob(value.episode_id, jobId);
+      throw error(`Job ${jobId} is still ${job.state}; it has not succeeded`, 408, { current: job });
+    },
     cancel_job: ({ jobId }) => { ensureActive(value, origin); return renders.cancelJob(value.episode_id, jobId); },
+    move_final_to_drafts: ({ outputId = null, expectedRevision = null } = {}) => { ensureActive(value, origin); return moveFinalToDrafts(store, { episodeId: value.episode_id, outputId, expectedRevision, actor: "agent", requestId: origin.requestId }); },
     list_graphic_recipes: () => renders.listGraphicRecipes(value.episode_id),
     get_graphic_recipe: ({ recipeId }) => { const recipe = renders.getGraphicRecipe(value.episode_id, recipeId); if (!recipe) throw error("Graphic recipe not found", 404); return recipe; },
     create_graphic_recipe: (input) => { ensureActive(value, origin); return renders.createGraphicRecipe(value.episode_id, input, "agent"); },
     update_graphic_recipe: ({ recipeId, expectedRevision, ...input }) => { ensureActive(value, origin); return renders.updateGraphicRecipe(value.episode_id, recipeId, expectedRevision, input, "agent"); },
-    render_graphic: ({ recipeId, expectedRecipeRevision }) => { ensureActive(value, origin); return renders.enqueueGraphic({ episodeId: value.episode_id, recipeId, expectedRecipeRevision }); },
+    render_graphic: ({ recipeId, expectedRecipeRevision }) => { ensureActive(value, origin); return renders.enqueueGraphic({ episodeId: value.episode_id, recipeId, expectedRecipeRevision, requestId: origin.requestId }); },
     list_branding: () => store.listBrandingTemplates({ channelId: episode(value.episode_id).channelId }),
     promote_card: ({ cardId, name, role = null }) => { ensureActive(value, origin); return store.promoteCard(value.episode_id, cardId, { name, role }); },
     apply_branding: ({ templateId }) => { ensureActive(value, origin); return store.applyBrandingTemplate(value.episode_id, templateId); },
@@ -159,14 +182,20 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     update_storyboard: ({ expectedRevision, cards }) => { ensureActive(value, origin); return store.updateEpisode(value.episode_id, expectedRevision, { cards }, "agent"); },
   });
 
-  async function execute(value, messageId, text) {
-    let connection, turnId, assistantId, terminal = false, dispatch = false, aborted = false, resolveDone, rejectDone;
-    const requestId = `request_${randomUUID()}`;
-    const persistence = continuity?.persistence;
+  async function execute(value, messageId, text, request = {}) {
+    let connection, turnId, assistantId, terminal = false, dispatch = false, aborted = false, assistantOutput = false, toolActivity = false, resolveDone, rejectDone;
+    const requestId = request.id ?? `request_${randomUUID()}`;
+    const persistence = continuity?.persistence ?? requestPersistence;
     let plan = null, segment = null;
     const finishRun = (patch) => { if (persistence && plan) try { persistence.updateRun(requestId, { ...patch, finishedAt: now() }); } catch { /* attribution is best effort */ } };
+    const restoreTypedDraft = () => {
+      if ((request.origin ?? "typed") !== "typed") return;
+      // Do not replace text the creator entered after dispatch. Button requests use their
+      // explicit Retry action and must likewise leave an existing composer draft untouched.
+      db.prepare("UPDATE conversations SET draft=?,updated_at=? WHERE id=? AND draft=''").run(text, now(), value.id);
+    };
     const controller = new AbortController(), pending = [], done = new Promise((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
-    const activity = { conversationId: value.id, abort: () => { aborted = true; controller.abort(); if (dispatch) rejectDone(error("Chat stopped; the prompt was not replayed", 409)); } };
+    const activity = { conversationId: value.id, requestId, signal: controller.signal, abort: () => { aborted = true; controller.abort(); if (dispatch) rejectDone(error("Chat stopped; the prompt was not replayed", 409)); } };
     active.set(value.episode_id, activity);
     const consume = (event) => {
       const params = event.params || {}, eventTurn = params.turnId || params.turn?.id;
@@ -177,14 +206,25 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
         if (persistence && plan) try { persistence.updateRun(requestId, { state: "running", nativeTurnId: turnId ?? null }); } catch { /* already running */ }
       }
       else if (event.method === "item/agentMessage/delta" && typeof params.delta === "string") {
+        if (params.delta.length) assistantOutput = true;
         if (!assistantId) assistantId = store.addConversationMessage({ conversationId: value.id, role: "assistant", text: "", state: "streaming", turnId }).id;
         db.prepare("UPDATE conversation_messages SET text=text||?,updated_at=? WHERE id=?").run(params.delta, now(), assistantId);
         emit(value, "assistant.delta", { messageId: assistantId, text: params.delta, turnId });
-      } else if (["item/started", "item/completed"].includes(event.method) && ["dynamicToolCall", "mcpToolCall"].includes(params.item?.type)) emit(value, event.method === "item/started" ? "tool.started" : "tool.completed", { name: params.item.tool || params.item.name, status: params.item.status, turnId });
+      } else if (["item/started", "item/completed"].includes(event.method) && ["dynamicToolCall", "mcpToolCall"].includes(params.item?.type)) {
+        toolActivity = true;
+        emit(value, event.method === "item/started" ? "tool.started" : "tool.completed", { name: params.item.tool || params.item.name, status: params.item.status, turnId });
+      }
       else if (event.method === "turn/completed") {
-        terminal = true; const status = params.turn?.status, state = status === "completed" ? "idle" : status === "interrupted" ? "interrupted" : "error", detail = state === "error" ? JSON.stringify(params.turn?.error || "Harness turn failed") : null;
+        terminal = true;
+        const unfinished = persistence ? store.listRequestJobs(requestId, { activeOnly: true }) : [];
+        const providerStatus = params.turn?.status;
+        const status = providerStatus === "completed" && unfinished.length ? "failed" : providerStatus;
+        const state = status === "completed" ? "idle" : status === "interrupted" ? "interrupted" : "error";
+        const detail = unfinished.length ? `The assistant ended while ${unfinished.length} request-owned job(s) were still unfinished; no success was recorded.`
+          : state === "error" ? JSON.stringify(params.turn?.error || "Harness turn failed") : null;
         db.prepare("UPDATE conversation_messages SET state=?,updated_at=? WHERE id=?").run(status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed", now(), messageId);
         if (assistantId) db.prepare("UPDATE conversation_messages SET state=?,updated_at=? WHERE id=?").run(status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed", now(), assistantId);
+        if (state === "error" && !assistantOutput && !toolActivity) restoreTypedDraft();
         finishRun({ state: status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed", error: detail, assistantMessageId: assistantId ?? null, nativeTurnId: turnId,
           modelResolved: connection?.resolved?.model ?? params.model ?? null, effortResolved: connection?.resolved?.effort ?? null, usage: params.usage ?? null });
         setState(value, state, { detail }); resolveDone();
@@ -198,13 +238,14 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
         const earlier = Number(db.prepare("SELECT COUNT(*) n FROM conversation_messages WHERE conversation_id=? AND id<?").get(value.id, messageId).n) > 0;
         plan = planTurn(persistence, value.id, { hasEarlierMessages: earlier, legacyThreadId: value.thread_id, defaultModel: model });
         plannedSegmentId = plan.segment?.id ?? plan.newSegment.adoptId ?? `segment_${randomUUID()}`;
-        persistence.createRun({ id: requestId, conversationId: value.id, segmentId: null, userMessageId: messageId, harness: plan.selection.harness,
-          modelSelected: plan.selection.model, effortSelected: plan.selection.effort, state: "starting", startedAt: now() });
+        if (!request.existingRun) persistence.createRun({ id: requestId, conversationId: value.id, segmentId: null, userMessageId: messageId, harness: plan.selection.harness,
+          modelSelected: plan.selection.model, effortSelected: plan.selection.effort, state: "starting", startedAt: now(), kind: request.kind ?? "chat", origin: request.origin ?? "typed",
+          clientRequestId: request.clientRequestId ?? null, targetCardId: request.targetCardId ?? null, successorOf: request.successorOf ?? null });
       }
       const openConnection = (segmentId) => codexFactory({ cwd: store.workspace, model: plan ? plan.selection.model : model, tools: tools(value, activity), signal: controller.signal,
-        episodeId: value.episode_id, conversationId: value.id, requestId, request: { text, messageId, kind: "chat", cardId: null },
+        episodeId: value.episode_id, conversationId: value.id, requestId, request: { text, messageId, kind: request.kind ?? "chat", cardId: request.targetCardId ?? null },
         // Every Storybench tool call of a worker-backed turn arrives through the request bridge.
-        onToolCall: (call) => { try { emit(value, "tool.called", { name: call.name, requestId }); } catch { /* conversation gone */ } },
+        onToolCall: (call) => { toolActivity = true; try { emit(value, "tool.called", { name: call.name, requestId }); } catch { /* conversation gone */ } },
         ...(plan ? { harness: plan.selection.harness, effort: plan.selection.effort, segmentId } : {}),
         onEvent: (event) => dispatch ? consume(event) : pending.push(event), onError: (cause) => { if (dispatch) rejectDone(cause); } });
       connection = await openConnection(plannedSegmentId);
@@ -284,7 +325,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
         const detail = `${cause?.uncertain ? "The harness may have received this prompt; it was not replayed. " : ""}${cause?.message || "Turn failed"}`;
         // Startup failure keeps the history and the prompt; the creator can retry or choose another model/harness.
         db.prepare("UPDATE conversation_messages SET state='failed',updated_at=? WHERE id=?").run(now(), messageId);
-        if (!dispatch) db.prepare("UPDATE conversations SET draft=? WHERE id=?").run(text, value.id);
+        if (!assistantOutput && !toolActivity) restoreTypedDraft();
         setState(value, "error", { detail }); finishRun({ state: "failed", error: detail });
       } else if (aborted) finishRun({ state: "interrupted" });
     } finally { if (active.get(value.episode_id) === activity) active.delete(value.episode_id); connection?.close(); }
@@ -295,15 +336,82 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     if (active.has(episodeId) || db.prepare("SELECT 1 FROM conversations WHERE episode_id=? AND state IN ('queued','running','interrupting')").get(episodeId)) throw error("A turn is already active for this episode", 409);
     if (typeof text !== "string" || !text.trim()) throw error("Chat message must not be blank");
     // One active production request per conversation (the store does not refuse a second 'starting' run).
-    if (continuity && continuity.persistence.activeRuns?.(id).length) throw error("A request is already running in this conversation; let it finish or press Stop", 409);
+    if ((continuity?.persistence ?? requestPersistence)?.activeRuns?.(id).length) throw error("A request is already running in this conversation; let it finish or press Stop", 409);
     // Origin is bound to the role by the store: a typed creator message (shortcuts are #27's handler).
-    const stamp = now(), messageId = store.addConversationMessage({ conversationId: id, role: "user", text: text.trim(), state: "queued" }).id;
+    const normalized = text.trim();
+    const productionVerb = /\b(?:create|make|build|render|produce|export|assemble)\b/i.test(normalized);
+    const kind = productionVerb && /\bfinal\b/i.test(normalized) ? "final"
+      : productionVerb && /\bdraft\b/i.test(normalized) ? "draft"
+      : productionVerb && /\b(?:animated|motion)\s+graphic\b/i.test(normalized) ? "animated_graphic"
+      : productionVerb && /\b(?:still|static)\s+graphic\b/i.test(normalized) ? "still_graphic" : "chat";
+    const stamp = now(), messageId = store.addConversationMessage({ conversationId: id, role: "user", text: normalized, state: "queued" }).id;
     db.prepare("UPDATE conversations SET draft='',state='queued',error=NULL,updated_at=? WHERE id=?").run(stamp, id); emit(value, "status", { state: "queued" });
-    const task = execute(value, messageId, text.trim()); tasks.add(task); task.finally(() => tasks.delete(task)); return project(episodeId, id);
+    const task = execute(value, messageId, normalized, { kind, origin: "typed" }); tasks.add(task); task.finally(() => tasks.delete(task)); return project(episodeId, id);
+  };
+  const productionText = (episodeId, kind, targetCardId, prompt) => {
+    const current = episode(episodeId), card = targetCardId ? current.cards.find((item) => item.id === targetCardId) : null;
+    if (targetCardId && !card) throw error("Target card not found", 404);
+    const requested = String(prompt ?? "").trim();
+    if (kind === "card_build") return requested || `${card?.itemId ? "Revise" : "Build"} the output for card “${card?.title || targetCardId}”. Use the saved card prompt, references, and current board.`;
+    if (kind === "still_graphic") return requested || `Create and render a still graphic${card ? ` for card “${card.title}”` : " and register it in the episode library"}.`;
+    if (kind === "animated_graphic") return requested || `Create and render an animated graphic${card ? ` for card “${card.title}”` : " and register it in the episode library"}.`;
+    if (kind === "draft") return "Create a draft of the current saved episode. Validate the cut, enqueue the draft, await the job, and report the completed output (not merely that it was queued).";
+    if (kind === "final") return "Create the final output from the current saved episode. Complete the request through the assistant and report only a completed output.";
+    throw error("Unknown production request kind");
+  };
+  const dispatch = (value, messageId, text, request) => {
+    db.prepare("UPDATE conversations SET state='queued',error=NULL,updated_at=? WHERE id=?").run(now(), value.id);
+    emit(value, "status", { state: "queued" });
+    const task = execute(value, messageId, text, request);
+    tasks.add(task); task.finally(() => tasks.delete(task));
+    return project(value.episode_id, value.id);
+  };
+  const sendProduction = async (episodeId, id, body = {}) => {
+    const value = id ? row(episodeId, id) : first(episodeId);
+    const clientRequestId = String(body.clientRequestId ?? "");
+    if (!clientRequestId || clientRequestId.length > 200) throw error("clientRequestId is required and must be at most 200 characters");
+    const persistence = continuity?.persistence ?? requestPersistence;
+    if (!persistence) throw error("Production request persistence is unavailable", 501);
+    const duplicate = store.getRunByClientRequestId(value.id, clientRequestId);
+    if (duplicate) return { ...project(episodeId, value.id), requestResult: { created: false, run: duplicate } };
+    if (active.has(episodeId) || db.prepare("SELECT 1 FROM conversations WHERE episode_id=? AND state IN ('queued','running','interrupting')").get(episodeId))
+      throw error("A request is already active for this episode. Let it finish or press Stop; this request was not queued.", 409);
+    if (persistence.activeRuns?.(value.id).length) throw error("A request is already active for this episode. Let it finish or press Stop; this request was not queued.", 409);
+    const kind = String(body.kind ?? "");
+    if (!["card_build", "still_graphic", "animated_graphic", "draft", "final"].includes(kind)) throw error("Unknown production request kind");
+    const targetCardId = body.targetCardId == null || body.targetCardId === "" ? null : String(body.targetCardId);
+    if (kind === "card_build" && !targetCardId) throw error("A card build needs a target card");
+    const text = productionText(episodeId, kind, targetCardId, body.prompt);
+    const message = store.addConversationMessage({ conversationId: value.id, role: "user", text, state: "queued", shortcut: true });
+    const requestId = `request_${randomUUID()}`;
+    const result = dispatch(value, message.id, text, { id: requestId, kind, origin: "button", clientRequestId, targetCardId });
+    return { ...result, requestResult: { created: true, run: store.getProductionRun(requestId) } };
+  };
+  const retry = async (episodeId, id, runId, { clientRequestId } = {}) => {
+    const value = row(episodeId, id), previous = store.getProductionRun(runId);
+    if (!previous || previous.conversationId !== id) throw error("Production request not found", 404);
+    const duplicate = clientRequestId && store.getRunByClientRequestId(id, clientRequestId);
+    if (duplicate) return { ...project(episodeId, id), requestResult: { created: false, run: duplicate } };
+    if (active.has(episodeId) || db.prepare("SELECT 1 FROM conversations WHERE episode_id=? AND state IN ('queued','running','interrupting')").get(episodeId))
+      throw error("A request is already active for this episode. Let it finish or press Stop; this retry was not queued.", 409);
+    const old = db.prepare("SELECT text FROM conversation_messages WHERE id=? AND conversation_id=?").get(previous.originatingMessageId, id);
+    if (!old) throw error("The original request message is unavailable", 409);
+    const message = store.addConversationMessage({ conversationId: id, role: "user", text: old.text, state: "queued", shortcut: true });
+    const created = store.retryProductionRun(runId, { clientRequestId, originatingMessageId: message.id, origin: "button" });
+    if (!created.created) return { ...project(episodeId, id), requestResult: created };
+    const result = dispatch(value, message.id, old.text, { id: created.run.id, kind: created.run.kind, origin: "button", targetCardId: created.run.targetCardId, existingRun: true, successorOf: runId });
+    return { ...result, requestResult: created };
+  };
+  const cancelOwnedJobs = (activity) => {
+    if (!activity?.requestId || !db.isOpen) return;
+    for (const job of store.listRequestJobs(activity.requestId, { activeOnly: true })) {
+      if (["queued", "running"].includes(job.state)) try { renders.cancelJob(job.episodeId, job.id); } catch { /* terminal race */ }
+    }
   };
   const interrupt = async (episodeId, id) => {
     const value = row(episodeId, id), activity = active.get(episodeId);
     if (!activity || activity.conversationId !== id || !["queued", "running"].includes(value.state)) throw error("This conversation has no active turn", 409);
+    cancelOwnedJobs(activity);
     if (!activity.connection || !value.thread_id || !value.active_turn_id) { activity.abort(); db.prepare("UPDATE conversation_messages SET state='interrupted',updated_at=? WHERE conversation_id=? AND state IN ('queued','running','streaming')").run(now(), id); setState(value, "interrupted"); return project(episodeId, id); }
     setState(value, "interrupting", { threadId: value.thread_id, turnId: value.active_turn_id });
     if (activity.connection.workerRequest) {
@@ -349,6 +457,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     updateSettings, busyReason,
     get: (episodeId, id) => project(episodeId, id || first(episodeId).id), update,
     send: (episodeId, id, text) => text === undefined ? send(episodeId, first(episodeId).id, id) : send(episodeId, id, text),
+    sendProduction, retry,
     interrupt: (episodeId, id) => interrupt(episodeId, id || first(episodeId).id),
     getLegacy: (episodeId) => project(episodeId, first(episodeId).id), sendLegacy: (episodeId, text) => send(episodeId, first(episodeId).id, text), interruptLegacy: (episodeId) => interrupt(episodeId, first(episodeId).id),
     subscribe(episodeId, listener) { episode(episodeId); const set = listeners.get(episodeId) || new Set(); set.add(listener); listeners.set(episodeId, set); return () => { set.delete(listener); if (!set.size) listeners.delete(episodeId); }; },
@@ -358,7 +467,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       for (const [episodeId, item] of active) {
         const value = db.isOpen ? db.prepare("SELECT * FROM conversations WHERE id=? AND episode_id=?").get(item.conversationId, episodeId) : null;
         if (value) { db.prepare("UPDATE conversation_messages SET state='interrupted',updated_at=? WHERE conversation_id=? AND state IN ('queued','running','streaming')").run(now(), value.id); setState(value, "interrupted", { detail: "Stopped because Storybench shut down; the prompt was not replayed." }); }
-        stops.push(item.connection?.close()); item.abort();
+        cancelOwnedJobs(item); stops.push(item.connection?.close()); item.abort();
       }
       await Promise.allSettled([...tasks, ...stops]); active.clear();
     }

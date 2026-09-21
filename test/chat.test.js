@@ -124,7 +124,7 @@ test('Codex JSONL client declares scoped tools and answers dynamic tool calls', 
   const start = requests.find((request) => request.method === 'thread/start');
   assert.equal(start.params.sandbox, 'read-only');
   assert.equal(start.params.approvalPolicy, 'never');
-  assert.deepEqual(start.params.dynamicTools.map((tool) => tool.name), ['get_context','get_operation_guide','read_conversation_history','read_reference_excerpt','update_story','update_cards','validate_render','create_draft','request_final','create_final','get_job','cancel_job','list_graphic_recipes','get_graphic_recipe','create_graphic_recipe','update_graphic_recipe','render_graphic','list_branding','promote_card','apply_branding']);
+  assert.deepEqual(start.params.dynamicTools.map((tool) => tool.name), ['get_context','get_operation_guide','read_conversation_history','read_reference_excerpt','update_story','update_cards','validate_render','create_draft','request_final','create_final','get_job','await_job','cancel_job','move_final_to_drafts','list_graphic_recipes','get_graphic_recipe','create_graphic_recipe','update_graphic_recipe','render_graphic','list_branding','promote_card','apply_branding']);
   stdout.write(`${JSON.stringify({ id: 99, method: 'item/tool/call', params: { threadId, turnId: 'turn_rpc', callId: 'call_1', tool: 'get_context', arguments: {} } })}\n`);
   await until(() => requests.some((request) => request.id === 99 && request.result));
   const response = requests.find((request) => request.id === 99);
@@ -182,7 +182,7 @@ test('agent final tool cannot mint grants and forwards exact conversation scope'
   assert.deepEqual(options.tools.request_final({}), { requiredAction: 'Use Create final in Storybench', conversationId: conversation.id, renderRevision: 'render_exact' });
   assert.equal(options.tools.mint_final_grant, undefined);
   assert.deepEqual(options.tools.create_final({ expectedRenderRevision: 'render_exact', finalGrantId: 'grant_human' }), { id: 'job_final' });
-  assert.deepEqual(enqueued, { episodeId: episode.id, outputClass: 'final', expectedRenderRevision: 'render_exact', finalGrantId: 'grant_human', conversationId: conversation.id });
+  assert.deepEqual(enqueued, { episodeId: episode.id, outputClass: 'final', expectedRenderRevision: 'render_exact', finalGrantId: 'grant_human', conversationId: conversation.id, requestId: options.requestId });
   await chat.interrupt(episode.id, conversation.id); await until(() => chat.get(episode.id, conversation.id).state === 'interrupted');
   await chat.close(); store.close(); rmSync(root, { recursive: true, force: true });
 });

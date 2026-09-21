@@ -157,7 +157,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
   const catalog = chatOptions.catalog ?? (runtimeControl ? createModelCatalog({ controlSocket: runtimeControl }) : null);
   const persistence = chatOptions.persistence ?? conversationPersistenceFor(store);
   const continuity = catalog && persistence ? { persistence, catalog: (options) => catalog.list(options) } : null;
-  const chat = createChatService({ store, renders, onChange: notify, ...runtimeChat, continuity, ...chatOptions });
+  const chat = createChatService({ store, renders, onChange: notify, ...runtimeChat, continuity, requestPersistence: persistence, ...chatOptions });
   const eventStreams = new Set();
   let closing = false;
   let closePromise;
@@ -415,6 +415,10 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           if (conversationId && parts[5] === "messages" && req.method === "POST") {
             const body = await jsonBody(req); return send(res, 202, await chat.send(episodeId, conversationId, body.text));
           }
+          if (conversationId && parts[5] === "production-requests" && parts.length === 6 && req.method === "POST")
+            return send(res, 202, await chat.sendProduction(episodeId, conversationId, await jsonBody(req)));
+          if (conversationId && parts[5] === "production-requests" && parts[6] && parts[7] === "retry" && parts.length === 8 && req.method === "POST")
+            return send(res, 202, await chat.retry(episodeId, conversationId, parts[6], await jsonBody(req)));
           if (conversationId && parts[5] === "interrupt" && req.method === "POST")
             return send(res, 202, await chat.interrupt(episodeId, conversationId));
           if (conversationId && parts[5] === "events" && req.method === "GET") {

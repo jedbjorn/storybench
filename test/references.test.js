@@ -179,7 +179,7 @@ test("creator direction for reference use/edit is recorded only from a creator m
   const userMessage = messages.find((message) => message.role === "user");
   const context = options.tools.get_context({});
   assert.equal(context.references.rule, REFERENCE_RULE);
-  assert.deepEqual(context.references.episode, { scope: "episode", prompt: "keep this pace", items: [{ itemId: ref.id, available: true, label: "mood.mp4", category: "Reference",
+  assert.deepEqual(context.references.episode, { scope: "episode", revision: current.revision, prompt: "keep this pace", items: [{ itemId: ref.id, available: true, label: "mood.mp4", category: "Reference",
     kind: "video", sourceKind: "file", sourceUrl: null, extractionStatus: "not-applicable", hasText: false, directions: [] }] });
   assert.deepEqual(context.references.cards.map((value) => [value.scope, value.cardId, value.prompt, value.items.map((item) => item.itemId)]), [["card", "open", "card feel", [ref.id]]]);
   assert.match(getOperationGuide("read_references").instructions, /read-only feel context/);
@@ -189,7 +189,7 @@ test("creator direction for reference use/edit is recorded only from a creator m
     messageId: userMessage.id, requestId: "req-1", note: "opening shot" });
   assert.equal(store.referenceDirectionFor(episode.id, ref.id, "direct-use", { requestId: "req-1" }).id, direction.id);
   assert.equal(store.referenceDirectionFor(episode.id, ref.id, "edit"), null, "use and edit are distinct directions");
-  assert.deepEqual(store.getReferenceContext(episode.id).episode.items[0].directions, [{ id: direction.id, use: "direct-use", messageId: userMessage.id, requestId: "req-1" }]);
+  assert.deepEqual(store.getReferenceContext(episode.id).episode.items[0].directions, [{ id: direction.id, use: "direct-use", sourceType: "message", messageId: userMessage.id, requestId: "req-1" }]);
   const stamp = new Date().toISOString();
   const assistantId = Number(store.db.prepare("INSERT INTO conversation_messages(conversation_id,role,text,state,created_at,updated_at) VALUES(?,'assistant','sure','completed',?,?)").run(conversation.id, stamp, stamp).lastInsertRowid);
   assert.throws(() => store.recordReferenceDirection({ episodeId: episode.id, itemId: ref.id, use: "edit", conversationId: conversation.id, messageId: assistantId }), (error) => error.statusCode === 403);
@@ -203,6 +203,27 @@ test("creator direction for reference use/edit is recorded only from a creator m
   store.updateEpisode(episode.id, current.revision, { referenceItemIds: [] });
   assert.equal(store.listReferenceDirections(episode.id).length, 1);
   assert.equal(store.listReferenceDirections(episode.id, { requestId: "req-2" }).length, 0);
+});
+
+test("saved reference prompts and creator media selection record exact v10 direction provenance", (t) => {
+  const { store, episode, attach } = fixture(t);
+  const ref = attach(episode.id, "opening.mp4", "video", "Reference");
+  let current = store.updateEpisode(episode.id, episode.revision, { referenceItemIds: [ref.id], referencePrompt: "Use opening.mp4 as the opening shot" });
+  const promptDirection = store.recordReferencePromptDirection({ episodeId: episode.id, itemId: ref.id, use: "direct-use",
+    sourceType: "episode-prompt", episodeRevision: current.revision, note: "opening" });
+  assert.deepEqual((({ sourceType, episodeRevision, textSnapshot }) => ({ sourceType, episodeRevision, textSnapshot }))(promptDirection),
+    { sourceType: "episode-prompt", episodeRevision: current.revision, textSnapshot: "Use opening.mp4 as the opening shot" });
+
+  current = store.updateEpisode(episode.id, current.revision, { referencePrompt: "Use this pace" });
+  assert.throws(() => store.recordReferencePromptDirection({ episodeId: episode.id, itemId: ref.id, use: "direct-use",
+    sourceType: "episode-prompt", episodeRevision: current.revision }), (error) => error.statusCode === 403);
+
+  const selected = [{ id: "opening", title: "Opening", type: "Video", prompt: "", itemId: ref.id, referenceItemIds: [ref.id] }];
+  current = store.updateEpisode(episode.id, current.revision, { cards: selected }, "human");
+  const selection = store.recordReferencePromptDirection({ episodeId: episode.id, itemId: ref.id, use: "direct-use",
+    sourceType: "card-media-selection", cardId: "opening", episodeRevision: current.revision });
+  assert.match(selection.textSnapshot, /Creator selected opening\.mp4/);
+  assert.equal(store.referenceDirectionFor(episode.id, ref.id, "direct-use").id, selection.id);
 });
 
 test("reference panel offers any library item, reports unavailable links and escapes labels", () => {
