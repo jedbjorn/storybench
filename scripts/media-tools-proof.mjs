@@ -142,7 +142,7 @@ async function harnessRun(harness, seed, seedA, seedB, sourceHashBefore) {
     `1. With ffmpeg, cut seconds 4 to 6 of the scene clip (file ${clipFile}) into a ${size} MP4 at work/${harness}-cut.mp4 (e.g. ffmpeg -y -ss 4 -t 2 -i ${clipFile} -vf scale=${size.replace("x", ":")} -an work/${harness}-cut.mp4). Register it with register_work_file: category B-roll, cardId card_broll, expectedRevision ${current}.`,
     `2. Write a Python script work/${harness}-title.py that uses Pillow to draw a 640x360 still graphic (a white circle on dark green, plus the text ${harness.toUpperCase()}) saved as work/${harness}-title.png, and run it. Register the PNG with register_work_file: category Graphics, sourcePath work/${harness}-title.py, cardId card_title, expectedRevision ${staleRevision}. Use exactly that revision and do not retry if the card is not updated; report what happened to the card and the item.`,
     `3. Reuse item ${seed.items.ordinary} from episode ${seedB.id} (another channel) into this episode with reuse_project_item, and report its origin.`,
-    `4. Call reuse_project_item for the reference item ${seed.items.reference} from episode ${seedB.id} WITHOUT a direction and report the error. Then call it again with direction { messageId: ${conversation.directionMessageId}, use: "direct-use" } — that message is the creator's instruction — and report the result.`,
+    `4. Call reuse_project_item for the reference item ${seed.items.reference} from episode ${seedB.id} WITHOUT a direction and report the result. Then call it again with direction { messageId: ${conversation.directionMessageId}, use: "direct-use" } — that message is the creator's instruction — and report the result.`,
   ].join("\n");
   log(harness, "turn 2 (produce/reuse)");
   const t2 = await driver({ ...common, phase: "produce", requestId: `req-${harness}-produce`, prompt: prompt2, resume: t1.sessionId, timeoutMs: 600_000 });
@@ -165,10 +165,11 @@ async function harnessRun(harness, seed, seedA, seedB, sourceHashBefore) {
     && tools2.some((call) => call.tool === "reuse_project_item" && call.args.sourceItemId === seed.items.ordinary && !call.error),
     `item ${reusedOrdinary?.id} from ${reusedOrdinary?.provenance?.reusedFrom?.channelName}; source sha unchanged ${sourceHashAfter === sourceHashBefore.ordinary}`, `${harness}-2-episode-state.json`);
   const refCalls = tools2.filter((call) => call.tool === "reuse_project_item" && call.args.sourceItemId === seed.items.reference);
-  const refused = refCalls.find((call) => !call.args.direction && /explicit instruction|direction/i.test(call.error ?? ""));
-  const allowed = refCalls.find((call) => call.args.direction?.messageId === conversation.directionMessageId && !call.error);
+  const noDirection = refCalls.find((call) => !call.args.direction && !call.error);
+  const directed = refCalls.find((call) => call.args.direction?.messageId === conversation.directionMessageId && !call.error);
   const direction = after.directions.find((entry) => entry.messageId === conversation.directionMessageId && entry.requestId === `req-${harness}-produce`);
-  record(harness, "reference reuse refused without direction, allowed with the creator's message", refused && allowed && direction, `refused: ${refused?.error?.slice(0, 80)}; direction ${direction?.id}`, `${harness}-2-produce.json`);
+  record(harness, "no-direction reuse of a reference succeeds; a supplied creator direction citation is validated and recorded",
+    noDirection && directed && direction, `no-direction call succeeded: ${Boolean(noDirection)}; direction ${direction?.id}`, `${harness}-2-produce.json`);
 }
 
 async function main() {

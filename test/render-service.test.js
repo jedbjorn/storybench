@@ -130,6 +130,30 @@ test("the database revision guard closes a creator-save race immediately before 
   assert.equal(value.store.getProductionRun(authority.run.id).finalIntent, "active");
 });
 
+test("the database revision guard closes a story-only save race immediately before Final publication", async (t) => {
+  const value = await fixture();
+  t.after(async () => { await value.renders.close(); value.store.close(); await rm(value.workspace, { recursive: true, force: true }); });
+  const snapshot = value.renders.getRenderSnapshot(value.episodeId);
+  const authority = finalRequest(value);
+  const publish = value.store.publishFinalIntent.bind(value.store);
+  let raced = false;
+  value.store.publishFinalIntent = (...args) => {
+    if (!raced) {
+      raced = true;
+      const story = value.store.getStory(value.episodeId);
+      value.store.saveStory(value.episodeId, story.storyRevision, `${story.source}\n\nStory-only edit in the publication gap.`);
+    }
+    return publish(...args);
+  };
+  const final = value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final", expectedRenderRevision: snapshot.renderRevision,
+    conversationId: authority.conversationId, requestId: authority.run.id });
+  const failed = await waitFor(value.store, final.id);
+  assert.equal(failed.state, "failed");
+  assert.match(failed.error, /inputs changed before Final publication/i);
+  assert.equal(failed.outputPath, null);
+  assert.equal(value.store.getProductionRun(authority.run.id).finalIntent, "active");
+});
+
 test("closed worker rejects Final enqueue before using request intent or creating a job", async (t) => {
   const value = await fixture();
   t.after(async () => { value.store.close(); await rm(value.workspace, { recursive: true, force: true }); });

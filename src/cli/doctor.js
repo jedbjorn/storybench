@@ -39,6 +39,14 @@ export async function runDoctor(context) {
   await command("npm", ["--version"]);
   await command("git", ["--version"]);
   const docker = await command("docker", ["info", "--format", "{{.ServerVersion}}"]).catch(() => null);
+  if (docker?.code === 0) {
+    try {
+      const security = await run("docker", ["info", "--format", "{{json .SecurityOptions}}"], { timeoutMs: 30_000, env: context.env });
+      const rootless = security.code === 0 && security.stdout.includes("name=rootless");
+      report(rootless ? "PASS" : "FAIL", "Docker rootless",
+        rootless ? "the selected daemon reports name=rootless" : "the selected daemon must report name=rootless in SecurityOptions");
+    } catch (error) { report("FAIL", "Docker rootless", `security options unavailable (${error.code || error.message})`); }
+  }
   // The executable is useful even before init; PATH absence is actionable but not a broken install.
   const pathEntries = String(context.env.PATH || "").split(":").map((entry) => path.resolve(entry || "."));
   report(pathEntries.includes(path.resolve(context.xdg.bin)) ? "PASS" : "WARN", "PATH",

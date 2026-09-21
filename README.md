@@ -14,7 +14,7 @@ The host needs:
 
 - Node.js 24 or newer and npm, for the installer and CLI;
 - Git, with access to the private repository;
-- Docker usable by the current user (rootless Docker is supported and preferred);
+- rootless Docker usable by the current user; `docker info --format '{{json .SecurityOptions}}'` must report `name=rootless`;
 - a working `systemctl --user` session and a writable, absolute `XDG_RUNTIME_DIR`;
 - at least 5 GiB free by default in the application store and Docker image store.
 
@@ -202,7 +202,7 @@ Common checks:
 - **Port:** the default is loopback-only `127.0.0.1:4173`. Stop first, then choose a free port with `storybench up --port N`. A conflicting listener is reported rather than replaced.
 - **Git access:** installation needs a clean clone with `origin`; updates reuse the host credential helper or SSH configuration. Keep credentials out of the origin URL. Check access with `git ls-remote origin` in a clean clone and `storybench update --check` after installation.
 - **Provider access:** run `codex login` or launch `claude` to sign in on the host, then rerun `storybench doctor`. Missing/expired live login means that harness is unavailable; Storybench never silently substitutes another provider or model.
-- **Docker:** `docker info` must succeed as the same user, without `sudo`. `doctor` checks the immutable app/worker image IDs and runs packaged-tool probes. Rootless Docker must preserve host ownership for the mounted data/work directories; if a production job cannot write its episode work area, stop and correct the rootless mapping or directory ownership rather than running Storybench as root.
+- **Docker:** `docker info` must succeed as the same user, without `sudo`, and its security options must report `name=rootless`. `doctor` enforces that rootless seat, checks the immutable app/worker image IDs and runs packaged-tool probes. Rootless Docker preserves host ownership for the mounted data/work directories; if a production job cannot write its episode work area, stop and correct the rootless mapping or directory ownership rather than running Storybench as root.
 - **Mount scope:** the app mounts the whole data root and owns SQLite/registered writes. Workers see only read-only Storybench project trees, writable work for the current episode, app-owned session state and one staged login file. Neither container receives the Docker socket or runs privileged.
 - **systemd user manager:** `systemctl --user is-system-running` may report `degraded` because of an unrelated unit. Judge Storybench with `storybench status`, `doctor`, its exact unit status and its journal. If the user bus is unavailable, start from a normal login session. `XDG_RUNTIME_DIR` must be set to that session's writable absolute runtime directory; Storybench will not start its managed service without it.
 

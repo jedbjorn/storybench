@@ -12,7 +12,7 @@ Usage: ./install.sh
 
 Install the exact commit from this clean private checkout for the current Linux user.
 The installer uses XDG locations, never sudo, never edits shell startup files, and does
-not start Storybench. Host requirements: Node 24+, Git, Docker and systemd --user.
+not start Storybench. Host requirements: Node 24+, Git, rootless Docker and systemd --user.
 EOF
   exit 0
 fi
@@ -42,7 +42,9 @@ fi
 
 DOCKER_VERSION=$(docker info --format '{{.ServerVersion}}' 2>/dev/null) || fail "Docker is not usable by this user; start/configure the user-accessible daemon and retry (do not use sudo)"
 DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null) || fail "Docker did not report its image-store location"
+DOCKER_SECURITY=$(docker info --format '{{json .SecurityOptions}}' 2>/dev/null) || fail "Docker did not report its security options"
 [[ -n $DOCKER_VERSION ]] || fail "Docker did not report a server version"
+[[ $DOCKER_SECURITY == *name=rootless* ]] || fail "rootless Docker is required; this daemon is not rootless. Hint: configure and select a rootless Docker daemon for this user, then retry without sudo"
 systemctl --user show-environment >/dev/null 2>&1 || fail "systemd --user is unavailable; run from a normal login session with a user manager"
 [[ -n ${XDG_RUNTIME_DIR-} && ${XDG_RUNTIME_DIR:0:1} == / && -d $XDG_RUNTIME_DIR && -w $XDG_RUNTIME_DIR ]] || fail "XDG_RUNTIME_DIR must name a writable absolute directory from the active user session"
 
