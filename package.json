@@ -10,7 +10,7 @@
     "start": "node src/server.js",
     "build": "esbuild src/story-editor.js --bundle --format=esm --outfile=public/story-editor.js",
     "test": "node --test",
-    "lint": "npm run build && node --check src/server.js && node --check src/store.js && node --check src/story-markdown.js && node --check src/story-editor.js && node --check src/library.js && node --check src/composition-plan.js && node --check src/composition-renderer.js && node --check src/media.js && node --check src/graphics.js && node --check src/job-runner.js && node --check src/render-service.js && node --check src/chat.js && node --check src/codex.js && node --check src/services/data-root.js && node --check src/services/channels.js && node --check public/app.js && node --check public/card-workspace.js && node --check public/library-workspace.js && node --check public/chat-workspace.js && node --check public/job-status.js"
+    "lint": "npm run build && node --check src/server.js && node --check src/store.js && node --check src/story-markdown.js && node --check src/story-editor.js && node --check src/library.js && node --check src/composition-plan.js && node --check src/composition-renderer.js && node --check src/media.js && node --check src/graphics.js && node --check src/job-runner.js && node --check src/render-service.js && node --check src/chat.js && node --check src/codex.js && node --check src/services/data-root.js && node --check src/services/channels.js && node --check public/app.js && node --check public/card-workspace.js && node --check public/library-workspace.js && node --check public/chat-workspace.js && node --check public/job-status.js && node --check public/reference-workspace.js"
   },
   "dependencies": {
     "@codemirror/commands": "6.10.3",
@@ -23,6 +23,7 @@
     "markdown-it": "15.0.2"
   },
   "devDependencies": {
-    "esbuild": "0.25.10"
+    "esbuild": "0.25.10",
+    "playwright-core": "1.63.0"
   }
 }

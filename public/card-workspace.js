@@ -18,3 +18,15 @@ export function attachMediaToCard(cards, cardId, itemId) {
   card.itemId = itemId;
   return card;
 }
+
+// A duplicate is a new card with the same direction, references and legacy reference URLs (same episode, so
+// library item IDs stay valid and need no remapping).
+export function duplicateCard(cards, cardId, newId) {
+  const index = cards.findIndex((value) => value.id === cardId);
+  if (index < 0) return null;
+  const source = cards[index];
+  const copy = { ...structuredClone(source), id: newId, title: `${source.title || "Card"} copy`, order: (source.order || 0) + 0.5,
+    referencePrompt: source.referencePrompt ?? "", referenceItemIds: [...(source.referenceItemIds || [])], referenceUrls: [...(source.referenceUrls || [])] };
+  cards.splice(index + 1, 0, copy);
+  return copy;
+}

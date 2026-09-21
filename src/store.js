@@ -24,13 +24,22 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 export const DEFAULT_CHANNEL_NAME = "Main";
 // IDs become directory names, so they must be single safe path segments.
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
 const LEGACY_EPISODE_SUBDIRS = ["reference", "b-roll", "narration", "graphics", "drafts", "final", "cache", "conflicts", "work"];
 const CHANNEL_EPISODE_SUBDIRS = ["work", "outputs", "outputs/drafts", "outputs/final", "outputs/graphics", "conflicts"];
 const channelNameKey = (name) => name.normalize("NFKC").toLowerCase();
+export const REFERENCE_DIRECTION_USES = Object.freeze(["direct-use", "edit"]);
+export const REFERENCE_RULE = "Reference material is read-only feel context. Do not edit it or directly use it in the production unless the creator explicitly asks for that use or edit.";
+
+function referenceIds(value, field) {
+  const ids = value == null ? [] : value;
+  if (!Array.isArray(ids) || ids.some((entry) => typeof entry !== "string" || !entry))
+    throw new StoreError(`${field} must be an array of library item IDs`);
+  return [...new Set(ids)];
+}
 
 export function normalizeChannelName(value) {
   const name = String(value ?? "").normalize("NFC").trim().replace(/\s+/g, " ");
@@ -167,6 +176,7 @@ export function validateCards(cards) {
           : String(card.sectionId),
       order: Number.isFinite(card.order) ? Number(card.order) : 0,
       itemId: card.itemId == null || card.itemId === "" ? null : String(card.itemId),
+      referencePrompt: String(card.referencePrompt ?? ""),
       referenceItemIds: [...new Set(referenceItemIds)],
       referenceUrls: [...new Set(referenceUrls)],
       enabled: card.enabled !== false,
@@ -194,6 +204,8 @@ function episodeRow(row) {
       notes: row.notes,
       state: row.state || "Scaffold",
       revision: row.revision,
+      referencePrompt: row.reference_prompt ?? "",
+      referenceItemIds: parse(row.reference_item_ids, []),
       cards: parse(row.cards, []),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -342,11 +354,18 @@ export class Store {
     if (version >= SCHEMA_VERSION) return;
     const hadLegacySchema = this.tableExists("episodes");
     if (version < 5) this.migrateV5(existingDatabase && hadLegacySchema);
-    if (existingDatabase && hadLegacySchema) {
-      const backupPath = path.join(this.workspace, "storybench.pre-v6.sqlite");
+    if (version < 6) {
+      if (existingDatabase && hadLegacySchema) {
+        const backupPath = path.join(this.workspace, "storybench.pre-v6.sqlite");
+        if (!existsSync(backupPath)) this.backupDatabase(backupPath);
+      }
+      this.migrateV6({ firstChannelName, origin: existingDatabase && hadLegacySchema ? (origin === "adopt" ? "adopt" : "migration") : origin });
+    } else if (existingDatabase) {
+      // Opened at schema 6: keep a consistent copy of exactly that state before references are added.
+      const backupPath = path.join(this.workspace, "storybench.pre-v7.sqlite");
       if (!existsSync(backupPath)) this.backupDatabase(backupPath);
     }
-    this.migrateV6({ firstChannelName, origin: existingDatabase && hadLegacySchema ? (origin === "adopt" ? "adopt" : "migration") : origin });
+    this.migrateV7();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -572,13 +591,71 @@ export class Store {
       if (violations.length)
         throw new StoreError(`Channel migration found ${violations.length} foreign-key violation(s); first: ${JSON.stringify(violations[0])}`, 500);
       this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(6,?)").run(stamp);
-      this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}; COMMIT`);
+      this.db.exec("PRAGMA user_version=6; COMMIT");
     } catch (error) {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
       throw error;
     } finally {
       this.db.exec("PRAGMA foreign_keys=ON");
     }
+  }
+  // Schema 7: episode/card references. Episodes gain a reference prompt and an explicit ordered reference set,
+  // initialized once from the prototype's Reference-category items (the old implicit episode-wide scope). After
+  // that, library category is organization only. Card JSON, links and URL strings are left exactly as stored.
+  migrateV7() {
+    const stamp = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (!this.columns("episodes").has("reference_prompt"))
+        this.db.exec("ALTER TABLE episodes ADD COLUMN reference_prompt TEXT NOT NULL DEFAULT ''");
+      if (!this.columns("episodes").has("reference_item_ids")) {
+        this.db.exec("ALTER TABLE episodes ADD COLUMN reference_item_ids TEXT NOT NULL DEFAULT '[]'");
+        const initial = this.db.prepare("SELECT id FROM library_items WHERE episode_id=? AND category='Reference' ORDER BY created_at,id");
+        const assign = this.db.prepare("UPDATE episodes SET reference_item_ids=? WHERE id=?");
+        for (const episode of this.db.prepare("SELECT id FROM episodes").all()) {
+          const ids = initial.all(episode.id).map((row) => row.id);
+          if (ids.length) assign.run(JSON.stringify(ids), episode.id);
+        }
+      }
+      // NULL in history means "recorded before references existed": undo leaves current references unchanged.
+      if (!this.columns("episode_history").has("reference_prompt"))
+        this.db.exec("ALTER TABLE episode_history ADD COLUMN reference_prompt TEXT");
+      if (!this.columns("episode_history").has("reference_item_ids"))
+        this.db.exec("ALTER TABLE episode_history ADD COLUMN reference_item_ids TEXT");
+      // The history row for each episode's current revision records the initialized set, so the first undo
+      // after migration restores it. Older rows stay NULL. Rows already written with references are untouched.
+      this.db.exec(`UPDATE episode_history SET reference_prompt='',
+          reference_item_ids=(SELECT e.reference_item_ids FROM episodes e WHERE e.id=episode_history.episode_id)
+        WHERE reference_item_ids IS NULL
+          AND revision=(SELECT e.revision FROM episodes e WHERE e.id=episode_history.episode_id)`);
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS reference_directions (
+          id TEXT PRIMARY KEY,
+          episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+          item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+          use TEXT NOT NULL CHECK (use IN ('direct-use','edit')),
+          conversation_id TEXT NOT NULL,
+          message_id INTEGER NOT NULL,
+          request_id TEXT,
+          note TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS reference_directions_episode ON reference_directions(episode_id,item_id,created_at);
+        CREATE TRIGGER IF NOT EXISTS reference_directions_membership BEFORE INSERT ON reference_directions
+          WHEN (SELECT episode_id FROM library_items WHERE id=NEW.item_id) IS NOT NEW.episode_id
+          BEGIN SELECT RAISE(ABORT,'reference direction item is not in this episode'); END;
+      `);
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(7,?)").run(stamp);
+      this.db.exec("PRAGMA user_version=7; COMMIT");
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  insertHistory(episode, actor, createdAt, parentRevision) {
+    this.db.prepare(`INSERT INTO episode_history(episode_id,revision,title,notes,cards,actor,created_at,parent_revision,reference_prompt,reference_item_ids)
+      VALUES(?,?,?,?,?,?,?,?,?,?)`).run(episode.id, episode.revision, episode.title, episode.notes, JSON.stringify(episode.cards), actor, createdAt,
+      parentRevision ?? null, episode.referencePrompt ?? "", JSON.stringify(episode.referenceItemIds ?? []));
   }
   dataRootIdentity() {
     const row = this.db.prepare("SELECT * FROM data_root WHERE singleton=1").get();
@@ -770,20 +847,7 @@ export class Store {
           episode.updatedAt,
           episode.state,
         );
-      this.db
-        .prepare(
-          "INSERT INTO episode_history(episode_id,revision,title,notes,cards,actor,created_at,parent_revision) VALUES(?,?,?,?,?,?,?,?)",
-        )
-        .run(
-          episode.id,
-          1,
-          episode.title,
-          episode.notes,
-          "[]",
-          "human",
-          episode.createdAt,
-          null,
-        );
+      this.insertHistory({ ...episode, referencePrompt: "", referenceItemIds: [] }, "human", episode.createdAt, null);
       this.db
         .prepare("INSERT INTO stories(episode_id,source,revision,sections,publication_pending,committed_hash,published_hash,updated_at) VALUES(?,?,?,?,?,?,?,?)")
         .run(episode.id, initialStory.source, 1, JSON.stringify(initialStory.sections), 1, hash(initialStory.source), null, episode.createdAt);
@@ -846,10 +910,21 @@ export class Store {
       if (card.sectionId && !this.db.prepare("SELECT 1 FROM story_sections WHERE id=? AND episode_id=? AND retired_at IS NULL").get(card.sectionId, episodeId))
         throw new StoreError(`Story section not found for this episode: ${card.sectionId}`);
     const libraryById = new Map(this.listEpisodeLibrary(episodeId).map((item) => [item.id, item]));
+    // Episode references use this same episode revision. Newly linked items must belong to the episode;
+    // links that already exist are kept as-is so an unavailable one can be shown and unlinked, not hidden.
+    const referenceItemIds = changes.referenceItemIds == null ? current.referenceItemIds : referenceIds(changes.referenceItemIds, "referenceItemIds");
+    for (const itemId of referenceItemIds)
+      if (!current.referenceItemIds.includes(itemId) && !libraryById.has(itemId))
+        throw new StoreError(`Library item not found for this episode: ${itemId}`);
+    const referencePrompt = changes.referencePrompt == null ? current.referencePrompt : String(changes.referencePrompt);
     const cardIds = new Set(cards.map((card) => card.id));
+    const currentCards = new Map(current.cards.map((card) => [card.id, card]));
     for (const card of cards) {
-      for (const itemId of [card.itemId, ...card.referenceItemIds].filter(Boolean))
-        if (!libraryById.has(itemId)) throw new StoreError(`Library item not found for this episode: ${itemId}`);
+      if (card.itemId && !libraryById.has(card.itemId)) throw new StoreError(`Library item not found for this episode: ${card.itemId}`);
+      // Like episode references, a link already on this card is kept even if unresolvable; only new links are checked.
+      const existingReferences = new Set(currentCards.get(card.id)?.referenceItemIds || []);
+      for (const itemId of card.referenceItemIds)
+        if (!existingReferences.has(itemId) && !libraryById.has(itemId)) throw new StoreError(`Library item not found for this episode: ${itemId}`);
       if (card.type === "Audio" && card.anchorVisualCardId && !cardIds.has(card.anchorVisualCardId))
         throw new StoreError(`Audio anchor card not found: ${card.anchorVisualCardId}`);
       const selected = card.itemId ? libraryById.get(card.itemId) : null;
@@ -870,6 +945,8 @@ export class Store {
       notes: changes.notes == null ? current.notes : String(changes.notes),
       cards,
       state,
+      referencePrompt,
+      referenceItemIds,
       revision: current.revision + 1,
       updatedAt: now(),
     };
@@ -877,7 +954,7 @@ export class Store {
     try {
       const result = this.db
         .prepare(
-          "UPDATE episodes SET title=?,notes=?,state=?,revision=?,cards=?,updated_at=? WHERE id=? AND revision=?",
+          "UPDATE episodes SET title=?,notes=?,state=?,revision=?,cards=?,reference_prompt=?,reference_item_ids=?,updated_at=? WHERE id=? AND revision=?",
         )
         .run(
           next.title,
@@ -885,25 +962,14 @@ export class Store {
           next.state,
           next.revision,
           JSON.stringify(next.cards),
+          next.referencePrompt,
+          JSON.stringify(next.referenceItemIds),
           next.updatedAt,
           episodeId,
           expectedRevision,
         );
       if (!result.changes) throw new StoreError("Stale revision", 409);
-      this.db
-        .prepare(
-          "INSERT INTO episode_history(episode_id,revision,title,notes,cards,actor,created_at,parent_revision) VALUES(?,?,?,?,?,?,?,?)",
-        )
-        .run(
-          episodeId,
-          next.revision,
-          next.title,
-          next.notes,
-          JSON.stringify(next.cards),
-          actor,
-          next.updatedAt,
-          parentRevision,
-        );
+      this.insertHistory(next, actor, next.updatedAt, parentRevision);
       this.db.exec("COMMIT");
       return next;
     } catch (error) {
@@ -933,7 +999,8 @@ export class Store {
     return this.updateEpisode(
       episodeId,
       expectedRevision,
-      { title: prior.title, notes: prior.notes, cards: this.normalizeLegacyCards(episodeId, parse(prior.cards, [])) },
+      { title: prior.title, notes: prior.notes, cards: this.normalizeLegacyCards(episodeId, parse(prior.cards, [])),
+        ...(prior.reference_item_ids == null ? {} : { referencePrompt: prior.reference_prompt ?? "", referenceItemIds: parse(prior.reference_item_ids, []) }) },
       "undo",
       prior.parent_revision,
     );
@@ -984,6 +1051,59 @@ export class Store {
       a.metadata,a.thumbnail_path,a.created_at AS asset_created_at
       FROM library_items l JOIN assets a ON a.id=l.asset_id WHERE l.episode_id=? AND l.id=?`).get(episodeId, itemId);
     return libraryItemRow(row);
+  }
+  // Explicit creator direction to edit or directly use a specific reference item. It must cite a creator (user)
+  // message in one of this episode's conversations; migration, category changes, attachments and model output
+  // never create one. Callers attach the returned record to the request/result provenance.
+  recordReferenceDirection({ episodeId, itemId, use, conversationId, messageId, requestId = null, note = "" } = {}) {
+    if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
+    if (!REFERENCE_DIRECTION_USES.includes(use)) throw new StoreError(`use must be one of ${REFERENCE_DIRECTION_USES.join(", ")}`);
+    if (!this.getLibraryItem(episodeId, itemId)) throw new StoreError("Reference item not found for this episode", 404);
+    if (typeof conversationId !== "string" || !conversationId || !Number.isInteger(messageId))
+      throw new StoreError("A creator message (conversationId and messageId) is required", 400);
+    const message = this.tableExists("conversations") && this.tableExists("conversation_messages")
+      ? this.db.prepare(`SELECT m.role FROM conversation_messages m JOIN conversations c ON c.id=m.conversation_id
+          WHERE m.id=? AND c.id=? AND c.episode_id=?`).get(messageId, conversationId, episodeId)
+      : null;
+    if (!message) throw new StoreError("The cited message is not in this episode's conversations", 404);
+    if (message.role !== "user") throw new StoreError("Only a creator message can direct reference use or edit", 403);
+    const value = { id: id("refdir"), episodeId, itemId, use, conversationId, messageId, requestId: requestId ?? null, note: String(note ?? ""), createdAt: now() };
+    this.db.prepare(`INSERT INTO reference_directions(id,episode_id,item_id,use,conversation_id,message_id,request_id,note,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?)`).run(value.id, episodeId, itemId, use, conversationId, messageId, value.requestId, value.note, value.createdAt);
+    return value;
+  }
+  listReferenceDirections(episodeId, { itemId = null, requestId = null } = {}) {
+    return this.db.prepare(`SELECT * FROM reference_directions WHERE episode_id=? AND (? IS NULL OR item_id=?) AND (? IS NULL OR request_id=?)
+      ORDER BY created_at,id`).all(episodeId, itemId, itemId, requestId, requestId).map((row) => ({
+      id: row.id, episodeId: row.episode_id, itemId: row.item_id, use: row.use, conversationId: row.conversation_id,
+      messageId: row.message_id, requestId: row.request_id, note: row.note, createdAt: row.created_at }));
+  }
+  // Helper for production operations: the latest recorded direction permitting exactly this use, or null.
+  referenceDirectionFor(episodeId, itemId, use, { requestId = null } = {}) {
+    if (!REFERENCE_DIRECTION_USES.includes(use)) throw new StoreError(`use must be one of ${REFERENCE_DIRECTION_USES.join(", ")}`);
+    return this.listReferenceDirections(episodeId, { itemId, requestId }).filter((direction) => direction.use === use).at(-1) || null;
+  }
+  // Reference scopes as delivered to the agent: episode references apply across the episode; card references
+  // are local context for that card. Unavailable links are reported, not dropped.
+  getReferenceContext(episodeId) {
+    const episode = this.getEpisode(episodeId);
+    if (!episode) throw new StoreError("Episode not found", 404);
+    const library = new Map(this.listEpisodeLibrary(episodeId).map((item) => [item.id, item]));
+    const describe = (itemId) => {
+      const item = library.get(itemId);
+      if (!item) return { itemId, available: false };
+      return { itemId, available: true, label: item.label, category: item.category, kind: item.asset?.kind ?? null,
+        sourceKind: item.sourceKind, sourceUrl: item.sourceUrl ?? null, extractionStatus: item.extractionStatus,
+        hasText: Boolean(item.extractedText), directions: this.listReferenceDirections(episodeId, { itemId }).map(({ id: directionId, use, messageId, requestId }) => ({ id: directionId, use, messageId, requestId })) };
+    };
+    return {
+      rule: REFERENCE_RULE,
+      episode: { scope: "episode", prompt: episode.referencePrompt, items: episode.referenceItemIds.map(describe) },
+      cards: episode.cards
+        .filter((card) => card.referencePrompt || card.referenceItemIds?.length || card.referenceUrls?.length)
+        .map((card) => ({ scope: "card", cardId: card.id, title: card.title, prompt: card.referencePrompt ?? "",
+          items: (card.referenceItemIds || []).map(describe), legacyUrls: card.referenceUrls || [] })),
+    };
   }
   attachLibraryItem(episodeId, assetId, details = {}) {
     const episode = this.getEpisode(episodeId);
@@ -1187,8 +1307,7 @@ export class Store {
         const boardRevision = episode.revision + 1;
         this.db.prepare("UPDATE episodes SET cards=?,revision=?,updated_at=? WHERE id=? AND revision=?")
           .run(JSON.stringify(cards), boardRevision, stamp, episodeId, episode.revision);
-        this.db.prepare("INSERT INTO episode_history(episode_id,revision,title,notes,cards,actor,created_at,parent_revision) VALUES(?,?,?,?,?,?,?,?)")
-          .run(episodeId, boardRevision, episode.title, episode.notes, JSON.stringify(cards), "story", stamp, episode.revision);
+        this.insertHistory({ ...episode, revision: boardRevision, cards }, "story", stamp, episode.revision);
       }
       this.db.exec("COMMIT");
     } catch (error) {
@@ -1362,9 +1481,7 @@ export class Store {
         const revision = current.revision + 1;
         this.db.prepare("UPDATE episodes SET cards=?,revision=?,updated_at=? WHERE id=? AND revision=?")
           .run(JSON.stringify(cards), revision, stamp, episodeId, current.revision);
-        this.db.prepare(`INSERT INTO episode_history(
-          episode_id,revision,title,notes,cards,actor,created_at,parent_revision
-        ) VALUES(?,?,?,?,?,?,?,?)`).run(episodeId, revision, current.title, current.notes, JSON.stringify(cards), "graphic", stamp, current.revision);
+        this.insertHistory({ ...current, revision, cards }, "graphic", stamp, current.revision);
         appliedToCard = true;
       } else if (targetCard) applyNote = "Graphic registered in the library; the target card changed while rendering and was not overwritten";
       this.db.exec("COMMIT");
