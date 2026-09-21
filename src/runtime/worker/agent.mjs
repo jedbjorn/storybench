@@ -10,6 +10,7 @@ import { chmod, rm } from "node:fs/promises";
 
 const SOCKET = "/run/storybench/request/worker/harness.sock";
 const MCP_CONFIG = "/run/storybench/request/app/mcp.json";
+const MCP_BRIDGE = "/opt/storybench/app/src/runtime/worker/mcp-bridge.mjs";
 const HARNESS = process.env.STORYBENCH_HARNESS;
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:\-[\]]{0,79}$/;
 const SESSION = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -25,7 +26,13 @@ export function launchArgv(header) {
   if (extra.length) throw new Error(`Unexpected launch fields: ${extra.join(", ")}`);
   if (header.harness === "codex") {
     if (header.model !== undefined || header.resume !== undefined) throw new Error("Codex model and thread are selected over the app-server protocol");
-    return ["codex", ["app-server", "--listen", "stdio://", "-c", "mcp_servers={}", ...CODEX_DISABLED.flatMap((feature) => ["--disable", feature])]];
+    // Storybench tools reach Codex through the same request-scoped MCP bridge as Claude: in
+    // code mode an MCP tool returns a structured CallToolResult whose image blocks the model
+    // forwards with image(...), whereas a dynamic tool's output is flattened to a string.
+    return ["codex", ["app-server", "--listen", "stdio://",
+      "-c", 'mcp_servers.storybench.command="node"', "-c", `mcp_servers.storybench.args=["${MCP_BRIDGE}"]`,
+      "-c", "mcp_servers.storybench.startup_timeout_sec=20", "-c", "mcp_servers.storybench.tool_timeout_sec=120",
+      ...CODEX_DISABLED.flatMap((feature) => ["--disable", feature])]];
   }
   if (header.harness === "claude") {
     if (!MODEL.test(header.model ?? "")) throw new Error("Claude launch needs a plain model identifier");

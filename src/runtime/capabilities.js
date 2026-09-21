@@ -3,9 +3,14 @@
 // the media command versions verified in this release's worker image (release manifest).
 // Nothing is advertised on assumption; unverified items say so.
 const IMAGE_TOOLS = ["inspect_image", "inspect_contact_sheet"];
+// Both harnesses receive Storybench tools over the request's MCP bridge. Image routes are
+// advertised as verified only after the repeatable nonce proof (scripts/image-receipt-proof.mjs:
+// both harnesses must echo random text drawn in fresh images, 5/5). Codex 0.155.1 production
+// models run tools in code mode: an MCP result's image blocks are forwarded with image(...);
+// the earlier app-server dynamic-tool route flattened results to a string and was unreliable.
 const HARNESS_IMAGE_ROUTE = {
-  codex: "Storybench tool results as app-server inputImage content items",
-  claude: "Storybench MCP tool results as image content blocks",
+  codex: { via: "Storybench MCP tool results as image content blocks (forwarded by Codex code mode with image())", verified: true, evidence: "scripts/image-receipt-proof.mjs 5/5 (gpt-5.6-terra)" },
+  claude: { via: "Storybench MCP tool results as image content blocks", verified: true, evidence: "scripts/image-receipt-proof.mjs 5/5 (sonnet)" },
 };
 // Not provided by Storybench to either production harness in this release.
 export const NOT_AVAILABLE = Object.freeze([
@@ -25,9 +30,10 @@ export function describeCapabilities({ scope, served, release = null }) {
     harness: scope.harness,
     model: scope.model ?? null,
     tools: served.map((definition) => ({ name: definition.name, description: definition.description })),
-    imageInput: imageTools.length
-      ? { available: true, via: HARNESS_IMAGE_ROUTE[scope.harness] ?? "tool results", tools: imageTools }
-      : { available: false, reason: "no image-returning tool is served in this request" },
+    imageInput: !imageTools.length ? { available: false, reason: "no image-returning tool is served in this request" }
+      : HARNESS_IMAGE_ROUTE[scope.harness]?.verified
+        ? { available: true, verified: true, via: HARNESS_IMAGE_ROUTE[scope.harness].via, evidence: HARNESS_IMAGE_ROUTE[scope.harness].evidence, tools: imageTools }
+        : { available: false, verified: false, reason: `image delivery to ${scope.harness} is unverified`, tools: imageTools },
     commandExecution: {
       available: true,
       workingDirectory: scope.episodeDir,

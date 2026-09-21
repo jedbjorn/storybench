@@ -157,7 +157,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
         if (!assistantId) { const stamp = now(); assistantId = Number(db.prepare("INSERT INTO conversation_messages(conversation_id,role,text,state,turn_id,created_at,updated_at) VALUES(?,'assistant','','streaming',?,?,?)").run(value.id, turnId, stamp, stamp).lastInsertRowid); }
         db.prepare("UPDATE conversation_messages SET text=text||?,updated_at=? WHERE id=?").run(params.delta, now(), assistantId);
         emit(value, "assistant.delta", { messageId: assistantId, text: params.delta, turnId });
-      } else if (["item/started", "item/completed"].includes(event.method) && params.item?.type === "dynamicToolCall") emit(value, event.method === "item/started" ? "tool.started" : "tool.completed", { name: params.item.tool || params.item.name, status: params.item.status, turnId });
+      } else if (["item/started", "item/completed"].includes(event.method) && ["dynamicToolCall", "mcpToolCall"].includes(params.item?.type)) emit(value, event.method === "item/started" ? "tool.started" : "tool.completed", { name: params.item.tool || params.item.name, status: params.item.status, turnId });
       else if (event.method === "turn/completed") {
         terminal = true; const status = params.turn?.status, state = status === "completed" ? "idle" : status === "interrupted" ? "interrupted" : "error", detail = state === "error" ? JSON.stringify(params.turn?.error || "Codex turn failed") : null;
         db.prepare("UPDATE conversation_messages SET state=?,updated_at=? WHERE id=?").run(status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed", now(), messageId);
