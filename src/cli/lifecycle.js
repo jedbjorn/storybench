@@ -1,7 +1,7 @@
 // Lifecycle commands over the generated user unit (spec #10 "CLI Contract", "Health and Lifecycle").
 // systemd is the single supervisor; these commands only ask it to start/stop and then verify /api/health against
 // the expected release (manifest) and data-root identity within a bounded time.
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, writeSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, renameSync, writeSync } from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
 import { readReleaseManifest } from "../runtime/manifest.js";
@@ -35,6 +35,17 @@ async function expectedRelease(context) {
   const result = await readReleaseManifest(file);
   if (!result.ok) throw new CliError(`The release manifest cannot be used: ${result.reason}`);
   return { file, manifest: result.manifest, identity: result.identity };
+}
+
+// A minimal PATH for the unit: where `docker` and Node live, plus the standard system directories. The caller's
+// full shell PATH is not copied into the unit.
+export function servicePath(callerPath = "", node = process.execPath) {
+  const standard = ["/usr/local/bin", "/usr/bin", "/bin"];
+  const dockerDir = String(callerPath).split(":").filter((dir) => path.isAbsolute(dir)).find((dir) => {
+    try { accessSync(path.join(dir, "docker"), constants.X_OK); return true; } catch { return false; }
+  });
+  const extra = [dockerDir, path.dirname(node)].filter((dir) => dir && !standard.includes(dir));
+  return [...new Set([...extra, ...standard])].join(":");
 }
 
 const urlFor = (port, channelId = null) => `http://127.0.0.1:${port}/${channelId ? `?channel=${encodeURIComponent(channelId)}` : ""}`;
@@ -81,7 +92,7 @@ async function prepareService(context, config) {
     appStopTimeoutS: APP_STOP_TIMEOUT_S, healthTimeoutMs: 120_000,
   };
   writeConfigFile(paths.hostConfig, hostConfig);
-  const environment = { PATH: context.env.PATH || "/usr/local/bin:/usr/bin:/bin" };
+  const environment = { PATH: servicePath(context.env.PATH, context.nodePath ?? process.execPath) };
   for (const key of ["DOCKER_HOST", "DOCKER_CONTEXT"]) if (context.env[key]) environment[key] = context.env[key];
   const content = generateUnit({ node: context.nodePath ?? process.execPath, hostEntry: path.join(PACKAGE_ROOT, "src", "runtime", "host.js"),
     hostConfig: paths.hostConfig, workingDirectory: PACKAGE_ROOT, stopTimeoutS: APP_STOP_TIMEOUT_S + 60, environment });

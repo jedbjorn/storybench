@@ -11,6 +11,7 @@ import { readConfig } from "../src/cli/config.js";
 import { acquireLock } from "../src/cli/lock.js";
 import { generateUnit, quoteArg, unitName } from "../src/cli/unit.js";
 import { probeService } from "../src/cli/service.js";
+import { servicePath } from "../src/cli/lifecycle.js";
 import { createManifest } from "../src/runtime/manifest.js";
 import { createApp } from "../src/server.js";
 import { listenInRange } from "../test-support/loopback-port.js";
@@ -126,6 +127,12 @@ test("up writes the host config and unit, starts it, waits for matching health, 
     { installId: config.installId, dataRoot: s.root, port: s.port, manifestPath: s.env.STORYBENCH_RELEASE_MANIFEST, stateRoot: path.join(s.env.XDG_STATE_HOME, "storybench"),
       runtimeRoot: path.join(s.env.XDG_RUNTIME_DIR, "storybench", `host-${config.installId}`) });
   assert.deepEqual(s.system.calls.filter(([name]) => ["daemon-reload", "start"].includes(name)), [["daemon-reload"], ["start", "storybench-test-life.service"]]);
+  // The unit's PATH is minimal: docker's directory, Node's, and the standard ones — not the caller's shell PATH.
+  const dockerHome = path.join(s.home, "tools");
+  mkdirSync(dockerHome);
+  writeFileSync(path.join(dockerHome, "docker"), "#!/bin/sh\n", { mode: 0o755 });
+  assert.equal(servicePath(`/home/me/.personal/bin:${dockerHome}:/usr/bin`, "/opt/node/bin/node"), `${dockerHome}:/opt/node/bin:/usr/local/bin:/usr/bin:/bin`);
+  assert.match(unit, /^Environment="PATH=(?:[^"]*:)?\/usr\/local\/bin:\/usr\/bin:\/bin"$/m);
   const again = await s.run(["up"]);
   assert.equal(again.code, 0);
   assert.match(again.stdout, /already running/);
