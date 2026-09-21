@@ -3,7 +3,10 @@
 // implementations serve Codex (app-server dynamic tools) and Claude (MCP via the
 // request bridge). Storage/mutation rules stay in the existing app services.
 import { spawn } from "node:child_process";
-import { rm, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { constants, createWriteStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
+import { mkdir, open, rm } from "node:fs/promises";
 import path from "node:path";
 import { importMedia } from "../media.js";
 import { PROJECT_ROOTS } from "./layout.js";
@@ -31,12 +34,38 @@ function ffmpegFrame(file, atSeconds, { maxWidth = 1024, signal } = {}) {
   });
 }
 
-async function waitForStableFile(file, expected, { settleMs = 300 } = {}) {
-  await new Promise((resolve) => setTimeout(resolve, settleMs));
-  const after = await stat(file);
-  if (after.size !== expected.size || after.mtimeMs !== expected.mtimeMs || after.ino !== expected.ino)
-    throw new RuntimeError("FILE_NOT_COMPLETE", "The work file is still changing; register it after it is completely written", { status: 409 });
-  if (!after.size) throw new RuntimeError("FILE_EMPTY", "The work file is empty", { status: 409 });
+// Copy a validated work file into an app-only staging directory through ONE file
+// descriptor opened with O_NOFOLLOW, after checking it is still the exact inode that
+// resolveWorkFile validated. Nothing after this point reads the worker-writable path, so
+// a later swap of the path (e.g. to a symlink at the database) cannot change what is
+// imported. Returns the staged file path (caller removes its directory).
+export async function stageWorkFile(file, stagingRoot, { settleMs = 300 } = {}) {
+  let handle;
+  try { handle = await open(file.path, constants.O_RDONLY | constants.O_NOFOLLOW); }
+  catch (error) {
+    if (error.code === "ELOOP") throw new RuntimeError("PATH_SYMLINK", "Symlinks cannot be registered; write the completed file into the work area", { status: 403 });
+    throw new RuntimeError("PATH_MISSING", "Work file could not be opened", { status: 404, cause: error });
+  }
+  const staged = path.join(stagingRoot, randomUUID(), path.basename(file.path));
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || before.ino !== file.ino || before.dev !== file.dev)
+      throw new RuntimeError("FILE_CHANGED", "The work file changed after validation; register it again", { status: 409 });
+    await new Promise((resolve) => setTimeout(resolve, settleMs));
+    const settled = await handle.stat();
+    if (settled.size !== before.size || settled.mtimeMs !== before.mtimeMs)
+      throw new RuntimeError("FILE_NOT_COMPLETE", "The work file is still changing; register it after it is completely written", { status: 409 });
+    if (!settled.size) throw new RuntimeError("FILE_EMPTY", "The work file is empty", { status: 409 });
+    await mkdir(path.dirname(staged), { recursive: true, mode: 0o700 });
+    await pipeline(handle.createReadStream({ start: 0, autoClose: false }), createWriteStream(staged, { flags: "wx", mode: 0o600 }));
+    const after = await handle.stat();
+    if (after.size !== settled.size || after.mtimeMs !== settled.mtimeMs)
+      throw new RuntimeError("FILE_NOT_COMPLETE", "The work file changed while it was being copied", { status: 409 });
+    return staged;
+  } catch (error) {
+    await rm(path.dirname(staged), { recursive: true, force: true });
+    throw error;
+  } finally { await handle.close(); }
 }
 
 export const TOOL_DEFINITIONS = Object.freeze([
@@ -74,9 +103,12 @@ export function createScopedTools(scope, { store }) {
   const handlers = {
     async register_work_file(args = {}) {
       const file = await resolveWorkFile(scope.workDir, args.path, { base: scope.episodeDir });
-      await waitForStableFile(file.path, file);
       const workspace = store.workspace;
-      const imported = await importMedia({ workspace, sourcePath: file.path, mediaDirectory: store.channelMediaDirectory(scope.channelId) });
+      // imports/ is app-only: it is never mounted into workers.
+      const staged = await stageWorkFile(file, path.join(workspace, "imports", ".agent-staging"));
+      let imported;
+      try { imported = await importMedia({ workspace, sourcePath: staged, mediaDirectory: store.channelMediaDirectory(scope.channelId) }); }
+      finally { await rm(path.dirname(staged), { recursive: true, force: true }); }
       const provenance = {
         tool: "register_work_file",
         requestId: scope.requestId, conversationId: scope.conversationId, harness: scope.harness,
@@ -86,7 +118,7 @@ export function createScopedTools(scope, { store }) {
       };
       const name = typeof args.name === "string" && args.name.trim() ? args.name.trim().slice(0, 200) : imported.name;
       const deduplicated = Boolean(store.getAssetByHash(imported.hash, scope.channelId));
-      const asset = store.saveAsset({ ...imported, channelId: scope.channelId, name, metadata: { ...imported.metadata, provenance } });
+      const asset = store.saveAsset({ ...imported, channelId: scope.channelId, name, metadata: { ...imported.metadata, originPath: file.path, provenance } });
       // Same bytes already registered in this channel: keep that asset, drop the redundant copy.
       if (imported.createdFile && asset.path !== imported.path) await rm(path.join(workspace, imported.path), { force: true });
       const category = CATEGORY_BY_KIND[asset.kind] ?? "B-roll";

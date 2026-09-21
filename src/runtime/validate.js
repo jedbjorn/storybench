@@ -136,7 +136,7 @@ export async function resolveWorkFile(workDir, input, { base } = {}) {
   if (!info.isFile()) throw new RuntimeError("PATH_NOT_FILE", "Only regular files can be registered", { status: 400 });
   const actual = await realpath(lexical);
   if (actual !== lexical || !isInside(workReal, actual)) throw new RuntimeError("PATH_OUTSIDE_WORK", "Work file resolves outside the work area", { status: 403 });
-  return { path: actual, relative: path.relative(workReal, actual), size: info.size, mtimeMs: info.mtimeMs, ino: info.ino };
+  return { path: actual, relative: path.relative(workReal, actual), size: info.size, mtimeMs: info.mtimeMs, ino: info.ino, dev: info.dev };
 }
 
 // Resolve a readable project file for inspection: anywhere under the data root's project

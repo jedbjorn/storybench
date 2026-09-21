@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import { connect } from "node:net";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fillTemplate, loadTemplates, renderEpisodeBoot } from "../src/runtime/boot.js";
 import { startBridge } from "../src/runtime/bridge.js";
-import { createScopedTools, toCodexContentItems, toMcpResult } from "../src/runtime/tools.js";
+import { createScopedTools, stageWorkFile, toCodexContentItems, toMcpResult } from "../src/runtime/tools.js";
+import { resolveWorkFile } from "../src/runtime/validate.js";
 import { initDataRoot, openDataRoot } from "../src/services/data-root.js";
 import { createChannel } from "../src/services/channels.js";
 
@@ -160,6 +161,36 @@ test("scoped tools inspect real frames and register work files through the store
   assert.equal(item.category, "Graphics");
   assert.equal(result.deduplicated, false);
   assert.equal(JSON.parse((await tools.call("register_work_file", { path: "work/red.png" })).text).deduplicated, true);
+});
+
+test("register stages through one O_NOFOLLOW descriptor, so a post-validation swap cannot publish other bytes", async (t) => {
+  const root = await tempDir(t, "sb-toctou-");
+  const work = path.join(root, "work");
+  const staging = path.join(root, "staging");
+  await mkdir(work);
+  await writeFile(path.join(root, "storybench.sqlite"), "DATABASE BYTES");
+  await writeFile(path.join(work, "out.png"), "work bytes");
+  // Normal case: staged bytes are the validated file's bytes.
+  const staged = await stageWorkFile(await resolveWorkFile(work, "out.png"), staging, { settleMs: 1 });
+  assert.equal(await readFile(staged, "utf8"), "work bytes");
+  // Swap to a symlink at the database after validation: O_NOFOLLOW refuses it.
+  const validated = await resolveWorkFile(work, "out.png");
+  await rm(path.join(work, "out.png"));
+  await symlink(path.join(root, "storybench.sqlite"), path.join(work, "out.png"));
+  await assert.rejects(stageWorkFile(validated, staging, { settleMs: 1 }), { code: "PATH_SYMLINK" });
+  // Swap to a different regular file (e.g. a new inode) after validation: refused.
+  await rm(path.join(work, "out.png"));
+  await writeFile(path.join(work, "out.png"), "first");
+  const second = await resolveWorkFile(work, "out.png");
+  await writeFile(path.join(work, "replacement"), "DATABASE BYTES");
+  await rename(path.join(work, "replacement"), path.join(work, "out.png"));
+  await assert.rejects(stageWorkFile(second, staging, { settleMs: 1 }), { code: "FILE_CHANGED" });
+  // A file still being written is refused.
+  const growing = await resolveWorkFile(work, "out.png");
+  const pending = stageWorkFile(growing, staging, { settleMs: 50 });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await writeFile(path.join(work, "out.png"), "DATABASE BYTES and more", { flag: "a" });
+  await assert.rejects(pending, { code: "FILE_NOT_COMPLETE" });
 });
 
 test("worker launch table accepts only fixed harness argv", async () => {

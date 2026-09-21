@@ -108,9 +108,34 @@ export function decideCredentialSync({ base, host, stage }) {
   return stageChanged ? "write-back" : "refresh-worker";
 }
 
-// Replace the host file atomically: temp file in the same directory, fsync, rename.
-// The rename only happens if the host still matches `expectedHash`.
-export async function atomicWriteBack(hostPath, bytes, expectedHash, { mode = 0o600 } = {}) {
+const LOCK_STALE_MS = 30_000;
+
+// Exclusive lock file next to the host credential. Serializes Storybench writers; a lock
+// older than LOCK_STALE_MS (crashed writer) is removed once. Returns a release function,
+// or null when another writer currently holds it.
+export async function acquireLock(lockPath, { staleMs = LOCK_STALE_MS, now = Date.now } = {}) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const handle = await open(lockPath, "wx", 0o600);
+      await handle.writeFile(String(process.pid));
+      await handle.close();
+      return () => unlink(lockPath).catch(() => {});
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      const info = await stat(lockPath).catch(() => null);
+      if (info && now() - info.mtimeMs < staleMs) return null;
+      await unlink(lockPath).catch(() => {});
+    }
+  }
+  return null;
+}
+
+// Replace the host file atomically without ever truncating it: the complete new bytes go
+// to a temp file in the same directory and are fsynced first; then, under the lock file,
+// the host hash is re-checked immediately before rename(2), and the directory is fsynced.
+// Returns "written", "changed" (host no longer matches expectedHash: never clobbered) or
+// "locked" (another Storybench writer holds the lock; retry on the next pass).
+export async function atomicWriteBack(hostPath, bytes, expectedHash, { mode = 0o600, lockPath = `${hostPath}.storybench.lock` } = {}) {
   const dir = path.dirname(hostPath);
   const temp = path.join(dir, `.${path.basename(hostPath)}.storybench-${randomBytes(6).toString("hex")}.tmp`);
   const handle = await open(temp, "wx", mode);
@@ -119,20 +144,34 @@ export async function atomicWriteBack(hostPath, bytes, expectedHash, { mode = 0o
     await handle.sync();
   } finally { await handle.close(); }
   try {
-    if ((await hashOrNull(hostPath)) !== expectedHash) return false;
-    await rename(temp, hostPath);
-    return true;
+    const release = await acquireLock(lockPath);
+    if (!release) return "locked";
+    try {
+      if ((await hashOrNull(hostPath)) !== expectedHash) return "changed";
+      await rename(temp, hostPath);
+      const dirHandle = await open(dir, "r");
+      try { await dirHandle.sync(); } catch { /* directory fsync unsupported */ } finally { await dirHandle.close(); }
+      return "written";
+    } finally { await release(); }
   } finally { await unlink(temp).catch(() => {}); }
 }
 
 // Overwrite the staged copy in place so the worker's bind-mounted inode is preserved.
-async function writeInPlace(filePath, bytes) {
+// The full new bytes are written at offset 0 before truncating to their length, so the
+// file is never observed empty.
+export async function writeInPlace(filePath, bytes) {
   const handle = await open(filePath, "r+");
   try {
-    await handle.truncate(0);
     await handle.write(bytes, 0, bytes.length, 0);
+    await handle.truncate(bytes.length);
     await handle.sync();
   } finally { await handle.close(); }
+}
+
+// Sync outcomes worth logging are logged on transition only (a persistent conflict is
+// reported once, and again only after it clears and recurs).
+export function shouldLogSyncAction(previous, action) {
+  return action !== "unchanged" && action !== previous;
 }
 
 export class CredentialLink {
@@ -161,8 +200,11 @@ export class CredentialLink {
       const bytes = await readFile(this.stagePath);
       const invalid = validateCredentialBytes(this.harness, bytes, { now: this.now() });
       if (invalid) outcome = "invalid-worker-write";
-      else if (await atomicWriteBack(this.hostPath, bytes, this.baseHash, { mode: (await stat(this.hostPath)).mode & 0o777 })) this.baseHash = sha256(bytes);
-      else outcome = "conflict";
+      else {
+        const written = await atomicWriteBack(this.hostPath, bytes, this.baseHash, { mode: (await stat(this.hostPath)).mode & 0o777 });
+        if (written === "written") this.baseHash = sha256(bytes);
+        else outcome = written === "locked" ? "write-back-deferred" : "conflict";
+      }
     } else if (action === "refresh-worker") {
       const read = await readCredential(this.harness, this.hostPath, { now: this.now() });
       if (!read.ok) outcome = "host-invalid";

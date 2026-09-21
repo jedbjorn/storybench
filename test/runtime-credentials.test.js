@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { CredentialLink, decideCredentialSync, harnessAvailability, readCredential, validateCredentialBytes } from "../src/runtime/credentials.js";
+import { CredentialLink, atomicWriteBack, decideCredentialSync, harnessAvailability, readCredential, shouldLogSyncAction, validateCredentialBytes, writeInPlace } from "../src/runtime/credentials.js";
 
 const codexLogin = (access) => JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: access, refresh_token: `refresh-${access}`, id_token: "id" }, last_refresh: "2026-09-20T00:00:00Z" });
 const claudeLogin = (access, extra = {}) => JSON.stringify({ claudeAiOauth: { accessToken: access, refreshToken: `refresh-${access}`, expiresAt: Date.now() + 3_600_000, ...extra } });
@@ -122,4 +122,57 @@ test("staging fails loudly for an unusable login and a missing host file is repo
   const link = await CredentialLink.stage({ harness: "codex", hostPath: host, stageDir: path.join(dir, "req2") });
   await rm(host);
   assert.equal(await link.sync(), "host-missing");
+});
+
+test("in-place staged-copy updates write full bytes before truncating and keep the inode", async (t) => {
+  const dir = await tempDir(t);
+  const file = path.join(dir, "copy.json");
+  await writeFile(file, codexLogin("a-much-longer-original-token-value"));
+  const inode = (await stat(file)).ino;
+  await writeInPlace(file, Buffer.from(codexLogin("short")));
+  assert.equal(await readFile(file, "utf8"), codexLogin("short"));
+  await writeInPlace(file, Buffer.from(codexLogin("longer-than-short-again-and-again")));
+  assert.equal(await readFile(file, "utf8"), codexLogin("longer-than-short-again-and-again"));
+  assert.equal((await stat(file)).ino, inode);
+});
+
+test("write-back is conditional, lock-serialized and never leaves temp files or a truncated host", async (t) => {
+  const dir = await tempDir(t);
+  const host = path.join(dir, "auth.json");
+  await writeFile(host, codexLogin("v1"), { mode: 0o600 });
+  const { createHash } = await import("node:crypto");
+  const hash = (text) => createHash("sha256").update(text).digest("hex");
+  const lock = `${host}.storybench.lock`;
+  // Another Storybench writer holds a fresh lock: defer, host untouched.
+  await writeFile(lock, "123");
+  assert.equal(await atomicWriteBack(host, Buffer.from(codexLogin("v2")), hash(codexLogin("v1"))), "locked");
+  assert.equal(await readFile(host, "utf8"), codexLogin("v1"));
+  // A stale lock (crashed writer) is cleared.
+  const { utimes } = await import("node:fs/promises");
+  await utimes(lock, new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
+  assert.equal(await atomicWriteBack(host, Buffer.from(codexLogin("v2")), hash(codexLogin("v1"))), "written");
+  assert.equal(await readFile(host, "utf8"), codexLogin("v2"));
+  // Host moved on since the base: never clobbered.
+  assert.equal(await atomicWriteBack(host, Buffer.from(codexLogin("v3")), hash(codexLogin("v1"))), "changed");
+  assert.equal(await readFile(host, "utf8"), codexLogin("v2"));
+  const { readdir } = await import("node:fs/promises");
+  assert.deepEqual((await readdir(dir)).sort(), ["auth.json"]);
+});
+
+test("sync defers write-back while locked and logs outcomes on transition only", async (t) => {
+  const dir = await tempDir(t);
+  const host = path.join(dir, "auth.json");
+  await writeFile(host, codexLogin("v1"), { mode: 0o600 });
+  const link = await CredentialLink.stage({ harness: "codex", hostPath: host, stageDir: path.join(dir, "req") });
+  await writeFile(link.stagePath, codexLogin("worker-v2"));
+  await writeFile(`${host}.storybench.lock`, "1");
+  assert.equal(await link.sync(), "write-back-deferred");
+  assert.equal(await readFile(host, "utf8"), codexLogin("v1"));
+  await rm(`${host}.storybench.lock`);
+  assert.equal(await link.sync(), "write-back");
+  assert.equal(await readFile(host, "utf8"), codexLogin("worker-v2"));
+  assert.equal(shouldLogSyncAction(undefined, "conflict"), true);
+  assert.equal(shouldLogSyncAction("conflict", "conflict"), false);
+  assert.equal(shouldLogSyncAction("conflict", "unchanged"), false);
+  assert.equal(shouldLogSyncAction("unchanged", "conflict"), true);
 });

@@ -14,7 +14,7 @@ import { chmod, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { docker, ensureNetwork, inspectContainer, listByLabels } from "./docker.js";
-import { CredentialLink, CREDENTIAL_FILES, harnessAvailability } from "./credentials.js";
+import { CredentialLink, CREDENTIAL_FILES, harnessAvailability, shouldLogSyncAction } from "./credentials.js";
 import {
   APP_REQUESTS_MOUNT, BRIDGE_SOCKET_NAME, DATA_MOUNT, LABEL, PROJECT_ROOTS,
   appRunArgs, hostPaths, names, validateHostConfig, workerRunArgs,
@@ -203,7 +203,9 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     syncTimer = setInterval(async () => {
       for (const worker of workers.values()) {
         const action = await worker.credential.sync().catch((error) => `error: ${error.message}`);
-        if (action !== "unchanged") log({ event: "credential.sync", requestId: worker.requestId, harness: worker.harness, action, level: ["conflict", "host-missing", "host-invalid", "invalid-worker-write"].includes(action) || action.startsWith("error") ? "error" : "info" });
+        const previous = worker.loggedSyncAction;
+        worker.loggedSyncAction = action;
+        if (shouldLogSyncAction(previous, action)) log({ event: "credential.sync", requestId: worker.requestId, harness: worker.harness, action, level: ["conflict", "host-missing", "host-invalid", "invalid-worker-write"].includes(action) || action.startsWith("error") ? "error" : "info" });
       }
     }, syncIntervalMs);
     return { appId };
