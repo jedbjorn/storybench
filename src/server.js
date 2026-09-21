@@ -1,5 +1,5 @@
 import http from "node:http";
-import { stat, realpath } from "node:fs/promises";
+import { rm, stat, realpath } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,8 @@ import { createChatService } from "./chat.js";
 import { createLibraryService } from "./library.js";
 import { renderGraphic, validateGraphicRecipe } from "./graphics.js";
 import { createRenderService } from "./render-service.js";
+import { openDataRoot } from "./services/data-root.js";
+import { createChannel, listChannels, renameChannel, useChannel } from "./services/channels.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = path.join(root, "public");
@@ -26,16 +28,23 @@ const mime = {
   ".mp3": "audio/mpeg",
 };
 
+// --data-root opens an explicitly initialized/adopted shared data root and never initializes one implicitly.
+// --workspace keeps the prototype behavior: it opens (and migrates) a single workspace as a one-channel root.
 function options(argv) {
   const out = {
+    dataRoot: process.env.STORYBENCH_DATA_ROOT,
     workspace: process.env.STORYBENCH_WORKSPACE,
     port: Number(process.env.SC_DEV_PORT || process.env.PORT || 4173),
   };
   for (let i = 2; i < argv.length; i++)
-    if (argv[i] === "--workspace") out.workspace = argv[++i];
+    if (argv[i] === "--workspace") { out.workspace = argv[++i]; out.dataRoot = undefined; }
+    else if (argv[i] === "--data-root") { out.dataRoot = argv[++i]; out.workspace = undefined; }
     else if (argv[i] === "--port") out.port = Number(argv[++i]);
-  if (!out.workspace || !path.isAbsolute(out.workspace))
-    throw new Error("Start with --workspace /absolute/channel/path");
+  if (out.dataRoot) {
+    if (!path.isAbsolute(out.dataRoot)) throw new Error("--data-root must be an absolute path");
+    out.workspace = undefined;
+  } else if (!out.workspace || !path.isAbsolute(out.workspace))
+    throw new Error("Start with --data-root /absolute/data/root (or --workspace /absolute/prototype/workspace)");
   if (!Number.isInteger(out.port) || out.port < 0 || out.port > 65535)
     throw new Error("Invalid port");
   return out;
@@ -128,8 +137,9 @@ async function streamFile(req, res, file, contentType) {
   pipe({ start, end });
 }
 
-export async function createApp({ workspace, onListen, storeOptions, renderOptions = {}, chatOptions = {} } = {}) {
-  const store = new Store(workspace, storeOptions);
+export async function createApp({ workspace: workspaceOption, dataRoot, onListen, storeOptions, renderOptions = {}, chatOptions = {} } = {}) {
+  const store = dataRoot ? openDataRoot(dataRoot, { startup: true, storeOptions }) : new Store(workspaceOption, storeOptions);
+  const workspace = store.workspace;
   const listeners = new Map();
   const notify = (episodeId) => listeners.get(episodeId)?.forEach((fn) => fn());
   const library = createLibraryService({ workspace, store });
@@ -145,24 +155,60 @@ export async function createApp({ workspace, onListen, storeOptions, renderOptio
       if (closing && !["GET", "HEAD"].includes(req.method)) throw new StoreError("Application is shutting down", 503);
       const url = new URL(req.url, `http://${req.headers.host}`);
       const parts = url.pathname.split("/").filter(Boolean);
-      if (req.method === "GET" && url.pathname === "/api/state")
+      // Channel scope is explicit per request (query or header, captured by each open view). The persisted
+      // default is only a fallback for navigation entry; it never retargets an explicitly scoped request.
+      const requestedChannel = url.searchParams.get("channel") || String(req.headers["x-storybench-channel"] || "") || null;
+      const viewChannel = () => requestedChannel ? store.requireChannel(requestedChannel) : store.getDefaultChannel();
+      if (req.method === "GET" && url.pathname === "/api/state") {
+        const channel = viewChannel();
         return send(res, 200, {
-          episodes: store.listEpisodes(),
-          assets: store.listAssets(),
-          jobs: store.listJobs().map((job) => {
+          channel,
+          channels: store.listChannels(),
+          defaultChannelId: store.getDefaultChannel()?.id ?? null,
+          episodes: channel ? store.listEpisodes({ channelId: channel.id }) : [],
+          assets: channel ? store.listAssets({ channelId: channel.id }) : [],
+          jobs: channel ? store.listJobs(null, { channelId: channel.id }).map((job) => {
             try { return renders.getJob(job.episodeId, job.id); } catch { return job; }
-          }),
+          }) : [],
         });
-      if (req.method === "POST" && url.pathname === "/api/episodes")
-        return send(res, 201, store.createEpisode(await jsonBody(req)));
-      if (req.method === "GET" && url.pathname === "/api/branding")
-        return send(res, 200, store.listBrandingTemplates());
+      }
+      if (req.method === "GET" && url.pathname === "/api/data-root") {
+        const identity = store.dataRootIdentity();
+        return send(res, 200, { id: identity.id, schemaVersion: identity.schemaVersion, defaultChannelId: identity.defaultChannelId,
+          channelCount: store.listChannels().length, pid: process.pid });
+      }
+      if (parts[0] === "api" && parts[1] === "channels") {
+        if (parts.length === 2 && req.method === "GET") return send(res, 200, listChannels(store));
+        if (parts.length === 2 && req.method === "POST") return send(res, 201, createChannel(store, (await jsonBody(req)).name));
+        if (parts[2] === "default" && parts.length === 3 && req.method === "GET") return send(res, 200, { channel: store.getDefaultChannel() });
+        if (parts[2] === "default" && parts.length === 3 && req.method === "PUT") return send(res, 200, useChannel(store, (await jsonBody(req)).channel));
+        if (parts[2] && parts.length === 3 && req.method === "GET") return send(res, 200, store.requireChannel(parts[2]));
+        if (parts[2] && parts.length === 3 && req.method === "PUT") return send(res, 200, renameChannel(store, store.requireChannel(parts[2]).id, (await jsonBody(req)).name));
+        if (parts[2] && parts[3] === "episodes" && parts.length === 4 && req.method === "GET")
+          return send(res, 200, store.listEpisodes({ channelId: store.requireChannel(parts[2]).id }));
+        if (parts[2] && parts[3] === "episodes" && parts.length === 4 && req.method === "POST") {
+          const body = await jsonBody(req);
+          return send(res, 201, store.createEpisode({ title: body.title, notes: body.notes, channelId: store.requireChannel(parts[2]).id }));
+        }
+      }
+      if (req.method === "POST" && url.pathname === "/api/episodes") {
+        const body = await jsonBody(req);
+        return send(res, 201, store.createEpisode({ title: body.title, notes: body.notes, channelId: body.channelId ?? requestedChannel }));
+      }
+      if (req.method === "GET" && url.pathname === "/api/branding") {
+        const channel = viewChannel();
+        return send(res, 200, channel ? store.listBrandingTemplates({ channelId: channel.id }) : []);
+      }
       if (parts[0] === "api" && parts[1] === "branding" && parts[2] && req.method === "PUT") {
         const body = await jsonBody(req);
+        const template = store.getBrandingTemplate(parts[2]);
+        if (template && requestedChannel && template.channelId !== requestedChannel) throw new StoreError("Branding template belongs to another channel", 409);
         return send(res, 200, store.setBrandingRole(parts[2], body.role ?? null));
       }
       if (parts[0] === "api" && parts[1] === "episodes" && parts[2]) {
         const episodeId = parts[2];
+        // Every episode-scoped route validates the caller's channel together with the episode ID.
+        if (requestedChannel) store.assertEpisodeChannel(episodeId, requestedChannel);
         if (parts.length === 3 && req.method === "GET") {
           const value = store.getEpisode(episodeId);
           if (!value) throw new StoreError("Episode not found", 404);
@@ -208,7 +254,7 @@ export async function createApp({ workspace, onListen, storeOptions, renderOptio
           }
           if (parts[4] && parts[5] === "render" && parts.length === 6 && req.method === "POST") {
             const body = await jsonBody(req);
-            const value = renders.enqueueGraphic({ episodeId, recipeId: parts[4], expectedRecipeRevision: body.expectedRecipeRevision });
+            const value = renders.enqueueGraphic({ episodeId, channelId: requestedChannel, recipeId: parts[4], expectedRecipeRevision: body.expectedRecipeRevision });
             notify(episodeId); return send(res, 202, value);
           }
         }
@@ -246,6 +292,17 @@ export async function createApp({ workspace, onListen, storeOptions, renderOptio
           if (parts[4] === "text" && parts.length === 5 && req.method === "POST") {
             const body = await jsonBody(req);
             const value = await library.registerText({ episodeId, title: body.title, text: body.text, sectionId: body.sectionId });
+            notify(episodeId);
+            return send(res, 201, value);
+          }
+          if (parts[4] === "reuse" && parts.length === 5 && req.method === "POST") {
+            const body = await jsonBody(req);
+            const value = await library.reuseItem({
+              source: { channelId: body.sourceChannelId ?? null, episodeId: body.sourceEpisodeId, itemId: body.sourceItemId },
+              destination: { channelId: requestedChannel ?? body.channelId ?? null, episodeId, cardId: body.cardId ?? null,
+                expectedRevision: body.expectedRevision, assign: body.assign },
+              category: body.category ?? null, label: body.label ?? null, requestId: body.requestId ?? null,
+            });
             notify(episodeId);
             return send(res, 201, value);
           }
@@ -299,7 +356,7 @@ export async function createApp({ workspace, onListen, storeOptions, renderOptio
           const outputClass = body.kind === "preview" ? "draft" : body.kind === "export" ? "final" : body.outputClass;
           const expectedRenderRevision = body.expectedRenderRevision ||
             (outputClass === "draft" ? renders.validateRender(episodeId).renderRevision : null);
-          return send(res, 202, renders.enqueueRender({ episodeId, outputClass,
+          return send(res, 202, renders.enqueueRender({ episodeId, channelId: requestedChannel ?? body.channelId ?? null, outputClass,
             expectedRenderRevision,
             finalGrantId: body.finalGrantId, conversationId: body.conversationId ?? null, requestId: body.requestId ?? null }));
         }
@@ -380,11 +437,15 @@ export async function createApp({ workspace, onListen, storeOptions, renderOptio
         const body = await jsonBody(req);
         if (!path.isAbsolute(body.path || ""))
           throw new StoreError("Import path must be absolute");
+        const channelId = store.resolveChannelId(body.channelId ?? requestedChannel);
         const candidate = await importMedia({
           workspace,
           sourcePath: body.path,
+          mediaDirectory: store.channelMediaDirectory(channelId),
         });
-        return send(res, 201, store.saveAsset(candidate));
+        const asset = store.saveAsset({ ...candidate, channelId });
+        if (candidate.createdFile && asset.path !== candidate.path) await rm(path.join(workspace, candidate.path), { force: true });
+        return send(res, 201, asset);
       }
       if (
         parts[0] === "api" &&
@@ -460,7 +521,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const { server, close } = await createApp(config);
   server.listen(config.port, "127.0.0.1", () =>
     console.log(
-      `Storybench: http://127.0.0.1:${server.address().port} — workspace ${config.workspace}`,
+      `Storybench: http://127.0.0.1:${server.address().port} — ${config.dataRoot ? `data root ${config.dataRoot}` : `workspace ${config.workspace}`}`,
     ),
   );
   const shutdown = async () => {

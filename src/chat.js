@@ -103,7 +103,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
   const bootText = (value) => { const currentEpisode = episode(value.episode_id), story = store.getStory(value.episode_id);
     return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires the user's one-use Storybench authorization.`; };
   const tools = (value, origin) => ({
-    get_context: () => ({ episode: episode(value.episode_id), story: store.getStory(value.episode_id), library: librarySummary(value.episode_id), branding: store.listBrandingTemplates(), operationGuides: OPERATION_GUIDE_NAMES }),
+    get_context: () => ({ episode: episode(value.episode_id), story: store.getStory(value.episode_id), library: librarySummary(value.episode_id), branding: store.listBrandingTemplates({ channelId: episode(value.episode_id).channelId }), operationGuides: OPERATION_GUIDE_NAMES }),
     get_operation_guide: ({ name }) => getOperationGuide(name),
     read_reference_excerpt: ({ itemId, offset, limit }) => excerpt(value.episode_id, itemId, offset, limit),
     update_story: ({ expectedStoryRevision, source }) => { ensureActive(value, origin); return store.saveStory(value.episode_id, expectedStoryRevision, source, "agent"); },
@@ -119,7 +119,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     create_graphic_recipe: (input) => { ensureActive(value, origin); return renders.createGraphicRecipe(value.episode_id, input, "agent"); },
     update_graphic_recipe: ({ recipeId, expectedRevision, ...input }) => { ensureActive(value, origin); return renders.updateGraphicRecipe(value.episode_id, recipeId, expectedRevision, input, "agent"); },
     render_graphic: ({ recipeId, expectedRecipeRevision }) => { ensureActive(value, origin); return renders.enqueueGraphic({ episodeId: value.episode_id, recipeId, expectedRecipeRevision }); },
-    list_branding: () => store.listBrandingTemplates(),
+    list_branding: () => store.listBrandingTemplates({ channelId: episode(value.episode_id).channelId }),
     promote_card: ({ cardId, name, role = null }) => { ensureActive(value, origin); return store.promoteCard(value.episode_id, cardId, { name, role }); },
     apply_branding: ({ templateId }) => { ensureActive(value, origin); return store.applyBrandingTemplate(value.episode_id, templateId); },
     // Compatibility handlers for provider threads created by the first prototype.

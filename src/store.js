@@ -24,6 +24,21 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
+export const SCHEMA_VERSION = 6;
+export const DEFAULT_CHANNEL_NAME = "Main";
+// IDs become directory names, so they must be single safe path segments.
+const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
+const LEGACY_EPISODE_SUBDIRS = ["reference", "b-roll", "narration", "graphics", "drafts", "final", "cache", "conflicts", "work"];
+const CHANNEL_EPISODE_SUBDIRS = ["work", "outputs", "outputs/drafts", "outputs/final", "outputs/graphics", "conflicts"];
+const channelNameKey = (name) => name.normalize("NFKC").toLowerCase();
+
+export function normalizeChannelName(value) {
+  const name = String(value ?? "").normalize("NFC").trim().replace(/\s+/g, " ");
+  if (!name) throw new StoreError("Channel name is required");
+  if (name.length > 80) throw new StoreError("Channel name must be at most 80 characters");
+  if (/[\u0000-\u001f\u007f]/.test(name)) throw new StoreError("Channel name must not contain control characters");
+  return name;
+}
 
 export class StoreError extends Error {
   constructor(message, statusCode = 400, details = {}) {
@@ -174,6 +189,7 @@ function episodeRow(row) {
   return (
     row && {
       id: row.id,
+      channelId: row.channel_id,
       title: row.title,
       notes: row.notes,
       state: row.state || "Scaffold",
@@ -188,6 +204,7 @@ function assetRow(row) {
   return (
     row && {
       id: row.id,
+      channelId: row.channel_id,
       name: row.name,
       hash: row.hash,
       kind: row.kind,
@@ -228,6 +245,7 @@ function jobRow(row) {
     row && {
       id: row.id,
       episodeId: row.episode_id,
+      channelId: row.channel_id ?? null,
       kind: row.kind,
       state: row.state,
       progress: row.progress,
@@ -256,21 +274,44 @@ function graphicRecipeRow(row) {
 }
 
 export class Store {
-  constructor(workspace, { afterMigrationCommit, beforeStoryPublish, afterStoryRename, beforeGraphicMembership } = {}) {
+  constructor(workspace, {
+    afterMigrationCommit, beforeStoryPublish, afterStoryRename, beforeGraphicMembership,
+    legacyWorkspace = true, firstChannelName = DEFAULT_CHANNEL_NAME, origin = null, startup = true,
+  } = {}) {
     this.workspace = path.resolve(workspace);
+    this.dataRoot = this.workspace;
     this.afterMigrationCommit = afterMigrationCommit;
     this.beforeStoryPublish = beforeStoryPublish;
     this.afterStoryRename = afterStoryRename;
     this.beforeGraphicMembership = beforeGraphicMembership;
-    for (const dir of ["", "media", "cache", "exports", "imports", "branding/assets"])
-      mkdirSync(path.join(this.workspace, dir), { recursive: true });
+    // A legacy single-workspace open keeps the prototype's root folders; an initialized data root only gets shared ones.
+    const rootDirs = legacyWorkspace ? ["", "media", "cache", "exports", "imports", "branding/assets", "channels"] : ["", "cache", "imports", "channels"];
+    mkdirSync(this.workspace, { recursive: true });
     const databasePath = path.join(this.workspace, "storybench.sqlite");
     const existingDatabase = existsSync(databasePath);
     this.db = new DatabaseSync(databasePath);
-    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
-    this.migrate(existingDatabase);
-    for (const episode of this.db.prepare("SELECT id FROM episodes").all())
-      this.ensureEpisodeDirectories(episode.id);
+    try {
+      this.db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
+      this.migrate(existingDatabase, { firstChannelName, origin: origin || (legacyWorkspace ? "workspace" : "init") });
+      // A root explicitly initialized or adopted as a shared data root is never reopened as a prototype
+      // workspace: that would silently add a channel and prototype folders.
+      const rootOrigin = this.dataRootIdentity()?.origin;
+      if (legacyWorkspace && ["init", "adopt"].includes(rootOrigin))
+        throw new StoreError(`This is an initialized Storybench data root (origin ${rootOrigin}); open it with --data-root instead of --workspace`, 409);
+      for (const dir of rootDirs) mkdirSync(path.join(this.workspace, dir), { recursive: true });
+      this.db.exec("PRAGMA foreign_keys=ON");
+      if (Number(this.db.prepare("PRAGMA foreign_keys").get().foreign_keys) !== 1)
+        throw new StoreError("SQLite foreign-key enforcement could not be enabled", 500);
+      if (legacyWorkspace && !this.listChannels().length) this.createChannel(firstChannelName);
+      for (const channel of this.db.prepare("SELECT id FROM channels").all())
+        this.ensureChannelDirectories(channel.id);
+      for (const episode of this.db.prepare("SELECT id FROM episodes").all())
+        this.ensureEpisodeDirectories(episode.id);
+    } catch (error) {
+      if (this.db.isOpen) this.db.close();
+      throw error;
+    }
+    if (!startup) return;
     this.recoverPendingStories();
     this.db
       .prepare(
@@ -278,19 +319,52 @@ export class Store {
       )
       .run(now());
   }
-  migrate(existingDatabase) {
+  tableExists(name) {
+    return Boolean(this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name));
+  }
+  columns(table) {
+    return new Set(this.db.prepare(`PRAGMA table_info('${table}')`).all().map((column) => column.name));
+  }
+  backupDatabase(destination) {
+    const escaped = destination.replaceAll("'", "''");
+    this.db.exec(`VACUUM INTO '${escaped}'`);
+    const copy = new DatabaseSync(destination, { readOnly: true });
+    try {
+      const check = copy.prepare("PRAGMA quick_check").get();
+      if (Object.values(check)[0] !== "ok") throw new StoreError("Pre-migration backup failed its integrity check", 500);
+    } finally { copy.close(); }
+    return destination;
+  }
+  migrate(existingDatabase, { firstChannelName = DEFAULT_CHANNEL_NAME, origin = "init" } = {}) {
     const version = Number(this.db.prepare("PRAGMA user_version").get().user_version);
-    if (version >= 5) return;
-    const hadLegacySchema = this.db
-      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='episodes'")
-      .get();
+    if (version > SCHEMA_VERSION)
+      throw new StoreError(`Database schema ${version} is newer than this Storybench release supports (${SCHEMA_VERSION})`, 409);
+    if (version >= SCHEMA_VERSION) return;
+    const hadLegacySchema = this.tableExists("episodes");
+    if (version < 5) this.migrateV5(existingDatabase && hadLegacySchema);
     if (existingDatabase && hadLegacySchema) {
+      const backupPath = path.join(this.workspace, "storybench.pre-v6.sqlite");
+      if (!existsSync(backupPath)) this.backupDatabase(backupPath);
+    }
+    this.migrateV6({ firstChannelName, origin: existingDatabase && hadLegacySchema ? (origin === "adopt" ? "adopt" : "migration") : origin });
+    try {
+      this.afterMigrationCommit?.();
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
+  }
+  migrateV5(backupLegacy) {
+    if (backupLegacy) {
       const backupPath = path.join(this.workspace, "storybench.pre-v2.sqlite");
       if (!existsSync(backupPath)) {
         const escaped = backupPath.replaceAll("'", "''");
         this.db.exec(`VACUUM INTO '${escaped}'`);
       }
     }
+    // Channel-era schemas (for example an artificially lowered user_version) must not get the prototype's
+    // installation-wide asset backfill, which would cross channel ownership.
+    const channelSchema = this.tableExists("channels");
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.exec(`
@@ -343,8 +417,7 @@ export class Store {
           expires_at TEXT NOT NULL,consumed_at TEXT,created_at TEXT NOT NULL
         );
       `);
-      const columns = (table) =>
-        new Set(this.db.prepare(`PRAGMA table_info('${table}')`).all().map((column) => column.name));
+      const columns = (table) => this.columns(table);
       if (!columns("episodes").has("state"))
         this.db.exec("ALTER TABLE episodes ADD COLUMN state TEXT NOT NULL DEFAULT 'Scaffold'");
       if (!columns("episode_history").has("parent_revision")) {
@@ -355,31 +428,35 @@ export class Store {
         this.db.exec("ALTER TABLE jobs ADD COLUMN output_class TEXT NOT NULL DEFAULT 'active'");
         this.db.exec("UPDATE jobs SET output_class='legacy_draft'");
       }
-      if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chats'").get() && !columns("chats").has("name"))
+      if (this.tableExists("chats") && !columns("chats").has("name"))
         this.db.exec("ALTER TABLE chats ADD COLUMN name TEXT NOT NULL DEFAULT 'Conversation 1'");
       const stamp = now();
-      if (!this.db.prepare("SELECT 1 FROM episodes LIMIT 1").get() && this.db.prepare("SELECT 1 FROM assets LIMIT 1").get()) {
-        const importedId = id("episode");
-        this.db.prepare("INSERT INTO episodes(id,title,notes,revision,cards,created_at,updated_at,state) VALUES(?,?,?,?,?,?,?,?)")
-          .run(importedId, "Imported library", "", 1, "[]", stamp, stamp, "Scaffold");
-        this.db.prepare("INSERT INTO episode_history(episode_id,revision,title,notes,cards,actor,created_at,parent_revision) VALUES(?,?,?,?,?,?,?,?)")
-          .run(importedId, 1, "Imported library", "", "[]", "migration", stamp, null);
+      if (!channelSchema) {
+        if (!this.db.prepare("SELECT 1 FROM episodes LIMIT 1").get() && this.db.prepare("SELECT 1 FROM assets LIMIT 1").get()) {
+          const importedId = id("episode");
+          this.db.prepare("INSERT INTO episodes(id,title,notes,revision,cards,created_at,updated_at,state) VALUES(?,?,?,?,?,?,?,?)")
+            .run(importedId, "Imported library", "", 1, "[]", stamp, stamp, "Scaffold");
+          this.db.prepare("INSERT INTO episode_history(episode_id,revision,title,notes,cards,actor,created_at,parent_revision) VALUES(?,?,?,?,?,?,?,?)")
+            .run(importedId, 1, "Imported library", "", "[]", "migration", stamp, null);
+        }
       }
       const emptyHash = hash("");
       this.db.prepare(`INSERT OR IGNORE INTO stories(episode_id,source,revision,sections,publication_pending,committed_hash,published_hash,updated_at)
         SELECT id,'',1,'[]',1,?,NULL,? FROM episodes`).run(emptyHash, stamp);
       this.db.prepare(`INSERT OR IGNORE INTO story_history(episode_id,revision,source,sections,actor,created_at)
         SELECT id,1,'','[]','migration',? FROM episodes`).run(stamp);
-      const category = (kind) => kind === "video" ? "B-roll" : kind === "audio" ? "Narration" : kind === "image" ? "Graphics" : "Reference";
-      const episodes = this.db.prepare("SELECT id FROM episodes").all();
-      const assets = this.db.prepare("SELECT id,kind FROM assets").all();
-      const membership = this.db.prepare("INSERT OR IGNORE INTO episode_library(episode_id,asset_id,category,created_at) VALUES(?,?,?,?)");
-      for (const episode of episodes)
-        for (const asset of assets) membership.run(episode.id, asset.id, category(asset.kind), stamp);
-      this.db.prepare(`INSERT OR IGNORE INTO library_items(
-        id,episode_id,asset_id,category,label,source_kind,created_at,updated_at
-      ) SELECT 'library_' || lower(hex(randomblob(16))),l.episode_id,l.asset_id,l.category,a.name,'file',l.created_at,l.created_at
-        FROM episode_library l JOIN assets a ON a.id=l.asset_id`).run();
+      if (!channelSchema) {
+        const category = (kind) => kind === "video" ? "B-roll" : kind === "audio" ? "Narration" : kind === "image" ? "Graphics" : "Reference";
+        const episodes = this.db.prepare("SELECT id FROM episodes").all();
+        const assets = this.db.prepare("SELECT id,kind FROM assets").all();
+        const membership = this.db.prepare("INSERT OR IGNORE INTO episode_library(episode_id,asset_id,category,created_at) VALUES(?,?,?,?)");
+        for (const episode of episodes)
+          for (const asset of assets) membership.run(episode.id, asset.id, category(asset.kind), stamp);
+        this.db.prepare(`INSERT OR IGNORE INTO library_items(
+          id,episode_id,asset_id,category,label,source_kind,created_at,updated_at
+        ) SELECT 'library_' || lower(hex(randomblob(16))),l.episode_id,l.asset_id,l.category,a.name,'file',l.created_at,l.created_at
+          FROM episode_library l JOIN assets a ON a.id=l.asset_id`).run();
+      }
       for (const row of this.db.prepare("SELECT id,cards FROM episodes").all()) {
         const legacy = parse(row.cards, []);
         if (!legacy.some((card) => !card.type)) continue;
@@ -391,56 +468,284 @@ export class Store {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+  // Schema 6: shared channels. Existing data becomes the first channel with every ID, path and byte preserved.
+  // Table rebuilds follow SQLite's documented procedure: foreign keys off outside the transaction,
+  // rebuild, foreign_key_check before commit, then enforcement back on.
+  migrateV6({ firstChannelName = DEFAULT_CHANNEL_NAME, origin = "init" } = {}) {
+    const stamp = now();
+    this.db.exec("PRAGMA foreign_keys=OFF");
+    this.db.exec("BEGIN IMMEDIATE");
     try {
-      this.afterMigrationCommit?.();
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS channels (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          name_key TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS data_root (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          id TEXT NOT NULL,
+          origin TEXT NOT NULL,
+          default_channel_id TEXT REFERENCES channels(id),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+      const hasData = ["episodes", "assets", "branding_templates"].some((table) => this.db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get());
+      let firstChannelId = this.db.prepare("SELECT id FROM channels ORDER BY created_at,id LIMIT 1").get()?.id || null;
+      if (!firstChannelId && hasData) {
+        const name = normalizeChannelName(firstChannelName);
+        firstChannelId = id("channel");
+        this.db.prepare("INSERT INTO channels(id,name,name_key,created_at,updated_at) VALUES(?,?,?,?,?)")
+          .run(firstChannelId, name, channelNameKey(name), stamp, stamp);
+      }
+      if (!this.columns("episodes").has("channel_id")) {
+        this.db.exec(`CREATE TABLE episodes_v6 (
+          id TEXT PRIMARY KEY,
+          channel_id TEXT NOT NULL REFERENCES channels(id),
+          directory TEXT NOT NULL,
+          title TEXT NOT NULL,notes TEXT NOT NULL DEFAULT '',revision INTEGER NOT NULL,cards TEXT NOT NULL,
+          created_at TEXT NOT NULL,updated_at TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'Scaffold'
+        )`);
+        // Legacy episodes keep their recorded episodes/<id> directory; nothing is moved.
+        this.db.prepare(`INSERT INTO episodes_v6(id,channel_id,directory,title,notes,revision,cards,created_at,updated_at,state)
+          SELECT id,?,'episodes/' || id,title,notes,revision,cards,created_at,updated_at,state FROM episodes`).run(firstChannelId);
+        this.db.exec("DROP TABLE episodes; ALTER TABLE episodes_v6 RENAME TO episodes;");
+      }
+      if (!this.columns("assets").has("channel_id")) {
+        // The prototype's global UNIQUE(hash) becomes channel-scoped deduplication.
+        this.db.exec(`CREATE TABLE assets_v6 (
+          id TEXT PRIMARY KEY,
+          channel_id TEXT NOT NULL REFERENCES channels(id),
+          name TEXT NOT NULL,hash TEXT NOT NULL,kind TEXT NOT NULL,path TEXT NOT NULL,
+          duration REAL,width INTEGER,height INTEGER,metadata TEXT NOT NULL,thumbnail_path TEXT,created_at TEXT NOT NULL,
+          UNIQUE(channel_id,hash)
+        )`);
+        this.db.prepare(`INSERT INTO assets_v6(id,channel_id,name,hash,kind,path,duration,width,height,metadata,thumbnail_path,created_at)
+          SELECT id,?,name,hash,kind,path,duration,width,height,metadata,thumbnail_path,created_at FROM assets`).run(firstChannelId);
+        this.db.exec("DROP TABLE assets; ALTER TABLE assets_v6 RENAME TO assets;");
+      }
+      if (!this.columns("branding_templates").has("channel_id")) {
+        this.db.exec(`CREATE TABLE branding_templates_v6 (
+          id TEXT PRIMARY KEY,
+          channel_id TEXT NOT NULL REFERENCES channels(id),
+          name TEXT NOT NULL,role TEXT,
+          source_episode_id TEXT NOT NULL,source_card_id TEXT NOT NULL,
+          card_snapshot TEXT NOT NULL,dependency_items TEXT NOT NULL,
+          created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+        )`);
+        this.db.prepare(`INSERT INTO branding_templates_v6(id,channel_id,name,role,source_episode_id,source_card_id,card_snapshot,dependency_items,created_at,updated_at)
+          SELECT id,?,name,role,source_episode_id,source_card_id,card_snapshot,dependency_items,created_at,updated_at FROM branding_templates`).run(firstChannelId);
+        this.db.exec("DROP TABLE branding_templates; ALTER TABLE branding_templates_v6 RENAME TO branding_templates;");
+      }
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS episodes_channel ON episodes(channel_id,updated_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS episodes_directory ON episodes(directory);
+        CREATE INDEX IF NOT EXISTS assets_channel_hash ON assets(channel_id,hash);
+        CREATE INDEX IF NOT EXISTS branding_templates_channel ON branding_templates(channel_id,created_at);
+        CREATE INDEX IF NOT EXISTS library_items_episode ON library_items(episode_id,created_at);
+        CREATE INDEX IF NOT EXISTS jobs_episode ON jobs(episode_id,created_at);
+        CREATE TRIGGER IF NOT EXISTS episodes_ownership_immutable BEFORE UPDATE OF channel_id,directory ON episodes
+          WHEN NEW.channel_id IS NOT OLD.channel_id OR NEW.directory IS NOT OLD.directory
+          BEGIN SELECT RAISE(ABORT,'episode channel and directory are immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS assets_channel_immutable BEFORE UPDATE OF channel_id ON assets
+          WHEN NEW.channel_id IS NOT OLD.channel_id
+          BEGIN SELECT RAISE(ABORT,'asset channel is immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS library_items_channel_insert BEFORE INSERT ON library_items
+          WHEN (SELECT channel_id FROM assets WHERE id=NEW.asset_id) IS NOT (SELECT channel_id FROM episodes WHERE id=NEW.episode_id)
+          BEGIN SELECT RAISE(ABORT,'library item asset belongs to another channel'); END;
+        CREATE TRIGGER IF NOT EXISTS library_items_channel_update BEFORE UPDATE OF asset_id,episode_id ON library_items
+          WHEN (SELECT channel_id FROM assets WHERE id=NEW.asset_id) IS NOT (SELECT channel_id FROM episodes WHERE id=NEW.episode_id)
+          BEGIN SELECT RAISE(ABORT,'library item asset belongs to another channel'); END;
+        CREATE TRIGGER IF NOT EXISTS branding_templates_channel_insert BEFORE INSERT ON branding_templates
+          WHEN (SELECT channel_id FROM episodes WHERE id=NEW.source_episode_id) IS NOT NEW.channel_id
+          BEGIN SELECT RAISE(ABORT,'branding template source episode belongs to another channel'); END;
+      `);
+      this.db.prepare("INSERT OR IGNORE INTO data_root(singleton,id,origin,default_channel_id,created_at,updated_at) VALUES(1,?,?,?,?,?)")
+        .run(`root_${crypto.randomUUID()}`, origin, firstChannelId, stamp, stamp);
+      if (firstChannelId)
+        this.db.prepare("UPDATE data_root SET default_channel_id=?,updated_at=? WHERE singleton=1 AND default_channel_id IS NULL").run(firstChannelId, stamp);
+      const violations = this.db.prepare("PRAGMA foreign_key_check").all();
+      if (violations.length)
+        throw new StoreError(`Channel migration found ${violations.length} foreign-key violation(s); first: ${JSON.stringify(violations[0])}`, 500);
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(6,?)").run(stamp);
+      this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION}; COMMIT`);
     } catch (error) {
-      this.db.close();
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
       throw error;
+    } finally {
+      this.db.exec("PRAGMA foreign_keys=ON");
     }
-    for (const episode of this.db.prepare("SELECT id FROM episodes").all())
-      this.ensureEpisodeDirectories(episode.id);
   }
-  episodeDirectory(episodeId) {
-    const episodesRoot = path.join(this.workspace, "episodes");
-    const directory = path.resolve(episodesRoot, String(episodeId));
-    if (directory === episodesRoot || !directory.startsWith(episodesRoot + path.sep))
-      throw new StoreError("Invalid registered episode path", 403);
-    return directory;
+  dataRootIdentity() {
+    const row = this.db.prepare("SELECT * FROM data_root WHERE singleton=1").get();
+    return row && { id: row.id, origin: row.origin, defaultChannelId: row.default_channel_id, createdAt: row.created_at,
+      schemaVersion: Number(this.db.prepare("PRAGMA user_version").get().user_version) };
   }
-  ensureEpisodeDirectories(episodeId) {
-    const episodeDirectory = this.episodeDirectory(episodeId);
-    mkdirSync(path.join(this.workspace, "episodes"), { recursive: true });
-    mkdirSync(episodeDirectory, { recursive: true });
-    const actual = realpathSync(episodeDirectory);
-    const root = realpathSync(path.join(this.workspace, "episodes"));
-    if (actual === root || !actual.startsWith(root + path.sep))
-      throw new StoreError("Registered episode path escapes the workspace", 403);
-    for (const dir of ["reference", "b-roll", "narration", "graphics", "drafts", "final", "cache", "conflicts"]) {
-      const destination = path.join(episodeDirectory, dir);
+  channelRow(row, defaultId = this.dataRootIdentity()?.defaultChannelId) {
+    return row && { id: row.id, name: row.name, isDefault: row.id === defaultId, createdAt: row.created_at, updatedAt: row.updated_at };
+  }
+  listChannels() {
+    const defaultId = this.dataRootIdentity()?.defaultChannelId;
+    return this.db.prepare("SELECT * FROM channels ORDER BY created_at,id").all().map((row) => this.channelRow(row, defaultId));
+  }
+  getChannel(channelId) {
+    return this.channelRow(this.db.prepare("SELECT * FROM channels WHERE id=?").get(String(channelId ?? "")));
+  }
+  findChannel(nameOrId) {
+    const value = String(nameOrId ?? "").trim();
+    if (!value) return null;
+    const byId = this.getChannel(value);
+    if (byId) return byId;
+    return this.channelRow(this.db.prepare("SELECT * FROM channels WHERE name_key=?").get(channelNameKey(value.normalize("NFC").replace(/\s+/g, " "))));
+  }
+  requireChannel(channelId) {
+    const channel = this.getChannel(channelId);
+    if (!channel) throw new StoreError(`Channel not found: ${channelId}`, 404);
+    return channel;
+  }
+  createChannel(name) {
+    const displayName = normalizeChannelName(name);
+    const key = channelNameKey(displayName);
+    const stamp = now();
+    const channelId = id("channel");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (this.db.prepare("SELECT 1 FROM channels WHERE name_key=?").get(key))
+        throw new StoreError(`A channel named "${displayName}" already exists`, 409);
+      this.db.prepare("INSERT INTO channels(id,name,name_key,created_at,updated_at) VALUES(?,?,?,?,?)").run(channelId, displayName, key, stamp, stamp);
+      // The first channel becomes the default navigation target.
+      this.db.prepare("UPDATE data_root SET default_channel_id=?,updated_at=? WHERE singleton=1 AND default_channel_id IS NULL").run(channelId, stamp);
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    this.ensureChannelDirectories(channelId);
+    return this.getChannel(channelId);
+  }
+  renameChannel(channelId, name) {
+    this.requireChannel(channelId);
+    const displayName = normalizeChannelName(name);
+    const key = channelNameKey(displayName);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (this.db.prepare("SELECT 1 FROM channels WHERE name_key=? AND id<>?").get(key, channelId))
+        throw new StoreError(`A channel named "${displayName}" already exists`, 409);
+      this.db.prepare("UPDATE channels SET name=?,name_key=?,updated_at=? WHERE id=?").run(displayName, key, now(), channelId);
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    return this.getChannel(channelId);
+  }
+  getDefaultChannel() {
+    const defaultId = this.dataRootIdentity()?.defaultChannelId;
+    return defaultId ? this.getChannel(defaultId) : null;
+  }
+  // Persists only the default navigation target. It never touches jobs, conversations or open views.
+  setDefaultChannel(nameOrId) {
+    const channel = this.findChannel(nameOrId);
+    if (!channel) throw new StoreError(`Channel not found: ${nameOrId}`, 404);
+    this.db.prepare("UPDATE data_root SET default_channel_id=?,updated_at=? WHERE singleton=1").run(channel.id, now());
+    return this.getChannel(channel.id);
+  }
+  // Resolves a write destination. An explicit channel must exist; an omitted one is accepted only when the
+  // installation has exactly one channel, so a mutable default never silently chooses a destination.
+  resolveChannelId(channelId) {
+    if (channelId != null && channelId !== "") return this.requireChannel(channelId).id;
+    const rows = this.db.prepare("SELECT id FROM channels ORDER BY created_at,id LIMIT 2").all();
+    if (!rows.length) throw new StoreError("No channel exists yet; create a channel first", 409);
+    if (rows.length > 1) throw new StoreError("channelId is required when several channels exist", 400);
+    return rows[0].id;
+  }
+  assertEpisodeChannel(episodeId, channelId) {
+    if (channelId != null && channelId !== "") this.requireChannel(channelId);
+    const episode = this.getEpisode(episodeId);
+    if (!episode) throw new StoreError("Episode not found", 404);
+    if (channelId != null && channelId !== "" && episode.channelId !== channelId)
+      throw new StoreError("Episode belongs to another channel", 409, { episodeChannelId: episode.channelId });
+    return episode;
+  }
+  channelDirectory(channelId) {
+    if (!SAFE_SEGMENT.test(String(channelId ?? ""))) throw new StoreError("Invalid registered channel path", 403);
+    return path.join(this.workspace, "channels", String(channelId));
+  }
+  channelMediaDirectory(channelId) { return path.join(this.channelDirectory(channelId), "media"); }
+  channelBrandingDirectory(channelId) { return path.join(this.channelDirectory(channelId), "branding"); }
+  ensureChannelDirectories(channelId) {
+    const directory = this.channelDirectory(channelId);
+    const rootReal = realpathSync(this.workspace);
+    for (const dir of ["", "branding", "media", "episodes"]) {
+      const destination = path.join(directory, dir);
       mkdirSync(destination, { recursive: true });
       const resolved = realpathSync(destination);
-      if (!resolved.startsWith(root + path.sep))
+      if (!resolved.startsWith(rootReal + path.sep))
+        throw new StoreError("Registered channel path escapes the workspace", 403);
+    }
+    return directory;
+  }
+  episodeLocation(episodeId) {
+    if (!SAFE_SEGMENT.test(String(episodeId ?? ""))) throw new StoreError("Invalid registered episode path", 403);
+    const row = this.db.prepare("SELECT id,channel_id,directory FROM episodes WHERE id=?").get(String(episodeId));
+    if (!row) throw new StoreError("Episode not found", 404);
+    const legacy = `episodes/${row.id}`;
+    const channelOwned = `channels/${row.channel_id}/episodes/${row.id}`;
+    if (!SAFE_SEGMENT.test(row.channel_id) || ![legacy, channelOwned].includes(row.directory))
+      throw new StoreError("Invalid registered episode path", 403);
+    return { directory: path.join(this.workspace, ...row.directory.split("/")), legacy: row.directory === legacy, channelId: row.channel_id };
+  }
+  episodeDirectory(episodeId) {
+    return this.episodeLocation(episodeId).directory;
+  }
+  // Managed output folder for drafts, final or graphics. Legacy episodes keep their existing folders.
+  episodeOutputDirectory(episodeId, kind) {
+    if (!["drafts", "final", "graphics"].includes(kind)) throw new StoreError("Unknown output directory");
+    const location = this.episodeLocation(episodeId);
+    return location.legacy ? path.join(location.directory, kind) : path.join(location.directory, "outputs", kind);
+  }
+  episodeWorkDirectory(episodeId) {
+    return path.join(this.episodeDirectory(episodeId), "work");
+  }
+  // Where registered non-media library files (references, pasted text) are stored.
+  episodeLibraryFileDirectory(episodeId) {
+    const location = this.episodeLocation(episodeId);
+    return location.legacy ? path.join(location.directory, "reference") : this.channelMediaDirectory(location.channelId);
+  }
+  ensureEpisodeDirectories(episodeId) {
+    const location = this.episodeLocation(episodeId);
+    mkdirSync(location.directory, { recursive: true });
+    const actual = realpathSync(location.directory);
+    const root = realpathSync(this.workspace);
+    if (actual === root || !actual.startsWith(root + path.sep))
+      throw new StoreError("Registered episode path escapes the workspace", 403);
+    for (const dir of location.legacy ? LEGACY_EPISODE_SUBDIRS : CHANNEL_EPISODE_SUBDIRS) {
+      const destination = path.join(location.directory, dir);
+      mkdirSync(destination, { recursive: true });
+      const resolved = realpathSync(destination);
+      if (!resolved.startsWith(actual + path.sep))
         throw new StoreError("Registered episode path escapes the workspace", 403);
     }
+    if (!location.legacy) mkdirSync(this.channelMediaDirectory(location.channelId), { recursive: true });
   }
   close() {
-    this.db.close();
+    if (this.db.isOpen) this.db.close();
   }
-  listEpisodes() {
-    return this.db
-      .prepare("SELECT * FROM episodes ORDER BY updated_at DESC")
-      .all()
-      .map(episodeRow);
+  listEpisodes({ channelId = null } = {}) {
+    const rows = channelId
+      ? this.db.prepare("SELECT * FROM episodes WHERE channel_id=? ORDER BY updated_at DESC").all(channelId)
+      : this.db.prepare("SELECT * FROM episodes ORDER BY updated_at DESC").all();
+    return rows.map(episodeRow);
   }
   getEpisode(episodeId) {
     return episodeRow(
       this.db.prepare("SELECT * FROM episodes WHERE id=?").get(episodeId),
     );
   }
-  createEpisode({ title = "Untitled episode", notes = "" } = {}) {
+  createEpisode({ title = "Untitled episode", notes = "", channelId = null } = {}) {
+    const ownerId = this.resolveChannelId(channelId);
     const initialStory = normalizeStory(STARTER_STORY);
     const episode = {
       id: id("episode"),
+      channelId: ownerId,
       title: String(title).trim() || "Untitled episode",
       notes: String(notes),
       state: "Scaffold",
@@ -452,9 +757,11 @@ export class Store {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db
-        .prepare("INSERT INTO episodes(id,title,notes,revision,cards,created_at,updated_at,state) VALUES(?,?,?,?,?,?,?,?)")
+        .prepare("INSERT INTO episodes(id,channel_id,directory,title,notes,revision,cards,created_at,updated_at,state) VALUES(?,?,?,?,?,?,?,?,?,?)")
         .run(
           episode.id,
+          ownerId,
+          `channels/${ownerId}/episodes/${episode.id}`,
           episode.title,
           episode.notes,
           1,
@@ -493,7 +800,7 @@ export class Store {
     }
     this.ensureEpisodeDirectories(episode.id);
     this.publishStory(episode.id);
-    const standards = this.listBrandingTemplates().filter((value) => value.role);
+    const standards = this.listBrandingTemplates({ channelId: ownerId }).filter((value) => value.role);
     for (const template of standards)
       this.applyBrandingTemplate(episode.id, template.id, { automatic: true });
     return this.getEpisode(episode.id);
@@ -525,6 +832,7 @@ export class Store {
         if (value) {
           const asset = this.getAsset(value.assetId);
           if (!asset) throw new StoreError(`${field} asset not found`);
+          if (asset.channelId !== current.channelId) throw new StoreError(`${field} asset belongs to another channel`, 409);
           if (field === "visual" && !["video", "image"].includes(asset.kind))
             throw new StoreError("Visual source must be video or image");
           if (field === "narration" && !["video", "audio"].includes(asset.kind))
@@ -639,7 +947,7 @@ export class Store {
   }
   listEpisodeLibrary(episodeId) {
     if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
-    return this.db.prepare(`SELECT l.*,a.id AS id_asset,a.name,a.hash,a.kind,a.path,a.duration,a.width,a.height,
+    return this.db.prepare(`SELECT l.*,a.id AS id_asset,a.channel_id,a.name,a.hash,a.kind,a.path,a.duration,a.width,a.height,
       a.metadata,a.thumbnail_path,a.created_at AS asset_created_at
       FROM library_items l JOIN assets a ON a.id=l.asset_id
       WHERE l.episode_id=? ORDER BY l.created_at,l.id`).all(episodeId).map((row) =>
@@ -672,15 +980,18 @@ export class Store {
   }
   getLibraryItem(episodeId, itemId) {
     if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
-    const row = this.db.prepare(`SELECT l.*,a.name,a.hash,a.kind,a.path,a.duration,a.width,a.height,
+    const row = this.db.prepare(`SELECT l.*,a.channel_id,a.name,a.hash,a.kind,a.path,a.duration,a.width,a.height,
       a.metadata,a.thumbnail_path,a.created_at AS asset_created_at
       FROM library_items l JOIN assets a ON a.id=l.asset_id WHERE l.episode_id=? AND l.id=?`).get(episodeId, itemId);
     return libraryItemRow(row);
   }
   attachLibraryItem(episodeId, assetId, details = {}) {
-    if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
+    const episode = this.getEpisode(episodeId);
+    if (!episode) throw new StoreError("Episode not found", 404);
     const asset = this.getAsset(assetId);
     if (!asset) throw new StoreError("Asset not found", 404);
+    if (asset.channelId !== episode.channelId)
+      throw new StoreError("Asset belongs to another channel; reuse it into this channel first", 409);
     const category = String(details.category || "Reference");
     if (!["Reference", "B-roll", "Narration", "Graphics"].includes(category))
       throw new StoreError("Unknown library category");
@@ -725,9 +1036,12 @@ export class Store {
     if (!result.changes) throw new StoreError("Stale library revision", 409);
     return this.getLibraryItem(episodeId, itemId);
   }
-  listBrandingTemplates() {
-    return this.db.prepare("SELECT * FROM branding_templates ORDER BY created_at,id").all().map((row) => ({
-      id: row.id, name: row.name, role: row.role, sourceEpisodeId: row.source_episode_id,
+  listBrandingTemplates({ channelId = null } = {}) {
+    const rows = channelId
+      ? this.db.prepare("SELECT * FROM branding_templates WHERE channel_id=? ORDER BY created_at,id").all(channelId)
+      : this.db.prepare("SELECT * FROM branding_templates ORDER BY created_at,id").all();
+    return rows.map((row) => ({
+      id: row.id, channelId: row.channel_id, name: row.name, role: row.role, sourceEpisodeId: row.source_episode_id,
       sourceCardId: row.source_card_id, card: parse(row.card_snapshot, {}), dependencies: parse(row.dependency_items, []),
       createdAt: row.created_at, updatedAt: row.updated_at,
     }));
@@ -748,7 +1062,9 @@ export class Store {
       const source = path.resolve(this.workspace, item.asset.path);
       const workspaceReal = realpathSync(this.workspace), sourceReal = realpathSync(source);
       if (!sourceReal.startsWith(workspaceReal + path.sep)) throw new StoreError("Branding dependency escapes the workspace", 403);
-      const destination = path.join(this.workspace, "branding", "assets", `${item.asset.hash}-${path.basename(item.asset.path)}`);
+      const brandingDirectory = this.channelBrandingDirectory(episode.channelId);
+      mkdirSync(brandingDirectory, { recursive: true });
+      const destination = path.join(brandingDirectory, `${item.asset.hash}-${path.basename(item.asset.path)}`);
       if (!existsSync(destination)) copyFileSync(source, destination);
       const registered = path.relative(this.workspace, destination);
       if (item.asset.path !== registered) this.db.prepare("UPDATE assets SET path=? WHERE id=?").run(registered, item.assetId);
@@ -760,20 +1076,22 @@ export class Store {
     const stamp = now(), templateId = id("branding");
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      if (role) this.db.prepare("UPDATE branding_templates SET role=NULL,updated_at=? WHERE role=?").run(stamp, role);
-      this.db.prepare("INSERT INTO branding_templates VALUES(?,?,?,?,?,?,?,?,?)")
-        .run(templateId, String(name || card.title || "Reusable card"), role, episodeId, cardId, JSON.stringify(snapshot), JSON.stringify(dependencies), stamp, stamp);
+      if (role) this.db.prepare("UPDATE branding_templates SET role=NULL,updated_at=? WHERE role=? AND channel_id=?").run(stamp, role, episode.channelId);
+      this.db.prepare(`INSERT INTO branding_templates(id,channel_id,name,role,source_episode_id,source_card_id,card_snapshot,dependency_items,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?)`)
+        .run(templateId, episode.channelId, String(name || card.title || "Reusable card"), role, episodeId, cardId, JSON.stringify(snapshot), JSON.stringify(dependencies), stamp, stamp);
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
     return this.getBrandingTemplate(templateId);
   }
   setBrandingRole(templateId, role) {
     if (role != null && !["intro", "outro"].includes(role)) throw new StoreError("Branding role must be intro or outro");
-    if (!this.getBrandingTemplate(templateId)) throw new StoreError("Branding template not found", 404);
+    const template = this.getBrandingTemplate(templateId);
+    if (!template) throw new StoreError("Branding template not found", 404);
     const stamp = now();
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      if (role) this.db.prepare("UPDATE branding_templates SET role=NULL,updated_at=? WHERE role=?").run(stamp, role);
+      if (role) this.db.prepare("UPDATE branding_templates SET role=NULL,updated_at=? WHERE role=? AND channel_id=?").run(stamp, role, template.channelId);
       this.db.prepare("UPDATE branding_templates SET role=?,updated_at=? WHERE id=?").run(role, stamp, templateId);
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
@@ -784,6 +1102,7 @@ export class Store {
     if (!template) throw new StoreError("Branding template not found", 404);
     let episode = this.getEpisode(episodeId);
     if (!episode) throw new StoreError("Episode not found", 404);
+    if (template.channelId !== episode.channelId) throw new StoreError("Branding template belongs to another channel", 409);
     if (automatic && episode.cards.some((card) => card.brandingTemplateId === templateId)) return episode;
     const createdItemIds = [], itemMap = new Map();
     try {
@@ -945,45 +1264,56 @@ export class Store {
     }
     return outcomes;
   }
-  listAssets() {
-    return this.db
-      .prepare("SELECT * FROM assets ORDER BY created_at DESC")
-      .all()
-      .map(assetRow);
+  listAssets({ channelId = null } = {}) {
+    return (channelId
+      ? this.db.prepare("SELECT * FROM assets WHERE channel_id=? ORDER BY created_at DESC").all(channelId)
+      : this.db.prepare("SELECT * FROM assets ORDER BY created_at DESC").all()
+    ).map(assetRow);
   }
   getAsset(assetId) {
     return assetRow(
       this.db.prepare("SELECT * FROM assets WHERE id=?").get(assetId),
     );
   }
-  getAssetByHash(hash) {
+  // Content-hash deduplication is scoped to one channel: equal bytes in two channels are two assets.
+  getAssetByHash(hash, channelId = null) {
+    const owner = this.resolveChannelId(channelId);
     return assetRow(
-      this.db.prepare("SELECT * FROM assets WHERE hash=?").get(hash),
+      this.db.prepare("SELECT * FROM assets WHERE channel_id=? AND hash=?").get(owner, hash),
     );
   }
   saveAsset(asset) {
-    const existing = this.getAssetByHash(asset.hash);
+    const channelId = this.resolveChannelId(asset.channelId);
+    const existing = this.getAssetByHash(asset.hash, channelId);
     if (existing) return existing;
     const value = {
       ...asset,
       id: asset.id || id("asset"),
       createdAt: asset.createdAt || now(),
     };
-    this.db
-      .prepare("INSERT INTO assets VALUES(?,?,?,?,?,?,?,?,?,?,?)")
-      .run(
-        value.id,
-        value.name,
-        value.hash,
-        value.kind,
-        value.path,
-        value.duration ?? null,
-        value.width ?? null,
-        value.height ?? null,
-        JSON.stringify(value.metadata || {}),
-        value.thumbnailPath ?? null,
-        value.createdAt,
-      );
+    try {
+      this.db
+        .prepare("INSERT INTO assets(id,channel_id,name,hash,kind,path,duration,width,height,metadata,thumbnail_path,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
+        .run(
+          value.id,
+          channelId,
+          value.name,
+          value.hash,
+          value.kind,
+          value.path,
+          value.duration ?? null,
+          value.width ?? null,
+          value.height ?? null,
+          JSON.stringify(value.metadata || {}),
+          value.thumbnailPath ?? null,
+          value.createdAt,
+        );
+    } catch (error) {
+      // A concurrent writer registered the same bytes in this channel first: return that asset.
+      const winner = /UNIQUE/.test(error.message) ? this.getAssetByHash(asset.hash, channelId) : null;
+      if (winner) return winner;
+      throw error;
+    }
     return this.getAsset(value.id);
   }
   repairReferenceAssetAsMedia(assetId, detected) {
@@ -1004,10 +1334,10 @@ export class Store {
     let assetId, itemId, appliedToCard = false, applyNote = null;
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const existingAsset = this.db.prepare("SELECT id FROM assets WHERE hash=?").get(candidate.hash);
+      const existingAsset = this.db.prepare("SELECT id FROM assets WHERE channel_id=? AND hash=?").get(episode.channelId, candidate.hash);
       assetId = existingAsset?.id || candidate.id || id("asset");
-      if (!existingAsset) this.db.prepare("INSERT INTO assets VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(
-        assetId, candidate.name, candidate.hash, candidate.kind, candidate.path, candidate.duration ?? null,
+      if (!existingAsset) this.db.prepare("INSERT INTO assets(id,channel_id,name,hash,kind,path,duration,width,height,metadata,thumbnail_path,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").run(
+        assetId, episode.channelId, candidate.name, candidate.hash, candidate.kind, candidate.path, candidate.duration ?? null,
         candidate.width ?? null, candidate.height ?? null, JSON.stringify(candidate.metadata || {}),
         candidate.thumbnailPath ?? null, candidate.createdAt || stamp,
       );
@@ -1150,19 +1480,19 @@ export class Store {
       return this.getJob(job.id);
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
-  listJobs(episodeId) {
+  // Jobs inherit channel ownership through their (immutable) episode relationship.
+  listJobs(episodeId, { channelId = null } = {}) {
+    const select = "SELECT j.*,e.channel_id FROM jobs j LEFT JOIN episodes e ON e.id=j.episode_id";
     return (
       episodeId
-        ? this.db
-            .prepare(
-              "SELECT * FROM jobs WHERE episode_id=? ORDER BY created_at DESC",
-            )
-            .all(episodeId)
-        : this.db.prepare("SELECT * FROM jobs ORDER BY created_at DESC").all()
+        ? this.db.prepare(`${select} WHERE j.episode_id=? ORDER BY j.created_at DESC`).all(episodeId)
+        : channelId
+          ? this.db.prepare(`${select} WHERE e.channel_id=? ORDER BY j.created_at DESC`).all(channelId)
+          : this.db.prepare(`${select} ORDER BY j.created_at DESC`).all()
     ).map(jobRow);
   }
   getJob(jobId) {
-    return jobRow(this.db.prepare("SELECT * FROM jobs WHERE id=?").get(jobId));
+    return jobRow(this.db.prepare("SELECT j.*,e.channel_id FROM jobs j LEFT JOIN episodes e ON e.id=j.episode_id WHERE j.id=?").get(jobId));
   }
   saveJob(job) {
     const old = job.id && this.getJob(job.id);
