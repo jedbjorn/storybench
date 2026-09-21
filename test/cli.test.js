@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +11,7 @@ import { main } from "../src/cli/main.js";
 import { SCHEMA_VERSION } from "../src/store.js";
 import { resolveXdg } from "../src/cli/xdg.js";
 import { readConfig, writeConfigAtomic } from "../src/cli/config.js";
-import { acquireLock } from "../src/cli/lock.js";
+import { acquireLock, readLockOwner } from "../src/cli/lock.js";
 import { probeService } from "../src/cli/service.js";
 import { createApp } from "../src/server.js";
 import { initDataRoot } from "../src/services/data-root.js";
@@ -49,6 +49,18 @@ function legacyWorkspace(root) {
   writeFileSync(path.join(root, "media", "clip"), "clip bytes");
   db.prepare("INSERT INTO assets VALUES(?,?,?,?,?,?,?,?,?,?,?)").run("asset-1", "clip", "hash-clip", "video", "media/clip", 1, null, null, "{}", null, stamp);
   db.close();
+}
+
+async function installReleasePointer(xdg, commit = "a".repeat(40)) {
+  const { createManifest } = await import("../src/runtime/manifest.js");
+  const manifest = createManifest({ packageName: "storybench", packageVersion: "0.1.0", commit, ref: "main", builtAt: "2026-09-21T00:00:00Z",
+    images: { app: `sha256:${"c".repeat(64)}`, worker: `sha256:${"d".repeat(64)}` }, schema: { min: 0, max: SCHEMA_VERSION } });
+  const directory = path.join(xdg.releases, commit);
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(path.join(directory, "manifest.json"), JSON.stringify(manifest));
+  mkdirSync(path.dirname(xdg.current), { recursive: true });
+  symlinkSync(directory, xdg.current);
+  return { directory, manifest };
 }
 
 test("XDG locations use standard defaults, honour absolute overrides and fall back for the lock directory", () => {
@@ -243,6 +255,7 @@ test("init --adopt on a legacy workspace twice: migrates once, then changes noth
 test("channel create/list/current/use run offline through the shared services", async (t) => {
   const { home, run } = sandbox(t);
   await run(["init", path.join(home, "root")]);
+  assert.match((await run(["status"])).stdout, /Stopped data commands: development checkout \(host Node fallback\)/);
   assert.match((await run(["channel", "current"])).stdout, /No channel exists yet/);
   assert.match((await run(["channel", "list"])).stdout, /No channels yet/);
   const cooking = await run(["channel", "create", "Cooking"]);
@@ -408,14 +421,105 @@ test("offline commands never migrate: an older or newer database schema is refus
   assert.equal(version(), 99);
 });
 
-test("the executor seam picks the running app, the offline path, or refuses, from the probe and the unit state", async () => {
-  const { selectExecutor } = await import("../src/cli/executor.js");
-  const base = { dataRoot: "/nowhere", dataRootId: "root_x", lockDir: "/nowhere/lock", lockTimeoutMs: 1, port: 4173, unit: "storybench.service" };
+test("the executor seam picks the running app, selected image, or development host fallback", async (t) => {
+  const { appImageExecutor, selectExecutor } = await import("../src/cli/executor.js");
+  const s = sandbox(t);
+  const root = path.join(s.home, "root");
+  const initialized = initDataRoot(root);
+  const release = await installReleasePointer(s.xdg);
+  const calls = [];
+  const imageResult = { channels: [], defaultChannelId: null };
+  const runCommand = async (command, args) => {
+    assert.equal(readLockOwner(s.xdg.lockDir)?.operation, "channel list", "Docker starts while the lifecycle lock is held");
+    calls.push({ command, args });
+    return { code: 0, stdout: JSON.stringify({ schema: "storybench.data-command/1", ok: true, result: imageResult }), stderr: "" };
+  };
+  const base = { dataRoot: root, dataRootId: initialized.identity.id, lockDir: s.xdg.lockDir, lockTimeoutMs: 300, port: 4173,
+    unit: "storybench-test-image.service", xdg: s.xdg, installId: "sb_image_test", runCommand };
   const unitIs = (active) => ({ unitState: async () => ({ active }) });
-  const running = await selectExecutor({ ...base, probeService: async () => ({ state: "running", dataRootId: "root_x" }), system: unitIs("active") });
-  assert.equal(running.kind, "running-app");
-  const offline = await selectExecutor({ ...base, probeService: async () => ({ state: "stopped" }), system: unitIs("inactive") });
+  const running = await selectExecutor({ ...base, probeService: async () => ({ state: "running", dataRootId: initialized.identity.id }), system: unitIs("active") });
+  assert.equal(running.kind, "running-app", "the healthy app wins even when an installed release exists");
+  for (const state of [{ active: "inactive", load: "loaded" }, { active: "failed", load: "loaded" }, { active: "inactive", load: "not-found" }]) {
+    const selected = await selectExecutor({ ...base, probeService: async () => ({ state: "stopped" }), system: { unitState: async () => state } });
+    assert.equal(selected.kind, "app-image");
+  }
+  const selected = await selectExecutor({ ...base, probeService: async () => ({ state: "stopped" }), system: unitIs("inactive") });
+  assert.deepEqual(await selected.listChannels(), imageResult);
+  assert.equal(calls.length, 1);
+  const [{ command, args }] = calls;
+  assert.equal(command, "docker");
+  assert.deepEqual(args.slice(0, 11), ["run", "--rm", "--network", "none", "--user", "0:0", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--label"]);
+  assert.equal(args[args.indexOf("--network") + 1], "none");
+  assert.equal(args[args.indexOf("--user") + 1], "0:0");
+  assert.ok(args.includes("io.storybench.install=sb_image_test"));
+  assert.ok(args.includes("io.storybench.role=data-command"));
+  const mounts = args.flatMap((value, index) => value === "--mount" ? [args[index + 1]] : []);
+  assert.deepEqual(mounts, [`type=bind,source=${root},target=/storybench/data`], "only the guarded data root is mounted");
+  const imageAt = args.indexOf(release.manifest.images.app.id);
+  assert.ok(imageAt > 0);
+  assert.deepEqual(args.slice(imageAt), [release.manifest.images.app.id, "node", "src/cli/data-image.js", "channel-list"]);
+
+  let dockerStarted = false;
+  const unsafe = appImageExecutor({ ...base, dataRoot: path.join(s.home, "bad,root"), runCommand: async () => { dockerStarted = true; } }, release);
+  await assert.rejects(unsafe.listChannels(), /cannot be mounted safely/);
+  assert.equal(dockerStarted, false, "the guarded path is rejected before Docker starts");
+
+  const mapped = appImageExecutor({ ...base, runCommand: async () => ({ code: 1, stderr: "", stdout: JSON.stringify({ schema: "storybench.data-command/1", ok: false,
+    error: { message: "The data root /storybench/data is unavailable", exitCode: 1, statusCode: 409, hint: "Restore /storybench/data first." } }) }) }, release);
+  await assert.rejects(mapped.createChannel("Main"), (error) => error instanceof Error && error.message === `The data root ${root} is unavailable`
+    && error.hint === `Restore ${root} first.` && error.exitCode === 1 && error.statusCode === 409);
+
+  const { runImageDataCommand } = await import("../src/cli/executor.js");
+  const adopted = await runImageDataCommand({ ...base, runCommand: async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ schema: "storybench.data-command/1", ok: true,
+    result: { dataRoot: "/storybench/data", backupPath: "/storybench/data/storybench.pre-v6.sqlite",
+      upgraded: { from: 8, to: 9, backupPath: "/storybench/data/storybench.pre-v9.sqlite" } } }) }) }, release, "adopt", ["Main"]);
+  assert.deepEqual(adopted, { dataRoot: root, backupPath: path.join(root, "storybench.pre-v6.sqlite"),
+    upgraded: { from: 8, to: 9, backupPath: path.join(root, "storybench.pre-v9.sqlite") } });
+
+  const dev = sandbox(t);
+  const devRoot = path.join(dev.home, "root");
+  const devInfo = initDataRoot(devRoot);
+  const offline = await selectExecutor({ ...base, dataRoot: devRoot, dataRootId: devInfo.identity.id, xdg: dev.xdg, lockDir: dev.xdg.lockDir,
+    probeService: async () => ({ state: "stopped" }), system: unitIs("inactive") });
   assert.equal(offline.kind, "offline");
   await assert.rejects(selectExecutor({ ...base, probeService: async () => ({ state: "stopped" }), system: unitIs("activating") }), /service is activating/);
   await assert.rejects(selectExecutor({ ...base, probeService: async () => ({ state: "running", dataRootId: "root_other" }), system: unitIs("active") }), /different data root/);
+});
+
+test("installed init is delegated to the selected image and image results configure the same root", async (t) => {
+  const s = sandbox(t);
+  const release = await installReleasePointer(s.xdg, "b".repeat(40));
+  const root = path.join(s.home, "image-root");
+  const calls = [];
+  const result = await s.run(["init", root], { runCommand: async (command, args) => {
+    assert.equal(readLockOwner(s.xdg.lockDir)?.operation, "init", "image init remains inside the init lifecycle lock");
+    calls.push({ command, args });
+    return { code: 0, stderr: "", stdout: JSON.stringify({ schema: "storybench.data-command/1", ok: true,
+      result: { dataRoot: "/storybench/data", identity: { id: "root_from_image", schemaVersion: SCHEMA_VERSION }, channels: [], created: true } }) };
+  } });
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /Initialized a Storybench data root/);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].args.includes(release.manifest.images.app.id));
+  assert.deepEqual(calls[0].args.slice(-3), ["node", "src/cli/data-image.js", "init"]);
+  assert.equal(readConfig(s.xdg.configFile).dataRootId, "root_from_image");
+  assert.match((await s.run(["version"])).stdout, new RegExp(`Stopped data commands: selected app image ${release.manifest.images.app.id}`));
+});
+
+test("the in-image entry point runs shared init and channel services and serializes errors", async (t) => {
+  const { executeDataCommand, runDataImage } = await import("../src/cli/data-image.js");
+  const s = sandbox(t);
+  const root = path.join(s.home, "direct-image-root");
+  const initialized = executeDataCommand("init", [], root);
+  assert.equal(initialized.created, true);
+  const channel = executeDataCommand("channel-create", ["Main"], root);
+  assert.equal(channel.name, "Main");
+  assert.equal(executeDataCommand("channel-current", [], root).id, channel.id);
+  let output = "";
+  const code = runDataImage(["not-an-operation"], (value) => { output += value; });
+  assert.equal(code, 2);
+  const envelope = JSON.parse(output);
+  assert.deepEqual({ schema: envelope.schema, ok: envelope.ok, exitCode: envelope.error.exitCode },
+    { schema: "storybench.data-command/1", ok: false, exitCode: 2 });
+  assert.equal(typeof envelope.error.message, "string");
 });

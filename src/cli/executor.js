@@ -1,13 +1,43 @@
 // Where channel operations run. selectExecutor is the single switch point:
 //   - the service is healthy for this data root -> the running app's shared operations (/api/channels);
-//   - otherwise -> offline: the shared services against the data root with startup:false, under the lifecycle lock.
-// Task #16 adds "via the selected app image" for the stopped case behind this same interface.
+//   - an installed service is stopped -> the selected release's exact app image, under the lifecycle lock;
+//   - a development checkout with no installed release -> host Node, explicitly, under the same lock.
 import { createChannel, getDefaultChannel, listChannels, useChannel } from "../services/channels.js";
 import { inspectDataRoot, withDataRoot } from "../services/data-root.js";
 import { SCHEMA_VERSION } from "../store.js";
+import path from "node:path";
 import { CliError } from "./errors.js";
+import { assertOwnedWritable, mountPath } from "./fs-safety.js";
+import { installedOrConfiguredId } from "./installation.js";
 import { withLock } from "./lock.js";
+import { installedRelease } from "./release.js";
 import { requestJson } from "./service.js";
+import { runCommand as hostRunCommand } from "./system.js";
+
+const DATA_IMAGE_SCHEMA = "storybench.data-command/1";
+const DATA_IMAGE_ROOT = "/storybench/data";
+const IMAGE_OPERATIONS = new Set(["init", "adopt", "channel-create", "channel-list", "channel-current", "channel-use"]);
+
+function firstLine(value) { return String(value || "").trim().split("\n")[0]; }
+function hostPath(value, dataRoot) {
+  if (value === DATA_IMAGE_ROOT) return dataRoot;
+  return typeof value === "string" && value.startsWith(`${DATA_IMAGE_ROOT}/`) ? path.join(dataRoot, value.slice(DATA_IMAGE_ROOT.length + 1)) : value;
+}
+function hostText(value, dataRoot) {
+  return typeof value === "string" ? value.replaceAll(DATA_IMAGE_ROOT, () => dataRoot) : value;
+}
+function hostResult(value, dataRoot) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  return {
+    ...value,
+    ...(typeof value.dataRoot === "string" ? { dataRoot: hostPath(value.dataRoot, dataRoot) } : {}),
+    ...(typeof value.backupPath === "string" ? { backupPath: hostPath(value.backupPath, dataRoot) } : {}),
+    ...(value.upgraded && typeof value.upgraded === "object" ? { upgraded: {
+      ...value.upgraded,
+      ...(typeof value.upgraded.backupPath === "string" ? { backupPath: hostPath(value.upgraded.backupPath, dataRoot) } : {}),
+    } } : {}),
+  };
+}
 
 // Offline commands never migrate a database: opening an older schema would upgrade it as a side effect.
 export function assertCurrentSchema(info, dataRoot) {
@@ -30,6 +60,48 @@ export function offlineExecutor({ dataRoot, lockDir, lockTimeoutMs }) {
     listChannels: () => run("channel list", (store) => listChannels(store)),
     currentChannel: () => run("channel current", (store) => getDefaultChannel(store)),
     useChannel: (nameOrId) => run("channel use", (store) => useChannel(store, nameOrId)),
+  };
+}
+
+// Run one shared data service in the selected app image. The caller decides lock scope so init/adopt can keep their
+// host-side identity checks and the image operation in one lifecycle lock; appImageExecutor locks channel calls.
+export async function runImageDataCommand(context, release, operation, args = []) {
+  if (!IMAGE_OPERATIONS.has(operation)) throw new CliError(`Unknown image data operation: ${operation}`);
+  assertOwnedWritable(context.dataRoot, "the data root");
+  const installId = context.installId ?? (context.xdg ? installedOrConfiguredId(context.xdg) : null);
+  const labels = installId ? ["--label", `io.storybench.install=${installId}`, "--label", "io.storybench.role=data-command"] : [];
+  const command = context.runCommand ?? hostRunCommand;
+  const result = await command("docker", [
+    "run", "--rm", "--network", "none", "--user", "0:0", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+    ...labels,
+    "--mount", `type=bind,source=${mountPath(context.dataRoot, "The data root")},target=${DATA_IMAGE_ROOT}`,
+    release.manifest.images.app.id, "node", "src/cli/data-image.js", operation, ...args,
+  ], { timeoutMs: 120_000 });
+  let envelope = null;
+  try { envelope = JSON.parse(result.stdout); } catch { /* mapped below without exposing arbitrary container output */ }
+  if (envelope?.schema === DATA_IMAGE_SCHEMA && envelope.ok === true && result.code === 0) return hostResult(envelope.result, context.dataRoot);
+  if (envelope?.schema === DATA_IMAGE_SCHEMA && envelope.ok === false && typeof envelope.error?.message === "string") {
+    const error = new CliError(hostText(envelope.error.message, context.dataRoot), {
+      exitCode: Number.isInteger(envelope.error.exitCode) ? envelope.error.exitCode : undefined,
+      hint: hostText(envelope.error.hint, context.dataRoot),
+    });
+    if (Number.isInteger(envelope.error.statusCode)) error.statusCode = envelope.error.statusCode;
+    throw error;
+  }
+  if (result.code !== 0) throw new CliError(`The selected app image could not run ${operation}: ${firstLine(result.stderr) || `exit ${result.code}`}`);
+  throw new CliError(`The selected app image returned an invalid ${operation} result`);
+}
+
+export function appImageExecutor(context, release) {
+  const run = (operation, imageOperation, args = []) => withLock(context.lockDir, operation,
+    () => runImageDataCommand(context, release, imageOperation, args), { timeoutMs: context.lockTimeoutMs });
+  return {
+    kind: "app-image",
+    release,
+    createChannel: (name) => run("channel create", "channel-create", [name]),
+    listChannels: () => run("channel list", "channel-list"),
+    currentChannel: () => run("channel current", "channel-current"),
+    useChannel: (nameOrId) => run("channel use", "channel-use", [nameOrId]),
   };
 }
 
@@ -64,9 +136,9 @@ export function runningAppExecutor({ port }) {
 
 export const SERVICE_BUSY_STATES = Object.freeze(["active", "activating", "reloading", "deactivating"]);
 
-// context: { dataRoot, dataRootId, lockDir, lockTimeoutMs, port, probeService, system, unit }.
-// The offline path is used only when the unit is inactive, failed or not loaded: while systemd is running,
-// starting, restarting or stopping the service, the app owns the database even if it does not answer yet.
+// context: { dataRoot, dataRootId, lockDir, lockTimeoutMs, port, probeService, system, unit, xdg, runCommand }.
+// A stopped installed service uses its exact app image. Host Node is only the development-checkout fallback. While
+// systemd is starting, restarting or stopping the service, the app owns the database even if it does not answer yet.
 export async function selectExecutor(context) {
   const answer = context.probeService ? await context.probeService(context.port) : { state: "stopped" };
   if (answer.state === "running") {
@@ -82,5 +154,6 @@ export async function selectExecutor(context) {
       throw new CliError(`The Storybench service is ${state.active}${state.sub && state.sub !== state.active ? ` (${state.sub})` : ""} but its app is not answering`, {
         hint: "Retry in a moment, or run `storybench down` to manage channels offline." });
   }
-  return offlineExecutor(context);
+  const release = await installedRelease(context);
+  return release ? appImageExecutor(context, release) : offlineExecutor(context);
 }

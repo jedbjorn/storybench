@@ -9,7 +9,7 @@ import { DEFAULT_PORT, readConfig, validatePort, writeConfigAtomic } from "./con
 import { configuredRoot as verifiedRoot } from "./root.js";
 import { CliError, EXIT } from "./errors.js";
 import { withLock } from "./lock.js";
-import { PACKAGE_ROOT, manifestFile } from "./release.js";
+import { installedRelease, PACKAGE_ROOT, manifestFile } from "./release.js";
 import { activeWork, probeService, requestJson, serviceStatus } from "./service.js";
 import { SERVICE_BUSY_STATES } from "./executor.js";
 import { generateUnit, unitName, writeUnitAtomic } from "./unit.js";
@@ -242,6 +242,11 @@ export async function runStatus(context) {
   try { verifiedRoot(context); } catch (error) { rootProblem = `${error.message}${error.hint ? ` — ${error.hint}` : ""}`; }
   let release = null;
   try { release = await expectedRelease(context); } catch (error) { release = { error: error.message }; }
+  let dataExecutor;
+  try {
+    const selected = await installedRelease(context);
+    dataExecutor = selected ? `selected app image ${selected.identity.images.app}` : "development checkout (host Node fallback)";
+  } catch (error) { dataExecutor = `unavailable (${error.message})`; }
   const status = await serviceStatus({ system: context.system, unit, port: config.port, identity: release.identity ?? null, dataRootId: config.dataRootId, probe: context.probeService });
   const lines = [`Status: ${status.state}`, `Unit: ${unit} (${status.unit.load ?? "unknown"}, ${status.unit.active ?? "unknown"}${status.unit.sub ? `/${status.unit.sub}` : ""})`];
   if (interrupted) lines.push(`Recovery: ${interruptedTransitionHint(interrupted)}`);
@@ -258,6 +263,7 @@ export async function runStatus(context) {
   const channel = status.health ? await defaultChannel(config.port) : null;
   lines.push(`URL: ${urlFor(config.port, channel?.id)}${status.state === "healthy" ? "" : " (not serving)"}`);
   lines.push(`Release expected: ${release.identity ? `${release.identity.manifestId} (version ${release.identity.version}, commit ${release.identity.commit})` : release.error}`);
+  lines.push(`Stopped data commands: ${dataExecutor}`);
   if (status.health) {
     const served = status.health.release || {};
     lines.push(`Release served: ${served.manifestId ?? "(none)"} (version ${served.version ?? status.health.package?.version ?? "?"}, commit ${served.commit ?? "?"})`);
