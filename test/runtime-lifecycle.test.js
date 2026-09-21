@@ -284,3 +284,21 @@ test("a stop that leaves installation containers behind is reported at error lev
   assert.ok(events.some((event) => event.event === "host.stop.incomplete" && event.level === "error"));
   assert.ok(events.some((event) => event.event === "host.stopped" && event.level === "error"));
 });
+
+test("v1 release manifests still validate with their original id rule", async (t) => {
+  const { createHash } = await import("node:crypto");
+  const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object"
+    ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
+  const { id, ...v2content } = manifest();
+  const v1 = { ...v2content, schema: "storybench.release/1" };
+  v1.id = `sha256:${createHash("sha256").update(canonical(v1)).digest("hex")}`;
+  assert.equal(validateManifest(JSON.parse(JSON.stringify(v1))).id, v1.id);
+  assert.equal(manifestId(v1), v1.id);
+  assert.throws(() => validateManifest({ ...v1, builtAt: "2030-01-01T00:00:00Z" }), /id does not match/, "v1 ids still cover builtAt");
+  assert.equal(manifest().schema, "storybench.release/2");
+  const dir = await tempDir(t);
+  await writeFile(path.join(dir, "v1.json"), JSON.stringify(v1));
+  const read = await readReleaseManifest(path.join(dir, "v1.json"));
+  assert.equal(read.ok, true);
+  assert.equal(read.identity.manifestId, v1.id);
+});

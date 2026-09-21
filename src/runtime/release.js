@@ -46,7 +46,10 @@ export async function findReusableRelease(manifestPath, commit) {
 export async function buildRelease({ repo = REPO_ROOT, tag = "storybench", allowDirty = false, reuseManifestPath = null, log = () => {} } = {}) {
   const git = (...args) => run("git", ["-C", repo, ...args]).then((out) => out.stdout.trim());
   const commit = await git("rev-parse", "HEAD");
-  const reusable = await findReusableRelease(reuseManifestPath, commit);
+  // The dirty-tree refusal applies to reuse as well as to a fresh build.
+  const dirtyTree = Boolean(await git("status", "--porcelain", "--untracked-files=no"));
+  if (dirtyTree && !allowDirty) throw new Error("Refusing to build a release from a checkout with uncommitted tracked changes");
+  const reusable = dirtyTree ? null : await findReusableRelease(reuseManifestPath, commit);
   if (reusable) { log(`reusing release ${reusable.id} for ${commit}`); return reusable; }
   const dirty = Boolean(await git("status", "--porcelain", "--untracked-files=no"));
   if (dirty && !allowDirty) throw new Error("Refusing to build a release from a checkout with uncommitted tracked changes");
