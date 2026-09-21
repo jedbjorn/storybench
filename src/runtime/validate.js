@@ -20,7 +20,7 @@ const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:\-[\]]{0,79}$/;
 
 // The only operations the app may ask of the host lifecycle entry point.
 const CONTROL_OPS = {
-  "worker.start": ["op", "requestId", "harness", "segmentId", "episodeDir"],
+  "worker.start": ["op", "requestId", "harness", "segmentId", "episodeDir", "workDir"],
   "worker.stop": ["op", "requestId"],
   "worker.status": ["op", "requestId"],
   "harness.availability": ["op"],
@@ -47,8 +47,9 @@ export function assertSessionId(value) {
   return value;
 }
 
-// Episode directories are data-root-relative and may only name a project episode:
-// channels/<channel>/episodes/<episode> or the legacy episodes/<episode>.
+// Episode directories are data-root-relative (as resolved by the app's store path API,
+// store.episodeLocation) and may only name a project episode:
+// channels/<channel>/episodes/<episode> or the legacy adopted episodes/<episode>.
 export function parseEpisodeDir(value) {
   if (typeof value !== "string" || !value || value.length > 300 || path.isAbsolute(value) || value.includes("\\") || value.includes("\0"))
     throw new RuntimeError("INVALID_EPISODE_DIR", "episodeDir must be a data-root-relative episode path");
@@ -67,6 +68,18 @@ export function parseEpisodeDir(value) {
   throw new RuntimeError("INVALID_EPISODE_DIR", "episodeDir must be channels/<channel>/episodes/<episode> or episodes/<episode>");
 }
 
+// The episode work directory (store.episodeWorkDirectory, data-root-relative) must be a
+// plain descendant of the episode directory.
+export function parseWorkDir(value, episode) {
+  if (typeof value !== "string" || !value || value.length > 400 || path.isAbsolute(value) || value.includes("\\") || value.includes("\0"))
+    throw new RuntimeError("INVALID_WORK_DIR", "workDir must be a data-root-relative path");
+  const parts = value.split("/");
+  if (parts.some((part) => part === "" || part === "." || part === ".."))
+    throw new RuntimeError("INVALID_WORK_DIR", "workDir must not contain empty, '.' or '..' segments");
+  if (!value.startsWith(`${episode.relative}/`)) throw new RuntimeError("INVALID_WORK_DIR", "workDir must be inside the episode directory");
+  return value;
+}
+
 // Validate a control request exactly: unknown fields (images, flags, mounts, env, ...) are rejected.
 export function validateControlRequest(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new RuntimeError("INVALID_REQUEST", "Control request must be a JSON object");
@@ -80,6 +93,7 @@ export function validateControlRequest(input) {
     request.harness = assertHarness(input.harness);
     request.segmentId = assertId(input.segmentId, "segmentId");
     request.episode = parseEpisodeDir(input.episodeDir);
+    request.episode.work = parseWorkDir(input.workDir, request.episode);
   }
   return request;
 }
@@ -98,10 +112,12 @@ export async function resolveEpisodeDirectory(dataRoot, episode) {
   catch (error) { throw new RuntimeError("EPISODE_MISSING", `Episode directory does not exist: ${episode.relative}`, { status: 404, cause: error }); }
   if (actual !== lexical || !isInside(rootReal, actual)) throw new RuntimeError("EPISODE_ESCAPE", "Episode directory resolves outside its registered location", { status: 403 });
   if (!(await stat(actual)).isDirectory()) throw new RuntimeError("EPISODE_MISSING", "Episode path is not a directory", { status: 404 });
-  const work = path.join(actual, "work");
+  if (typeof episode.work !== "string") throw new RuntimeError("INVALID_WORK_DIR", "workDir is required");
+  const work = path.join(rootReal, episode.work);
   const workInfo = await lstat(work).catch(() => null);
   if (!workInfo) throw new RuntimeError("WORK_MISSING", "Episode work directory does not exist", { status: 404 });
-  if (workInfo.isSymbolicLink() || !workInfo.isDirectory()) throw new RuntimeError("WORK_ESCAPE", "Episode work directory must be a real directory", { status: 403 });
+  if (workInfo.isSymbolicLink() || !workInfo.isDirectory() || (await realpath(work)) !== work || !isInside(actual, work))
+    throw new RuntimeError("WORK_ESCAPE", "Episode work directory must be a real directory inside the episode", { status: 403 });
   return { dataRoot: rootReal, episodeDir: actual, workDir: work };
 }
 

@@ -3,33 +3,43 @@
 //   render boot/skills -> ask the host for a worker -> bind scoped tools to a request
 //   bridge -> connect a harness -> ... -> stop (container and descendants removed).
 import { randomBytes } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { renderEpisodeBoot } from "./boot.js";
 import { startBridge } from "./bridge.js";
 import { connectHarness, controlRequest } from "./channel.js";
 import { ClaudeStreamSession, WorkerCodexConnection } from "./harnesses.js";
-import { WORKER_REQUEST_MOUNT, BRIDGE_SOCKET_NAME } from "./layout.js";
+import { BRIDGE_SOCKET_NAME, DATA_MOUNT, WORKER_REQUEST_MOUNT } from "./layout.js";
 import { createScopedTools } from "./tools.js";
 import { assertModel, assertSessionId, parseEpisodeDir } from "./validate.js";
 
 export const MCP_BRIDGE_SCRIPT = "/opt/storybench/app/src/runtime/worker/mcp-bridge.mjs";
 
+// store: the app's open Store. All paths come from its path API (episodeLocation,
+// episodeWorkDirectory), for both channel-owned and legacy adopted episode layouts.
 export async function openWorkerRequest({
-  controlSocket, dataRoot, requestId, conversationId, harness, segmentId, episodeDir,
-  bootContext, templates, registerAsset, onToolCall = () => {}, wrapTools = (tools) => tools,
+  controlSocket, store, requestId, conversationId, harness, segmentId, episodeId,
+  bootContext = {}, templates, onToolCall = () => {}, wrapTools = (tools) => tools,
 }) {
-  const episode = parseEpisodeDir(episodeDir);
-  const episodeAbs = path.join(dataRoot, episode.relative);
-  await mkdir(path.join(episodeAbs, "work"), { recursive: true });
+  const dataRoot = store.workspace;
+  // App and worker must see project files at identical paths so worker-reported paths
+  // validate against store paths; the app container mounts its data root at DATA_MOUNT.
+  if (path.resolve(dataRoot) !== DATA_MOUNT) throw new Error(`Worker requests require the app data root at ${DATA_MOUNT}`);
+  store.ensureEpisodeDirectories(episodeId);
+  const location = store.episodeLocation(episodeId);
+  const episodeDir = parseEpisodeDir(path.relative(dataRoot, location.directory));
+  const workRelative = path.relative(dataRoot, store.episodeWorkDirectory(episodeId));
   // Render before the worker starts so the harness never sees a half-written boot.
-  const render = await renderEpisodeBoot({ episodeDir: episodeAbs, context: bootContext, templates });
-  const started = await controlRequest(controlSocket, { op: "worker.start", requestId, harness, segmentId, episodeDir: episode.relative });
+  const render = await renderEpisodeBoot({
+    episodeDir: location.directory, templates,
+    context: { ...bootContext, paths: { ...bootContext.paths, episode: location.directory, work: store.episodeWorkDirectory(episodeId) } },
+  });
+  const started = await controlRequest(controlSocket, { op: "worker.start", requestId, harness, segmentId, episodeDir: episodeDir.relative, workDir: workRelative });
   const scope = {
-    requestId, conversationId, harness, channelId: episode.channelId, episodeId: episode.episodeId,
-    dataRoot, episodeDir: started.episodeDir, workDir: started.workDir,
+    requestId, conversationId, harness, channelId: location.channelId, episodeId,
+    dataRoot, episodeDir: location.directory, workDir: store.episodeWorkDirectory(episodeId),
   };
-  const tools = wrapTools(createScopedTools(scope, { registerAsset }));
+  const tools = wrapTools(createScopedTools(scope, { store }));
   const token = randomBytes(32).toString("hex");
   let bridge;
   try {

@@ -15,10 +15,11 @@ export const CONTROL_SOCKET_NAME = "control.sock";
 export const HARNESS_SOCKET = `${WORKER_REQUEST_MOUNT}/worker/harness.sock`;
 export const BRIDGE_SOCKET_NAME = "bridge.sock";
 
-// Top-level data-root entries that are project material. Everything else in the data
-// root (storybench.sqlite and its sidecars, cache, runtime state) is not mounted into
-// workers. Legacy roots are included when present.
-export const PROJECT_ROOTS = Object.freeze(["channels", "episodes", "media", "branding", "imports"]);
+// Top-level data-root entries that are project material: channel-owned trees plus the
+// legacy adopted-episode and legacy media roots. Everything else in the data root
+// (storybench.sqlite and its sidecars, backups, cache, imports) is never mounted into
+// workers, and the data root itself is not mounted.
+export const PROJECT_ROOTS = Object.freeze(["channels", "episodes", "media"]);
 
 export const LABEL = Object.freeze({
   install: "io.storybench.install",
@@ -104,7 +105,7 @@ export function appRunArgs(config) {
     ...bind(p.controlDir, APP_CONTROL_MOUNT),
     ...bind(p.requestsDir, APP_REQUESTS_MOUNT),
     config.images.app,
-    "node", "src/server.js", "--workspace", DATA_MOUNT, "--port", String(config.port),
+    "node", "src/server.js", "--data-root", DATA_MOUNT, "--port", String(config.port),
   ];
 }
 
@@ -130,7 +131,7 @@ export function workerRunArgs(config, request, { presentRoots, credentialFile })
     // Project trees: read-only for browsing across episodes/channels.
     ...roots.flatMap((root) => bind(path.join(config.dataRoot, root), `${DATA_MOUNT}/${root}`, { readonly: true })),
     // Current episode work: writable, nested over the read-only project mount.
-    ...bind(path.join(config.dataRoot, request.episode.relative, "work"), `${episodeTarget}/work`),
+    ...bind(path.join(config.dataRoot, request.episode.work), `${DATA_MOUNT}/${request.episode.work}`),
     // App-owned native session state for this harness and conversation segment.
     ...bind(p.sessionDir(harness, request.segmentId), `${SESSION_MOUNT}/${harness}`),
     // Exactly one per-request credential copy, freshly staged from the host login.

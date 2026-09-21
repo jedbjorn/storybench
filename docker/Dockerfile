@@ -29,7 +29,7 @@ COPY agent ./agent
 FROM base AS app
 ENV NODE_ENV=production STORYBENCH_BIND_HOST=0.0.0.0
 LABEL io.storybench.image-role=app
-CMD ["node", "src/server.js", "--workspace", "/storybench/data"]
+CMD ["node", "src/server.js", "--data-root", "/storybench/data"]
 
 FROM base AS worker
 ARG CODEX_VERSION=0.155.1

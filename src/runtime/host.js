@@ -42,7 +42,12 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
   async function removeContainer(id) {
     await docker(["stop", "--time", "3", id]).catch(() => {});
     await docker(["rm", "--force", "--volumes", id]).catch(() => {});
-    if (await inspectContainer(id)) throw new RuntimeError("STOP_FAILED", `Container ${id.slice(0, 12)} is still present after stop`, { status: 500 });
+    // Removal may still be completing (e.g. a concurrent removal); confirm it is gone.
+    for (let attempt = 0; attempt < 40; attempt++) {
+      if (!(await inspectContainer(id))) return;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new RuntimeError("STOP_FAILED", `Container ${id.slice(0, 12)} is still present after stop`, { status: 500 });
   }
 
   async function reconcile() {
@@ -68,7 +73,7 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
   async function startWorker(request) {
     const existing = workers.get(request.requestId);
     if (existing) {
-      if (existing.harness !== request.harness || existing.segmentId !== request.segmentId || existing.episode.relative !== request.episode.relative)
+      if (existing.harness !== request.harness || existing.segmentId !== request.segmentId || existing.episode.relative !== request.episode.relative || existing.episode.work !== request.episode.work)
         throw new RuntimeError("DUPLICATE_REQUEST", "requestId already owns a worker with different settings", { status: 409 });
       return { ...statusOf(request.requestId, existing, await inspectContainer(existing.containerId)), reused: true };
     }
@@ -94,7 +99,7 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
       return {
         ...statusOf(request.requestId, worker, await inspectContainer(containerId)),
         episodeDir: `${DATA_MOUNT}/${request.episode.relative}`,
-        workDir: `${DATA_MOUNT}/${request.episode.relative}/work`,
+        workDir: `${DATA_MOUNT}/${request.episode.work}`,
         harnessSocket: `${requestMount}/worker/harness.sock`,
         bridgeSocket: `${requestMount}/app/${BRIDGE_SOCKET_NAME}`,
         appRequestDir: `${requestMount}/app`,
@@ -106,7 +111,14 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     }
   }
 
-  async function stopWorker(requestId) {
+  // Concurrent stops of one request (user Stop racing request cleanup) share one operation.
+  const inFlightStops = new Map();
+  function stopWorker(requestId) {
+    if (!inFlightStops.has(requestId)) inFlightStops.set(requestId, stopWorkerOnce(requestId).finally(() => inFlightStops.delete(requestId)));
+    return inFlightStops.get(requestId);
+  }
+
+  async function stopWorkerOnce(requestId) {
     const worker = workers.get(requestId);
     const ids = worker ? [worker.containerId] : await listByLabels({ [LABEL.install]: config.installId, [LABEL.request]: requestId });
     for (const id of ids) await removeContainer(id);

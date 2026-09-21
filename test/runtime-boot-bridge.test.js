@@ -9,6 +9,8 @@ import path from "node:path";
 import { fillTemplate, loadTemplates, renderEpisodeBoot } from "../src/runtime/boot.js";
 import { startBridge } from "../src/runtime/bridge.js";
 import { createScopedTools, toCodexContentItems, toMcpResult } from "../src/runtime/tools.js";
+import { initDataRoot, openDataRoot } from "../src/services/data-root.js";
+import { createChannel } from "../src/services/channels.js";
 
 async function tempDir(t, prefix = "sb-boot-") {
   const dir = await mkdtemp(path.join(os.tmpdir(), prefix));
@@ -128,27 +130,36 @@ test("tool output adapters encode images for both harnesses", () => {
   assert.deepEqual(toCodexContentItems(output)[1], { type: "inputImage", imageUrl: "data:image/png;base64,QUJD" });
 });
 
-test("scoped tools inspect real frames and refuse to register symlinks or files outside work", async (t) => {
+test("scoped tools inspect real frames and register work files through the store", async (t) => {
   const root = await tempDir(t, "sb-tools-");
-  const episode = path.join(root, "channels/ch-a/episodes/ep-1");
-  await mkdir(path.join(episode, "work"), { recursive: true });
-  await writeFile(path.join(root, "storybench.sqlite"), "db");
-  await promisify(execFile)("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=64x48:d=1", "-frames:v", "1", path.join(episode, "work/red.png")]);
-  const registered = [];
-  const tools = createScopedTools({ requestId: "r1", conversationId: "c1", harness: "codex", channelId: "ch-a", episodeId: "ep-1", dataRoot: root, episodeDir: episode, workDir: path.join(episode, "work") },
-    { registerAsset: async (candidate) => { registered.push(candidate); return { id: "asset_1", ...candidate }; } });
+  initDataRoot(root);
+  const channel = createChannel(root, "Tools");
+  const store = openDataRoot(root);
+  t.after(() => store.close());
+  const episode = store.createEpisode({ title: "E", channelId: channel.id });
+  store.ensureEpisodeDirectories(episode.id);
+  const workDir = store.episodeWorkDirectory(episode.id);
+  await promisify(execFile)("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=64x48:d=1", "-frames:v", "1", path.join(workDir, "red.png")]);
+  const tools = createScopedTools({ requestId: "r1", conversationId: "c1", harness: "codex", channelId: channel.id, episodeId: episode.id,
+    dataRoot: root, episodeDir: store.episodeDirectory(episode.id), workDir }, { store });
   const seen = await tools.call("inspect_image", { path: "work/red.png" });
   assert.equal(Buffer.from(seen.images[0].data, "base64").subarray(1, 4).toString(), "PNG");
-  await assert.rejects(tools.call("inspect_image", { path: "../../../../storybench.sqlite" }), { code: "PATH_NOT_PROJECT" });
-  await symlink(path.join(root, "storybench.sqlite"), path.join(episode, "work/db.png"));
+  await assert.rejects(tools.call("inspect_image", { path: path.join(root, "storybench.sqlite") }), { code: "PATH_NOT_PROJECT" });
+  await symlink(path.join(root, "storybench.sqlite"), path.join(workDir, "db.png"));
   await assert.rejects(tools.call("register_work_file", { path: "work/db.png" }), { code: "PATH_SYMLINK" });
-  await assert.rejects(tools.call("register_work_file", { path: "../../../../storybench.sqlite" }), { code: "PATH_OUTSIDE_WORK" });
+  await assert.rejects(tools.call("register_work_file", { path: "story.md" }), { code: "PATH_OUTSIDE_WORK" });
   await assert.rejects(tools.call("drop_database", {}), { code: "UNKNOWN_TOOL" });
   const result = JSON.parse((await tools.call("register_work_file", { path: "work/red.png", name: "Red" })).text);
-  assert.equal(result.assetId, "asset_1");
-  assert.equal(registered[0].name, "Red");
-  assert.equal(registered[0].metadata.provenance.requestId, "r1");
-  assert.equal(registered[0].metadata.provenance.workPath, "work/red.png");
+  const asset = store.getAsset(result.assetId);
+  assert.equal(asset.channelId, channel.id);
+  assert.equal(asset.name, "Red");
+  assert.ok(asset.path.startsWith(path.relative(root, store.channelMediaDirectory(channel.id))));
+  assert.equal(asset.metadata.provenance.requestId, "r1");
+  assert.equal(asset.metadata.provenance.workPath, "work/red.png");
+  const item = store.listEpisodeLibrary(episode.id).find((entry) => entry.assetId === asset.id);
+  assert.equal(item.category, "Graphics");
+  assert.equal(result.deduplicated, false);
+  assert.equal(JSON.parse((await tools.call("register_work_file", { path: "work/red.png" })).text).deduplicated, true);
 });
 
 test("worker launch table accepts only fixed harness argv", async () => {

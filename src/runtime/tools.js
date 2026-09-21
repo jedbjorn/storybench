@@ -3,7 +3,7 @@
 // implementations serve Codex (app-server dynamic tools) and Claude (MCP via the
 // request bridge). Storage/mutation rules stay in the existing app services.
 import { spawn } from "node:child_process";
-import { stat } from "node:fs/promises";
+import { rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { importMedia } from "../media.js";
 import { PROJECT_ROOTS } from "./layout.js";
@@ -64,25 +64,34 @@ export const TOOL_DEFINITIONS = Object.freeze([
   },
 ]);
 
+const CATEGORY_BY_KIND = { image: "Graphics", video: "B-roll", audio: "Narration" };
+
 // scope: { requestId, conversationId, harness, channelId, episodeId, dataRoot, episodeDir, workDir }
-// registerAsset(candidate) persists an importMedia candidate (e.g. store.saveAsset).
-export function createScopedTools(scope, { registerAsset, workspace = scope.dataRoot } = {}) {
+// (all resolved by the app from the store path API). `store` is the app's open Store:
+// registration uses the existing import/storage rules (channel media directory,
+// channel-scoped dedup, episode library membership); nothing is reimplemented here.
+export function createScopedTools(scope, { store }) {
   const handlers = {
     async register_work_file(args = {}) {
       const file = await resolveWorkFile(scope.workDir, args.path, { base: scope.episodeDir });
       await waitForStableFile(file.path, file);
-      const candidate = await importMedia({ workspace, sourcePath: file.path });
+      const workspace = store.workspace;
+      const imported = await importMedia({ workspace, sourcePath: file.path, mediaDirectory: store.channelMediaDirectory(scope.channelId) });
       const provenance = {
         tool: "register_work_file",
         requestId: scope.requestId, conversationId: scope.conversationId, harness: scope.harness,
         channelId: scope.channelId, episodeId: scope.episodeId,
         workPath: path.relative(scope.episodeDir, file.path),
-        sourceSha256: candidate.hash, sourceSize: file.size, registeredAt: new Date().toISOString(),
+        sourceSha256: imported.hash, sourceSize: file.size, registeredAt: new Date().toISOString(),
       };
-      const name = typeof args.name === "string" && args.name.trim() ? args.name.trim().slice(0, 200) : candidate.name;
-      const asset = await registerAsset({ ...candidate, name, metadata: { ...candidate.metadata, provenance } });
-      const deduplicated = asset.metadata?.provenance?.requestId !== scope.requestId;
-      return { text: JSON.stringify({ registered: true, assetId: asset.id, kind: asset.kind, sha256: asset.hash, deduplicated, width: asset.width, height: asset.height, duration: asset.duration }) };
+      const name = typeof args.name === "string" && args.name.trim() ? args.name.trim().slice(0, 200) : imported.name;
+      const deduplicated = Boolean(store.getAssetByHash(imported.hash, scope.channelId));
+      const asset = store.saveAsset({ ...imported, channelId: scope.channelId, name, metadata: { ...imported.metadata, provenance } });
+      // Same bytes already registered in this channel: keep that asset, drop the redundant copy.
+      if (imported.createdFile && asset.path !== imported.path) await rm(path.join(workspace, imported.path), { force: true });
+      const category = CATEGORY_BY_KIND[asset.kind] ?? "B-roll";
+      const item = store.attachLibraryItem(scope.episodeId, asset.id, { category, label: name, sourceKind: "file", provenance });
+      return { text: JSON.stringify({ registered: true, assetId: asset.id, libraryItemId: item?.id ?? null, category, kind: asset.kind, sha256: asset.hash, deduplicated, width: asset.width, height: asset.height, duration: asset.duration }) };
     },
     async inspect_image(args = {}) {
       const at = args.atSeconds;

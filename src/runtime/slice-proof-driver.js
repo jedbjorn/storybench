@@ -4,7 +4,9 @@
 // request bridge, scoped tools and the existing import/registration services.
 // Used by scripts/runtime-slice-proof.mjs; prints one JSON summary on stdout.
 import { createHash } from "node:crypto";
-import { Store } from "../store.js";
+import path from "node:path";
+import { initDataRoot, openDataRoot } from "../services/data-root.js";
+import { createChannel, createChannelEpisode } from "../services/channels.js";
 import { controlRequest } from "./channel.js";
 import { DATA_MOUNT, APP_CONTROL_MOUNT, CONTROL_SOCKET_NAME } from "./layout.js";
 import { openWorkerRequest } from "./request.js";
@@ -63,14 +65,14 @@ function claudeEventSummary(event) {
 }
 
 async function runTurn(spec) {
-  const store = new Store(DATA_MOUNT);
+  const store = openDataRoot(DATA_MOUNT, { startup: false });
   const trace = [];
   const events = [];
   const out = { phase: spec.phase, harness: spec.harness, requestId: spec.requestId, events, toolCalls: trace };
   const request = await openWorkerRequest({
-    controlSocket: CONTROL, dataRoot: DATA_MOUNT, requestId: spec.requestId, conversationId: spec.conversationId,
-    harness: spec.harness, segmentId: spec.segmentId, episodeDir: spec.episodeDir, bootContext: spec.bootContext,
-    registerAsset: (candidate) => store.saveAsset(candidate), wrapTools: (tools) => withTracing(tools, trace),
+    controlSocket: CONTROL, store, requestId: spec.requestId, conversationId: spec.conversationId,
+    harness: spec.harness, segmentId: spec.segmentId, episodeId: spec.episodeId, bootContext: spec.bootContext,
+    wrapTools: (tools) => withTracing(tools, trace),
   });
   out.worker = { containerId: request.started.containerId, state: request.started.state };
   out.render = { templateVersion: request.render.templateVersion, bootSha256: request.render.bootSha256, files: request.render.files, removed: request.render.removed };
@@ -122,9 +124,26 @@ async function main() {
   let result;
   if (spec.phase === "control") result = { phase: "control", reply: await controlRequest(CONTROL, spec.body).then((value) => ({ ok: true, value }), (error) => ({ ok: false, code: error.code, error: error.message })) };
   else if (spec.phase === "asset") {
-    const store = new Store(DATA_MOUNT);
-    result = { phase: "asset", asset: store.getAsset(spec.assetId) };
+    const store = openDataRoot(DATA_MOUNT, { startup: false });
+    const asset = store.getAsset(spec.assetId);
+    const item = asset && spec.episodeId ? store.listEpisodeLibrary(spec.episodeId).find((entry) => (entry.assetId ?? entry.asset?.id) === asset.id) ?? null : null;
+    result = { phase: "asset", asset, libraryItem: item };
     store.close();
+  } else if (spec.phase === "seed") {
+    // Offline (no server): initialize a disposable data root with two channels and one
+    // episode each, returning locations from the store path API.
+    initDataRoot(DATA_MOUNT);
+    const channels = [createChannel(DATA_MOUNT, "Slice A"), createChannel(DATA_MOUNT, "Slice B")];
+    const store = openDataRoot(DATA_MOUNT, { startup: false });
+    const rel = (value) => path.relative(DATA_MOUNT, value);
+    const episodes = channels.map((channel) => {
+      const episode = createChannelEpisode(store, channel.id, { title: `${channel.name} episode` });
+      store.ensureEpisodeDirectories(episode.id);
+      return { id: episode.id, channelId: channel.id, directory: rel(store.episodeDirectory(episode.id)), work: rel(store.episodeWorkDirectory(episode.id)),
+        drafts: rel(store.episodeOutputDirectory(episode.id, "drafts")), channelMedia: rel(store.channelMediaDirectory(channel.id)) };
+    });
+    store.close();
+    result = { phase: "seed", channels: channels.map((channel) => ({ id: channel.id, name: channel.name })), episodes };
   } else result = await runTurn(spec);
   process.stdout.write(JSON.stringify(result) + "\n");
   process.exit(0);

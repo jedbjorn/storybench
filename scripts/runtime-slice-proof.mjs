@@ -34,8 +34,9 @@ const dataRoot = path.join(work, "data");
 const stateRoot = path.join(work, "state");
 const home = os.homedir();
 const credentials = { codex: path.join(home, ".codex/auth.json"), claude: path.join(home, ".claude/.credentials.json") };
-const ep1 = "channels/ch-a/episodes/ep-1";
-const ep2 = "channels/ch-b/episodes/ep-2";
+// Episode/channel locations come from the app store's path API (seed phase), never hand-built.
+let L = null; // { ep1, ep2, ep1Id, ep2Id, work1, work2, drafts1, media1 } data-root-relative
+const D = (relative) => `/storybench/data/${relative}`;
 const results = [];
 const log = (...parts) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...parts);
 
@@ -71,15 +72,22 @@ async function buildImages() {
   return ids;
 }
 
-async function prepareData() {
+async function prepareData(images) {
   await rm(work, { recursive: true, force: true });
-  for (const dir of [`${ep1}/reference`, `${ep1}/outputs`, `${ep1}/work`, `${ep2}/work`, "media", stateRoot])
-    await mkdir(path.isAbsolute(dir) ? dir : path.join(dataRoot, dir), { recursive: true });
+  await mkdir(dataRoot, { recursive: true });
+  await mkdir(stateRoot, { recursive: true });
+  // Initialize the disposable data root offline with the app image's shared services.
+  const seedOut = await run("docker", ["run", "--rm", "--network", "none", "--user", "0:0", "--cap-drop", "ALL",
+    "--mount", `type=bind,source=${dataRoot},target=/storybench/data`, images.app, "node", "src/runtime/slice-proof-driver.js", JSON.stringify({ phase: "seed" })]);
+  const seed = JSON.parse(seedOut.stdout.trim().split("\n").pop());
+  await save("seed.json", seed);
+  const [a, b] = seed.episodes;
+  L = { ep1: a.directory, ep2: b.directory, ep1Id: a.id, ep2Id: b.id, work1: a.work, work2: b.work, drafts1: a.drafts, media1: a.channelMedia };
   const codeWord = `OTTER-${nonce()}`;
-  await writeFile(path.join(dataRoot, ep1, "story.md"), "# Overview\n\nA disposable slice-test episode.\n");
-  await writeFile(path.join(dataRoot, ep2, "notes.txt"), `Channel B notes. The code word is ${codeWord}.\n`);
+  await mkdir(path.join(dataRoot, "media"), { recursive: true });
+  await writeFile(path.join(dataRoot, L.ep2, "notes.txt"), `Channel B notes. The code word is ${codeWord}.\n`);
   await writeFile(path.join(dataRoot, "media", "legacy-original.txt"), "legacy managed original stand-in\n");
-  const ref = path.join(dataRoot, ep1, "reference");
+  const ref = path.join(dataRoot, L.media1);
   // Still: an orange five-pointed star on a teal background.
   // Clip: 0-2s purple + white square, 2-4s yellow + black circle, 4-6s red + white triangle.
   await run("python3", ["-c", `
@@ -100,12 +108,12 @@ for name, bg, shape in [('s1', (128, 0, 160), 'square'), ('s2', (255, 230, 0), '
 `]);
   await run("ffmpeg", ["-v", "error", "-y", ...["s1", "s2", "s3"].flatMap((name) => ["-loop", "1", "-t", "2", "-framerate", "24", "-i", path.join(work, `${name}.png`)]),
     "-filter_complex", "[0][1][2]concat=n=3:v=1:a=0,format=yuv420p[v]", "-map", "[v]", "-r", "24", path.join(ref, "clip-b.mp4")]);
-  await run("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=320x240:d=1", "-pix_fmt", "yuv420p", path.join(dataRoot, ep1, "outputs", "draft-001.mp4")]);
+  await run("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=320x240:d=1", "-pix_fmt", "yuv420p", path.join(dataRoot, L.drafts1, "draft-001.mp4")]);
   return { codeWord };
 }
 
 async function protectedHashes() {
-  const files = [`${ep1}/story.md`, `${ep1}/reference/fixture-a.png`, `${ep1}/reference/clip-b.mp4`, `${ep1}/outputs/draft-001.mp4`, `${ep2}/notes.txt`, "media/legacy-original.txt", "storybench.sqlite"];
+  const files = [`${L.ep1}/story.md`, `${L.media1}/fixture-a.png`, `${L.media1}/clip-b.mp4`, `${L.drafts1}/draft-001.mp4`, `${L.ep2}/notes.txt`, "media/legacy-original.txt", "storybench.sqlite"];
   const out = {};
   for (const file of files) out[file] = existsSync(path.join(dataRoot, file)) ? await sha(path.join(dataRoot, file)) : null;
   return out;
@@ -162,16 +170,17 @@ console.log(rows.map(c=>{const [ip,p]=c[1].split(':');return ip.match(/../g).rev
 }
 
 async function controlChecks() {
-  const base = { op: "worker.start", requestId: "probe-reject", harness: "codex", segmentId: "seg-x", episodeDir: ep1 };
+  const base = { op: "worker.start", requestId: "probe-reject", harness: "codex", segmentId: "seg-x", episodeDir: L.ep1, workDir: L.work1 };
   const cases = {
     arbitraryImage: { ...base, image: "alpine:latest" },
     extraMount: { ...base, mounts: [{ source: "/", target: "/host" }] },
     dockerFlags: { ...base, flags: ["--privileged"] },
-    pathEscape: { ...base, episodeDir: "channels/ch-a/episodes/../../../.." },
+    pathEscape: { ...base, episodeDir: `${L.ep1}/../../../..` },
+    workOutsideEpisode: { ...base, workDir: L.work2 },
     absoluteEpisode: { ...base, episodeDir: "/etc" },
     unknownOp: { op: "docker.run", image: "alpine" },
     badHarness: { ...base, harness: "bash" },
-    missingEpisode: { ...base, episodeDir: "channels/ch-a/episodes/nope" },
+    missingEpisode: { ...base, episodeDir: `${path.dirname(L.ep1)}/nope`, workDir: `${path.dirname(L.ep1)}/nope/work` },
   };
   const replies = {};
   for (const [name, body] of Object.entries(cases)) replies[name] = (await control(body)).reply;
@@ -185,7 +194,7 @@ async function controlChecks() {
 // Deterministic boundary probe: a real worker started through the app's control route,
 // inspected with docker exec (test harness only), then stopped through control.
 async function boundaryProbe() {
-  const started = await control({ op: "worker.start", requestId: "probe-boundary", harness: "codex", segmentId: "seg-probe", episodeDir: ep1 });
+  const started = await control({ op: "worker.start", requestId: "probe-boundary", harness: "codex", segmentId: "seg-probe", episodeDir: L.ep1, workDir: L.work1 });
   if (!started.reply?.ok) { record("host", "worker boundary probe", false, JSON.stringify(started), null); return; }
   const id = started.reply.value.containerId;
   const appIp = (await run("docker", ["inspect", appName(), "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"])).stdout.trim();
@@ -195,15 +204,15 @@ echo "== id"; id
 echo "== /storybench/data"; ls -la /storybench/data
 echo "== DB visible?"; ls -la /storybench/data/storybench.sqlite 2>&1
 echo "== write DB path"; touch /storybench/data/storybench.sqlite 2>&1; echo "exit=$?"
-echo "== write story.md"; sh -c 'echo x >> ${"/storybench/data/" + ep1}/story.md' 2>&1; echo "exit=$?"
-echo "== write reference"; sh -c 'echo x >> ${"/storybench/data/" + ep1}/reference/fixture-a.png' 2>&1; echo "exit=$?"
-echo "== write managed output"; sh -c 'echo x >> ${"/storybench/data/" + ep1}/outputs/draft-001.mp4' 2>&1; echo "exit=$?"
+echo "== write story.md"; sh -c 'echo x >> ${D(L.ep1)}/story.md' 2>&1; echo "exit=$?"
+echo "== write reference"; sh -c 'echo x >> ${D(L.media1)}/fixture-a.png' 2>&1; echo "exit=$?"
+echo "== write managed output"; sh -c 'echo x >> ${D(L.drafts1)}/draft-001.mp4' 2>&1; echo "exit=$?"
 echo "== write legacy media"; touch /storybench/data/media/probe.txt 2>&1; echo "exit=$?"
-echo "== write other channel"; touch ${"/storybench/data/" + ep2}/work/probe.txt 2>&1; echo "exit=$?"
-echo "== write boot render"; sh -c 'echo x >> ${"/storybench/data/" + ep1}/AGENTS.md' 2>&1; echo "exit=$?"
+echo "== write other channel"; touch ${D(L.work2)}/probe.txt 2>&1; echo "exit=$?"
+echo "== write boot render"; sh -c 'echo x >> ${D(L.ep1)}/AGENTS.md' 2>&1; echo "exit=$?"
 echo "== write rootfs"; touch /usr/probe 2>&1; echo "exit=$?"
-echo "== write work"; echo ok > ${"/storybench/data/" + ep1}/work/probe-boundary.txt; echo "exit=$?"
-echo "== read other channel"; cat ${"/storybench/data/" + ep2}/notes.txt; echo "exit=$?"
+echo "== write work"; echo ok > ${D(L.work1)}/probe-boundary.txt; echo "exit=$?"
+echo "== read other channel"; cat ${D(L.ep2)}/notes.txt; echo "exit=$?"
 echo "== docker socket"; ls -la /var/run/docker.sock /run/docker.sock 2>&1
 echo "== session dir"; ls -la /storybench/session /storybench/session/codex 2>&1
 echo "== home creds?"; ls -la /storybench/home 2>&1
@@ -216,7 +225,7 @@ echo "== mounts"; grep -E ' /storybench| /run/storybench' /proc/self/mountinfo |
   const probe = await run("docker", ["exec", id, "bash", "-c", script], { allowFail: true });
   const inspect = JSON.parse((await run("docker", ["inspect", id])).stdout)[0];
   const hostConfig = { Privileged: inspect.HostConfig.Privileged, ReadonlyRootfs: inspect.HostConfig.ReadonlyRootfs, CapDrop: inspect.HostConfig.CapDrop, SecurityOpt: inspect.HostConfig.SecurityOpt, User: inspect.Config.User, NetworkMode: inspect.HostConfig.NetworkMode, Mounts: inspect.Mounts.map((m) => ({ Source: m.Source.replace(home, "~"), Destination: m.Destination, RW: m.RW })) };
-  const hostOwner = await stat(path.join(dataRoot, ep1, "work", "probe-boundary.txt")).then((info) => info.uid, () => null);
+  const hostOwner = await stat(path.join(dataRoot, L.work1, "probe-boundary.txt")).then((info) => info.uid, () => null);
   const stop = await control({ op: "worker.stop", requestId: "probe-boundary" });
   const leftover = (await run("docker", ["ps", "-a", "--filter", `id=${id}`, "--format", "{{.ID}}"])).stdout.trim();
   await save("boundary-probe.txt", `${probe.stdout}${probe.stderr}\n== docker inspect (worker)\n${JSON.stringify(hostConfig, null, 2)}\n== host owner of work/probe-boundary.txt: uid ${hostOwner} (host id -u ${process.getuid()})\n== stop: ${JSON.stringify(stop.reply)}\n== container after stop: ${leftover || "(gone)"}\n`);
@@ -237,17 +246,18 @@ echo "== mounts"; grep -E ' /storybench| /run/storybench' /proc/self/mountinfo |
   for (const [check, pass] of Object.entries(checks)) record("worker", `boundary: ${check}`, pass, pass ? "ok" : "see evidence", "boundary-probe.txt");
 }
 
+const size = { codex: "320x240", claude: "352x240" };
 function prompts(harness, phrases) {
   return {
     fresh: [
       "This is a short Storybench runtime check. Do each step, then answer with a short numbered list.",
       "1. From your boot instructions file in the episode directory (AGENTS.md / CLAUDE.md), report the Runtime verification phrase.",
       "2. Use the Storybench skill named storybench-runtime-check and report its Skill verification phrase.",
-      "3. Call the Storybench tool inspect_image with path \"reference/fixture-a.png\" and describe the main shape, its color and the background color. Do not use shell commands, scripts or any other tool to analyze the image or the clip; rely only on what inspect_image shows you.",
-      "4. Call inspect_image with path \"reference/clip-b.mp4\" and atSeconds 3. Describe that frame's background color and the shape.",
-      `5. Run a shell command using ffmpeg to cut seconds 4 to 6 of reference/clip-b.mp4 into a 320x240 MP4 at work/${harness}-derivative.mp4 (for example: ffmpeg -y -ss 4 -t 2 -i reference/clip-b.mp4 -vf scale=320:240 -an work/${harness}-derivative.mp4). Then register it with the Storybench tool register_work_file (path work/${harness}-derivative.mp4) and report the returned assetId.`,
-      "6. Read ../../../ch-b/episodes/ep-2/notes.txt (another channel's episode) and report the code word.",
-      "7. With shell commands, try each of these writes and report the error for each: append a line to story.md; create /storybench/data/storybench.sqlite; append to outputs/draft-001.mp4; create /storybench/data/media/probe.txt.",
+      `3. Call the Storybench tool inspect_image with path "${D(L.media1)}/fixture-a.png" and describe the main shape, its color and the background color. Do not use shell commands, scripts or any other tool to analyze the image or the clip; rely only on what inspect_image shows you.`,
+      `4. Call inspect_image with path "${D(L.media1)}/clip-b.mp4" and atSeconds 3. Describe that frame's background color and the shape.`,
+      `5. Run a shell command using ffmpeg to cut seconds 4 to 6 of ${D(L.media1)}/clip-b.mp4 into a ${size[harness]} MP4 at work/${harness}-derivative.mp4 (for example: ffmpeg -y -ss 4 -t 2 -i ${D(L.media1)}/clip-b.mp4 -vf scale=${size[harness].replace("x", ":")} -an work/${harness}-derivative.mp4). Then register it with the Storybench tool register_work_file (path work/${harness}-derivative.mp4) and report the returned assetId.`,
+      `6. Read ${D(L.ep2)}/notes.txt (another channel's episode) and report the code word.`,
+      `7. With shell commands, try each of these writes and report the error for each: append a line to story.md; create /storybench/data/storybench.sqlite; append to ${D(L.drafts1)}/draft-001.mp4; create /storybench/data/media/probe.txt.`,
       "8. Report the output of `id -u` and of `ls -ln work/`.",
     ].join("\n"),
     resume: "Answer from this conversation's history only, without using any tools: which Runtime verification phrase did you report earlier, and what shape and color did you see in fixture-a.png? One line.",
@@ -257,8 +267,8 @@ function prompts(harness, phrases) {
 }
 
 const bootContext = (harness, phrases) => ({
-  channel: { id: "ch-a" }, episode: { id: "ep-1" },
-  paths: { episode: `/storybench/data/${ep1}`, work: `/storybench/data/${ep1}/work`, projects: "`/storybench/data/channels` (all channels/episodes), `/storybench/data/media` (legacy originals)" },
+  channel: { id: L.ep1.split("/")[1] }, episode: { id: L.ep1Id },
+  paths: { projects: "`/storybench/data/channels` (all channels, their media and episodes), `/storybench/data/episodes` and `/storybench/data/media` (legacy adopted episodes and originals, when present)" },
   runtime: { harness, model: models[harness], bootPhrase: phrases.boot, skillPhrase: phrases.skill },
 });
 
@@ -266,7 +276,7 @@ async function harnessRun(harness, fixtures) {
   const phrases = { boot: `BOOT-${nonce()}`, skill: `SKILL-${nonce()}` };
   const p = prompts(harness, phrases);
   const segmentId = `seg-${harness}-1`;
-  const common = { harness, model: models[harness], conversationId: `conv-${harness}`, segmentId, episodeDir: ep1, bootContext: bootContext(harness, phrases) };
+  const common = { harness, model: models[harness], conversationId: `conv-${harness}`, segmentId, episodeId: L.ep1Id, bootContext: bootContext(harness, phrases) };
   const hostUid = process.getuid();
 
   // Phase A: fresh session.
@@ -280,13 +290,14 @@ async function harnessRun(harness, fixtures) {
   // Shell commands the agent ran (Codex commandExecution items, Claude Bash tool_use inputs).
   const commands = (a.events ?? []).flatMap((event) => event.type === "commandExecution" ? [event.command ?? ""]
     : event.type === "assistant" ? (event.blocks ?? []).filter((block) => block.tool_use === "Bash").map((block) => block.input) : []).join("\n");
-  const analyzedByCommand = /fixture-a|PIL|Image\.open|ffprobe|identify /.test(commands);
-  const workFile = path.join(dataRoot, ep1, "work", `${harness}-derivative.mp4`);
+  const analyzedByCommand = /fixture-a/.test(commands) || commands.split("\n").some((line) => /clip-b/.test(line) && /ffprobe|PIL|Image\.open|-frames|\.png|select=/.test(line));
+  const workFile = path.join(dataRoot, L.work1, `${harness}-derivative.mp4`);
   const workInfo = await stat(workFile).catch(() => null);
-  const lsWork = (await run("ls", ["-ln", path.join(dataRoot, ep1, "work")])).stdout;
+  const lsWork = (await run("ls", ["-ln", path.join(dataRoot, L.work1)])).stdout;
   const registered = (a.registeredAssets ?? []).find((asset) => asset.registered);
-  const asset = registered ? (await driver({ phase: "asset", assetId: registered.assetId })).asset : null;
-  await save(`${harness}-A-checks.txt`, `host id -u: ${hostUid}\nls -ln work/:\n${lsWork}\nregistered asset:\n${JSON.stringify(asset, null, 2)}\nnative skills (codex skills/list or claude init):\n${JSON.stringify(a.nativeSkills ?? a.events?.find((event) => event.type === "init")?.skills ?? null, null, 2)}\n`);
+  const lookup = registered ? await driver({ phase: "asset", assetId: registered.assetId, episodeId: L.ep1Id }) : null;
+  const asset = lookup?.asset ?? null;
+  await save(`${harness}-A-checks.txt`, `host id -u: ${hostUid}\nls -ln work/:\n${lsWork}\nregistered asset:\n${JSON.stringify(asset, null, 2)}\nepisode library item:\n${JSON.stringify(lookup?.libraryItem ?? null, null, 2)}\nnative skills (codex skills/list or claude init):\n${JSON.stringify(a.nativeSkills ?? a.events?.find((event) => event.type === "init")?.skills ?? null, null, 2)}\n`);
   record(harness, "authentication inside worker", Boolean(a.sessionId) && !a.turnError && !a.isError && (a.turn?.status ?? "completed") === "completed", `session ${a.sessionId ?? "none"}${a.turnError ? ` error ${a.turnError}` : ""}`, `${harness}-A-fresh.json`);
   record(harness, "boot discovery (AGENTS.md/CLAUDE.md phrase)", text.includes(phrases.boot.toLowerCase()), `expected ${phrases.boot}`, `${harness}-A-fresh.json`);
   const nativeSkill = harness === "codex" ? (a.nativeSkills ?? []).some((skill) => skill.name === "storybench-runtime-check") : (a.events?.find((event) => event.type === "init")?.skills ?? a.events?.find((event) => event.type === "init")?.slash_commands ?? []).some((name) => String(name).includes("storybench-runtime-check"));
@@ -294,7 +305,7 @@ async function harnessRun(harness, fixtures) {
   record(harness, "image receipt: still (orange star on teal)", inspects.some((call) => /fixture-a/.test(call.args?.path)) && /star/.test(text) && /orange/.test(text) && /teal|turquoise|cyan|blue-green/.test(text) && !analyzedByCommand, `inspect_image returned ${inspects.length} image(s); analyzed by command: ${analyzedByCommand}`, `${harness}-A-fresh.json`);
   record(harness, "image receipt: clip frame at 3s (yellow + black circle)", inspects.some((call) => /clip-b/.test(call.args?.path) && call.args?.atSeconds === 3) && /yellow/.test(text) && /circle/.test(text), "frame 2-4s scene is yellow with a black circle", `${harness}-A-fresh.json`);
   record(harness, "command-created media in work/", Boolean(workInfo?.size), workInfo ? `${workInfo.size} bytes` : "missing", `${harness}-A-checks.txt`);
-  record(harness, "result registration through scoped bridge", Boolean(asset && asset.metadata?.provenance?.requestId === `${harness}-a` && text.includes(String(registered?.assetId).toLowerCase())), asset ? `asset ${asset.id} kind ${asset.kind} provenance ${JSON.stringify(asset.metadata.provenance)}` : "no registered asset", `${harness}-A-checks.txt`);
+  record(harness, "result registration through scoped bridge", Boolean(asset && lookup?.libraryItem && asset.channelId === L.ep1.split("/")[1] && asset.metadata?.provenance?.requestId === `${harness}-a` && text.includes(String(registered?.assetId).toLowerCase())), asset ? `asset ${asset.id} kind ${asset.kind} provenance ${JSON.stringify(asset.metadata.provenance)}` : "no registered asset", `${harness}-A-checks.txt`);
   record(harness, "host ownership of created files", Boolean(workInfo) && workInfo.uid === hostUid, `uid ${workInfo?.uid} vs id -u ${hostUid}`, `${harness}-A-checks.txt`);
   record(harness, "read another channel's episode", text.includes(fixtures.codeWord.toLowerCase()), `expected ${fixtures.codeWord}`, `${harness}-A-fresh.json`);
   record(harness, "agent-attempted protected writes rejected", /read-only|permission denied|read only/.test(text), "agent reported errors; hashes verified separately", `${harness}-A-fresh.json`);
@@ -348,7 +359,7 @@ async function main() {
   const credentialFingerprintBefore = {};
   for (const [harness, file] of Object.entries(credentials)) credentialFingerprintBefore[harness] = await stat(file).then((info) => ({ ino: info.ino, mtimeMs: info.mtimeMs }), () => null);
   const images = await buildImages();
-  const fixtures = await prepareData();
+  const fixtures = await prepareData(images);
   let started = false;
   try {
     await startHost(images);
