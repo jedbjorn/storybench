@@ -177,6 +177,19 @@ async function main() {
     store.close();
     result = { phase: "seed-media", items: { still: still.id, clip: clip.id, ordinary: ordinary.id, reference: reference.id },
       assetPaths: { still: still.asset.path, clip: clip.asset.path, ordinary: ordinary.asset.path, reference: reference.asset.path }, revision: updated.revision, conversations };
+  } else if (spec.phase === "attach-files") {
+    // Register fixture files (under the app-only imports/fixtures) into an episode library.
+    const store = openDataRoot(DATA_MOUNT, { startup: false });
+    const episode = store.getEpisode(spec.episodeId);
+    const items = [];
+    for (const entry of spec.files) {
+      const imported = await importMedia({ workspace: DATA_MOUNT, sourcePath: path.join(DATA_MOUNT, "imports/fixtures", entry.file), mediaDirectory: store.channelMediaDirectory(episode.channelId) });
+      const asset = store.saveAsset({ ...imported, channelId: episode.channelId, name: entry.file });
+      const item = store.attachLibraryItem(episode.id, asset.id, { category: entry.category ?? "Graphics", label: entry.label ?? entry.file });
+      items.push({ file: entry.file, itemId: item.id, assetPath: item.asset.path });
+    }
+    store.close();
+    result = { phase: "attach-files", items };
   } else if (spec.phase === "episode-state") {
     const store = openDataRoot(DATA_MOUNT, { startup: false });
     const episode = store.getEpisode(spec.episodeId);
