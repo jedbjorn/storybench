@@ -7,6 +7,8 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { initDataRoot, openDataRoot } from "../services/data-root.js";
 import { createChannel, createChannelEpisode } from "../services/channels.js";
+import { createChatService } from "../chat.js";
+import { importMedia } from "../media.js";
 import { controlRequest } from "./channel.js";
 import { DATA_MOUNT, APP_CONTROL_MOUNT, CONTROL_SOCKET_NAME } from "./layout.js";
 import { openWorkerRequest } from "./request.js";
@@ -16,7 +18,7 @@ const clip = (value, max = 600) => (typeof value === "string" && value.length > 
 
 function summarizeToolOutput(output) {
   return {
-    text: clip(output.text, 400),
+    text: clip(output.text, 6000),
     images: (output.images ?? []).map((image) => {
       const bytes = Buffer.from(image.data, "base64");
       return { mimeType: image.mimeType, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
@@ -71,7 +73,7 @@ async function runTurn(spec) {
   const out = { phase: spec.phase, harness: spec.harness, requestId: spec.requestId, events, toolCalls: trace };
   const request = await openWorkerRequest({
     controlSocket: CONTROL, store, requestId: spec.requestId, conversationId: spec.conversationId,
-    harness: spec.harness, segmentId: spec.segmentId, episodeId: spec.episodeId, bootContext: spec.bootContext,
+    harness: spec.harness, segmentId: spec.segmentId, episodeId: spec.episodeId, bootContext: spec.bootContext, model: spec.model,
     wrapTools: (tools) => withTracing(tools, trace),
   });
   out.worker = { containerId: request.started.containerId, state: request.started.state };
@@ -115,7 +117,7 @@ async function runTurn(spec) {
     out.stop = spec.keepWorker ? null : await request.stop().catch((error) => ({ error: error.message }));
     store.close();
   }
-  out.registeredAssets = trace.filter((entry) => entry.tool === "register_work_file" && entry.output).map((entry) => JSON.parse(entry.output.text));
+  out.registeredAssets = trace.filter((entry) => entry.tool === "register_work_file" && entry.output).map((entry) => { try { return JSON.parse(entry.output.text); } catch { return { unparsed: entry.output.text }; } });
   return out;
 }
 
@@ -144,6 +146,45 @@ async function main() {
     });
     store.close();
     result = { phase: "seed", channels: channels.map((channel) => ({ id: channel.id, name: channel.name })), episodes };
+  } else if (spec.phase === "seed-media") {
+    // After "seed": register fixture files (placed by the proof under the app-only imports/)
+    // as library items, add two cards, and one conversation per harness whose creator
+    // message explicitly directs use of the other channel's reference still.
+    const store = openDataRoot(DATA_MOUNT, { startup: false });
+    const chat = createChatService({ store, codexFactory: async () => { throw new Error("offline"); } });
+    const [a, b] = spec.episodes;
+    const attach = async (episodeId, channelId, file, category, label) => {
+      const imported = await importMedia({ workspace: DATA_MOUNT, sourcePath: path.join(DATA_MOUNT, "imports/fixtures", file), mediaDirectory: store.channelMediaDirectory(channelId) });
+      const asset = store.saveAsset({ ...imported, channelId, name: file });
+      return store.attachLibraryItem(episodeId, asset.id, { category, label });
+    };
+    const still = await attach(a.id, a.channelId, "fixture-a.png", "Graphics", "Fixture still");
+    const clip = await attach(a.id, a.channelId, "clip-b.mp4", "B-roll", "Scene clip");
+    const ordinary = await attach(b.id, b.channelId, "ordinary.png", "Graphics", "Beta badge");
+    const reference = await attach(b.id, b.channelId, "reference.png", "Reference", "Beta mood reference");
+    const episode = store.getEpisode(a.id);
+    const card = (id, title, type, order) => ({ id, title, type, prompt: title, sectionId: null, itemId: null, referenceItemIds: [], order, enabled: true });
+    const updated = store.updateEpisode(a.id, episode.revision, { cards: [card("card_title", "Title graphic", "Static Graphic", 0), card("card_broll", "Closing footage", "Video", 1)] });
+    const now = new Date().toISOString();
+    const conversations = {};
+    for (const harness of spec.harnesses) {
+      const conversation = chat.create(a.id, { name: `Media tools ${harness}` });
+      const messageId = Number(store.db.prepare("INSERT INTO conversation_messages(conversation_id,role,text,state,created_at,updated_at) VALUES(?,?,?,'completed',?,?)")
+        .run(conversation.id, "user", "Please use the 'Beta mood reference' still from the Beta channel directly in this episode as the opening image.", now, now).lastInsertRowid);
+      conversations[harness] = { id: conversation.id, directionMessageId: messageId };
+    }
+    await chat.close();
+    store.close();
+    result = { phase: "seed-media", items: { still: still.id, clip: clip.id, ordinary: ordinary.id, reference: reference.id },
+      assetPaths: { still: still.asset.path, clip: clip.asset.path, ordinary: ordinary.asset.path, reference: reference.asset.path }, revision: updated.revision, conversations };
+  } else if (spec.phase === "episode-state") {
+    const store = openDataRoot(DATA_MOUNT, { startup: false });
+    const episode = store.getEpisode(spec.episodeId);
+    const library = store.listEpisodeLibrary(spec.episodeId).map((item) => ({ id: item.id, label: item.label, category: item.category, assetId: item.assetId, kind: item.asset?.kind,
+      hash: item.asset?.hash, sourceKind: item.sourceKind, provenance: item.provenance }));
+    const directions = store.listReferenceDirections(spec.episodeId);
+    store.close();
+    result = { phase: "episode-state", revision: episode.revision, cards: episode.cards.map(({ id, type, itemId, referenceItemIds }) => ({ id, type, itemId, referenceItemIds })), library, directions };
   } else result = await runTurn(spec);
   process.stdout.write(JSON.stringify(result) + "\n");
   process.exit(0);
