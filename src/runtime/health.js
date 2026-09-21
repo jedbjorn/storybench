@@ -20,6 +20,9 @@ export function releaseFromEnv(env = process.env) {
       manifestId: pick(value.manifestId), version: pick(value.version), commit: pick(value.commit),
       images: { app: pick(value.images?.app), worker: pick(value.images?.worker) },
       protocol: Number.isInteger(value.protocol) ? value.protocol : null,
+      // Tool versions probed in the worker image at release build (short version strings only).
+      tools: Object.fromEntries(Object.entries(value.tools && typeof value.tools === "object" ? value.tools : {})
+        .filter(([key, version]) => /^[a-z0-9_-]{1,32}$/i.test(key) && typeof version === "string" && /^[\w.+:-]{1,64}$/.test(version)).slice(0, 20)),
     };
   } catch { return null; }
 }

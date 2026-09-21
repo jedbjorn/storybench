@@ -25,9 +25,10 @@ function canonical(value) {
   return JSON.stringify(value);
 }
 
-// Stable identity of a manifest's content (independent of key order and whitespace).
+// Stable identity of a manifest's content (independent of key order, whitespace and the
+// informational build time), so one commit's release has one identity.
 export function manifestId(manifest) {
-  const { id, ...content } = manifest;
+  const { id, builtAt, ...content } = manifest;
   return `sha256:${createHash("sha256").update(canonical(content)).digest("hex")}`;
 }
 
@@ -82,6 +83,7 @@ export function releaseIdentity(manifest) {
     images: { app: manifest.images.app.id, worker: manifest.images.worker.id },
     protocol: manifest.runtime.protocol,
     supportedSchema: { ...manifest.database.supportedSchema },
+    tools: { ...(manifest.runtime.tools ?? {}) },
   };
 }
 
