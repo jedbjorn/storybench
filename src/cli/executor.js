@@ -5,6 +5,7 @@
 import { createChannel, getDefaultChannel, listChannels, useChannel } from "../services/channels.js";
 import { inspectDataRoot, withDataRoot } from "../services/data-root.js";
 import { SCHEMA_VERSION } from "../store.js";
+import path from "node:path";
 import { CliError } from "./errors.js";
 import { assertOwnedWritable, mountPath } from "./fs-safety.js";
 import { installedOrConfiguredId } from "./installation.js";
@@ -18,6 +19,25 @@ const DATA_IMAGE_ROOT = "/storybench/data";
 const IMAGE_OPERATIONS = new Set(["init", "adopt", "channel-create", "channel-list", "channel-current", "channel-use"]);
 
 function firstLine(value) { return String(value || "").trim().split("\n")[0]; }
+function hostPath(value, dataRoot) {
+  if (value === DATA_IMAGE_ROOT) return dataRoot;
+  return typeof value === "string" && value.startsWith(`${DATA_IMAGE_ROOT}/`) ? path.join(dataRoot, value.slice(DATA_IMAGE_ROOT.length + 1)) : value;
+}
+function hostText(value, dataRoot) {
+  return typeof value === "string" ? value.replaceAll(DATA_IMAGE_ROOT, () => dataRoot) : value;
+}
+function hostResult(value, dataRoot) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  return {
+    ...value,
+    ...(typeof value.dataRoot === "string" ? { dataRoot: hostPath(value.dataRoot, dataRoot) } : {}),
+    ...(typeof value.backupPath === "string" ? { backupPath: hostPath(value.backupPath, dataRoot) } : {}),
+    ...(value.upgraded && typeof value.upgraded === "object" ? { upgraded: {
+      ...value.upgraded,
+      ...(typeof value.upgraded.backupPath === "string" ? { backupPath: hostPath(value.upgraded.backupPath, dataRoot) } : {}),
+    } } : {}),
+  };
+}
 
 // Offline commands never migrate a database: opening an older schema would upgrade it as a side effect.
 export function assertCurrentSchema(info, dataRoot) {
@@ -59,11 +79,11 @@ export async function runImageDataCommand(context, release, operation, args = []
   ], { timeoutMs: 120_000 });
   let envelope = null;
   try { envelope = JSON.parse(result.stdout); } catch { /* mapped below without exposing arbitrary container output */ }
-  if (envelope?.schema === DATA_IMAGE_SCHEMA && envelope.ok === true && result.code === 0) return envelope.result;
+  if (envelope?.schema === DATA_IMAGE_SCHEMA && envelope.ok === true && result.code === 0) return hostResult(envelope.result, context.dataRoot);
   if (envelope?.schema === DATA_IMAGE_SCHEMA && envelope.ok === false && typeof envelope.error?.message === "string") {
-    const error = new CliError(envelope.error.message, {
+    const error = new CliError(hostText(envelope.error.message, context.dataRoot), {
       exitCode: Number.isInteger(envelope.error.exitCode) ? envelope.error.exitCode : undefined,
-      hint: typeof envelope.error.hint === "string" ? envelope.error.hint : null,
+      hint: hostText(envelope.error.hint, context.dataRoot),
     });
     if (Number.isInteger(envelope.error.statusCode)) error.statusCode = envelope.error.statusCode;
     throw error;

@@ -465,8 +465,16 @@ test("the executor seam picks the running app, selected image, or development ho
   assert.equal(dockerStarted, false, "the guarded path is rejected before Docker starts");
 
   const mapped = appImageExecutor({ ...base, runCommand: async () => ({ code: 1, stderr: "", stdout: JSON.stringify({ schema: "storybench.data-command/1", ok: false,
-    error: { message: "Channel name already exists", exitCode: 1, statusCode: 409, hint: null } }) }) }, release);
-  await assert.rejects(mapped.createChannel("Main"), (error) => error instanceof Error && error.message === "Channel name already exists" && error.exitCode === 1 && error.statusCode === 409);
+    error: { message: "The data root /storybench/data is unavailable", exitCode: 1, statusCode: 409, hint: "Restore /storybench/data first." } }) }) }, release);
+  await assert.rejects(mapped.createChannel("Main"), (error) => error instanceof Error && error.message === `The data root ${root} is unavailable`
+    && error.hint === `Restore ${root} first.` && error.exitCode === 1 && error.statusCode === 409);
+
+  const { runImageDataCommand } = await import("../src/cli/executor.js");
+  const adopted = await runImageDataCommand({ ...base, runCommand: async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ schema: "storybench.data-command/1", ok: true,
+    result: { dataRoot: "/storybench/data", backupPath: "/storybench/data/storybench.pre-v6.sqlite",
+      upgraded: { from: 8, to: 9, backupPath: "/storybench/data/storybench.pre-v9.sqlite" } } }) }) }, release, "adopt", ["Main"]);
+  assert.deepEqual(adopted, { dataRoot: root, backupPath: path.join(root, "storybench.pre-v6.sqlite"),
+    upgraded: { from: 8, to: 9, backupPath: path.join(root, "storybench.pre-v9.sqlite") } });
 
   const dev = sandbox(t);
   const devRoot = path.join(dev.home, "root");
