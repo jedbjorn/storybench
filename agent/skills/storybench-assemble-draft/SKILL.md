@@ -51,5 +51,5 @@ Change what the feedback calls for — card timing/order/media with `update_card
 
 - The app pins the exact inputs of each render in the job `snapshot`; the output records what it was built from.
 - Missing media on an enabled card is a validation issue, not a silent gap; disable the card (`enabled: false`) or supply media.
-- An app restart marks unfinished jobs interrupted; nothing is replayed — re-enqueue if still wanted.
+- An app restart fails unfinished render jobs with the error "Render interrupted by server restart"; nothing is replayed — re-enqueue if still wanted.
 - If a tool named here is missing from your tool list, say so; do not assemble a "draft" by writing a similarly named file in `work/` — only the app's render operation produces a Storybench draft.

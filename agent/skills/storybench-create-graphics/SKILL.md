@@ -37,7 +37,7 @@ Keyframes interpolate linearly between entries (`easing`: `linear` or `hold`); t
 
 ## Route B — your own scripts (Pillow, SVG + resvg, FFmpeg)
 
-Keep the script/SVG in `{{paths.work}}` as the editable source; write the output next to it. Fonts: `/usr/share/fonts/truetype/dejavu/`, `/usr/share/fonts/truetype/noto/`, `/usr/share/fonts/truetype/liberation2/`.
+Keep the script/SVG in `{{paths.work}}` as the editable source; write the output next to it. Fonts: `/usr/share/fonts/truetype/dejavu/`, `/usr/share/fonts/truetype/noto/`, `/usr/share/fonts/truetype/liberation/`.
 
 ```python
 # {{paths.work}}/title/title.py  ->  python3 title.py

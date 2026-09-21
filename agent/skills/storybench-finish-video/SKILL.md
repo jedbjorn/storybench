@@ -43,6 +43,6 @@ Behaviour of the operation: same output ID, bytes, resolution, creation time and
 
 ## Behaviour to expect
 
-- Only the creator deletes rendered drafts (UI action). You never prune outputs, work files, media or anything else on your own initiative.
+- Only the creator deletes rendered drafts (UI action). Never remove outputs, registered media or project files on your own initiative; your own intermediates in `work/` are yours to manage.
 - A final moved to Drafts and later re-finished goes through a normal Final request; do not promote a draft by relabelling.
 - If `create_final` or the reclassification tool is not in your tool list, the operation is unavailable in this request — say so.

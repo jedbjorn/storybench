@@ -23,7 +23,7 @@ search_project { "query": "logo", "category": "Graphics", "limit": 50 }
 
 Confirm before reusing: `inspect_image { "itemId": "item-intro-1", "episodeId": "ep-3", "atSeconds": 1 }`, `inspect_media { "itemId": "…", "episodeId": "…" }`, `read_reference_excerpt { "itemId": "…", "episodeId": "…" }`. Results carry `origin` so you can tell the creator exactly what you found. You may also browse the directories directly (`ls`, `rg`), but item IDs come from `search_project`.
 
-`list_branding` shows the channel's own reusable intro/outro templates; `apply_branding { "templateId": "…" }` adds editable copies of those cards to this episode.
+`list_branding` shows the channel's own reusable intro/outro templates; `apply_branding { "templateId": "…" }` adds editable copies of those cards to this episode. `promote_card { "cardId": "…", "name": "…", "role": "intro" | "outro" }` saves a card (with its media/references) as a reusable channel template (`role` may be omitted for a non-intro/outro template).
 
 ## Reuse
 
