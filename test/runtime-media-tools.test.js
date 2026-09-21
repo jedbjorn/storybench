@@ -212,10 +212,16 @@ test("capabilities list only what is served and verified", () => {
   assert.equal(describeCapabilities({ scope: { ...scope, harness: "other" }, served: TOOL_DEFINITIONS }).imageInput.verified, false, "an unverified route is not advertised");
   assert.equal(noImages.imageInput.available, false);
   assert.equal(noImages.commandExecution.commands.verified, false);
-  const full = describeCapabilities({ scope, served: TOOL_DEFINITIONS, release: { tools: { ffmpeg: "7.1.5", codex: "0.155.1" } } });
-  assert.equal(full.imageInput.available, true);
+  // The image route is verified only for the harness version the proof passed on.
+  const full = describeCapabilities({ scope, served: TOOL_DEFINITIONS, release: { tools: { ffmpeg: "7.1.5", claude: "2.1.278" } } });
+  assert.equal(full.imageInput.verified, true);
   assert.match(full.imageInput.via, /MCP/);
-  assert.deepEqual(full.commandExecution.commands.versions, { ffmpeg: "7.1.5", codex: "0.155.1" });
+  assert.deepEqual(full.commandExecution.commands.versions, { ffmpeg: "7.1.5", claude: "2.1.278" });
+  const upgraded = describeCapabilities({ scope, served: TOOL_DEFINITIONS, release: { tools: { claude: "2.2.0" } } });
+  assert.equal(upgraded.imageInput.verified, false);
+  assert.match(upgraded.imageInput.reason, /2\.2\.0 differs from 2\.1\.278/);
+  const unknown = describeCapabilities({ scope: { ...scope, harness: "codex" }, served: TOOL_DEFINITIONS });
+  assert.match(unknown.imageInput.reason, /running codex version is unknown/);
   assert.deepEqual(full.tools.map((tool) => tool.name), TOOL_DEFINITIONS.map((definition) => definition.name));
   assert.ok(full.notAvailable.some((entry) => /image generation/.test(entry)));
 });
