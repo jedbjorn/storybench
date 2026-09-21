@@ -93,7 +93,10 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
   };
   const excerpt = (episodeId, itemId, offset = 0, limit = 4000) => {
     const item = store.listEpisodeLibrary(episodeId).find((candidate) => candidate.id === itemId);
-    if (!item || item.category !== "Reference") throw error("Reference item not found", 404);
+    const current = store.getEpisode(episodeId);
+    // Scope comes from explicit episode/card links; the Reference category remains readable as before.
+    const linked = current.referenceItemIds.includes(itemId) || current.cards.some((card) => (card.referenceItemIds || []).includes(itemId));
+    if (!item || (item.category !== "Reference" && !linked)) throw error("Reference item not found", 404);
     const text = item.extractedText ?? item.provenance?.extractedText ?? "", start = Math.max(0, Number(offset) || 0), size = Math.min(20_000, Math.max(1, Number(limit) || 4000));
     return { itemId, offset: start, text: text.slice(start, start + size), truncated: start + size < text.length };
   };
@@ -103,7 +106,8 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
   const bootText = (value) => { const currentEpisode = episode(value.episode_id), story = store.getStory(value.episode_id);
     return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires the user's one-use Storybench authorization.`; };
   const tools = (value, origin) => ({
-    get_context: () => ({ episode: episode(value.episode_id), story: store.getStory(value.episode_id), library: librarySummary(value.episode_id), branding: store.listBrandingTemplates({ channelId: episode(value.episode_id).channelId }), operationGuides: OPERATION_GUIDE_NAMES }),
+    get_context: () => ({ episode: episode(value.episode_id), story: store.getStory(value.episode_id), library: librarySummary(value.episode_id),
+      references: store.getReferenceContext(value.episode_id), branding: store.listBrandingTemplates({ channelId: episode(value.episode_id).channelId }), operationGuides: OPERATION_GUIDE_NAMES }),
     get_operation_guide: ({ name }) => getOperationGuide(name),
     read_reference_excerpt: ({ itemId, offset, limit }) => excerpt(value.episode_id, itemId, offset, limit),
     update_story: ({ expectedStoryRevision, source }) => { ensureActive(value, origin); return store.saveStory(value.episode_id, expectedStoryRevision, source, "agent"); },
