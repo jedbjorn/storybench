@@ -29,7 +29,7 @@ function snapshot(store) {
   };
 }
 
-test("a v8 database (conversations created by the v8 chat code) migrates to v9 with the specified backfill, twice", (t) => {
+test("a v8 database (conversations created by the v8 chat code) migrates through v9 to the current schema with the specified backfill, twice", (t) => {
   const root = fixtureRoot(t, "v8-conversations.sqlite");
   const before = new DatabaseSync(path.join(root, "storybench.sqlite"), { readOnly: true });
   assert.equal(Number(before.prepare("PRAGMA user_version").get().user_version), 8);
@@ -42,7 +42,7 @@ test("a v8 database (conversations created by the v8 chat code) migrates to v9 w
   assert.equal(original.conversations.filter((row) => row.thread_id).length, 1);
   let store = new Store(root, { legacyWorkspace: false, startup: false });
   assert.equal(Number(store.db.prepare("PRAGMA user_version").get().user_version), SCHEMA_VERSION);
-  assert.equal(SCHEMA_VERSION, 9);
+  assert.ok(SCHEMA_VERSION >= 9);
   const backup = new DatabaseSync(path.join(root, "storybench.pre-v9.sqlite"), { readOnly: true });
   assert.equal(Number(backup.prepare("PRAGMA user_version").get().user_version), 8);
   backup.close();
@@ -78,7 +78,7 @@ test("a v8 database (conversations created by the v8 chat code) migrates to v9 w
   assert.deepEqual(snapshot(store), first);
 });
 
-test("a v5 database (pre-channel conversations) migrates straight through to v9", (t) => {
+test("a v5 database (pre-channel conversations) migrates through v9 to the current schema", (t) => {
   const root = fixtureRoot(t, "v5-conversations.sqlite");
   const before = new DatabaseSync(path.join(root, "storybench.sqlite"), { readOnly: true });
   assert.equal(Number(before.prepare("PRAGMA user_version").get().user_version), 5);
@@ -87,8 +87,8 @@ test("a v5 database (pre-channel conversations) migrates straight through to v9"
   before.close();
   const store = new Store(root, { startup: false });
   t.after(() => store.close());
-  assert.equal(Number(store.db.prepare("PRAGMA user_version").get().user_version), 9);
-  assert.deepEqual(rows(store, "SELECT version FROM migration_log ORDER BY version").map((row) => row.version), [5, 6, 7, 8, 9]);
+  assert.equal(Number(store.db.prepare("PRAGMA user_version").get().user_version), SCHEMA_VERSION);
+  assert.deepEqual(rows(store, "SELECT version FROM migration_log ORDER BY version").map((row) => row.version), Array.from({ length: SCHEMA_VERSION - 4 }, (_, i) => i + 5));
   assert.ok(existsSync(path.join(root, "storybench.pre-v6.sqlite")));
   assert.equal(store.listChannels().length, 1);
   assert.deepEqual(rows(store, "SELECT id,native_session_id FROM conversation_segments").map((row) => ({ id: row.id, thread_id: row.native_session_id })), threads);

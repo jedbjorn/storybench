@@ -1,3 +1,4 @@
+import { SettingsPages } from "/settings-pages.js";
 import { StoryEditor } from "/story-editor.js?v=round2-editor";
 import { LibraryWorkspace, episodeNavigatorHTML, uploadLibraryFile } from "/library-workspace.js";
 import { attachMediaToCard, categoryForCardMedia, duplicateCard, setCardType } from "/card-workspace.js";
@@ -72,6 +73,7 @@ async function load(select) {
   else if (episode)
     episode = state.episodes.find((e) => e.id === episode.id) || null;
   render();
+  if (select) rememberEpisode();
   await syncChat();
   if (episode && !$("#boardPanel").hidden) await loadBoardContext();
 }
@@ -305,18 +307,17 @@ $("#promoteCardForm").onsubmit = async (event) => {
 };
 document.querySelectorAll("[data-promote-close]").forEach((button) => button.onclick = () => $("#promoteCardModal").close());
 document.querySelectorAll("[data-graphic-close]").forEach((button) => button.onclick = () => $("#graphicModal").close());
-document.querySelectorAll("[data-branding-close]").forEach((button) => button.onclick = () => $("#brandingModal").close());
-$("#openBranding").onclick = async () => {
+async function refreshBrandingTemplates() {
   try {
     const templates = await api("/api/branding");
     $("#brandingTemplates").innerHTML = templates.map((template) => `<article class="branding-template"><div><b>${esc(template.name)}</b><span>${template.role ? `Standard ${esc(template.role)}` : "Reusable"} · ${esc(template.card.type)}</span></div><div><select data-branding-role="${template.id}"><option value="" ${!template.role ? "selected" : ""}>Reusable</option><option value="intro" ${template.role === "intro" ? "selected" : ""}>Intro</option><option value="outro" ${template.role === "outro" ? "selected" : ""}>Outro</option></select><button data-branding-apply="${template.id}" ${episode ? "" : "disabled"}>Add to episode</button></div></article>`).join("") || "<p>No reusable cards yet. Promote one from the Storyboard.</p>";
-    $("#brandingModal").showModal();
-  } catch (error) { toast(error.message); }
-};
+    $("#brandingEpisode").textContent = episode ? `Add reusable cards to: ${episode.title}` : "Select an episode on Episodes to add a reusable card.";
+  } catch (error) { $("#brandingTemplates").textContent = error.message; }
+}
 $("#brandingTemplates").onchange = async (event) => {
   const id = event.target.dataset.brandingRole;
   if (!id) return;
-  try { await api(`/api/branding/${id}`, { method: "PUT", body: JSON.stringify({ role: event.target.value || null }) }); toast("Standard role updated"); }
+  try { await api(`/api/branding/${id}`, { method: "PUT", body: JSON.stringify({ role: event.target.value || null }) }); await refreshBrandingTemplates(); toast("Standard role updated"); }
   catch (error) { toast(error.message); }
 };
 $("#brandingTemplates").onclick = async (event) => {
@@ -435,6 +436,7 @@ $("#episodes").onclick = async (e) => {
   if (id && id !== episode?.id && (await leaveStory())) {
     await flushDraft();
     episode = state.episodes.find((x) => x.id === id);
+    rememberEpisode();
     render();
     if (!$("#boardPanel").hidden) loadBoardContext().catch((error) => toast(error.message));
     await chatWorkspace.open();
@@ -732,6 +734,73 @@ setInterval(async () => {
   } catch (error) { toast(error.message); }
 }, 1800);
 window.addEventListener("beforeunload", (event) => {
-  if (storyEditor.isDirty()) event.preventDefault();
+  if (storyEditor.isDirty() || dirty || saveInFlight || settingsPages.dirty || settingsPages.pending) event.preventDefault();
 });
-load().catch((e) => toast(e.message));
+const settingsPages = new SettingsPages({ api, toast, setStatus: (text) => { $("#saveState").textContent = text; } });
+const pageFor = (url) => ['branding', 'models'].includes(url.pathname.slice(1)) ? url.pathname.slice(1) : 'episodes';
+let page = pageFor(new URL(location.href)), navigationIndex = history.state?.pageIndex ?? 0, restoringHistory = false, navigating = false;
+let currentUrl = new URL(location.href);
+history.replaceState({ ...history.state, pageIndex: navigationIndex }, '', currentUrl);
+function pageLinks() {
+  document.querySelectorAll('[data-page]').forEach((link) => {
+    const target = new URL(currentUrl); target.pathname = `/${link.dataset.page}`;
+    link.href = target.href;
+    if (link.dataset.page === page) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  });
+}
+function rememberEpisode() {
+  currentUrl = new URL(location.href);
+  if (episode) currentUrl.searchParams.set('episode', episode.id);
+  else currentUrl.searchParams.delete('episode');
+  history.replaceState({ ...history.state, pageIndex: navigationIndex }, '', currentUrl);
+  pageLinks();
+}
+async function showPage(next) {
+  page = next;
+  $('#episodesPage').hidden = next !== 'episodes';
+  $('#brandingPage').hidden = next !== 'branding';
+  $('#modelsPage').hidden = next !== 'models';
+  pageLinks();
+  await settingsPages.open(next);
+  if (next === 'branding') await refreshBrandingTemplates();
+}
+async function navigate(target, popIndex = null) {
+  if (navigating) return;
+  navigating = true;
+  let accepted = false;
+  try {
+    if (!(await settingsPages.canLeave()) || !(await leaveStory())) return;
+    await flushDraft();
+    if (popIndex == null) {
+      navigationIndex++;
+      history.pushState({ pageIndex: navigationIndex }, '', target);
+    } else navigationIndex = popIndex;
+    accepted = true; currentUrl = new URL(target);
+    const nextChannel = currentUrl.searchParams.get('channel') || channelId;
+    const nextEpisode = currentUrl.searchParams.get('episode');
+    if (nextChannel !== channelId || nextEpisode !== (episode?.id || null)) {
+      channelId = nextChannel; episode = null;
+      await load(nextEpisode);
+    }
+    await showPage(pageFor(currentUrl));
+  } catch (error) { toast(error.message); }
+  finally {
+    if (!accepted && popIndex != null) { restoringHistory = true; history.go(navigationIndex - popIndex); }
+    navigating = false;
+  }
+}
+document.querySelectorAll('[data-page]').forEach((link) => link.onclick = (event) => {
+  if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  if (page === link.dataset.page) return;
+  navigate(link.href);
+});
+window.addEventListener('popstate', (event) => {
+  if (restoringHistory) { restoringHistory = false; return; }
+  navigate(location.href, event.state?.pageIndex ?? 0);
+});
+load(new URL(location.href).searchParams.get('episode')).then(async () => {
+  currentUrl = new URL(location.href);
+  await showPage(page);
+}).catch((error) => toast(error.message));
