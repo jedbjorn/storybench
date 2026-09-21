@@ -85,7 +85,25 @@ test("renders refuse to replace symlinks and templates reject unknown placeholde
 
 test("the shipped templates render with the app's boot context and cover the skill roster", async (t) => {
   const dir = await tempDir(t);
-  const result = await renderEpisodeBoot({ episodeDir: dir, context });
+  // The app's real boot context for a channel episode, as the request layer builds it.
+  const root = await tempDir(t, "sb-bootctx-");
+  initDataRoot(root);
+  const channel = createChannel(root, "Night Shift Films");
+  const store = openDataRoot(root);
+  t.after(() => store.close());
+  const episode = store.createEpisode({ title: "Harbour at dawn", notes: "Slow and quiet.", channelId: channel.id });
+  const { defaultBootContextFor } = await import("../src/runtime/app-runtime.js");
+  const built = defaultBootContextFor(store, { episodeId: episode.id, conversationId: null, model: "gpt-5.6-terra", effort: "low", harness: "codex",
+    request: { text: "Make the opening title.", messageId: 42, kind: "chat", cardId: null } })({ requestWorkDir: "/storybench/data/w/request_1", served: ["get_context", "inspect_image"], release: { tools: { codex: "0.155.1" } } });
+  const appContext = { ...built, paths: { ...built.paths, episode: store.episodeDirectory(episode.id), work: store.episodeWorkDirectory(episode.id) } };
+  for (const key of ["channel.name", "channel.direction", "episode.title", "request.text", "request.messageId", "request.kind", "request.cardId", "conversation.id",
+    "runtime.effort", "runtime.resolvedModel", "runtime.harnessVersion", "paths.requestWork", "tools.served"])
+    assert.ok(key.split(".").reduce((value, part) => value?.[part], appContext) !== undefined, `${key} supplied`);
+  const result = await renderEpisodeBoot({ episodeDir: dir, context: appContext });
+  const renderedBoot = await readFile(path.join(dir, "CLAUDE.md"), "utf8");
+  for (const expected of ["Night Shift Films", "Harbour at dawn", "Make the opening title.", "message 42", "low", "0.155.1", "/storybench/data/w/request_1", "get_context, inspect_image", "not reported"])
+    assert.ok(renderedBoot.includes(expected), `boot shows ${expected}`);
+  assert.doesNotMatch(renderedBoot, /not in this render|not reported in this render/);
   const roster = ["storybench-understand-project", "storybench-read-references", "storybench-edit-story-cards", "storybench-edit-broll",
     "storybench-create-graphics", "storybench-reuse-project-assets", "storybench-assemble-draft", "storybench-finish-video"];
   for (const name of roster) for (const root of [".claude/skills", ".agents/skills"])

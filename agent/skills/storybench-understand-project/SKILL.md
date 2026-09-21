@@ -7,7 +7,7 @@ description: Orient in the current Storybench channel and episode - read directi
 
 **Purpose.** Know what this video is, what material exists and what has already been made, before or while you act on the creator's request. Load what the request needs; you do not have to read everything first.
 
-**Context.** Channel `{{channel.id}}`, episode `{{episode.id}}`, episode directory `{{paths.episode}}`. Channel/episode names and standing direction are not in the boot render; the tools below supply them.
+**Context.** Channel **{{channel.name}}** (`{{channel.id}}`), episode **{{episode.title}}** (`{{episode.id}}`), episode directory `{{paths.episode}}`. The boot file carries the names, notes and revisions as of this render; the tools below give current values and everything else.
 
 ## Tools
 

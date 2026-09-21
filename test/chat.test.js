@@ -124,7 +124,7 @@ test('Codex JSONL client declares scoped tools and answers dynamic tool calls', 
   const start = requests.find((request) => request.method === 'thread/start');
   assert.equal(start.params.sandbox, 'read-only');
   assert.equal(start.params.approvalPolicy, 'never');
-  assert.deepEqual(start.params.dynamicTools.map((tool) => tool.name), ['get_context','get_operation_guide','read_reference_excerpt','update_story','update_cards','validate_render','create_draft','request_final','create_final','get_job','cancel_job','list_graphic_recipes','get_graphic_recipe','create_graphic_recipe','update_graphic_recipe','render_graphic','list_branding','promote_card','apply_branding']);
+  assert.deepEqual(start.params.dynamicTools.map((tool) => tool.name), ['get_context','get_operation_guide','read_conversation_history','read_reference_excerpt','update_story','update_cards','validate_render','create_draft','request_final','create_final','get_job','cancel_job','list_graphic_recipes','get_graphic_recipe','create_graphic_recipe','update_graphic_recipe','render_graphic','list_branding','promote_card','apply_branding']);
   stdout.write(`${JSON.stringify({ id: 99, method: 'item/tool/call', params: { threadId, turnId: 'turn_rpc', callId: 'call_1', tool: 'get_context', arguments: {} } })}\n`);
   await until(() => requests.some((request) => request.id === 99 && request.result));
   const response = requests.find((request) => request.id === 99);

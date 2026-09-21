@@ -212,10 +212,16 @@ test("capabilities list only what is served and verified", () => {
   assert.equal(describeCapabilities({ scope: { ...scope, harness: "other" }, served: TOOL_DEFINITIONS }).imageInput.verified, false, "an unverified route is not advertised");
   assert.equal(noImages.imageInput.available, false);
   assert.equal(noImages.commandExecution.commands.verified, false);
-  const full = describeCapabilities({ scope, served: TOOL_DEFINITIONS, release: { tools: { ffmpeg: "7.1.5", codex: "0.155.1" } } });
-  assert.equal(full.imageInput.available, true);
+  // The image route is verified only for the harness version the proof passed on.
+  const full = describeCapabilities({ scope, served: TOOL_DEFINITIONS, release: { tools: { ffmpeg: "7.1.5", claude: "2.1.278" } } });
+  assert.equal(full.imageInput.verified, true);
   assert.match(full.imageInput.via, /MCP/);
-  assert.deepEqual(full.commandExecution.commands.versions, { ffmpeg: "7.1.5", codex: "0.155.1" });
+  assert.deepEqual(full.commandExecution.commands.versions, { ffmpeg: "7.1.5", claude: "2.1.278" });
+  const upgraded = describeCapabilities({ scope, served: TOOL_DEFINITIONS, release: { tools: { claude: "2.2.0" } } });
+  assert.equal(upgraded.imageInput.verified, false);
+  assert.match(upgraded.imageInput.reason, /2\.2\.0 differs from 2\.1\.278/);
+  const unknown = describeCapabilities({ scope: { ...scope, harness: "codex" }, served: TOOL_DEFINITIONS });
+  assert.match(unknown.imageInput.reason, /running codex version is unknown/);
   assert.deepEqual(full.tools.map((tool) => tool.name), TOOL_DEFINITIONS.map((definition) => definition.name));
   assert.ok(full.notAvailable.some((entry) => /image generation/.test(entry)));
 });
@@ -276,5 +282,14 @@ test("media tools time out instead of hanging", async (t) => {
   await assert.rejects(frameAt(fifo, null, { timeoutMs: 300 }), { code: "FRAME_TIMEOUT" });
 });
 
-// Review item 5: wired once the v9 message origin/kind marker lands (#26/#27).
-test.todo("a shortcut-originated message (v9 message origin marker) is refused as reference direction");
+test("a shortcut-originated creator message is refused as reference direction; a typed one is accepted", async (t) => {
+  const f = await fixture(t);
+  const tools = f.tools();
+  const button = f.store.addConversationMessage({ conversationId: f.conversation.id, role: "user", text: "Create a draft from the current story, cards and available material.", shortcut: true });
+  assert.equal(button.origin, "button");
+  const args = { sourceEpisodeId: f.epB.id, sourceItemId: f.reference.id };
+  await assert.rejects(tools.call("reuse_project_item", { ...args, direction: { messageId: button.id } }), { code: "DIRECTION_SHORTCUT" });
+  const typed = f.store.addConversationMessage({ conversationId: f.conversation.id, role: "user", text: "Use the Blue mood still directly." });
+  assert.equal(typed.origin, "typed");
+  assert.equal(JSON.parse((await tools.call("reuse_project_item", { ...args, direction: { messageId: typed.id } })).text).reference, true);
+});

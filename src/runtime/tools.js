@@ -148,11 +148,11 @@ const png = (bytes) => ({ mimeType: "image/png", data: bytes.toString("base64") 
 const json = (value) => ({ text: JSON.stringify(value) });
 const label = (origin) => [origin.channel && `channel ${origin.channel.name ?? ""} (${origin.channel.id})`, origin.episode && `episode ${origin.episode.title ?? ""} (${origin.episode.id})`, origin.item && `item ${origin.item.label} (${origin.item.id}, ${origin.item.category})`].filter(Boolean).join(" / ") || origin.path;
 
-// Messages that are UI shortcuts (Create draft / Create final) never count as creator
-// direction for reference use. #27 marks shortcut requests; until then a message row with a
-// shortcut `kind` (if that column exists) is rejected. Callers may supply a stricter check.
+// Messages produced by a UI shortcut (Create draft / Create final ...) never count as creator
+// direction for reference use. The store binds message origin to the role and marks only the
+// app's own shortcut handler's messages as 'button' (schema v9).
 export function defaultIsShortcutMessage(row) {
-  return typeof row?.kind === "string" && /^(shortcut|draft|final)/i.test(row.kind);
+  return row?.origin === "button";
 }
 
 // Validate a cited creator message for reference use/edit: it must be a user message in

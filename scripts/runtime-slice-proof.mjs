@@ -53,6 +53,7 @@ const sh = (script, opts) => run("bash", ["-c", script], opts);
 const sha = async (file) => createHash("sha256").update(await readFile(file)).digest("hex");
 const save = (name, content) => writeFile(path.join(evidence, name), typeof content === "string" ? content : JSON.stringify(content, null, 2) + "\n");
 const record = (harness, check, pass, detail, evidenceFile) => { results.push({ harness, check, pass, detail, evidence: evidenceFile }); log(pass ? "PASS" : "FAIL", harness, check, "-", detail); };
+const NAME_SUFFIX = `N${Date.now().toString(36).toUpperCase()}`;
 const nonce = () => randomBytes(4).toString("hex").toUpperCase();
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -78,7 +79,7 @@ async function prepareData(images) {
   await mkdir(stateRoot, { recursive: true });
   // Initialize the disposable data root offline with the app image's shared services.
   const seedOut = await run("docker", ["run", "--rm", "--network", "none", "--user", "0:0", "--cap-drop", "ALL",
-    "--mount", `type=bind,source=${dataRoot},target=/storybench/data`, ...DRIVER_MOUNT, images.app, "node", "src/runtime/slice-proof-driver.js", JSON.stringify({ phase: "seed" })]);
+    "--mount", `type=bind,source=${dataRoot},target=/storybench/data`, ...DRIVER_MOUNT, images.app, "node", "src/runtime/slice-proof-driver.js", JSON.stringify({ phase: "seed", nameSuffix: NAME_SUFFIX })]);
   const seed = JSON.parse(seedOut.stdout.trim().split("\n").pop());
   await save("seed.json", seed);
   const [a, b] = seed.episodes;
@@ -253,12 +254,16 @@ echo "== mounts"; grep -E ' /storybench| /run/storybench' /proc/self/mountinfo |
 }
 
 const size = { codex: "320x240", claude: "352x240" };
+// The shipped skills (agent/skills) that each harness must discover natively in the worker.
+const SKILLS = ["storybench-understand-project", "storybench-read-references", "storybench-edit-story-cards", "storybench-edit-broll",
+  "storybench-create-graphics", "storybench-reuse-project-assets", "storybench-assemble-draft", "storybench-finish-video"];
+const UNDERSTAND_PURPOSE = "Know what this video is";
 function prompts(harness, phrases) {
   return {
     fresh: [
       "This is a short Storybench runtime check. Do each step, then answer with a short numbered list.",
-      "1. From your boot instructions file in the episode directory (AGENTS.md / CLAUDE.md), report the Runtime verification phrase.",
-      "2. Use the Storybench skill named storybench-runtime-check and report its Skill verification phrase.",
+      "1. Without calling any tool, report the episode title and the channel name exactly as your boot instructions file in the episode directory (AGENTS.md / CLAUDE.md) states them.",
+      "2. Use the Storybench skill named storybench-understand-project and quote the first sentence of its Purpose section.",
       `3. Call the Storybench tool inspect_image with path "${D(L.media1)}/fixture-a.png" and describe the main shape, its color and the background color. Do not use shell commands, scripts or any other tool to analyze the image or the clip; rely only on what inspect_image shows you.`,
       `4. Call inspect_image with path "${D(L.media1)}/clip-b.mp4" and atSeconds 3. Describe that frame's background color and the shape.`,
       `5. Run a shell command using ffmpeg to cut seconds 4 to 6 of ${D(L.media1)}/clip-b.mp4 into a ${size[harness]} MP4 at work/${harness}-derivative.mp4 (for example: ffmpeg -y -ss 4 -t 2 -i ${D(L.media1)}/clip-b.mp4 -vf scale=${size[harness].replace("x", ":")} -an work/${harness}-derivative.mp4). Then register it with the Storybench tool register_work_file (path work/${harness}-derivative.mp4) and report the returned assetId.`,
@@ -266,23 +271,19 @@ function prompts(harness, phrases) {
       `7. With shell commands, try each of these writes and report the error for each: append a line to story.md; create /storybench/data/storybench.sqlite; append to ${D(L.drafts1)}/draft-001.mp4; create /storybench/data/media/probe.txt.`,
       "8. Report the output of `id -u` and of `ls -ln work/`.",
     ].join("\n"),
-    resume: "Answer from this conversation's history only, without using any tools: which Runtime verification phrase did you report earlier, and what shape and color did you see in fixture-a.png? One line.",
+    resume: "Answer from this conversation's history only, without using any tools: which episode title did you report earlier, and what shape and color did you see in fixture-a.png? One line.",
     cancel: "Run this exact shell command in the foreground with a 10-minute timeout and wait for it to finish before replying (it takes about 8 minutes; do not background it): sh -c 'sleep 240; sleep 241'",
     phrases,
   };
 }
 
-const bootContext = (harness, phrases) => ({
-  channel: { id: L.ep1.split("/")[1] }, episode: { id: L.ep1Id },
-  paths: { projects: "`/storybench/data/channels` (all channels, their media and episodes), `/storybench/data/episodes` and `/storybench/data/media` (legacy adopted episodes and originals, when present)" },
-  runtime: { harness, model: models[harness], bootPhrase: phrases.boot, skillPhrase: phrases.skill },
-});
 
 async function harnessRun(harness, fixtures) {
-  const phrases = { boot: `BOOT-${nonce()}`, skill: `SKILL-${nonce()}` };
+  // The episode title (with a run nonce) appears only in the rendered boot, not in the prompt.
+  const phrases = { boot: `Slice A ${NAME_SUFFIX} episode`, skill: UNDERSTAND_PURPOSE };
   const p = prompts(harness, phrases);
   const segmentId = `seg-${harness}-1`;
-  const common = { harness, model: models[harness], conversationId: `conv-${harness}`, segmentId, episodeId: L.ep1Id, bootContext: bootContext(harness, phrases) };
+  const common = { harness, model: models[harness], conversationId: `conv-${harness}`, segmentId, episodeId: L.ep1Id };
   const hostUid = process.getuid();
 
   // Phase A: fresh session.
@@ -305,9 +306,12 @@ async function harnessRun(harness, fixtures) {
   const asset = lookup?.asset ?? null;
   await save(`${harness}-A-checks.txt`, `host id -u: ${hostUid}\nls -ln work/:\n${lsWork}\nregistered asset:\n${JSON.stringify(asset, null, 2)}\nepisode library item:\n${JSON.stringify(lookup?.libraryItem ?? null, null, 2)}\nnative skills (codex skills/list or claude init):\n${JSON.stringify(a.nativeSkills ?? a.events?.find((event) => event.type === "init")?.skills ?? null, null, 2)}\n`);
   record(harness, "authentication inside worker", Boolean(a.sessionId) && !a.turnError && !a.isError && (a.turn?.status ?? "completed") === "completed", `session ${a.sessionId ?? "none"}${a.turnError ? ` error ${a.turnError}` : ""}`, `${harness}-A-fresh.json`);
-  record(harness, "boot discovery (AGENTS.md/CLAUDE.md phrase)", text.includes(phrases.boot.toLowerCase()), `expected ${phrases.boot}`, `${harness}-A-fresh.json`);
-  const nativeSkill = harness === "codex" ? (a.nativeSkills ?? []).some((skill) => skill.name === "storybench-runtime-check") : (a.events?.find((event) => event.type === "init")?.skills ?? a.events?.find((event) => event.type === "init")?.slash_commands ?? []).some((name) => String(name).includes("storybench-runtime-check"));
-  record(harness, "skill discovery (native list + phrase)", nativeSkill && text.includes(phrases.skill.toLowerCase()), `native listing ${nativeSkill ? "includes" : "MISSING"} storybench-runtime-check; expected ${phrases.skill}`, `${harness}-A-fresh.json`);
+  record(harness, "boot discovery (episode title only in the rendered AGENTS.md/CLAUDE.md)", text.includes(phrases.boot.toLowerCase()), `expected "${phrases.boot}"`, `${harness}-A-fresh.json`);
+  const native = harness === "codex" ? (a.nativeSkills ?? []).map((skill) => skill.name) : (a.events?.find((event) => event.type === "init")?.skills ?? []).map(String);
+  const missing = SKILLS.filter((name) => !native.some((entry) => entry.includes(name)));
+  await save(`${harness}-A-render.json`, { templateVersion: a.render?.templateVersion, bootSha256: a.render?.bootSha256, files: a.render?.files, nativeSkills: native });
+  record(harness, "native discovery of all 8 shipped skills + skill content used", !missing.length && text.includes(UNDERSTAND_PURPOSE.toLowerCase()),
+    `native listing ${missing.length ? `MISSING ${missing.join(", ")}` : "has all 8"}; template ${a.render?.templateVersion?.slice(0, 16)}; boot sha ${a.render?.bootSha256?.slice(0, 16)}`, `${harness}-A-render.json`);
   record(harness, "image receipt: still (orange star on teal)", inspects.some((call) => /fixture-a/.test(call.args?.path)) && /star/.test(text) && /orange/.test(text) && /teal|turquoise|cyan|blue-green/.test(text) && !analyzedByCommand, `inspect_image returned ${inspects.length} image(s); analyzed by command: ${analyzedByCommand}`, `${harness}-A-fresh.json`);
   record(harness, "image receipt: clip frame at 3s (yellow + black circle)", inspects.some((call) => /clip-b/.test(call.args?.path) && call.args?.atSeconds === 3) && /yellow/.test(text) && /circle/.test(text), "frame 2-4s scene is yellow with a black circle", `${harness}-A-fresh.json`);
   record(harness, "command-created media in work/", Boolean(workInfo?.size), workInfo ? `${workInfo.size} bytes` : "missing", `${harness}-A-checks.txt`);
