@@ -169,12 +169,11 @@ test("final intent is bound to its request: active, then published once or ended
   // A stopped final ends its intent; an explicit Retry starts a successor with Final intent again.
   const stopped = w.store.createProductionRun({ conversationId: w.conversation.id, kind: "final", harness: "codex", modelSelected: "gpt-6-astra" }).run;
   assert.throws(() => w.store.retryProductionRun(stopped.id, {}), /Only a finished request/);
-  w.store.updateProductionRun(stopped.id, { state: "interrupted" });
-  assert.throws(() => w.store.retryProductionRun(stopped.id, {}), /still active/);
-  assert.equal(w.store.endFinalIntent(stopped.id, "stopped").finalEndedReason, "stopped");
+  const interrupted = w.store.updateProductionRun(stopped.id, { state: "interrupted" });
+  assert.deepEqual({ intent: interrupted.finalIntent, reason: interrupted.finalEndedReason }, { intent: "ended", reason: "stopped" }, "Stop ends the intent in the same update");
   assert.throws(() => w.store.endFinalIntent(stopped.id, "restart"), (error) => error.statusCode === 409, "an ended intent cannot be re-ended or reopened");
   const retry = w.store.retryProductionRun(stopped.id, { clientRequestId: "retry-1" }).run;
-  assert.deepEqual({ successorOf: retry.successorOf, kind: retry.kind, intent: retry.finalIntent, model: retry.modelSelected, origin: retry.origin }, { successorOf: stopped.id, kind: "final", intent: "active", model: "gpt-6-astra", origin: "button" });
+  assert.deepEqual({ successorOf: retry.successorOf, kind: retry.kind, intent: retry.finalIntent, model: retry.modelSelected, origin: retry.origin }, { successorOf: stopped.id, kind: "final", intent: "active", model: null, origin: "button" }, "the retry uses the conversation's current selection, not the old run's model");
   assert.throws(() => w.store.endFinalIntent(retry.id, "published"), /reason must be/);
   // Ordinary requests never carry Final intent; the database refuses inconsistent states.
   const draft = w.store.createProductionRun({ conversationId: w.conversation.id, kind: "draft", harness: "codex" }).run;
@@ -211,14 +210,14 @@ test("jobs link to their request within the same episode; Stop can list a reques
 test("FK and cascade choices: deleting a conversation removes its segments, requests and messages; jobs keep history", (t) => {
   const w = world(t);
   const segment = w.store.createSegment({ conversationId: w.conversation.id, harness: "codex", reason: "initial" });
+  const otherSegment = w.store.createSegment({ conversationId: w.second.id, harness: "claude", reason: "initial" });
+  assert.throws(() => w.store.createSegment({ conversationId: w.conversation.id, harness: "codex", reason: "harness-return", previousSegmentId: otherSegment.id }), /another conversation/);
   const { run } = w.store.createProductionRun({ conversationId: w.conversation.id, kind: "draft", harness: "codex", segmentId: segment.id, originatingMessageId: w.userMessage });
   const job = w.store.saveJob({ episodeId: w.episode.id, kind: "draft", outputClass: "draft", state: "completed", progress: 1, revision: 1, outputPath: "d.mp4", snapshot: {}, requestId: run.id });
   // Scope triggers: a run cannot point at another conversation's segment, message or episode.
-  const otherSegment = w.store.createSegment({ conversationId: w.second.id, harness: "claude", reason: "initial" });
   assert.throws(() => w.store.db.prepare("INSERT INTO production_runs(id,conversation_id,episode_id,segment_id,harness,started_at,updated_at) VALUES('x',?,?,?,'codex','t','t')").run(w.conversation.id, w.episode.id, otherSegment.id), /another conversation/);
   assert.throws(() => w.store.db.prepare("INSERT INTO production_runs(id,conversation_id,episode_id,harness,started_at,updated_at) VALUES('y',?,?,'codex','t','t')").run(w.conversation.id, w.other.id), /another conversation or episode/);
   assert.throws(() => w.store.db.prepare("UPDATE conversations SET active_segment_id=? WHERE id=?").run(otherSegment.id, w.conversation.id), /another conversation/);
-  assert.throws(() => w.store.createSegment({ conversationId: w.conversation.id, harness: "codex", reason: "harness-return", previousSegmentId: otherSegment.id }), /another conversation/);
   w.store.db.prepare("DELETE FROM conversations WHERE id=?").run(w.conversation.id);
   assert.equal(w.store.getSegment(segment.id), null);
   assert.equal(w.store.getProductionRun(run.id), null);
@@ -271,4 +270,106 @@ test("an application restart interrupts unfinished requests and ends their Final
   assert.equal(reopened.getProductionRun(finished.id).state, "completed");
   const offline = new Store(w.root, { startup: false });
   offline.close();
+});
+
+const liveJob = (w, runId, extra = {}) => w.store.saveJob({ episodeId: w.episode.id, kind: "final", outputClass: "final", state: "completed", progress: 1, revision: 1, outputPath: `${Math.random()}.mp4`, snapshot: {}, requestId: runId, ...extra });
+
+test("review 1A: a failed Final request ends its intent at once and can never be published or given new work", (t) => {
+  const w = world(t);
+  const { run } = w.store.createProductionRun({ conversationId: w.conversation.id, kind: "final", harness: "codex" });
+  const output = liveJob(w, run.id);
+  const failed = w.store.updateProductionRun(run.id, { state: "failed", error: "render failed" });
+  assert.deepEqual({ state: failed.state, intent: failed.finalIntent, reason: failed.finalEndedReason }, { state: "failed", intent: "ended", reason: "failed" });
+  assert.throws(() => w.store.publishFinalIntent(run.id, output.id), /failed request cannot publish/);
+  const late = w.store.saveJob({ episodeId: w.episode.id, kind: "final", outputClass: "final", state: "completed", progress: 1, revision: 1, outputPath: "late.mp4", snapshot: {} });
+  assert.throws(() => w.store.linkJobToRequest(late.id, run.id), /failed request cannot take on new work/);
+  assert.throws(() => liveJob(w, run.id), /failed request cannot take on new work/);
+  assert.equal(w.store.getProductionRun(run.id).finalIntent, "ended");
+  // The database refuses a finished request with live Final authority.
+  const { run: other } = w.store.createProductionRun({ conversationId: w.second.id, kind: "final", harness: "codex" });
+  assert.throws(() => w.store.db.prepare("UPDATE production_runs SET state='failed' WHERE id=?").run(other.id), /CHECK/);
+  // An interruption may name its reason; anything else is refused.
+  assert.equal(w.store.updateProductionRun(other.id, { state: "interrupted", finalEndReason: "cancelled" }).finalEndedReason, "cancelled");
+  const { run: third } = w.store.createProductionRun({ conversationId: w.second.id, kind: "final", harness: "codex" });
+  assert.throws(() => w.store.updateProductionRun(third.id, { state: "interrupted", finalEndReason: "published" }), /finalEndReason must be/);
+});
+
+test("review 1B: a Final request that completes without publishing ends as unfulfilled and can be retried", (t) => {
+  const w = world(t);
+  const { run } = w.store.createProductionRun({ conversationId: w.conversation.id, kind: "final", harness: "codex" });
+  w.store.updateProductionRun(run.id, { state: "running" });
+  const done = w.store.updateProductionRun(run.id, { state: "completed", error: "No footage for the closing shot" });
+  assert.deepEqual({ intent: done.finalIntent, reason: done.finalEndedReason }, { intent: "ended", reason: "unfulfilled" });
+  const retry = w.store.retryProductionRun(run.id, {}).run;
+  assert.deepEqual({ successorOf: retry.successorOf, intent: retry.finalIntent }, { successorOf: run.id, intent: "active" });
+  // A published request completes normally and keeps its publication.
+  w.store.updateProductionRun(retry.id, { state: "running" });
+  const output = liveJob(w, retry.id);
+  w.store.publishFinalIntent(retry.id, output.id);
+  const finished = w.store.updateProductionRun(retry.id, { state: "completed" });
+  assert.deepEqual({ intent: finished.finalIntent, reason: finished.finalEndedReason }, { intent: "published", reason: "published" });
+});
+
+test("review 2: a retry dispatches on the conversation's current harness/model/effort by default", (t) => {
+  const w = world(t);
+  const { run } = w.store.createProductionRun({ conversationId: w.conversation.id, kind: "draft", harness: "codex", modelSelected: "gpt-6-astra", effortSelected: "medium" });
+  w.store.updateProductionRun(run.id, { state: "failed" });
+  w.store.updateConversationSettings(w.conversation.id, 1, { harness: "claude", model: "opus", effort: "high" });
+  const retry = w.store.retryProductionRun(run.id, {}).run;
+  assert.deepEqual({ harness: retry.harness, model: retry.modelSelected, effort: retry.effortSelected }, { harness: "claude", model: "opus", effort: "high" });
+  w.store.updateProductionRun(retry.id, { state: "failed" });
+  const explicit = w.store.retryProductionRun(retry.id, { harness: "codex", modelSelected: null }).run;
+  assert.deepEqual({ harness: explicit.harness, model: explicit.modelSelected, effort: explicit.effortSelected }, { harness: "codex", model: null, effort: "high" });
+});
+
+test("review 3: settings and segments change only while the conversation and its request-owned work are idle", (t) => {
+  const w = world(t);
+  const { run } = w.store.createProductionRun({ conversationId: w.conversation.id, kind: "draft", harness: "codex" });
+  assert.throws(() => w.store.updateConversationSettings(w.conversation.id, 1, { harness: "claude" }), (error) => error.statusCode === 409 && error.requestId === run.id);
+  assert.throws(() => w.store.createSegment({ conversationId: w.conversation.id, harness: "claude", reason: "harness-switch" }), (error) => error.statusCode === 409);
+  // The request being dispatched may still start its own segment (e.g. a resume fallback).
+  assert.equal(w.store.createSegment({ conversationId: w.conversation.id, harness: "codex", reason: "resume-unavailable", exceptRunId: run.id }).reason, "resume-unavailable");
+  const render = w.store.saveJob({ episodeId: w.episode.id, kind: "draft", outputClass: "draft", state: "running", progress: 0.5, revision: 1, snapshot: {}, requestId: run.id });
+  w.store.updateProductionRun(run.id, { state: "completed" });
+  // The turn ended but its render still runs on the episode: a switch waits for it, in any conversation of the episode.
+  assert.throws(() => w.store.updateConversationSettings(w.second.id, 1, { harness: "claude" }), (error) => error.statusCode === 409 && error.jobId === render.id);
+  w.store.saveJob({ ...w.store.getJob(render.id), state: "completed", progress: 1, outputPath: "r.mp4" });
+  assert.equal(w.store.updateConversationSettings(w.conversation.id, 1, { harness: "claude" }).harness, "claude");
+  assert.equal(w.store.createSegment({ conversationId: w.conversation.id, harness: "claude", reason: "harness-switch" }).harness, "claude");
+  // Another episode's work does not block this conversation.
+  const { run: foreignRun } = w.store.createProductionRun({ conversationId: w.foreign.id, kind: "draft", harness: "codex" });
+  assert.equal(w.store.updateConversationSettings(w.second.id, 1, { harness: "claude" }).harness, "claude");
+  assert.equal(foreignRun.state, "starting");
+});
+
+test("review 4: invalid references fail as StoreErrors with meaningful statuses, not raw SQLite errors", (t) => {
+  const w = world(t);
+  const { run } = w.store.createProductionRun({ id: "request_fixed", conversationId: w.conversation.id, harness: "codex" });
+  assert.throws(() => w.store.createProductionRun({ id: "request_fixed", conversationId: w.conversation.id, harness: "codex" }), (error) => error.statusCode === 409 && /already exists/.test(error.message));
+  const foreignReply = w.message(w.second.id, "assistant", "agent");
+  assert.throws(() => w.store.updateProductionRun(run.id, { assistantMessageId: foreignReply }), (error) => error.statusCode === 404);
+  assert.throws(() => w.store.updateProductionRun(run.id, { assistantMessageId: 999999 }), (error) => error.statusCode === 404);
+  assert.throws(() => w.store.updateProductionRun(run.id, { assistantMessageId: w.userMessage }), (error) => error.statusCode === 400 && /assistant message/.test(error.message));
+  const reply = w.message(w.conversation.id, "assistant", "agent");
+  assert.equal(w.store.updateProductionRun(run.id, { assistantMessageId: reply }).assistantMessageId, reply);
+  assert.throws(() => w.store.updateProductionRun(run.id, { segmentId: "segment_missing" }), (error) => error.statusCode === 404);
+  assert.throws(() => w.store.saveJob({ episodeId: w.episode.id, kind: "draft", outputClass: "draft", state: "queued", revision: 1, snapshot: {}, requestId: "request_missing" }),
+    (error) => error.statusCode === 404 && /Production request not found/.test(error.message));
+  const { run: foreignRun } = w.store.createProductionRun({ conversationId: w.foreign.id, harness: "codex" });
+  assert.throws(() => w.store.saveJob({ episodeId: w.episode.id, kind: "draft", outputClass: "draft", state: "queued", revision: 1, snapshot: {}, requestId: foreignRun.id }),
+    (error) => error.statusCode === 409 && /another episode/.test(error.message));
+});
+
+test("review 5: addConversationMessage derives origin from the role; a shortcut is only a user message", (t) => {
+  const w = world(t);
+  assert.equal(w.store.addConversationMessage({ conversationId: w.conversation.id, role: "user", text: "Make it faster" }).origin, "typed");
+  const shortcut = w.store.addConversationMessage({ conversationId: w.conversation.id, role: "user", text: "Create a draft from the current story, cards and available material.", shortcut: true });
+  assert.equal(shortcut.origin, "button");
+  assert.equal(w.store.addConversationMessage({ conversationId: w.conversation.id, role: "assistant", text: "Done", state: "streaming", turnId: "turn_1" }).origin, "agent");
+  assert.throws(() => w.store.addConversationMessage({ conversationId: w.conversation.id, role: "assistant", text: "x", shortcut: true }), /Only a user message/);
+  assert.throws(() => w.store.addConversationMessage({ conversationId: w.conversation.id, role: "tool", text: "x" }), /role must be/);
+  assert.throws(() => w.store.addConversationMessage({ conversationId: "conversation_missing", role: "user", text: "x" }), (error) => error.statusCode === 404);
+  // The stored row carries it, and a request can originate from it.
+  assert.equal(w.store.db.prepare("SELECT origin FROM conversation_messages WHERE id=?").get(shortcut.id).origin, "button");
+  assert.equal(w.store.createProductionRun({ conversationId: w.conversation.id, kind: "draft", origin: "button", originatingMessageId: shortcut.id, harness: "codex" }).run.originatingMessageId, shortcut.id);
 });

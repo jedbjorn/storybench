@@ -36,7 +36,10 @@ export const SEGMENT_REASONS = Object.freeze(["initial", "migrated", "harness-sw
 export const RUN_KINDS = Object.freeze(["chat", "card_build", "still_graphic", "animated_graphic", "draft", "final", "other"]);
 export const RUN_ORIGINS = Object.freeze(["typed", "button"]);
 export const MESSAGE_ORIGINS = Object.freeze(["typed", "button", "agent", "system"]);
-export const FINAL_END_REASONS = Object.freeze(["stopped", "cancelled", "failed", "restart"]);
+export const FINAL_END_REASONS = Object.freeze(["stopped", "cancelled", "failed", "restart", "unfulfilled"]);
+// How Final intent ends when its request reaches a terminal state without publishing.
+const FINAL_END_ON_TERMINAL = { failed: "failed", completed: "unfulfilled" };
+const INTERRUPTION_REASONS = ["stopped", "cancelled"];
 const RUN_TERMINAL = ["completed", "failed", "interrupted"];
 const RUN_TRANSITIONS = { starting: ["running", ...RUN_TERMINAL], running: RUN_TERMINAL, completed: [], failed: [], interrupted: [] };
 const hasControlCharacters = (value) => [...value].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127);
@@ -807,14 +810,16 @@ export class Store {
           error TEXT,
           usage TEXT,
           final_intent TEXT NOT NULL DEFAULT 'none' CHECK (final_intent IN ('none','active','published','ended')),
-          final_ended_reason TEXT CHECK (final_ended_reason IS NULL OR final_ended_reason IN ('published','stopped','cancelled','failed','restart')),
+          final_ended_reason TEXT CHECK (final_ended_reason IS NULL OR final_ended_reason IN ('published','stopped','cancelled','failed','restart','unfulfilled')),
           final_output_job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
           successor_of TEXT REFERENCES production_runs(id) ON DELETE SET NULL,
           started_at TEXT NOT NULL,
           finished_at TEXT,
           updated_at TEXT NOT NULL,
           CHECK ((final_intent IN ('published','ended')) = (final_ended_reason IS NOT NULL)),
-          CHECK ((final_intent = 'published') = (final_ended_reason IS 'published'))
+          CHECK ((final_intent = 'published') = (final_ended_reason IS 'published')),
+          -- A finished request never holds live Final authority.
+          CHECK (NOT (state IN ('completed','failed','interrupted') AND final_intent = 'active'))
         );
         CREATE INDEX IF NOT EXISTS production_runs_conversation ON production_runs(conversation_id,started_at);
         CREATE INDEX IF NOT EXISTS production_runs_episode_state ON production_runs(episode_id,state);
@@ -1911,12 +1916,24 @@ export class Store {
     return conversation;
   }
   // An explicit choice from the UI. Optimistic: expectedRevision must match settings_revision.
+  // Settings and segments change only between requests: refuse while a request of this conversation, or request-owned
+  // work on its episode, is unfinished. `exceptRunId` exempts the request being dispatched (e.g. its resume fallback).
+  assertConversationIdle(conversationId, { exceptRunId = null } = {}) {
+    const conversation = this.requireConversation(conversationId);
+    const busy = this.db.prepare("SELECT id FROM production_runs WHERE conversation_id=? AND state IN ('starting','running') AND id IS NOT ? LIMIT 1").get(conversationId, exceptRunId);
+    if (busy) throw new StoreError("A request is still running in this conversation; finish or stop it first", 409, { requestId: busy.id });
+    const work = this.db.prepare(`SELECT j.id,j.request_id FROM jobs j JOIN production_runs r ON r.id=j.request_id
+      WHERE r.episode_id=? AND j.state IN ('queued','running','cancelling') AND r.id IS NOT ? LIMIT 1`).get(conversation.episodeId, exceptRunId);
+    if (work) throw new StoreError("Request-owned production work is still running on this episode; finish or stop it first", 409, { jobId: work.id, requestId: work.request_id });
+    return conversation;
+  }
   updateConversationSettings(conversationId, expectedRevision, { harness, model = null, effort = null } = {}) {
     const current = this.requireConversation(conversationId);
     if (!HARNESSES.includes(harness)) throw new StoreError(`harness must be one of ${HARNESSES.join(", ")}`);
     const values = [harness, shortText(model, "model"), shortText(effort, "effort")];
     if (!Number.isInteger(expectedRevision) || expectedRevision !== current.settingsRevision)
       throw new StoreError(`Stale conversation settings: expected revision ${current.settingsRevision}`, 409, { current });
+    this.assertConversationIdle(conversationId);
     const result = this.db.prepare(`UPDATE conversations SET harness=?,model=?,effort=?,settings_source='explicit',settings_revision=settings_revision+1,settings_updated_at=?
       WHERE id=? AND settings_revision=?`).run(...values, now(), conversationId, expectedRevision);
     if (!result.changes) throw new StoreError("Stale conversation settings", 409, { current: this.getConversation(conversationId) });
@@ -1943,8 +1960,8 @@ export class Store {
   }
   // Starts a new native-session segment and makes it active; the previous active segment ends. Native session IDs are
   // never carried across harnesses: set the new one with setSegmentNativeSession once the harness reports it.
-  createSegment({ conversationId, harness, reason, previousSegmentId, firstMessageId = null, seedIncludedMessages = null, seedOmittedMessages = null } = {}) {
-    const conversation = this.requireConversation(conversationId);
+  createSegment({ conversationId, harness, reason, previousSegmentId, firstMessageId = null, seedIncludedMessages = null, seedOmittedMessages = null, exceptRunId = null } = {}) {
+    const conversation = this.assertConversationIdle(conversationId, { exceptRunId });
     if (!HARNESSES.includes(harness)) throw new StoreError(`harness must be one of ${HARNESSES.join(", ")}`);
     if (!SEGMENT_REASONS.includes(reason)) throw new StoreError(`reason must be one of ${SEGMENT_REASONS.join(", ")}`);
     const previous = previousSegmentId === undefined ? conversation.activeSegmentId : previousSegmentId;
@@ -1983,6 +2000,19 @@ export class Store {
     return this.getSegment(segmentId);
   }
 
+  // The only supported way to add a visible message: origin is derived from the role, never taken from a request
+  // body or a tool call. A creator (user) message is 'typed' unless the app's own shortcut button produced it.
+  addConversationMessage({ conversationId, role, text, state = "completed", turnId = null, shortcut = false } = {}) {
+    this.requireConversation(conversationId);
+    if (!["user", "assistant", "system"].includes(role)) throw new StoreError("role must be user, assistant or system");
+    if (typeof text !== "string") throw new StoreError("text must be a string");
+    if (shortcut && role !== "user") throw new StoreError("Only a user message can come from a shortcut button");
+    const origin = role === "user" ? (shortcut ? "button" : "typed") : role === "assistant" ? "agent" : "system";
+    const stamp = now();
+    const messageId = Number(this.db.prepare("INSERT INTO conversation_messages(conversation_id,role,text,state,turn_id,created_at,updated_at,origin) VALUES(?,?,?,?,?,?,?,?)")
+      .run(conversationId, role, text, String(state), turnId, stamp, stamp, origin).lastInsertRowid);
+    return { id: messageId, conversationId, role, text, state: String(state), turnId, origin, createdAt: stamp };
+  }
   runRow(row) {
     return row ? { id: row.id, conversationId: row.conversation_id, episodeId: row.episode_id, segmentId: row.segment_id ?? null, kind: row.kind, origin: row.origin,
       clientRequestId: row.client_request_id ?? null, targetCardId: row.target_card_id ?? null, originatingMessageId: row.originating_message_id ?? null,
@@ -2028,6 +2058,7 @@ export class Store {
       const previous = this.getProductionRun(successorOf);
       if (!previous || previous.conversationId !== conversationId) throw new StoreError("The retried request is not in this conversation", 404);
     }
+    if (runId != null && this.getProductionRun(runId)) throw new StoreError(`A request with id ${runId} already exists`, 409);
     const stamp = now(), value = runId ?? id("request");
     try {
       this.db.prepare(`INSERT INTO production_runs(id,conversation_id,episode_id,segment_id,kind,origin,client_request_id,target_card_id,originating_message_id,
@@ -2049,11 +2080,27 @@ export class Store {
     const current = this.getProductionRun(runId);
     if (!current) throw new StoreError("Production request not found", 404);
     const sets = [], values = [];
+    if (changes.finalEndReason !== undefined && !INTERRUPTION_REASONS.includes(changes.finalEndReason))
+      throw new StoreError(`finalEndReason must be one of ${INTERRUPTION_REASONS.join(", ")} (for an interrupted request)`);
     if (changes.state !== undefined && changes.state !== current.state) {
       if (!RUN_TRANSITIONS[current.state]?.includes(changes.state)) throw new StoreError(`A ${current.state} request cannot become ${changes.state}`, 409, { current });
       sets.push("state=?"); values.push(changes.state);
-      if (RUN_TERMINAL.includes(changes.state)) { sets.push("finished_at=?"); values.push(now()); }
+      if (RUN_TERMINAL.includes(changes.state)) {
+        sets.push("finished_at=?"); values.push(now());
+        // A request that finishes without publishing ends its Final intent in the same update.
+        if (current.finalIntent === "active") {
+          sets.push("final_intent='ended'", "final_ended_reason=?");
+          values.push(changes.state === "interrupted" ? changes.finalEndReason ?? "stopped" : FINAL_END_ON_TERMINAL[changes.state]);
+        }
+      }
     }
+    if (changes.assistantMessageId != null) {
+      const message = this.db.prepare("SELECT conversation_id,role FROM conversation_messages WHERE id=?").get(changes.assistantMessageId);
+      if (!message || message.conversation_id !== current.conversationId) throw new StoreError("The assistant message is not in this conversation", 404);
+      if (message.role !== "assistant") throw new StoreError("assistantMessageId must be an assistant message", 400);
+    }
+    if (changes.segmentId != null && this.getSegment(changes.segmentId)?.conversationId !== current.conversationId)
+      throw new StoreError("The segment is not in this conversation", 404);
     const text = { error: "error", modelResolved: "model_resolved", effortResolved: "effort_resolved", nativeTurnId: "native_turn_id" };
     for (const [key, column] of Object.entries(text)) if (changes[key] !== undefined) { sets.push(`${column}=?`); values.push(changes[key] == null ? null : String(changes[key]).slice(0, 4000)); }
     if (changes.usage !== undefined) { sets.push("usage=?"); values.push(changes.usage == null ? null : JSON.stringify(changes.usage)); }
@@ -2070,12 +2117,13 @@ export class Store {
   publishFinalIntent(runId, jobId) {
     const run = this.getProductionRun(runId);
     if (!run) throw new StoreError("Production request not found", 404);
+    if (RUN_TERMINAL.includes(run.state)) throw new StoreError(`A ${run.state} request cannot publish a Final`, 409, { current: run });
     const job = this.getJob(jobId);
     if (!job || job.requestId !== runId) throw new StoreError("The output was not produced by this request", 409);
     if (job.state !== "completed" || job.outputClass !== "final" || job.designation !== "final" || job.deletionState !== "present")
       throw new StoreError("Only a completed, present Final output can publish a Final request", 409);
     const result = this.db.prepare(`UPDATE production_runs SET final_intent='published',final_ended_reason='published',final_output_job_id=?,updated_at=?
-      WHERE id=? AND final_intent='active'`).run(jobId, now(), runId);
+      WHERE id=? AND final_intent='active' AND state IN ('starting','running')`).run(jobId, now(), runId);
     if (!result.changes) throw new StoreError(`This request has no active Final intent (${run.finalIntent})`, 409, { current: run });
     return this.getProductionRun(runId);
   }
@@ -2089,15 +2137,17 @@ export class Store {
   }
   // An explicit user Retry of a finished request: a successor with the same kind and target, and Final intent again
   // for a Final request that ended unpublished. A published Final is not retried; a new Final request is a new version.
+  // Harness, model and effort default to the conversation's current selection (it may have changed since).
   retryProductionRun(runId, { clientRequestId = null, originatingMessageId = null, origin = "button", harness, modelSelected, effortSelected, segmentId = null } = {}) {
     const previous = this.getProductionRun(runId);
     if (!previous) throw new StoreError("Production request not found", 404);
     if (!RUN_TERMINAL.includes(previous.state)) throw new StoreError("Only a finished request can be retried", 409, { current: previous });
     if (previous.finalIntent === "published") throw new StoreError("This Final request was published; request a new Final instead of retrying it", 409, { current: previous });
     if (previous.finalIntent === "active") throw new StoreError("This request's Final intent is still active", 409, { current: previous });
+    const selection = this.requireConversation(previous.conversationId);
     return this.createProductionRun({ conversationId: previous.conversationId, kind: previous.kind, origin, clientRequestId, targetCardId: previous.targetCardId,
-      originatingMessageId, segmentId, harness: harness ?? previous.harness, modelSelected: modelSelected === undefined ? previous.modelSelected : modelSelected,
-      effortSelected: effortSelected === undefined ? previous.effortSelected : effortSelected, successorOf: runId });
+      originatingMessageId, segmentId, harness: harness ?? selection.harness, modelSelected: modelSelected === undefined ? selection.model : modelSelected,
+      effortSelected: effortSelected === undefined ? selection.effort : effortSelected, successorOf: runId });
   }
   // Jobs owned by a request (set once; the episode must match). Stop cancels the active ones.
   linkJobToRequest(jobId, runId) {
@@ -2107,6 +2157,7 @@ export class Store {
     if (job.requestId === runId) return job;
     if (job.requestId) throw new StoreError("The job already belongs to another request", 409);
     if (job.episodeId !== run.episodeId) throw new StoreError("The job belongs to another episode", 409);
+    if (RUN_TERMINAL.includes(run.state)) throw new StoreError(`A ${run.state} request cannot take on new work`, 409, { current: run });
     this.db.prepare("UPDATE jobs SET request_id=? WHERE id=? AND request_id IS NULL").run(runId, jobId);
     return this.getJob(jobId);
   }
@@ -2118,12 +2169,21 @@ export class Store {
   reconcileProductionRuns() {
     if (!this.tableExists("production_runs")) return;
     const stamp = now();
-    this.db.prepare("UPDATE production_runs SET final_intent='ended',final_ended_reason='restart',updated_at=? WHERE final_intent='active' AND state IN ('starting','running')").run(stamp);
-    this.db.prepare("UPDATE production_runs SET state='interrupted',error=COALESCE(error,'Interrupted by an application restart'),finished_at=?,updated_at=? WHERE state IN ('starting','running')").run(stamp, stamp);
+    this.db.prepare(`UPDATE production_runs SET state='interrupted',error=COALESCE(error,'Interrupted by an application restart'),finished_at=?,updated_at=?,
+      final_ended_reason=CASE WHEN final_intent='active' THEN 'restart' ELSE final_ended_reason END,
+      final_intent=CASE WHEN final_intent='active' THEN 'ended' ELSE final_intent END
+      WHERE state IN ('starting','running')`).run(stamp, stamp);
   }
   saveJob(job) {
     const old = job.id && this.getJob(job.id);
     if (old?.state === "completed") throw new StoreError("Completed job records are immutable", 409);
+    // A new job may be created for a live request only; its episode must match (the trigger enforces it too).
+    if (!old && job.requestId != null) {
+      const run = this.getProductionRun(job.requestId);
+      if (!run) throw new StoreError("Production request not found", 404);
+      if (run.episodeId !== job.episodeId) throw new StoreError("The request belongs to another episode", 409);
+      if (RUN_TERMINAL.includes(run.state)) throw new StoreError(`A ${run.state} request cannot take on new work`, 409, { current: run });
+    }
     const value = {
       ...old,
       ...job,
