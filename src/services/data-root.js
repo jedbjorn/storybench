@@ -75,7 +75,15 @@ export function initDataRoot(dir) {
 // already-adopted root is a no-op and never duplicates records.
 export function adoptWorkspace(dir, { channelName = DEFAULT_CHANNEL_NAME } = {}) {
   const info = inspectDataRoot(dir);
-  if (info.state === "initialized") return withDataRoot(info.path, (store) => summary(store, { adopted: false, alreadyAdopted: true }));
+  if (info.state === "initialized") {
+    // Already adopted. Opening it applies any newer schema steps (each with its consistent pre-vN backup); report that.
+    return withDataRoot(info.path, (store) => {
+      const to = store.dataRootIdentity().schemaVersion;
+      const backupPath = path.join(info.path, `storybench.pre-v${info.schemaVersion + 1}.sqlite`);
+      const upgraded = to > info.schemaVersion ? { from: info.schemaVersion, to, backupPath: existsSync(backupPath) ? backupPath : null } : null;
+      return summary(store, { adopted: false, alreadyAdopted: true, upgraded });
+    });
+  }
   if (info.state !== "legacy") {
     const reason = info.detail || (info.state === "missing" ? "the directory does not exist" : "no prototype workspace database was found");
     throw new StoreError(`Refusing to adopt: ${reason}`, 409, { dataRootState: info.state });

@@ -86,7 +86,11 @@ async function runInit(context, { positionals: [dir], options }) {
   }
   writeConfigAtomic(context.xdg.configFile, { version: 1, dataRoot: target, dataRootId: result.identity.id, port });
   const out = context.out;
-  if (options.adopt) out(result.adopted ? `Adopted the prototype workspace at ${target} (schema ${result.previousSchemaVersion} -> ${result.identity.schemaVersion}).\nMetadata backup: ${result.backupPath}` : `The workspace at ${target} was already adopted; nothing changed.`);
+  if (options.adopt) {
+    if (result.adopted) out(`Adopted the prototype workspace at ${target} (schema ${result.previousSchemaVersion} -> ${result.identity.schemaVersion}).\nMetadata backup: ${result.backupPath}`);
+    else if (result.upgraded) out(`The data root at ${target} was already adopted; upgraded its database from schema ${result.upgraded.from} to ${result.upgraded.to}.\nMetadata backup: ${result.upgraded.backupPath ?? "(none recorded)"}`);
+    else out(`The workspace at ${target} was already adopted and current; nothing changed.`);
+  }
   else out(result.created ? `Initialized a Storybench data root at ${target}.` : `The data root at ${target} is already initialized; nothing changed.`);
   out(`Configuration: ${context.xdg.configFile} (port ${port})`);
   if (!result.channels.length) out("Next: create a channel with `storybench channel create NAME`, then start with `storybench up`.");
@@ -126,15 +130,15 @@ async function runChannel(context, sub, { positionals }) {
 }
 
 async function runVersion(context) {
-  const info = versionInfo({ env: context.env });
+  const info = await versionInfo({ env: context.env });
   context.out(`storybench ${info.package.version} (CLI and package ${info.package.name})`);
   const { manifest } = info;
   if (manifest.state === "release") {
-    const release = manifest.release;
-    context.out(`Release: ${release.id ?? "(no id)"}\nCommit: ${release.commit}${release.ref ? ` (${release.ref})` : ""}\nBuilt: ${release.builtAt ?? "unknown"}`);
-    context.out(`Images: app ${release.images.app ?? "unknown"}, worker ${release.images.worker ?? "unknown"}`);
+    const { identity, manifest: value } = manifest;
+    context.out(`Release: ${identity.manifestId}\nCommit: ${identity.commit}${value.source.ref ? ` (${value.source.ref})` : ""}\nBuilt: ${value.builtAt ?? "unknown"}`);
+    context.out(`Images: app ${identity.images.app}, worker ${identity.images.worker}\nRuntime protocol: ${identity.protocol}`);
   } else if (manifest.state === "absent") context.out("Release: development checkout (no release manifest)");
-  else context.out(`Release: manifest present but not recognized (${manifest.reason ?? manifest.release?.schema ?? "unknown schema"}); treating this as a development checkout`);
+  else context.out(`Release: the release manifest is not valid (${manifest.reason}); reporting this checkout's own schema support`);
   context.out(`Supported database schema: ${info.supportedSchema.min}-${info.supportedSchema.max}`);
   let config = null;
   try { config = readConfig(context.xdg.configFile); } catch { /* reported by other commands */ }

@@ -228,7 +228,7 @@ test("init --adopt on a legacy workspace twice: migrates once, then changes noth
   assert.match(first.stdout, /Channels: Prototype \(default\)/);
   const second = await run(["init", legacy, "--adopt"]);
   assert.equal(second.code, 0);
-  assert.match(second.stdout, /already adopted; nothing changed/);
+  assert.match(second.stdout, /already adopted and current; nothing changed/);
   const list = await run(["channel", "list"]);
   assert.equal(list.stdout.match(/^\* channel_/gm).length, 1);
   assert.equal(readFileSync(path.join(legacy, "media", "clip"), "utf8"), "clip bytes");
@@ -300,17 +300,22 @@ test("version works while stopped, reads a release manifest defensively and repo
   assert.equal(dev.code, 0);
   assert.match(dev.stdout, /storybench 0\.1\.0[\s\S]*Release: development checkout \(no release manifest\)[\s\S]*Supported database schema: 0-8[\s\S]*not configured/);
   const manifest = path.join(home, "manifest.json");
-  writeFileSync(manifest, JSON.stringify({ schema: "storybench.release/1", id: "sha256:abc", package: { name: "storybench", version: "0.1.0" }, source: { commit: "4e037ec", ref: "main" },
-    builtAt: "2026-09-21T00:00:00Z", images: { app: { id: "sha256:app" }, worker: { id: "sha256:worker" } }, runtime: { protocol: 1 }, database: { supportedSchema: { min: 0, max: 8 } } }));
+  const { createManifest } = await import("../src/runtime/manifest.js");
+  const release = createManifest({ packageName: "storybench", packageVersion: "0.1.0", commit: "71d30a6", ref: "main", builtAt: "2026-09-21T00:00:00Z",
+    images: { app: `sha256:${"a".repeat(64)}`, worker: `sha256:${"b".repeat(64)}` }, schema: { min: 0, max: 8 } });
+  writeFileSync(manifest, JSON.stringify(release));
   env.STORYBENCH_RELEASE_MANIFEST = manifest;
   await run(["init", path.join(home, "root")]);
-  const release = await run(["version"], { probeService: async () => ({ state: "running", dataRootId: "root_other", schemaVersion: 9 }) });
-  assert.match(release.stdout, /Release: sha256:abc\nCommit: 4e037ec \(main\)/);
-  assert.match(release.stdout, /Images: app sha256:app, worker sha256:worker/);
-  assert.match(release.stdout, /Mismatch: the running service uses schema 9/);
-  assert.match(release.stdout, /Mismatch: the running service serves a different data root/);
+  const shown = await run(["version"], { probeService: async () => ({ state: "running", dataRootId: "root_other", schemaVersion: 9 }) });
+  assert.match(shown.stdout, new RegExp(`Release: ${release.id}\\nCommit: 71d30a6 \\(main\\)`));
+  assert.match(shown.stdout, /Images: app sha256:a{64}, worker sha256:b{64}\nRuntime protocol: 1/);
+  assert.match(shown.stdout, /Supported database schema: 0-8/);
+  assert.match(shown.stdout, /Mismatch: the running service uses schema 9/);
+  assert.match(shown.stdout, /Mismatch: the running service serves a different data root/);
+  writeFileSync(manifest, JSON.stringify({ ...release, images: { app: { id: "sha256:app" }, worker: { id: "sha256:worker" } } }));
+  assert.match((await run(["version"])).stdout, /release manifest is not valid \(Invalid release manifest: images\.app\.id/);
   writeFileSync(manifest, "{ broken");
-  assert.match((await run(["version"])).stdout, /manifest present but not recognized/);
+  assert.match((await run(["version"])).stdout, /not valid \(Release manifest is not valid JSON\)/);
   assert.equal((await run(["--version"])).code, 0);
 });
 
@@ -390,6 +395,8 @@ test("offline commands never migrate: an older or newer database schema is refus
   assert.equal(version(), 7, "nothing was migrated as a side effect");
   const upgraded = await run(["init", root, "--adopt"]);
   assert.equal(upgraded.code, 0, upgraded.stderr);
+  assert.match(upgraded.stdout, /already adopted; upgraded its database from schema 7 to 8\.\nMetadata backup: .*root\/storybench\.pre-v8\.sqlite/);
+  assert.doesNotMatch(upgraded.stdout, /nothing changed/);
   assert.equal(version(), 8);
   assert.ok(existsSync(path.join(root, "storybench.pre-v8.sqlite")), "the explicit upgrade kept a backup");
   assert.equal((await run(["channel", "list"])).code, 0);
