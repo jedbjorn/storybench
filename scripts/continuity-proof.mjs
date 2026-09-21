@@ -82,7 +82,7 @@ async function main() {
   await save("catalog.json", harnesses);
   const entry = (name) => harnesses?.harnesses?.find((value) => value.harness === name);
   const codexIds = entry("codex")?.models?.map((model) => model.id) ?? [];
-  record("catalog", "GET /api/harnesses: Codex models from native model/list; Claude aliases labelled advisory; selection enabled", harnesses?.available === true && codexIds.includes(models.codex) && entry("claude")?.advisory === true && entry("claude").models.some((model) => model.id === models.claude),
+  record("catalog", "GET /api/harnesses: Codex models from native model/list; Claude aliases labelled advisory; selection enabled", harnesses?.available === true && codexIds.includes(models.codex) && codexIds.includes(models.codexAlt) && entry("claude")?.advisory === true && entry("claude").models.some((model) => model.id === models.claude),
     `codex: ${codexIds.join(", ")}; claude: ${entry("claude")?.models?.map((model) => model.id).join(", ")}`, "catalog.json");
 
   const word = `KESTREL-${randomBytes(3).toString("hex").toUpperCase()}`;
@@ -97,10 +97,8 @@ async function main() {
   const steps = [
     { settings: { harness: "codex", model: models.codex, effort: "low" } },
     { send: `Remember this code word for later: ${word}. Reply only with OK.` },
-    // Decision #46: no request runs while away, so returning still targets the active Codex
-    // segment and the visible boundary must say that the next message resumes it.
-    { settings: { harness: "claude", model: models.claude } },
-    { settings: { harness: "codex", model: models.codex, effort: "low" } },
+    // A same-harness model switch applies on this next send and resumes the exact native session.
+    { settings: { harness: "codex", model: models.codexAlt, effort: "low" } },
     { send: followUp },
     { settings: { harness: "claude", model: models.claude } },
     { send: followUp },
@@ -141,9 +139,10 @@ async function main() {
   const hookWord = hook.split(" ")[5];
   const answered = (turn) => turn?.state === "idle" && turn.reply.includes(word) && turn.reply.includes(hookWord);
   record("codex", "first turn with gpt-5.6-terra (low effort) in a worker", t1?.state === "idle" && t1.run?.harness === "codex" && t1.run?.modelSelected === models.codex && t1.run?.modelResolved === models.codex, `resolved ${t1?.run?.modelResolved}, effort ${t1?.run?.effortResolved}`, "continuity.json");
-  record("switch", "Codex -> Claude -> Codex with no send labels and performs an exact resume", answered(t2) && t2.threadId === t1.threadId && t2.run?.segmentId === t1.run?.segmentId
-    && settingsEvents[1]?.payload?.continuity === "new-segment-on-next-message" && settingsEvents[2]?.payload?.continuity === "same-session-resumed-on-next-message",
-    `labels ${settingsEvents[1]?.payload?.continuity} -> ${settingsEvents[2]?.payload?.continuity}; thread ${t1?.threadId} -> ${t2?.threadId}`, "continuity.json");
+  record("switch", "gpt-5.6-terra -> gpt-5.6-luna applies on the next send and resumes the exact Codex session", answered(t2)
+    && t2.threadId === t1.threadId && t2.run?.segmentId === t1.run?.segmentId && t2.run?.modelSelected === models.codexAlt && t2.run?.modelResolved === models.codexAlt
+    && settingsEvents[1]?.payload?.continuity === "same-session-resumed-on-next-message",
+    `label ${settingsEvents[1]?.payload?.continuity}; thread ${t1?.threadId} -> ${t2?.threadId}; resolved ${t2?.run?.modelResolved}`, "continuity.json");
   const claudeSegment = segments.find((segment) => segment.id === t3?.run?.segmentId);
   const seeded = (result.events ?? []).find((event) => event.type === "segment.started" && event.payload.segmentId === t3?.run?.segmentId);
   record("switch", "Codex -> Claude starts a new seeded segment; no native ID crosses; no replay", answered(t3) && t3.run?.harness === "claude" && claudeSegment?.reason === "harness-switch" && t3.threadId !== t1.threadId && seeded?.payload?.includedMessages >= 2
@@ -153,8 +152,8 @@ async function main() {
   record("switch", "Claude -> Codex starts a fresh segment (harness-return), not the stale Codex thread", answered(t4) && back?.reason === "harness-return" && t4.threadId !== t1.threadId && t4.run?.harness === "codex" && toolsOf(t4.run).includes("get_context"),
     `segment ${back?.id} (${back?.reason}); thread ${t4?.threadId}`, "continuity.json");
   record("attribution", "every run records selected and reported model", (result.runs ?? []).length === 4 && result.runs.every((runRow) => runRow.harness && runRow.modelResolved && runRow.state === "completed"), (result.runs ?? []).map((runRow) => `${runRow.harness}:${runRow.modelSelected}->${runRow.modelResolved}`).join(" "), "continuity.json");
-  record("transcript", "visible settings and session boundaries (v9 segments and requests)", settingsEvents.length === 5
-    && segments.length === 3 && segments.filter((segment) => !segment.endedAt).length === 1 && (result.runs ?? []).every((row) => row.originatingMessageId && row.assistantMessageId && row.segmentId) && (result.events ?? []).filter((event) => event.type === "segment.started").length === 2, "5 settings boundaries, 2 new-session boundaries", "continuity.json");
+  record("transcript", "visible settings and session boundaries (v9 segments and requests)", settingsEvents.length === 4
+    && segments.length === 3 && segments.filter((segment) => !segment.endedAt).length === 1 && (result.runs ?? []).every((row) => row.originatingMessageId && row.assistantMessageId && row.segmentId) && (result.events ?? []).filter((event) => event.type === "segment.started").length === 2, "4 settings boundaries, 2 new-session boundaries", "continuity.json");
 
   // SC-101: diagnostics in the journal, no model/prompt text.
   const journal = (await run("journalctl", ["--user", "-u", unit, "--no-pager", "-o", "cat"], { allowFail: true })).stdout;
