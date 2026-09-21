@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { DatabaseSync } from "node:sqlite";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -72,25 +72,78 @@ test("config writes are atomic: a failure before rename leaves the previous file
   assert.throws(() => readConfig(xdg.configFile), /not valid JSON/);
 });
 
-test("the lifecycle lock is exclusive, names its owner on timeout and reclaims a dead owner's lock", async (t) => {
+const LOCK_CHILD = `
+  import { acquireLock } from ${JSON.stringify(path.join(REPO, "src/cli/lock.js"))};
+  import { appendFileSync } from "node:fs";
+  const [lockDir, log, mode] = process.argv.slice(1);
+  const release = await acquireLock(lockDir, { operation: "test " + process.pid, timeoutMs: 60000, pollMs: 5 });
+  if (mode === "hold") { console.log("locked"); setInterval(() => {}, 1000); }
+  else {
+    appendFileSync(log, "enter " + process.pid + " " + performance.timeOrigin + performance.now() + "\\n");
+    const end = Date.now() + 15; while (Date.now() < end) {}
+    appendFileSync(log, "exit " + process.pid + " " + performance.timeOrigin + performance.now() + "\\n");
+    release();
+  }`;
+
+function assertNoOverlap(lines) {
+  let holder = null, holds = 0;
+  for (const line of lines) {
+    const [event, pid] = line.split(" ");
+    if (event === "enter") { assert.equal(holder, null, `overlapping holds: ${holder} and ${pid}`); holder = pid; holds++; }
+    else { assert.equal(holder, pid); holder = null; }
+  }
+  return holds;
+}
+
+test("the lifecycle lock is exclusive and names its owner on timeout", async (t) => {
   const { xdg, run } = sandbox(t);
   const release = await acquireLock(xdg.lockDir, { operation: "init --adopt" });
   await assert.rejects(acquireLock(xdg.lockDir, { operation: "channel create", timeoutMs: 150, pollMs: 20 }), (error) =>
-    /storybench init --adopt/.test(error.message) && /process \d+/.test(error.message) && /remove .*lifecycle\.lock/.test(error.hint));
+    /storybench init --adopt/.test(error.message) && /process \d+/.test(error.message) && /released automatically/.test(error.hint));
   const blocked = await run(["init", path.join(xdg.home, "root")]);
   assert.equal(blocked.code, 1);
   assert.match(blocked.stderr, /holds the installation lock: `storybench init --adopt`/);
   release();
-  // A lock left by a process that no longer exists is reclaimed.
-  mkdirSync(path.join(xdg.lockDir, "lifecycle.lock"));
-  writeFileSync(path.join(xdg.lockDir, "lifecycle.lock", "owner.json"), JSON.stringify({ pid: 2 ** 22 + 12345, operation: "init", host: os.hostname() }));
-  const reclaimed = await acquireLock(xdg.lockDir, { operation: "channel list", timeoutMs: 200 });
-  reclaimed();
-  // A lock held by a live process is waited for, then acquired once released (bounded wait).
+  release();
+  assert.deepEqual(readdirSync(xdg.lockDir).sort(), ["lifecycle.sqlite"], "no owner description or stale directories remain");
+  // A waiting acquirer gets the lock as soon as the holder releases it (bounded wait).
   const holder = await acquireLock(xdg.lockDir, { operation: "init" });
   setTimeout(holder, 100);
-  const waited = await acquireLock(xdg.lockDir, { operation: "channel list", timeoutMs: 2000, pollMs: 20 });
+  const waited = await acquireLock(xdg.lockDir, { operation: "channel list", timeoutMs: 2000, pollMs: 10 });
   waited();
+});
+
+test("30 concurrent in-process acquirers never hold the lock at the same time", async (t) => {
+  const { xdg } = sandbox(t);
+  const events = [];
+  await Promise.all(Array.from({ length: 30 }, async (_, index) => {
+    const release = await acquireLock(xdg.lockDir, { operation: `worker ${index}`, timeoutMs: 30_000, pollMs: 1 });
+    events.push(`enter ${index}`);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    events.push(`exit ${index}`);
+    release();
+  }));
+  assert.equal(assertNoOverlap(events), 30);
+});
+
+test("12 concurrent processes never overlap, and a kill -9 of the holder frees the lock immediately", { timeout: 60_000 }, async (t) => {
+  const { xdg, home } = sandbox(t);
+  const log = path.join(home, "holds.log");
+  writeFileSync(log, "");
+  const children = Array.from({ length: 12 }, () => spawn(process.execPath, ["--input-type=module", "-e", LOCK_CHILD, xdg.lockDir, log, "work"], { stdio: "ignore" }));
+  await Promise.all(children.map((child) => new Promise((resolve) => child.on("exit", resolve))));
+  const lines = readFileSync(log, "utf8").trim().split("\n").map((line) => line.split(" ").slice(0, 2).join(" "));
+  assert.equal(assertNoOverlap(lines), 12);
+
+  const holder = spawn(process.execPath, ["--input-type=module", "-e", LOCK_CHILD, xdg.lockDir, log, "hold"], { stdio: ["ignore", "pipe", "ignore"] });
+  await new Promise((resolve) => holder.stdout.on("data", (chunk) => { if (String(chunk).includes("locked")) resolve(); }));
+  await assert.rejects(acquireLock(xdg.lockDir, { operation: "channel list", timeoutMs: 100, pollMs: 10 }), /holds the installation lock: `storybench test \d+`/);
+  holder.kill("SIGKILL");
+  await new Promise((resolve) => holder.on("exit", resolve));
+  const started = Date.now();
+  const release = await acquireLock(xdg.lockDir, { operation: "after kill", timeoutMs: 200, pollMs: 5 });
+  assert.ok(Date.now() - started < 200, "no reclaim delay");
+  release();
 });
 
 test("help works at every level with exit 0; invalid invocations exit 2; unavailable commands are hidden and exit 2", async (t) => {
@@ -109,6 +162,8 @@ test("help works at every level with exit 0; invalid invocations exit 2; unavail
     const result = await run([name]);
     assert.deepEqual({ code: result.code, stderr: result.stderr.trim() }, { code: 2, stderr: `storybench: ${name} is not available in this build.` });
     assert.equal((await run([name, "--help"])).code, 2);
+    const help = await run(["help", name]);
+    assert.deepEqual({ code: help.code, stderr: help.stderr.trim() }, { code: 2, stderr: `storybench: ${name} is not available in this build.` });
   }
   assert.match((await run(["channel", "use", "--help"])).stdout, /open views keep their channel/);
   for (const args of [["bogus"], ["init", "--bogus"], ["init", "a", "b"], ["channel"], ["channel", "delete"], ["channel", "create"], ["channel", "use", "a", "b"],
@@ -215,15 +270,28 @@ test("a missing or replaced data root is refused and never recreated", async (t)
   renameSync(root, path.join(home, "moved"));
   const missing = await run(["channel", "list"]);
   assert.equal(missing.code, 1);
-  assert.match(missing.stderr, /configured data root .* is missing[\s\S]*never creates a replacement/);
+  assert.match(missing.stderr, /configured data root .* is missing[\s\S]*Restore or remount the configured data root/);
   assert.equal(existsSync(root), false, "not recreated");
+  // init on the configured-but-missing path refuses before creating anything.
+  const reinitMissing = await run(["init", root]);
+  assert.equal(reinitMissing.code, 1);
+  assert.match(reinitMissing.stderr, /configured data root .* is missing[\s\S]*Restore or remount/);
+  assert.equal(existsSync(root), false, "init did not create a replacement");
+  mkdirSync(root);
+  const empty = await run(["init", root]);
+  assert.equal(empty.code, 1);
+  assert.match(empty.stderr, /not a Storybench data root any more/);
+  assert.deepEqual(readdirSync(root), [], "an empty directory at the configured path is not initialized");
+  rmSync(root, { recursive: true });
   initDataRoot(root);
   const replaced = await run(["channel", "list"]);
   assert.equal(replaced.code, 1);
   assert.match(replaced.stderr, /different Storybench installation/);
+  const before = readFileSync(path.join(root, "storybench.sqlite"));
   const reinit = await run(["init", root]);
   assert.equal(reinit.code, 1, "init will not silently re-point the configuration at a different installation");
   assert.match(reinit.stderr, /different Storybench installation/);
+  assert.deepEqual(readFileSync(path.join(root, "storybench.sqlite")), before, "refused before any mutation");
 });
 
 test("version works while stopped, reads a release manifest defensively and reports served mismatches", async (t) => {
@@ -277,4 +345,66 @@ test("the installed bin entry runs as a process with only the environment it is 
   assert.match(current.stdout, /^Main \(channel_/);
   assert.ok(existsSync(path.join(env.XDG_CONFIG_HOME, "storybench", "config.json")));
   assert.equal(existsSync(path.join(home, ".config")), false, "XDG overrides are honoured");
+});
+
+test("init refuses a data root, config or lock location that is not writable by this user, before writing anything", { skip: process.getuid?.() === 0 }, async (t) => {
+  const { home, xdg, run } = sandbox(t);
+  const locked = path.join(home, "locked");
+  mkdirSync(locked);
+  chmodSync(locked, 0o555);
+  const result = await run(["init", path.join(locked, "root")]);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /Refusing to use the data root: .*locked \(where .*root would be created\) is not writable/);
+  assert.equal(existsSync(xdg.configFile), false, "no configuration was written");
+  assert.equal(existsSync(path.join(locked, "root")), false);
+  chmodSync(locked, 0o755);
+  // A read-only configuration directory is refused the same way, after nothing else was created.
+  mkdirSync(path.dirname(xdg.configFile), { recursive: true });
+  chmodSync(path.dirname(xdg.configFile), 0o555);
+  const config = await run(["init", path.join(home, "root")]);
+  assert.equal(config.code, 1);
+  assert.match(config.stderr, /Refusing to use the configuration directory: .* is not writable/);
+  assert.equal(existsSync(path.join(home, "root")), false, "the data root was not created");
+  chmodSync(path.dirname(xdg.configFile), 0o755);
+  chmodSync(xdg.lockDir.replace(/\/storybench$/, ""), 0o555);
+  const lock = await run(["init", path.join(home, "root")]);
+  assert.equal(lock.code, 1);
+  chmodSync(xdg.lockDir.replace(/\/storybench$/, ""), 0o755);
+  assert.match(lock.stderr, /Refusing to use the lifecycle lock directory/);
+  assert.equal(existsSync(xdg.configFile), false);
+});
+
+test("offline commands never migrate: an older or newer database schema is refused with the upgrade path", async (t) => {
+  const { home, run } = sandbox(t);
+  const root = path.join(home, "root");
+  await run(["init", root]);
+  await run(["channel", "create", "Main"]);
+  const setVersion = (version) => { const db = new DatabaseSync(path.join(root, "storybench.sqlite")); db.exec(`PRAGMA user_version=${version}`); db.close(); };
+  const version = () => { const db = new DatabaseSync(path.join(root, "storybench.sqlite"), { readOnly: true }); const value = db.prepare("PRAGMA user_version").get().user_version; db.close(); return value; };
+  setVersion(7);
+  for (const args of [["channel", "list"], ["channel", "current"], ["channel", "create", "Other"], ["channel", "use", "Main"], ["init", root]]) {
+    const result = await run(args);
+    assert.equal(result.code, 1, args.join(" "));
+    assert.match(result.stderr, /uses database schema 7; this release uses schema 8[\s\S]*storybench init .*root --adopt/);
+  }
+  assert.equal(version(), 7, "nothing was migrated as a side effect");
+  const upgraded = await run(["init", root, "--adopt"]);
+  assert.equal(upgraded.code, 0, upgraded.stderr);
+  assert.equal(version(), 8);
+  assert.ok(existsSync(path.join(root, "storybench.pre-v8.sqlite")), "the explicit upgrade kept a backup");
+  assert.equal((await run(["channel", "list"])).code, 0);
+  setVersion(99);
+  const newer = await run(["channel", "list"]);
+  assert.equal(newer.code, 1);
+  assert.match(newer.stderr, /(newer than this|not a usable Storybench data root \(newer\))/);
+  assert.equal(version(), 99);
+});
+
+test("the executor seam receives the port and service probe for a later running-app executor", async (t) => {
+  const { selectExecutor } = await import("../src/cli/executor.js");
+  const probe = async () => ({ state: "stopped" });
+  const executor = await selectExecutor({ dataRoot: "/nowhere", lockDir: "/nowhere/lock", lockTimeoutMs: 1, port: 4173, probeService: probe });
+  assert.equal(executor.kind, "offline");
+  const commands = readFileSync(path.join(REPO, "src/cli/commands.js"), "utf8");
+  assert.match(commands, /selectExecutor\(\{[^}]*port: config\.port, probeService: context\.probeService \}\)/);
 });

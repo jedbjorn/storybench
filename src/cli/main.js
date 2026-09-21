@@ -94,6 +94,7 @@ export async function main(argv, overrides = {}) {
       const { positionals } = parseArgs(rest);
       if (positionals.length > 2) throw usageError("help takes at most a command and a subcommand");
       const result = helpFor(positionals);
+      if (result.unavailable) throw new CliError(`${positionals[0]} is not available in this build.`, { exitCode: EXIT.USAGE });
       context.out(result.text);
       return EXIT.OK;
     }

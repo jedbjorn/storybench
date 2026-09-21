@@ -4,6 +4,7 @@ import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rm
 import crypto from "node:crypto";
 import path from "node:path";
 import { CliError } from "./errors.js";
+import { assertOwnedWritable } from "./fs-safety.js";
 
 export const DEFAULT_PORT = 4173;
 export const CONFIG_VERSION = 1;
@@ -35,6 +36,7 @@ export function readConfig(file) {
 export function writeConfigAtomic(file, config, { beforeRename = null } = {}) {
   const value = validateConfig(config);
   const directory = path.dirname(file);
+  assertOwnedWritable(directory, "the configuration directory");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const temporary = path.join(directory, `.${path.basename(file)}.${process.pid}.${crypto.randomUUID()}.tmp`);
   let descriptor = openSync(temporary, "wx", 0o600);

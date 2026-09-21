@@ -7,7 +7,8 @@ import { DEFAULT_PORT, readConfig, writeConfigAtomic } from "./config.js";
 import { CliError, EXIT } from "./errors.js";
 import { withLock } from "./lock.js";
 import { versionInfo } from "./release.js";
-import { selectExecutor } from "./executor.js";
+import { assertCurrentSchema, selectExecutor } from "./executor.js";
+import { assertOwnedWritable } from "./fs-safety.js";
 
 // Canonical absolute path: resolve symlinks of the longest existing prefix; the rest is kept as data.
 export function canonicalPath(input, cwd) {
@@ -34,15 +35,16 @@ export function configuredRoot(context) {
   const config = readConfig(context.xdg.configFile);
   if (!config) throw new CliError("Storybench is not initialized on this account", { hint: "Run `storybench init [DIR]` (or `storybench init DIR --adopt` for a prototype workspace)." });
   const info = inspectDataRoot(config.dataRoot);
-  if (info.state === "missing") throw new CliError(`The configured data root ${config.dataRoot} is missing`, {
-    hint: "Restore or remount it. Storybench never creates a replacement data root implicitly; `storybench init DIR` configures a root explicitly." });
+  if (info.state === "missing") throw new CliError(`The configured data root ${config.dataRoot} is missing`, { hint: restoreHint(config.dataRoot) });
   if (info.state === "legacy") throw new CliError(`The configured data root ${config.dataRoot} is an unadopted prototype workspace`, { hint: `Run \`storybench init ${config.dataRoot} --adopt\`.` });
   if (info.state !== "initialized") throw new CliError(`The configured data root ${config.dataRoot} is not a usable Storybench data root (${info.state})`, {
     hint: "Check the path in the configuration; Storybench does not repair or replace it automatically." });
   if (config.dataRootId && info.identity.id !== config.dataRootId) throw new CliError(`The data root at ${config.dataRoot} is a different Storybench installation than the one configured`, {
-    hint: "Restore the original data root, or run `storybench init` on this root to adopt it into the configuration explicitly." });
+    hint: restoreHint(config.dataRoot) });
   return config;
 }
+
+const restoreHint = (root) => `Restore or remount the configured data root at ${root}. Storybench never creates or substitutes a replacement.`;
 
 async function runInit(context, { positionals: [dir], options }) {
   if (options["channel-name"] !== undefined && !options.adopt) throw new CliError("--channel-name only applies with --adopt", { exitCode: EXIT.USAGE, hint: "Usage: storybench init [DIR] [--adopt] [--channel-name NAME]" });
@@ -52,6 +54,8 @@ async function runInit(context, { positionals: [dir], options }) {
     throw new CliError(`Storybench is already configured for the data root ${existing.dataRoot}`, {
       hint: "This build does not switch data roots; keep the configured root, or move the configuration aside deliberately first." });
   const port = existing?.port ?? DEFAULT_PORT;
+  assertOwnedWritable(target, "the data root");
+  assertOwnedWritable(path.dirname(context.xdg.configFile), "the configuration directory");
   if (options.adopt) {
     // Adoption migrates the database in place, so no Storybench service may have it open. Task #15 replaces
     // this probe with the user-service status check.
@@ -61,16 +65,25 @@ async function runInit(context, { positionals: [dir], options }) {
   const operation = options.adopt ? "init --adopt" : "init";
   let result;
   try {
-    result = await withLock(context.xdg.lockDir, operation, async () => (options.adopt
-      ? adoptWorkspace(target, { channelName: options["channel-name"] ?? undefined })
-      : initDataRoot(target)), { timeoutMs: context.lockTimeoutMs });
+    result = await withLock(context.xdg.lockDir, operation, async () => {
+      // Decide from the current state before anything is written.
+      const info = inspectDataRoot(target);
+      if (existing?.dataRootId) {
+        if (["missing", "empty", "unrelated"].includes(info.state))
+          throw new CliError(`The configured data root ${target} is ${info.state === "missing" ? "missing" : "not a Storybench data root any more"}`, { hint: restoreHint(target) });
+        if (info.state === "initialized" && info.identity.id !== existing.dataRootId)
+          throw new CliError(`The data root at ${target} is a different Storybench installation than the one configured`, { hint: restoreHint(target) });
+      }
+      // Plain init never upgrades a database; --adopt is the explicit, backed-up migration path.
+      if (!options.adopt && info.state === "initialized") assertCurrentSchema(info, target);
+      if (info.state === "newer") assertCurrentSchema(info, target);
+      return options.adopt ? adoptWorkspace(target, { channelName: options["channel-name"] ?? undefined }) : initDataRoot(target);
+    }, { timeoutMs: context.lockTimeoutMs });
   } catch (error) {
     const mapped = fromService(error);
     if (!options.adopt && /adopt it instead/.test(mapped.message)) mapped.hint = `Run \`storybench init ${target} --adopt\`.`;
     throw mapped;
   }
-  if (existing?.dataRootId && existing.dataRootId !== result.identity.id)
-    throw new CliError(`The data root at ${target} is a different Storybench installation than the one configured`, { hint: "Restore the original data root before continuing." });
   writeConfigAtomic(context.xdg.configFile, { version: 1, dataRoot: target, dataRootId: result.identity.id, port });
   const out = context.out;
   if (options.adopt) out(result.adopted ? `Adopted the prototype workspace at ${target} (schema ${result.previousSchemaVersion} -> ${result.identity.schemaVersion}).\nMetadata backup: ${result.backupPath}` : `The workspace at ${target} was already adopted; nothing changed.`);
@@ -83,7 +96,8 @@ async function runInit(context, { positionals: [dir], options }) {
 
 async function channelExecutor(context) {
   const config = configuredRoot(context);
-  return selectExecutor({ dataRoot: config.dataRoot, lockDir: context.xdg.lockDir, lockTimeoutMs: context.lockTimeoutMs });
+  return selectExecutor({ dataRoot: config.dataRoot, lockDir: context.xdg.lockDir, lockTimeoutMs: context.lockTimeoutMs,
+    port: config.port, probeService: context.probeService });
 }
 const channelLine = (channel) => `${channel.isDefault ? "*" : " "} ${channel.id}  ${channel.name}`;
 
