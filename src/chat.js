@@ -14,17 +14,6 @@ const safeRef = (value) => {
   const normalized = path.normalize(value);
   return normalized === ".." || normalized.startsWith(`..${path.sep}`) ? null : normalized;
 };
-const explicitFinalRequest = (value) => {
-  const text = String(value ?? "").trim();
-  const draftAt = text.search(/\bdraft\b/i), finalAt = text.search(/\bfinal\b/i);
-  if (draftAt >= 0 && (finalAt < 0 || draftAt < finalAt)) return false;
-  const polite = "(?:(?:please|kindly)\\s+|(?:can|could|would|will)\\s+you\\s+)*";
-  const create = text.match(new RegExp(`^${polite}(?:create|make|build|render|produce|export|assemble)\\b[^.!?\\n]{0,240}\\bfinal(?:\\s+(?:video|cut|output|version))?\\b`, "i"));
-  const describesSomethingElse = create && /\b(?:graphic|reference|caption|title|titled|quote|quoted|history|summary|summari[sz]e|text)\b/i.test(create[0]);
-  return (Boolean(create) && !describesSomethingElse)
-    || new RegExp(`^${polite}(?:finish|complete|finali[sz]e)\\s+(?:it|the\\s+(?:video|episode|project|cut|final)|this\\s+(?:video|episode|project|cut))\\b`, "i").test(text)
-    || new RegExp(`^${polite}(?:take|bring)\\b[^.!?\\n]{0,240}\\b(?:to|through\\s+to)\\s+(?:a\\s+)?(?:complete\\s+)?final\\b`, "i").test(text);
-};
 
 function installSchema(db) {
   db.exec(`
@@ -139,7 +128,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     return { text, included: rows.length, omitted: Math.max(0, total - rows.length) };
   };
   const bootText = (value) => { const currentEpisode = episode(value.episode_id), story = store.getStory(value.episode_id);
-    return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires the user's one-use Storybench authorization.`; };
+    return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires active request-bound Final intent.`; };
   const tools = (value, origin) => ({
     get_context: () => ({ episode: episode(value.episode_id), story: store.getStory(value.episode_id), library: librarySummary(value.episode_id),
       references: store.getReferenceContext(value.episode_id), branding: store.listBrandingTemplates({ channelId: episode(value.episode_id).channelId }), operationGuides: OPERATION_GUIDE_NAMES }),
@@ -156,9 +145,6 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     create_draft: ({ expectedRenderRevision }) => { ensureActive(value, origin); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "draft", expectedRenderRevision, conversationId: value.id, requestId: origin.requestId }); },
     declare_final_request: ({ messageId }) => {
       ensureActive(value, origin);
-      const source = db.prepare("SELECT text FROM conversation_messages WHERE id=? AND conversation_id=? AND role='user' AND origin='typed'").get(messageId, value.id);
-      if (!source || messageId !== origin.messageId) throw error("Final intent must cite this request's originating typed creator message", 403);
-      if (!explicitFinalRequest(source.text)) throw error("The originating message is not an explicit request to produce a Final video", 409);
       return store.declareFinalRequest(origin.requestId, messageId);
     },
     create_final: ({ expectedRenderRevision }) => { ensureActive(value, origin); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "final", expectedRenderRevision, conversationId: value.id, requestId: origin.requestId }); },
@@ -261,7 +247,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
           clientRequestId: request.clientRequestId ?? null, targetCardId: request.targetCardId ?? null, successorOf: request.successorOf ?? null });
       }
       const openConnection = (segmentId) => codexFactory({ cwd: store.workspace, model: plan ? plan.selection.model : model, tools: tools(value, activity), signal: controller.signal,
-        episodeId: value.episode_id, conversationId: value.id, requestId, request: { text, messageId, kind: request.kind ?? "chat", cardId: request.targetCardId ?? null },
+        episodeId: value.episode_id, conversationId: value.id, requestId, request: { text, messageId: request.authorityMessageId ?? messageId, kind: request.kind ?? "chat", cardId: request.targetCardId ?? null },
         // Every Storybench tool call of a worker-backed turn arrives through the request bridge.
         onToolCall: (call) => { toolActivity = true; try { emit(value, "tool.called", { name: call.name, requestId }); } catch { /* conversation gone */ } },
         ...(plan ? { harness: plan.selection.harness, effort: plan.selection.effort, segmentId } : {}),
@@ -408,6 +394,14 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     if (duplicate) return { ...project(episodeId, id), requestResult: { created: false, run: duplicate } };
     if (active.has(episodeId) || db.prepare("SELECT 1 FROM conversations WHERE episode_id=? AND state IN ('queued','running','interrupting')").get(episodeId))
       throw error("A request is already active for this episode. Let it finish or press Stop; this retry was not queued.", 409);
+    let root = previous;
+    const seen = new Set();
+    while (root.successorOf) {
+      if (seen.has(root.id)) throw error("The request retry chain is invalid", 409);
+      seen.add(root.id);
+      root = store.getProductionRun(root.successorOf);
+      if (!root || root.conversationId !== id) throw error("The original request is unavailable", 409);
+    }
     const old = db.prepare("SELECT text FROM conversation_messages WHERE id=? AND conversation_id=?").get(previous.originatingMessageId, id);
     if (!old) throw error("The original request message is unavailable", 409);
     let message, created;
@@ -421,7 +415,9 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       if (db.isTransaction) db.exec("ROLLBACK");
       throw cause;
     }
-    const result = dispatch(value, message.id, old.text, { id: created.run.id, kind: created.run.kind, origin: "button", targetCardId: created.run.targetCardId, existingRun: true, successorOf: runId });
+    const authorityMessageId = root.origin === "typed" ? root.originatingMessageId : null;
+    const result = dispatch(value, message.id, old.text, { id: created.run.id, kind: created.run.kind, origin: "button", targetCardId: created.run.targetCardId,
+      existingRun: true, successorOf: runId, authorityMessageId });
     return { ...result, requestResult: created };
   };
   const cancelOwnedJobs = (activity) => {

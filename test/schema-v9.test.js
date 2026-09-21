@@ -156,7 +156,8 @@ test("final intent is bound to its request: active, then published once or ended
   const w = world(t);
   const { run } = w.store.createProductionRun({ conversationId: w.conversation.id, kind: "final", origin: "button", clientRequestId: "final-1", originatingMessageId: w.userMessage, harness: "codex" });
   assert.equal(run.finalIntent, "active");
-  const job = w.store.saveJob({ episodeId: w.episode.id, kind: "final", outputClass: "final", state: "completed", progress: 1, revision: 1, outputPath: "x.mp4", snapshot: {}, requestId: run.id });
+  const job = w.store.saveJob({ episodeId: w.episode.id, kind: "final", outputClass: "final", state: "completed", progress: 1, revision: 1,
+    outputPath: "x.mp4", snapshot: { episode: { revision: w.store.getEpisode(w.episode.id).revision } }, requestId: run.id });
   assert.equal(job.requestId, run.id);
   const stray = w.store.saveJob({ episodeId: w.episode.id, kind: "final", outputClass: "final", state: "completed", progress: 1, revision: 1, outputPath: "y.mp4", snapshot: {} });
   assert.throws(() => w.store.publishFinalIntent(run.id, stray.id), /not produced by this request/);
@@ -205,6 +206,21 @@ test("typed Final declaration is idempotent and bound to the request's exact typ
   const draft = w.store.createProductionRun({ conversationId: w.second.id, kind: "draft", origin: "typed",
     originatingMessageId: draftMessage, harness: "codex" }).run;
   assert.throws(() => w.store.declareFinalRequest(draft.id, draftMessage), /ordinary typed request/);
+
+  const buttonMessage = w.message(w.second.id, "user", "button");
+  const buttonFinal = w.store.createProductionRun({ conversationId: w.second.id, kind: "final", origin: "button",
+    originatingMessageId: buttonMessage, harness: "codex" }).run;
+  assert.equal(w.store.declareFinalRequest(buttonFinal.id, buttonMessage).id, buttonFinal.id, "a button Final is already bound");
+
+  const rootMessage = w.message(w.second.id, "user", "typed");
+  const root = w.store.createProductionRun({ conversationId: w.second.id, kind: "chat", origin: "typed",
+    originatingMessageId: rootMessage, harness: "codex" }).run;
+  w.store.updateProductionRun(root.id, { state: "failed" });
+  const retryMessage = w.message(w.second.id, "user", "button");
+  const successor = w.store.retryProductionRun(root.id, { originatingMessageId: retryMessage, origin: "button" }).run;
+  assert.throws(() => w.store.declareFinalRequest(successor.id, retryMessage), /root typed request's originating message/);
+  assert.deepEqual((({ kind, finalIntent }) => ({ kind, finalIntent }))(w.store.declareFinalRequest(successor.id, rootMessage)),
+    { kind: "final", finalIntent: "active" }, "an explicit Retry can cite the root typed message");
 });
 
 test("jobs link to their request within the same episode; Stop can list a request's active jobs", (t) => {
@@ -291,7 +307,8 @@ test("an application restart interrupts unfinished requests and ends their Final
   offline.close();
 });
 
-const liveJob = (w, runId, extra = {}) => w.store.saveJob({ episodeId: w.episode.id, kind: "final", outputClass: "final", state: "completed", progress: 1, revision: 1, outputPath: `${Math.random()}.mp4`, snapshot: {}, requestId: runId, ...extra });
+const liveJob = (w, runId, extra = {}) => w.store.saveJob({ episodeId: w.episode.id, kind: "final", outputClass: "final", state: "completed", progress: 1,
+  revision: 1, outputPath: `${Math.random()}.mp4`, snapshot: { episode: { revision: w.store.getEpisode(w.episode.id).revision } }, requestId: runId, ...extra });
 
 test("review 1A: a failed Final request ends its intent at once and can never be published or given new work", (t) => {
   const w = world(t);

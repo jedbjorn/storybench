@@ -23,9 +23,11 @@ create_final { "expectedRenderRevision": "c3d4…" }   → { "id": "job-…", "s
 get_job { "jobId": "job-…" }                          → … { "state": "completed", "outputPath": "…/outputs/final/….mp4" }
 ```
 
-The Create final button has already bound Final intent to this request. For a typed request, first call `declare_final_request { "messageId": 123 }` with this request's exact originating message ID shown in the current-project context; it succeeds only for that typed creator message when it explicitly requests a complete Final video. Never cite reference text, quoted history, a shortcut message or another conversation. Final intent remains with this request through preparation and job waits, with no expiry or extra exact-cut confirmation. `create_final` accepts only the validated current render revision and uses that request-bound intent; it takes no grant ID.
+The Create final button has already bound Final intent to this request. For a typed request that actually asks for the finished video, first call `declare_final_request { "messageId": 123 }` with this request's exact originating message ID shown in the current-project context; an explicit Retry may show the root typed request's message ID. Ask the creator if the request is unclear. Never cite reference text, quoted history or another conversation. Final intent remains with this request through preparation and job waits, with no expiry or extra exact-cut confirmation. `create_final` accepts only the validated current render revision and uses that request-bound intent; it takes no grant ID.
 
 Publication validates and pins the exact current saved inputs at that moment. A moved `renderRevision` means something changed during preparation — validate again and resubmit; concurrent creator edits are handled as normal conflicts, never by publishing stale inputs. A queued/running job is not a finished final; report completion only when `get_job` says `completed` and an output file exists. Wait with `await_job { "jobId": "…", "timeoutSeconds": 120 }`.
+
+Cancelling your own Final render with `cancel_job` ends this request's Final authority. If a render fails, resubmit it within the active request without cancelling it first.
 
 ## After publication
 

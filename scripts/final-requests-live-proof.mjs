@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2), arg = (name, fallback) => { const index = args.indexOf(`--${name}`); return index < 0 ? fallback : args[index + 1]; };
+const reviewOnly = args.includes("--review-only");
 const evidence = path.resolve(arg("evidence", path.join(repo, "task28b-live-evidence")));
 const work = path.resolve(arg("work", path.join(os.tmpdir(), `sbf-${Date.now()}`)));
 const port = Number(arg("port", "18871"));
@@ -75,41 +76,51 @@ try {
   const fixture = await invoke({ phase: "seed-final", episodeId });
 
   const first = await invoke({ phase: "production", episodeId, requestId: "codex-typed-first", harness: "codex", model: "gpt-5.6-terra", typed: true, timeoutMs: 360_000,
-    prompt: "Please finish this video and publish a complete Final. The closing card is intentionally incomplete: use the available Two-scene synthetic clip for its second scene, update the saved card with the exact current revision, then validate_render, create_final, and await_job. Finish only after the Final job is completed." });
+    prompt: reviewOnly ? "Draft looks great — now create the final."
+      : "Please finish this video and publish a complete Final. The closing card is intentionally incomplete: use the available Two-scene synthetic clip for its second scene, update the saved card with the exact current revision, then validate_render, create_final, and await_job. Finish only after the Final job is completed." });
   await writeFile(path.join(evidence, "live-codex-first.json"), JSON.stringify(first, null, 2) + "\n");
   const firstJob = first.jobs.find((job) => job.id === first.run.finalOutputJobId);
   if (!firstJob) throw new Error(`first request did not publish its Final: ${JSON.stringify(first.run)}`);
   const firstFile = path.join(dataRoot, firstJob.outputPath), firstHash = await sha(firstFile);
   const firstProbe = JSON.parse((await run("ffprobe", ["-v", "error", "-show_entries", "format=duration,size", "-show_entries", "stream=codec_type,width,height", "-of", "json", firstFile])).stdout);
-  const moved = await invoke({ phase: "move-final", episodeId, outputId: firstJob.id, expectedRevision: firstJob.recordRevision });
-  const movedHash = await sha(firstFile);
-
-  const second = await invoke({ phase: "production", episodeId, requestId: "codex-typed-second", harness: "codex", model: "gpt-5.6-terra", typed: true, timeoutMs: 360_000,
-    prompt: "Please create another complete Final video. First make a small edit to the closing card by ending its selected clip at 1.8 seconds. Use exact current revisions, validate_render, create_final, and await_job; finish only after the new Final is completed." });
-  await writeFile(path.join(evidence, "live-codex-second.json"), JSON.stringify(second, null, 2) + "\n");
-  const secondJob = second.jobs.find((job) => job.id === second.run.finalOutputJobId);
-  if (!secondJob) throw new Error(`second request did not publish its Final: ${JSON.stringify(second.run)}`);
-
-  const claude = await invoke({ phase: "production", episodeId, requestId: "claude-button", harness: "claude", model: "sonnet", kind: "final", timeoutMs: 360_000,
-    prompt: "Create the final output from the current saved episode." });
-  await writeFile(path.join(evidence, "live-claude.json"), JSON.stringify(claude, null, 2) + "\n");
-  const claudeJob = claude.jobs.find((job) => job.id === claude.run.finalOutputJobId);
-  const finalState = await invoke({ phase: "final-state", episodeId });
   const afterCredentials = { codex: await sha(credentials.codex), claude: await sha(credentials.claude) };
-  const summary = {
-    port, images, fixture, credentialFilesUnchanged: beforeCredentials.codex === afterCredentials.codex && beforeCredentials.claude === afterCredentials.claude,
-    first: { state: first.state, run: first.run, job: firstJob, probe: firstProbe, sha256: firstHash },
-    moved: { id: moved.output.id, designation: moved.output.designation, recordRevision: moved.output.recordRevision, sha256Unchanged: firstHash === movedHash },
-    second: { state: second.state, run: second.run, job: secondJob },
-    claude: { state: claude.state, run: claude.run, job: claudeJob ?? null },
-    finalIds: finalState.jobs.filter((job) => job.outputClass === "final").map((job) => ({ id: job.id, designation: job.designation, requestId: job.requestId, output: job.snapshot?.output ?? null })),
-  };
-  await writeFile(path.join(evidence, "live-summary.json"), JSON.stringify(summary, null, 2) + "\n");
-  if (!summary.credentialFilesUnchanged || first.run.finalIntent !== "published" || first.state !== "idle" || firstJob.state !== "completed"
-      || !firstJob.snapshot?.output?.sha256 || firstJob.snapshot.output.sha256 !== firstHash || moved.output.designation !== "draft" || firstHash !== movedHash
-      || second.run.finalIntent !== "published" || secondJob.id === firstJob.id || claude.run.finalIntent !== "published" || !claudeJob)
-    throw new Error(`live proof did not pass: ${JSON.stringify({ first: first.run, moved: moved.output, second: second.run, claude: claude.run })}`);
-  console.log(JSON.stringify({ ok: true, evidence, first: firstJob.id, second: secondJob.id, claude: claudeJob.id }));
+  if (reviewOnly) {
+    const summary = { port, images, fixture, prompt: "Draft looks great — now create the final.",
+      credentialFilesUnchanged: beforeCredentials.codex === afterCredentials.codex && beforeCredentials.claude === afterCredentials.claude,
+      first: { state: first.state, run: first.run, job: firstJob, probe: firstProbe, sha256: firstHash } };
+    await writeFile(path.join(evidence, "live-summary.json"), JSON.stringify(summary, null, 2) + "\n");
+    if (!summary.credentialFilesUnchanged || first.run.finalIntent !== "published" || first.state !== "idle" || firstJob.state !== "completed"
+        || !firstJob.snapshot?.output?.sha256 || firstJob.snapshot.output.sha256 !== firstHash || !firstJob.snapshot?.episode?.revision)
+      throw new Error(`review live proof did not pass: ${JSON.stringify(first.run)}`);
+    console.log(JSON.stringify({ ok: true, evidence, first: firstJob.id }));
+  } else {
+    const moved = await invoke({ phase: "move-final", episodeId, outputId: firstJob.id, expectedRevision: firstJob.recordRevision });
+    const movedHash = await sha(firstFile);
+    const second = await invoke({ phase: "production", episodeId, requestId: "codex-typed-second", harness: "codex", model: "gpt-5.6-terra", typed: true, timeoutMs: 360_000,
+      prompt: "Please create another complete Final video. First make a small edit to the closing card by ending its selected clip at 1.8 seconds. Use exact current revisions, validate_render, create_final, and await_job; finish only after the new Final is completed." });
+    await writeFile(path.join(evidence, "live-codex-second.json"), JSON.stringify(second, null, 2) + "\n");
+    const secondJob = second.jobs.find((job) => job.id === second.run.finalOutputJobId);
+    if (!secondJob) throw new Error(`second request did not publish its Final: ${JSON.stringify(second.run)}`);
+    const claude = await invoke({ phase: "production", episodeId, requestId: "claude-button", harness: "claude", model: "sonnet", kind: "final", timeoutMs: 360_000,
+      prompt: "Create the final output from the current saved episode." });
+    await writeFile(path.join(evidence, "live-claude.json"), JSON.stringify(claude, null, 2) + "\n");
+    const claudeJob = claude.jobs.find((job) => job.id === claude.run.finalOutputJobId);
+    const finalState = await invoke({ phase: "final-state", episodeId });
+    const summary = {
+      port, images, fixture, credentialFilesUnchanged: beforeCredentials.codex === afterCredentials.codex && beforeCredentials.claude === afterCredentials.claude,
+      first: { state: first.state, run: first.run, job: firstJob, probe: firstProbe, sha256: firstHash },
+      moved: { id: moved.output.id, designation: moved.output.designation, recordRevision: moved.output.recordRevision, sha256Unchanged: firstHash === movedHash },
+      second: { state: second.state, run: second.run, job: secondJob },
+      claude: { state: claude.state, run: claude.run, job: claudeJob ?? null },
+      finalIds: finalState.jobs.filter((job) => job.outputClass === "final").map((job) => ({ id: job.id, designation: job.designation, requestId: job.requestId, output: job.snapshot?.output ?? null })),
+    };
+    await writeFile(path.join(evidence, "live-summary.json"), JSON.stringify(summary, null, 2) + "\n");
+    if (!summary.credentialFilesUnchanged || first.run.finalIntent !== "published" || first.state !== "idle" || firstJob.state !== "completed"
+        || !firstJob.snapshot?.output?.sha256 || firstJob.snapshot.output.sha256 !== firstHash || moved.output.designation !== "draft" || firstHash !== movedHash
+        || second.run.finalIntent !== "published" || secondJob.id === firstJob.id || claude.run.finalIntent !== "published" || !claudeJob)
+      throw new Error(`live proof did not pass: ${JSON.stringify({ first: first.run, moved: moved.output, second: second.run, claude: claude.run })}`);
+    console.log(JSON.stringify({ ok: true, evidence, first: firstJob.id, second: secondJob.id, claude: claudeJob.id }));
+  }
 } catch (error) {
   await mkdir(evidence, { recursive: true });
   await writeFile(path.join(evidence, "live-error.txt"), `${error.stack || error.message}\n\n${logs.join("")}`);

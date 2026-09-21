@@ -106,6 +106,30 @@ test("changed render inputs at publication fail instead of publishing stale Fina
   assert.equal(value.store.getProductionRun(authority.run.id).finalOutputJobId, retried.id, "the retry publishes within the same active request");
 });
 
+test("the database revision guard closes a creator-save race immediately before Final publication", async (t) => {
+  const value = await fixture();
+  t.after(async () => { await value.renders.close(); value.store.close(); await rm(value.workspace, { recursive: true, force: true }); });
+  const snapshot = value.renders.getRenderSnapshot(value.episodeId);
+  const authority = finalRequest(value);
+  const publish = value.store.publishFinalIntent.bind(value.store);
+  let raced = false;
+  value.store.publishFinalIntent = (...args) => {
+    if (!raced) {
+      raced = true;
+      const current = value.episode();
+      value.store.updateEpisode(value.episodeId, current.revision, { notes: "creator save between preflight and publication" });
+    }
+    return publish(...args);
+  };
+  const final = value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final", expectedRenderRevision: snapshot.renderRevision,
+    conversationId: authority.conversationId, requestId: authority.run.id });
+  const failed = await waitFor(value.store, final.id);
+  assert.equal(failed.state, "failed");
+  assert.match(failed.error, /inputs changed before Final publication/i);
+  assert.equal(failed.outputPath, null);
+  assert.equal(value.store.getProductionRun(authority.run.id).finalIntent, "active");
+});
+
 test("closed worker rejects Final enqueue before using request intent or creating a job", async (t) => {
   const value = await fixture();
   t.after(async () => { value.store.close(); await rm(value.workspace, { recursive: true, force: true }); });
@@ -117,6 +141,12 @@ test("closed worker rejects Final enqueue before using request intent or creatin
   assert.equal(value.store.listJobs(value.episodeId).length, 0);
   assert.equal(value.store.getProductionRun(authority.run.id).finalIntent, "active");
   assert.equal(value.store.tableExists("final_authorizations"), true, "historical grant rows remain readable");
+  for (const method of ["createFinalAuthorization", "consumeFinalAuthorization", "saveAuthorizedFinalJob"])
+    assert.equal(value.store[method], undefined, `${method} is retired`);
+  value.store.db.prepare("INSERT INTO final_authorizations VALUES(?,?,?,?,?,?,?,?)")
+    .run("historical-grant", value.episodeId, "a".repeat(64), null, null, "2025-01-01T00:05:00.000Z", "2025-01-01T00:01:00.000Z", "2025-01-01T00:00:00.000Z");
+  assert.deepEqual({ ...value.store.db.prepare("SELECT id,render_revision,consumed_at FROM final_authorizations WHERE id=?").get("historical-grant") },
+    { id: "historical-grant", render_revision: "a".repeat(64), consumed_at: "2025-01-01T00:01:00.000Z" });
 });
 
 test("request-bound Final intent outlives the retired five-minute grant window", async (t) => {

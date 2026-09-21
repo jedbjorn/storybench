@@ -1756,59 +1756,6 @@ export class Store {
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
     return this.getGraphicRecipe(episodeId, recipeId);
   }
-  createFinalAuthorization({ episodeId, renderRevision, conversationId = null, requestId = null, ttlMs = 5 * 60_000 }) {
-    if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
-    if (!/^[0-9a-f]{64}$/.test(renderRevision || "")) throw new StoreError("Valid render revision is required");
-    const createdAt = now();
-    const value = { id: id("final_auth"), episodeId, renderRevision, conversationId, requestId,
-      createdAt, expiresAt: new Date(Date.now() + ttlMs).toISOString() };
-    this.db.prepare(`INSERT INTO final_authorizations(
-      id,episode_id,render_revision,conversation_id,request_id,expires_at,consumed_at,created_at
-    ) VALUES(?,?,?,?,?,?,?,?)`)
-      .run(value.id, episodeId, renderRevision, conversationId, requestId, value.expiresAt, null, createdAt);
-    return value;
-  }
-  consumeFinalAuthorization(authorizationId, { episodeId, renderRevision, conversationId = null, requestId = null }) {
-    const stamp = now();
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const row = this.db.prepare("SELECT * FROM final_authorizations WHERE id=?").get(authorizationId);
-      if (!row) throw new StoreError("Final authorization is required", 403);
-      if (row.episode_id !== episodeId || row.render_revision !== renderRevision ||
-          (row.conversation_id ?? null) !== (conversationId ?? null) || (row.request_id ?? null) !== (requestId ?? null))
-        throw new StoreError("Final authorization does not match this render request", 403);
-      if (row.consumed_at) throw new StoreError("Final authorization was already used", 409);
-      if (row.expires_at <= stamp) throw new StoreError("Final authorization expired", 409);
-      const result = this.db.prepare("UPDATE final_authorizations SET consumed_at=? WHERE id=? AND consumed_at IS NULL")
-        .run(stamp, authorizationId);
-      if (!result.changes) throw new StoreError("Final authorization was already used", 409);
-      this.db.exec("COMMIT");
-      return { id: row.id, episodeId, renderRevision, consumedAt: stamp };
-    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
-  }
-  saveAuthorizedFinalJob(authorizationId, scope, job) {
-    const { episodeId, renderRevision, conversationId = null, requestId = null } = scope;
-    const stamp = now();
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const row = this.db.prepare("SELECT * FROM final_authorizations WHERE id=?").get(authorizationId);
-      if (!row) throw new StoreError("Final authorization is required", 403);
-      if (row.episode_id !== episodeId || row.render_revision !== renderRevision ||
-          (row.conversation_id ?? null) !== (conversationId ?? null) || (row.request_id ?? null) !== (requestId ?? null))
-        throw new StoreError("Final authorization does not match this render request", 403);
-      if (row.consumed_at) throw new StoreError("Final authorization was already used", 409);
-      if (row.expires_at <= stamp) throw new StoreError("Final authorization expired", 409);
-      const consumed = this.db.prepare("UPDATE final_authorizations SET consumed_at=? WHERE id=? AND consumed_at IS NULL")
-        .run(stamp, authorizationId);
-      if (!consumed.changes) throw new StoreError("Final authorization was already used", 409);
-      this.db.prepare(`INSERT INTO jobs(id,episode_id,kind,state,progress,revision,output_path,error,snapshot,created_at,updated_at,output_class)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(job.id, episodeId, job.kind, job.state, job.progress ?? 0,
-        job.revision, job.outputPath ?? null, job.error ?? null, JSON.stringify(job.snapshot ?? null),
-        job.createdAt || stamp, stamp, job.outputClass || "final");
-      this.db.exec("COMMIT");
-      return this.getJob(job.id);
-    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
-  }
   // Jobs inherit channel ownership through their (immutable) episode relationship.
   listJobs(episodeId, { channelId = null } = {}) {
     const select = "SELECT j.*,e.channel_id FROM jobs j LEFT JOIN episodes e ON e.id=j.episode_id";
@@ -2088,8 +2035,19 @@ export class Store {
   declareFinalRequest(runId, messageId) {
     const run = this.getProductionRun(runId);
     if (!run) throw new StoreError("Production request not found", 404);
-    if (run.origin !== "typed") throw new StoreError("Only a typed creator request can declare Final intent", 403);
-    if (run.originatingMessageId !== messageId) throw new StoreError("Final intent must cite this request's originating message", 403);
+    let root = run;
+    const seen = new Set();
+    while (root.successorOf) {
+      if (seen.has(root.id)) throw new StoreError("The request retry chain is invalid", 409);
+      seen.add(root.id);
+      root = this.getProductionRun(root.successorOf);
+      if (!root || root.conversationId !== run.conversationId) throw new StoreError("The original typed request is unavailable", 409);
+    }
+    // A Final button (including its Retry chain) has already bound authority; a redundant
+    // declaration changes nothing. A typed-root successor still validates the typed identity.
+    if (root.origin === "button" && run.kind === "final" && run.finalIntent === "active") return run;
+    if (root.origin !== "typed") throw new StoreError("Only a typed creator request can declare Final intent", 403);
+    if (root.originatingMessageId !== messageId) throw new StoreError("Final intent must cite the root typed request's originating message", 403);
     const message = this.db.prepare("SELECT conversation_id,role,origin FROM conversation_messages WHERE id=?").get(messageId);
     if (!message || message.conversation_id !== run.conversationId) throw new StoreError("The Final request message is not in this conversation", 404);
     if (message.role !== "user" || message.origin !== "typed") throw new StoreError("Final intent requires the originating typed creator message", 403);
@@ -2098,8 +2056,8 @@ export class Store {
     if (run.kind !== "chat" || run.finalIntent !== "none")
       throw new StoreError("Only an ordinary typed request without existing Final intent can be declared Final", 409, { current: run });
     const result = this.db.prepare(`UPDATE production_runs SET kind='final',final_intent='active',updated_at=?
-      WHERE id=? AND state IN ('starting','running') AND kind='chat' AND origin='typed' AND originating_message_id=? AND final_intent='none'`)
-      .run(now(), runId, messageId);
+      WHERE id=? AND state IN ('starting','running') AND kind='chat' AND final_intent='none'`)
+      .run(now(), runId);
     if (!result.changes) throw new StoreError("The request changed before Final intent could be declared", 409, { current: this.getProductionRun(runId) });
     return this.getProductionRun(runId);
   }
@@ -2148,6 +2106,8 @@ export class Store {
     if (RUN_TERMINAL.includes(run.state)) throw new StoreError(`A ${run.state} request cannot publish a Final`, 409, { current: run });
     let job = this.getJob(jobId);
     if (!job || job.requestId !== runId) throw new StoreError("The output was not produced by this request", 409);
+    const pinnedEpisodeRevision = completion?.snapshot?.episode?.revision ?? job.snapshot?.episode?.revision;
+    if (!Number.isInteger(pinnedEpisodeRevision)) throw new StoreError("The Final output is missing its pinned episode revision", 409);
     const stamp = now();
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -2162,8 +2122,14 @@ export class Store {
       if (job.state !== "completed" || job.outputClass !== "final" || job.designation !== "final" || job.deletionState !== "present")
         throw new StoreError("Only a completed, present Final output can publish a Final request", 409);
       const result = this.db.prepare(`UPDATE production_runs SET final_intent='published',final_ended_reason='published',final_output_job_id=?,updated_at=?
-        WHERE id=? AND final_intent='active' AND state IN ('starting','running')`).run(jobId, stamp, runId);
-      if (!result.changes) throw new StoreError(`This request has no active Final intent (${run.finalIntent})`, 409, { current: run });
+        WHERE id=? AND final_intent='active' AND state IN ('starting','running')
+          AND (SELECT revision FROM episodes WHERE id=?)=?`).run(jobId, stamp, runId, run.episodeId, pinnedEpisodeRevision);
+      if (!result.changes) {
+        const currentEpisodeRevision = this.db.prepare("SELECT revision FROM episodes WHERE id=?").get(run.episodeId)?.revision;
+        if (currentEpisodeRevision !== pinnedEpisodeRevision)
+          throw new StoreError("Render inputs changed before Final publication; validate the current cut and render again", 409, { currentEpisodeRevision });
+        throw new StoreError(`This request has no active Final intent (${run.finalIntent})`, 409, { current: run });
+      }
       this.db.exec("COMMIT");
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
     return this.getProductionRun(runId);
