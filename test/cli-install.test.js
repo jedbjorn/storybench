@@ -115,6 +115,9 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
       images: { app: APP, worker: WORKER }, tools: {}, schema: { min: 0, max: SCHEMA_VERSION } });
   };
   const metadata = { source: s.source, commit: s.commit, remote: s.remote, ref: "main", dockerVersion: "29.7.2" };
+  const cleanHelp = spawnSync(process.execPath, [path.join(s.source, "bin", "storybench.mjs"), "__install", "--help"], { env: s.env, encoding: "utf8" });
+  assert.equal(cleanHelp.status, 0, cleanHelp.stderr);
+  assert.match(cleanHelp.stdout, /Internal exact-release installer handoff/);
   assert.equal(await installFromSource(context, metadata, { runCommand: fakeRun, buildRelease }), 0);
   assert.equal(builds, 1);
   assert.equal(realpath(s.xdg.current), path.join(s.xdg.releases, s.commit));
