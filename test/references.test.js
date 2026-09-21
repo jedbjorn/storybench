@@ -132,7 +132,8 @@ test("schema 7 initializes the episode reference set once from Reference items a
   let store = new Store(root);
   t.after(() => store.close());
   assert.equal(Number(store.db.prepare("PRAGMA user_version").get().user_version), SCHEMA_VERSION);
-  assert.equal(SCHEMA_VERSION, 7);
+  assert.ok(SCHEMA_VERSION >= 7);
+  assert.ok(store.db.prepare("SELECT 1 FROM migration_log WHERE version=7").get());
   assert.ok(existsSync(path.join(root, "storybench.pre-v7.sqlite")));
   const backup = new DatabaseSync(path.join(root, "storybench.pre-v7.sqlite"), { readOnly: true });
   assert.equal(Number(backup.prepare("PRAGMA user_version").get().user_version), 6);

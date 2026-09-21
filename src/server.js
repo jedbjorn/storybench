@@ -11,6 +11,7 @@ import { renderGraphic, validateGraphicRecipe } from "./graphics.js";
 import { createRenderService } from "./render-service.js";
 import { openDataRoot } from "./services/data-root.js";
 import { createChannel, listChannels, renameChannel, useChannel } from "./services/channels.js";
+import { deleteDraftOutputs, listDraftCleanup, moveFinalToDrafts } from "./services/outputs.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = path.join(root, "public");
@@ -366,6 +367,22 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
             expectedRenderRevision: body.expectedRenderRevision,
             conversationId: body.conversationId ?? null, requestId: body.requestId ?? null }));
         }
+        if (parts[3] === "outputs") {
+          if (parts[4] === "cleanup" && parts.length === 5 && req.method === "GET")
+            return send(res, 200, await listDraftCleanup(store, episodeId));
+          if (parts[4] === "delete" && parts.length === 5 && req.method === "POST") {
+            const body = await jsonBody(req);
+            const value = await deleteDraftOutputs(store, { episodeId, outputs: body.outputs, actor: "human" });
+            notify(episodeId);
+            return send(res, 200, value);
+          }
+          if (parts[4] && parts[5] === "move-to-drafts" && parts.length === 6 && req.method === "POST") {
+            const body = await jsonBody(req);
+            const value = moveFinalToDrafts(store, { episodeId, outputId: parts[4], expectedRevision: body.expectedRevision, actor: "human" });
+            notify(episodeId);
+            return send(res, 200, value);
+          }
+        }
         if (parts[3] === "jobs" && parts[4] && parts[5] === "cancel" && req.method === "POST") {
           const value = renders.cancelJob(episodeId, parts[4]); notify(episodeId); return send(res, 200, value);
         }
@@ -477,6 +494,8 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         parts[3] === "file"
       ) {
         const job = store.getJob(parts[2]);
+        if (job && job.deletionState !== "present")
+          throw new StoreError(job.deletionState === "deleted" ? "This output was deleted" : "This output is being deleted", 410);
         if (!job || job.state !== "completed" || !job.outputPath)
           throw new StoreError("Completed artifact not found", 404);
         const workspaceReal = await realpath(workspace);
@@ -499,6 +518,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           ...(error.committed ? { committed: error.committed } : {}),
           ...(error.conflictPath ? { conflictPath: error.conflictPath } : {}),
           ...(error.issues ? { issues: error.issues } : {}),
+          ...(error.candidates ? { candidates: error.candidates } : {}),
         });
       else res.destroy();
     }

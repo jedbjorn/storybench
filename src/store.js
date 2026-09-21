@@ -24,7 +24,7 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 export const DEFAULT_CHANNEL_NAME = "Main";
 // IDs become directory names, so they must be single safe path segments.
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
@@ -265,6 +265,13 @@ function jobRow(row) {
       outputPath: row.output_path,
       error: row.error,
       outputClass: row.output_class || "active",
+      designation: row.designation ?? null,
+      recordRevision: row.record_revision ?? 1,
+      deletionState: row.deletion_state ?? "present",
+      deletedAt: row.deleted_at ?? null,
+      deletedBytes: row.deleted_bytes ?? null,
+      deletionNote: row.deletion_note ?? null,
+      sidecarPaths: parse(row.sidecar_paths, []),
       snapshot: parse(row.snapshot),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -325,6 +332,7 @@ export class Store {
     }
     if (!startup) return;
     this.recoverPendingStories();
+    this.reconcileOutputDeletions();
     this.db
       .prepare(
         "UPDATE jobs SET state='failed', error='Render interrupted by server restart', updated_at=? WHERE state IN ('queued','running','cancelling')",
@@ -361,11 +369,12 @@ export class Store {
       }
       this.migrateV6({ firstChannelName, origin: existingDatabase && hadLegacySchema ? (origin === "adopt" ? "adopt" : "migration") : origin });
     } else if (existingDatabase) {
-      // Opened at schema 6: keep a consistent copy of exactly that state before references are added.
-      const backupPath = path.join(this.workspace, "storybench.pre-v7.sqlite");
+      // Opened at a channel-era schema: keep a consistent copy of exactly that state before the next step.
+      const backupPath = path.join(this.workspace, `storybench.pre-v${version + 1}.sqlite`);
       if (!existsSync(backupPath)) this.backupDatabase(backupPath);
     }
-    this.migrateV7();
+    if (version < 7) this.migrateV7();
+    this.migrateV8();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -647,6 +656,57 @@ export class Store {
       `);
       this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(7,?)").run(stamp);
       this.db.exec("PRAGMA user_version=7; COMMIT");
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  // Schema 8: output designation and deletion state on the existing output records (jobs). The designation starts
+  // from the output class (final -> final, draft/legacy draft -> draft); output_class stays the original production
+  // class. Only dedicated operations change designation/deletion columns, each bumping record_revision.
+  migrateV8() {
+    const stamp = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const columns = this.columns("jobs");
+      const add = (name, definition) => { if (!columns.has(name)) this.db.exec(`ALTER TABLE jobs ADD COLUMN ${name} ${definition}`); };
+      const initialize = !columns.has("designation");
+      add("designation", "TEXT");
+      add("record_revision", "INTEGER NOT NULL DEFAULT 1");
+      add("deletion_state", "TEXT NOT NULL DEFAULT 'present'");
+      add("deletion_started_at", "TEXT");
+      add("deleted_at", "TEXT");
+      add("deleted_bytes", "INTEGER");
+      add("deletion_note", "TEXT");
+      add("sidecar_paths", "TEXT NOT NULL DEFAULT '[]'");
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS output_designations (
+          job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+          revision INTEGER NOT NULL,
+          designation TEXT NOT NULL,
+          previous TEXT,
+          actor TEXT NOT NULL,
+          request_id TEXT,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(job_id, revision)
+        );
+        CREATE TRIGGER IF NOT EXISTS jobs_initial_designation AFTER INSERT ON jobs
+          WHEN NEW.designation IS NULL AND NEW.output_class IN ('draft','legacy_draft','final')
+          BEGIN
+            UPDATE jobs SET designation=CASE NEW.output_class WHEN 'final' THEN 'final' ELSE 'draft' END WHERE id=NEW.id;
+            INSERT OR IGNORE INTO output_designations(job_id,revision,designation,previous,actor,request_id,created_at)
+              VALUES(NEW.id,1,CASE NEW.output_class WHEN 'final' THEN 'final' ELSE 'draft' END,NULL,'render',NULL,NEW.created_at);
+          END;
+      `);
+      if (initialize) {
+        this.db.exec(`UPDATE jobs SET designation=CASE output_class WHEN 'final' THEN 'final' ELSE 'draft' END
+          WHERE output_class IN ('draft','legacy_draft','final')`);
+      }
+      this.db.prepare(`INSERT OR IGNORE INTO output_designations(job_id,revision,designation,previous,actor,request_id,created_at)
+        SELECT id,record_revision,designation,NULL,'migration',NULL,? FROM jobs WHERE designation IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM output_designations d WHERE d.job_id=jobs.id)`).run(stamp);
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(8,?)").run(stamp);
+      this.db.exec("PRAGMA user_version=8; COMMIT");
     } catch (error) {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
       throw error;
@@ -1610,6 +1670,83 @@ export class Store {
   }
   getJob(jobId) {
     return jobRow(this.db.prepare("SELECT j.*,e.channel_id FROM jobs j LEFT JOIN episodes e ON e.id=j.episode_id WHERE j.id=?").get(jobId));
+  }
+  designationHistory(outputId) {
+    return this.db.prepare("SELECT * FROM output_designations WHERE job_id=? ORDER BY revision").all(outputId).map((row) => ({
+      revision: row.revision, designation: row.designation, previous: row.previous, actor: row.actor, requestId: row.request_id, createdAt: row.created_at }));
+  }
+  getOutput(episodeId, outputId) {
+    const job = this.getJob(outputId);
+    if (!job || job.episodeId !== episodeId || !job.designation) throw new StoreError("Output not found in this episode", 404);
+    return { ...job, designationHistory: this.designationHistory(outputId) };
+  }
+  // Move a completed final back to Drafts. Same record, bytes and path; only the designation changes (with history).
+  // Without outputId the caller must mean the episode's single current final, otherwise it is ambiguous.
+  moveFinalToDrafts({ episodeId, outputId = null, expectedRevision = null, actor = "human", requestId = null } = {}) {
+    if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
+    if (!outputId) {
+      const finals = this.listJobs(episodeId).filter((job) => job.designation === "final" && job.state === "completed" && job.deletionState === "present");
+      if (finals.length !== 1)
+        throw new StoreError(finals.length ? "Several finals exist; identify which output to move" : "No completed final to move", 409,
+          { candidates: finals.map((job) => ({ id: job.id, createdAt: job.createdAt, recordRevision: job.recordRevision })) });
+      outputId = finals[0].id;
+      expectedRevision ??= finals[0].recordRevision;
+    }
+    const current = this.getOutput(episodeId, outputId);
+    if (current.state !== "completed" || current.deletionState !== "present") throw new StoreError("Only a completed, present output can be moved", 409, { current });
+    if (current.designation !== "final") throw new StoreError("This output is not currently a Final", 409, { current });
+    if (!Number.isInteger(expectedRevision) || expectedRevision !== current.recordRevision)
+      throw new StoreError(`Stale output revision: expected ${current.recordRevision}`, 409, { current });
+    const stamp = now(), revision = current.recordRevision + 1;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.db.prepare(`UPDATE jobs SET designation='draft',record_revision=? WHERE id=? AND episode_id=? AND record_revision=?
+        AND designation='final' AND deletion_state='present'`).run(revision, outputId, episodeId, expectedRevision);
+      if (!result.changes) throw new StoreError("Stale output revision", 409);
+      this.db.prepare(`INSERT INTO output_designations(job_id,revision,designation,previous,actor,request_id,created_at) VALUES(?,?,?,?,?,?,?)`)
+        .run(outputId, revision, "draft", "final", String(actor), requestId, stamp);
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    return this.getOutput(episodeId, outputId);
+  }
+  // Paths another retained record depends on: registered library/branding assets and other outputs' files.
+  outputPathOwners(relativePath, excludeIds = []) {
+    const assets = this.db.prepare("SELECT id FROM assets WHERE path=? OR thumbnail_path=?").all(relativePath, relativePath).map((row) => ({ kind: "asset", id: row.id }));
+    const jobs = this.db.prepare("SELECT id,state,deletion_state,output_path,sidecar_paths FROM jobs WHERE deletion_state<>'deleted'").all()
+      .filter((row) => !excludeIds.includes(row.id) && (row.output_path === relativePath || parse(row.sidecar_paths, []).includes(relativePath)))
+      .map((row) => ({ kind: ["queued", "running", "cancelling"].includes(row.state) ? "active-job" : "retained-output", id: row.id }));
+    return [...assets, ...jobs];
+  }
+  markOutputDeleting(outputId, expectedRevision) {
+    const stamp = now();
+    const result = this.db.prepare(`UPDATE jobs SET deletion_state='deleting',deletion_started_at=?,record_revision=record_revision+1,deletion_note=NULL
+      WHERE id=? AND record_revision=? AND deletion_state='present' AND designation='draft' AND state='completed'`).run(stamp, outputId, expectedRevision);
+    return result.changes === 1;
+  }
+  finishOutputDeletion(outputId, { bytes = null, note = null } = {}) {
+    this.db.prepare(`UPDATE jobs SET deletion_state='deleted',deleted_at=?,deleted_bytes=?,deletion_note=?,record_revision=record_revision+1
+      WHERE id=? AND deletion_state='deleting'`).run(now(), bytes, note, outputId);
+  }
+  abortOutputDeletion(outputId, note) {
+    this.db.prepare(`UPDATE jobs SET deletion_state='present',deletion_started_at=NULL,deletion_note=?,record_revision=record_revision+1
+      WHERE id=? AND deletion_state='deleting'`).run(note, outputId);
+  }
+  // An interruption between file removal and the metadata update leaves 'deleting' rows. On reopen: a file that is
+  // gone is recorded as absent (no reclaimed bytes claimed); a file still present returns to 'present' for retry.
+  reconcileOutputDeletions() {
+    const outcomes = [];
+    for (const row of this.db.prepare("SELECT id,output_path FROM jobs WHERE deletion_state='deleting'").all()) {
+      const file = row.output_path ? path.resolve(this.workspace, row.output_path) : null;
+      const inside = file && file.startsWith(this.workspace + path.sep);
+      if (inside && existsSync(file)) {
+        this.abortOutputDeletion(row.id, "Deletion was interrupted; the file is still present and can be deleted again");
+        outcomes.push({ id: row.id, state: "present" });
+      } else {
+        this.finishOutputDeletion(row.id, { bytes: null, note: "Deletion was interrupted; the file was already absent when reconciled" });
+        outcomes.push({ id: row.id, state: "deleted" });
+      }
+    }
+    return outcomes;
   }
   saveJob(job) {
     const old = job.id && this.getJob(job.id);

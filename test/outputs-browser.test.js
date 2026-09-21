@@ -1,0 +1,141 @@
+// Headless browser proof for Move to Drafts and draft cleanup (Playwright, loopback port in the 188xx range).
+// Skips only when no Chromium can be launched on this seat. STORYBENCH_EVIDENCE_DIR saves screenshots.
+import test from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { chromium } from "playwright-core";
+import { createApp } from "../src/server.js";
+import { listenInRange } from "../test-support/loopback-port.js";
+import { initDataRoot, openDataRoot } from "../src/services/data-root.js";
+
+const PREFERRED_PORT = Number(process.env.STORYBENCH_OUTPUTS_BROWSER_PORT || 18832);
+async function launch() {
+  try { return await chromium.launch(); }
+  catch { return existsSync("/usr/bin/chromium") ? chromium.launch({ executablePath: "/usr/bin/chromium" }).catch(() => null) : null; }
+}
+
+test("outputs UI moves a final to Drafts, deletes one draft and cleans up a selection in a real browser", { timeout: 120_000 }, async (t) => {
+  const browser = await launch();
+  if (!browser) return t.skip("No launchable Chromium on this seat");
+  t.after(() => browser.close());
+  const base = mkdtempSync(path.join(os.tmpdir(), "storybench-outputs-browser-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const root = path.join(base, "data");
+  initDataRoot(root);
+  const setup = openDataRoot(root);
+  const channel = setup.createChannel("Outputs");
+  const episode = setup.createEpisode({ title: "Output proof", channelId: channel.id });
+  const video = (relative, color) => {
+    const file = path.join(root, relative);
+    mkdirSync(path.dirname(file), { recursive: true });
+    execFileSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", `color=c=${color}:s=160x90:d=1`, "-pix_fmt", "yuv420p", "-y", file]);
+    return relative;
+  };
+  const dir = (...parts) => path.relative(root, path.join(setup.episodeDirectory(episode.id), ...parts));
+  let second = 0;
+  const output = (id, outputClass, relative) => setup.saveJob({ id, episodeId: episode.id, kind: outputClass, outputClass, state: "completed", progress: 1, revision: 1,
+    outputPath: relative, snapshot: { renderRevision: id }, createdAt: new Date(Date.UTC(2026, 8, 20, 12, 0, second++)).toISOString() });
+  output("job_draft_one", "draft", video(dir("outputs", "drafts", "one.mp4"), "red"));
+  output("job_draft_two", "draft", video(dir("outputs", "drafts", "two.mp4"), "green"));
+  output("job_legacy", "legacy_draft", video("exports/legacy.mp4", "blue"));
+  output("job_registered", "draft", video(dir("outputs", "drafts", "registered.mp4"), "white"));
+  setup.saveAsset({ channelId: channel.id, name: "registered.mp4", hash: "registered", kind: "video", path: dir("outputs", "drafts", "registered.mp4"), duration: 1, metadata: {} });
+  const finalPath = video(dir("outputs", "final", "final.mp4"), "yellow");
+  const registeredPath = dir("outputs", "drafts", "registered.mp4"), twoPath = dir("outputs", "drafts", "two.mp4");
+  output("job_final", "final", finalPath);
+  setup.close();
+
+  const app = await createApp({ dataRoot: root });
+  const PORT = await listenInRange(app.server, { preferred: PREFERRED_PORT });
+  t.after(() => app.close());
+  const store = app.store;
+  const evidence = process.env.STORYBENCH_EVIDENCE_DIR;
+  if (evidence) mkdirSync(evidence, { recursive: true });
+  const shot = (page, name) => evidence ? page.screenshot({ path: path.join(evidence, `${name}.png`), fullPage: true }) : null;
+  const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+  page.setDefaultTimeout(20_000);
+  const errors = [], consoleLines = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => consoleLines.push(`${message.type()}: ${message.text()}`));
+  // On any failure, dump what the page and the store actually looked like so CI failures are diagnosable.
+  const diagnose = async (stepName, error) => {
+    const dom = await page.evaluate(() => ({
+      url: location.href,
+      drafts: document.querySelector("#draftJobs")?.outerHTML.slice(0, 4000),
+      finals: document.querySelector("#finalJobs")?.outerHTML.slice(0, 2000),
+      cleanup: document.querySelector("#draftCleanupModal")?.outerHTML.slice(0, 3000),
+      videos: [...document.querySelectorAll("video")].map((video) => ({ src: video.getAttribute("src"), readyState: video.readyState, networkState: video.networkState, error: video.error?.code ?? null })),
+      toast: document.querySelector("#toast")?.textContent,
+    })).catch((cause) => ({ unavailable: cause.message }));
+    const jobs = store.listJobs(episode.id).map(({ id, state, designation, recordRevision, deletionState, deletionNote, outputPath }) => ({ id, state, designation, recordRevision, deletionState, deletionNote, outputPath }));
+    const dump = { step: stepName, error: error.message, browser: browser.version(), dom, jobs, pageErrors: errors, console: consoleLines.slice(-50) };
+    if (evidence) await import("node:fs/promises").then(({ writeFile }) => writeFile(path.join(evidence, "failure-diagnostics.json"), JSON.stringify(dump, null, 2)));
+    throw new Error(`Step "${stepName}" failed: ${error.message}\n--- diagnostics ---\n${JSON.stringify(dump, null, 2)}`, { cause: error });
+  };
+  const step = async (name, fn) => { try { return await fn(); } catch (error) { return diagnose(name, error); } };
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.goto(`http://127.0.0.1:${PORT}/?channel=${channel.id}`);
+  await page.click(`#episodes [data-id="${episode.id}"] [data-episode-select]`);
+
+  // Move to Drafts from the Final view.
+  await step("move to drafts", async () => {
+  await page.click('.tabs [data-tab="final"]');
+  await page.waitForSelector('#finalJobs [data-move-to-drafts="job_final"]');
+  const finalBytes = statSync(path.join(root, finalPath)).size;
+  await page.click('#finalJobs [data-move-to-drafts="job_final"]');
+  await page.waitForSelector('#finalJobs [data-job-id="job_final"]', { state: "detached" });
+  assert.equal(store.getJob("job_final").designation, "draft");
+  assert.equal(statSync(path.join(root, finalPath)).size, finalBytes);
+  await page.click('.tabs [data-tab="drafts"]');
+  await page.waitForSelector('#draftJobs [data-job-id="job_final"] video[src="/api/jobs/job_final/file"]');
+  assert.match(await page.textContent('#draftJobs [data-job-id="job_final"]'), /Draft \(rendered as Final\)/);
+  await shot(page, "1-moved-final-in-drafts");
+  });
+
+  // Individual Delete releases only that row's player; another player keeps working. This is asserted on
+  // DOM identity/attributes and HTTP, not on media decoding (readyState), which depends on the browser's codecs.
+  await step("individual delete", async () => {
+  await page.waitForSelector('#draftJobs [data-job-id="job_draft_two"] video[src="/api/jobs/job_draft_two/file"]');
+  await page.$eval('#draftJobs [data-job-id="job_draft_two"] video', (element) => { element.dataset.probe = "kept"; });
+  await page.click('#draftJobs [data-delete-output="job_draft_one"]');
+  // Deterministic end state: the server record is deleted and the row re-rendered from it.
+  await page.waitForSelector('#draftJobs [data-job-id="job_draft_one"] [data-job-status]:has-text("deleted")');
+  assert.equal(store.getJob("job_draft_one").deletionState, "deleted");
+  assert.equal(await page.$('#draftJobs [data-job-id="job_draft_one"] video'), null, "the deleted draft has no player");
+  const kept = await page.$eval('#draftJobs [data-job-id="job_draft_two"] video', async (element) => ({ probe: element.dataset.probe, src: element.getAttribute("src"),
+    status: (await fetch(element.getAttribute("src"), { headers: { range: "bytes=0-1" } })).status }));
+  assert.deepEqual(kept, { probe: "kept", src: "/api/jobs/job_draft_two/file", status: 206 }, "the other player is the same element, still attached to a served file");
+  assert.equal(await page.evaluate(() => fetch("/api/jobs/job_draft_one/file").then((response) => response.status)), 410);
+  await shot(page, "2-individual-delete");
+  });
+
+  // Clean up drafts: starts with nothing selected, shows blockers, totals the selection and deletes it in one submit.
+  await step("clean up drafts", async () => {
+  await page.click("#openDraftCleanup");
+  await page.waitForSelector("#draftCleanupModal[open] [data-cleanup-select]");
+  assert.equal(await page.$$eval("#draftCleanupRows [data-cleanup-select]:checked", (items) => items.length), 0);
+  assert.equal(await page.$eval('[data-cleanup-select="job_registered"]', (element) => element.disabled), true);
+  assert.match(await page.textContent('[data-cleanup-row="job_registered"]'), /registered as library or branding media/);
+  assert.equal(await page.$eval("#draftCleanupSubmit", (element) => element.disabled), true);
+  await page.check('[data-cleanup-select="job_final"]');
+  await page.check('[data-cleanup-select="job_legacy"]');
+  const expected = statSync(path.join(root, finalPath)).size + statSync(path.join(root, "exports/legacy.mp4")).size;
+  assert.match(await page.textContent("#draftCleanupTotal"), /2 selected/);
+  await shot(page, "3-cleanup-selection");
+  await page.click("#draftCleanupSubmit");
+  await page.waitForSelector('#draftCleanupSummary:has-text("2 deleted")');
+  assert.equal(await page.$('[data-cleanup-row="job_final"]'), null);
+  assert.equal(existsSync(path.join(root, finalPath)), false);
+  assert.equal(existsSync(path.join(root, "exports/legacy.mp4")), false);
+  assert.ok(existsSync(path.join(root, registeredPath)));
+  assert.ok(existsSync(path.join(root, twoPath)));
+  const reclaimed = store.getJob("job_final").deletedBytes + store.getJob("job_legacy").deletedBytes;
+  assert.equal(reclaimed, expected);
+  await shot(page, "4-cleanup-result");
+  assert.equal((await fetch(`http://127.0.0.1:${PORT}/api/jobs/job_final/file`)).status, 410);
+  assert.deepEqual(errors, []);
+  });
+});

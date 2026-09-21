@@ -713,3 +713,15 @@ audio.reference-preview { width: 48px; }
 .reference-status:empty { display: none; }
 .reference-status.error { color: var(--accent); }
 @media (max-width: 720px) { .reference-actions { grid-template-columns: 1fr; } }
+
+/* Draft cleanup */
+.cleanup-rows { display: grid; gap: 6px; max-height: 50vh; overflow: auto; margin: 8px 0; }
+.cleanup-row { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.cleanup-row span { display: grid; gap: 2px; }
+.cleanup-row small { color: var(--muted); }
+.cleanup-row.blocked { opacity: .75; }
+.cleanup-blocker, .cleanup-outcome.failed, .cleanup-outcome.refused { color: var(--accent) !important; }
+.cleanup-total { margin: 4px 0; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+button.danger { background: #b3402a; color: #fff; border-color: #b3402a; }
+button.danger:disabled { opacity: .5; }
