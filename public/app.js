@@ -538,7 +538,7 @@ $("#cards").ondragover = (event) => {
     mediaDrop.classList.add("drag-over");
   } else if (event.target.closest("[data-card-section]")) event.preventDefault();
 };
-$("#cards").ondragleave = (event) => event.target.closest("[data-card-media-drop]")?.classList.remove("drag-over");
+$("#cards").ondragleave = (event) => event.target.closest("[data-card-media-drop], [data-ref-drop]")?.classList.remove("drag-over");
 $("#cards").addEventListener("toggle", (event) => {
   const details = event.target.closest?.("[data-card-references]");
   const cardId = details?.closest("[data-card-id]")?.dataset.cardId;

@@ -622,6 +622,12 @@ export class Store {
         this.db.exec("ALTER TABLE episode_history ADD COLUMN reference_prompt TEXT");
       if (!this.columns("episode_history").has("reference_item_ids"))
         this.db.exec("ALTER TABLE episode_history ADD COLUMN reference_item_ids TEXT");
+      // The history row for each episode's current revision records the initialized set, so the first undo
+      // after migration restores it. Older rows stay NULL. Rows already written with references are untouched.
+      this.db.exec(`UPDATE episode_history SET reference_prompt='',
+          reference_item_ids=(SELECT e.reference_item_ids FROM episodes e WHERE e.id=episode_history.episode_id)
+        WHERE reference_item_ids IS NULL
+          AND revision=(SELECT e.revision FROM episodes e WHERE e.id=episode_history.episode_id)`);
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS reference_directions (
           id TEXT PRIMARY KEY,
@@ -912,9 +918,13 @@ export class Store {
         throw new StoreError(`Library item not found for this episode: ${itemId}`);
     const referencePrompt = changes.referencePrompt == null ? current.referencePrompt : String(changes.referencePrompt);
     const cardIds = new Set(cards.map((card) => card.id));
+    const currentCards = new Map(current.cards.map((card) => [card.id, card]));
     for (const card of cards) {
-      for (const itemId of [card.itemId, ...card.referenceItemIds].filter(Boolean))
-        if (!libraryById.has(itemId)) throw new StoreError(`Library item not found for this episode: ${itemId}`);
+      if (card.itemId && !libraryById.has(card.itemId)) throw new StoreError(`Library item not found for this episode: ${card.itemId}`);
+      // Like episode references, a link already on this card is kept even if unresolvable; only new links are checked.
+      const existingReferences = new Set(currentCards.get(card.id)?.referenceItemIds || []);
+      for (const itemId of card.referenceItemIds)
+        if (!existingReferences.has(itemId) && !libraryById.has(itemId)) throw new StoreError(`Library item not found for this episode: ${itemId}`);
       if (card.type === "Audio" && card.anchorVisualCardId && !cardIds.has(card.anchorVisualCardId))
         throw new StoreError(`Audio anchor card not found: ${card.anchorVisualCardId}`);
       const selected = card.itemId ? libraryById.get(card.itemId) : null;

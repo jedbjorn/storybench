@@ -115,6 +115,7 @@ function v6Root(t) {
   const ref1 = attach(episode.id, "ref1.txt", "reference", "Reference");
   const broll = attach(episode.id, "clip.mp4", "video", "B-roll");
   const ref2 = attach(episode.id, "ref2.png", "image", "Reference");
+  store.updateEpisode(episode.id, store.getEpisode(episode.id).revision, { notes: "edited at schema 6" });
   const legacyCards = [{ ...card("c1", "Video", { itemId: broll.id, referenceItemIds: [broll.id], referenceUrls: ["https://example.invalid/never-fetched", "not even a url"] }) }];
   delete legacyCards[0].referencePrompt;
   store.db.prepare("UPDATE episodes SET cards=? WHERE id=?").run(JSON.stringify(legacyCards), episode.id);
@@ -225,4 +226,44 @@ test("reference panel offers any library item, reports unavailable links and esc
   assert.deepEqual(linkReference(["a"], "b"), ["a", "b"]);
   assert.deepEqual(linkReference(["a"], "a"), ["a"]);
   assert.deepEqual(unlinkReference(["a", "b"], "a"), ["b"]);
+});
+
+test("the first undo after migration restores the initialized episode reference set", (t) => {
+  const { root, episode, ref1, ref2 } = v6Root(t);
+  let store = new Store(root);
+  t.after(() => store.close());
+  const migrated = store.getEpisode(episode.id);
+  const initialSet = migrated.referenceItemIds;
+  assert.deepEqual([...initialSet].sort(), [ref1.id, ref2.id].sort());
+  const history = () => store.db.prepare("SELECT revision,reference_prompt,reference_item_ids FROM episode_history WHERE episode_id=? ORDER BY revision").all(episode.id).map((row) => ({ ...row }));
+  assert.deepEqual(history(), [
+    { revision: 1, reference_prompt: null, reference_item_ids: null },
+    { revision: 2, reference_prompt: "", reference_item_ids: JSON.stringify(initialSet) },
+  ], "only the current-revision row is backfilled");
+  const edited = store.updateEpisode(episode.id, migrated.revision, { referencePrompt: "new feel", referenceItemIds: [ref2.id] });
+  const undone = store.undoEpisode(episode.id, edited.revision);
+  assert.deepEqual({ prompt: undone.referencePrompt, ids: undone.referenceItemIds }, { prompt: "", ids: initialSet });
+  // Re-running the step leaves history exactly as written.
+  const before = history();
+  store.db.exec("PRAGMA user_version=6");
+  store.close();
+  store = new Store(root);
+  assert.deepEqual(history(), before);
+});
+
+test("an unresolvable card reference already on a card never blocks board saves", (t) => {
+  const { store, episode, attach } = fixture(t);
+  const mine = attach(episode.id, "mine.png", "image", "Reference");
+  let current = store.updateEpisode(episode.id, episode.revision, { cards: [card("a", "Video", { referenceItemIds: [mine.id] }), card("b", "Video")] });
+  const stored = current.cards.map((value) => value.id === "a" ? { ...value, referenceItemIds: [mine.id, "library_gone"] } : value);
+  store.db.prepare("UPDATE episodes SET cards=? WHERE id=?").run(JSON.stringify(stored), episode.id);
+  current = store.getEpisode(episode.id);
+  current = store.updateEpisode(episode.id, current.revision, { title: "Still saves", cards: current.cards.map((value) => ({ ...value, prompt: "edited" })) });
+  assert.deepEqual(current.cards[0].referenceItemIds, [mine.id, "library_gone"]);
+  assert.equal(current.title, "Still saves");
+  assert.deepEqual(store.getReferenceContext(episode.id).cards[0].items.map((item) => item.available), [true, false]);
+  assert.throws(() => store.updateEpisode(episode.id, current.revision, { cards: current.cards.map((value) => value.id === "a" ? { ...value, referenceItemIds: [...value.referenceItemIds, "library_new"] } : value) }), /library_new/);
+  assert.throws(() => store.updateEpisode(episode.id, current.revision, { cards: current.cards.map((value) => value.id === "b" ? { ...value, referenceItemIds: ["library_gone"] } : value) }), /library_gone/, "a missing ID is new on another card");
+  current = store.updateEpisode(episode.id, current.revision, { cards: current.cards.map((value) => value.id === "a" ? { ...value, referenceItemIds: [mine.id] } : value) });
+  assert.deepEqual(current.cards[0].referenceItemIds, [mine.id], "the unavailable link can be unlinked");
 });
