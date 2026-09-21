@@ -85,7 +85,7 @@ test("a refused Retry leaves no orphan visible queued message", async (t) => {
   const run = store.createProductionRun({ conversationId: conversation.id, kind: "final", origin: "button", originatingMessageId: message.id, harness: "codex" }).run;
   store.updateProductionRun(run.id, { state: "running" });
   const job = store.saveJob({ episodeId: episode.id, kind: "final", outputClass: "final", state: "completed", progress: 1,
-    revision: episode.revision, snapshot: { episode: { revision: episode.revision } }, outputPath: "outputs/final.mp4", requestId: run.id });
+    revision: episode.revision, snapshot: { episode: { revision: episode.revision }, story: { storyRevision: store.getStory(episode.id).storyRevision } }, outputPath: "outputs/final.mp4", requestId: run.id });
   store.publishFinalIntent(run.id, job.id);
   store.updateProductionRun(run.id, { state: "completed" });
   const before = chat.get(episode.id, conversation.id).messages.length;

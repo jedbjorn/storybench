@@ -185,6 +185,7 @@ test("reuse preserves the source; reference direction is optional provenance and
   const allowed = await call(tools, "reuse_project_item", { ...args, direction: { messageId: direct, use: "direct-use" } });
   assert.equal(allowed.reference, true);
   const direction = f.store.referenceDirectionFor(f.epA.id, allowed.libraryItemId, "direct-use");
+  assert.equal(allowed.referenceDirection, direction.id, "the tool result cites the direction record created from the supplied creator message");
   assert.equal(direction.messageId, direct);
   assert.equal(direction.requestId, "request_test1");
   // A later directed request for the same item records its own direction even though the item is already present.

@@ -2107,7 +2107,9 @@ export class Store {
     let job = this.getJob(jobId);
     if (!job || job.requestId !== runId) throw new StoreError("The output was not produced by this request", 409);
     const pinnedEpisodeRevision = completion?.snapshot?.episode?.revision ?? job.snapshot?.episode?.revision;
+    const pinnedStoryRevision = completion?.snapshot?.story?.storyRevision ?? job.snapshot?.story?.storyRevision;
     if (!Number.isInteger(pinnedEpisodeRevision)) throw new StoreError("The Final output is missing its pinned episode revision", 409);
+    if (!Number.isInteger(pinnedStoryRevision)) throw new StoreError("The Final output is missing its pinned story revision", 409);
     const stamp = now();
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -2123,11 +2125,14 @@ export class Store {
         throw new StoreError("Only a completed, present Final output can publish a Final request", 409);
       const result = this.db.prepare(`UPDATE production_runs SET final_intent='published',final_ended_reason='published',final_output_job_id=?,updated_at=?
         WHERE id=? AND final_intent='active' AND state IN ('starting','running')
-          AND (SELECT revision FROM episodes WHERE id=?)=?`).run(jobId, stamp, runId, run.episodeId, pinnedEpisodeRevision);
+          AND (SELECT revision FROM episodes WHERE id=?)=?
+          AND (SELECT revision FROM stories WHERE episode_id=?)=?`)
+        .run(jobId, stamp, runId, run.episodeId, pinnedEpisodeRevision, run.episodeId, pinnedStoryRevision);
       if (!result.changes) {
         const currentEpisodeRevision = this.db.prepare("SELECT revision FROM episodes WHERE id=?").get(run.episodeId)?.revision;
-        if (currentEpisodeRevision !== pinnedEpisodeRevision)
-          throw new StoreError("Render inputs changed before Final publication; validate the current cut and render again", 409, { currentEpisodeRevision });
+        const currentStoryRevision = this.db.prepare("SELECT revision FROM stories WHERE episode_id=?").get(run.episodeId)?.revision;
+        if (currentEpisodeRevision !== pinnedEpisodeRevision || currentStoryRevision !== pinnedStoryRevision)
+          throw new StoreError("Render inputs changed before Final publication; validate the current cut and render again", 409, { currentEpisodeRevision, currentStoryRevision });
         throw new StoreError(`This request has no active Final intent (${run.finalIntent})`, 409, { current: run });
       }
       this.db.exec("COMMIT");
