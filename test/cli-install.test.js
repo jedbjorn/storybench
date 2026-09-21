@@ -44,6 +44,7 @@ function fixture(t) {
     HOME: home, XDG_CONFIG_HOME: path.join(home, "config"), XDG_DATA_HOME: path.join(home, "data"),
     XDG_STATE_HOME: path.join(home, "state"), XDG_RUNTIME_DIR: path.join(home, "run"),
     STORYBENCH_UNIT_NAME: "storybench-test-install.service", STORYBENCH_UNIT_DIR: path.join(home, "units"),
+    DOCKER_HOST: "unix:///run/user/1000/docker.sock",
     PATH: `${path.join(home, ".local", "bin")}:${process.env.PATH}`,
   };
   mkdirSync(env.XDG_RUNTIME_DIR, { recursive: true });
@@ -123,6 +124,9 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
   assert.equal(builds, 1);
   assert.equal(realpath(s.xdg.current), path.join(s.xdg.releases, s.commit));
   assert.equal(statSync(s.xdg.executable).mode & 0o777, 0o755);
+  const unitText = readFileSync(path.join(s.env.STORYBENCH_UNIT_DIR, s.env.STORYBENCH_UNIT_NAME), "utf8");
+  assert.match(unitText, new RegExp(`^WorkingDirectory=${path.join(s.xdg.releases, s.commit)}$`, "m"));
+  assert.match(unitText, /^Environment="DOCKER_HOST=unix:\/\/\/run\/user\/1000\/docker\.sock"$/m);
   const installed = await readReleaseManifest(path.join(s.xdg.releases, s.commit, "manifest.json"));
   assert.equal(installed.ok, true);
   assert.deepEqual({ remote: installed.manifest.source.remote, ref: installed.manifest.source.ref }, { remote: s.remote, ref: "main" });

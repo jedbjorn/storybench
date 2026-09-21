@@ -2,7 +2,7 @@
 // passes immutable source facts here; this module owns every installation mutation.
 import crypto from "node:crypto";
 import {
-  chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
+  accessSync, chmodSync, closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
   readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync,
 } from "node:fs";
 import path from "node:path";
@@ -210,15 +210,27 @@ function unitFile(context) {
   return path.join(dir, unitName(context.env));
 }
 
-function installUnit(context) {
+function servicePath(callerPath, node) {
+  const standard = ["/usr/local/bin", "/usr/bin", "/bin"];
+  const dockerDir = String(callerPath || "").split(":").filter((directory) => path.isAbsolute(directory)).find((directory) => {
+    try { accessSync(path.join(directory, "docker"), constants.X_OK); return true; } catch { return false; }
+  });
+  const extra = [dockerDir, path.dirname(node)].filter((directory) => directory && !standard.includes(directory));
+  return [...new Set([...extra, ...standard])].join(":");
+}
+
+function installUnit(context, release) {
   const unit = unitName(context.env);
   const hostConfig = path.join(context.xdg.state, `host-${unit.replace(/\.service$/, "")}.json`);
+  const node = context.nodePath ?? process.execPath;
+  const environment = { PATH: servicePath(context.env.PATH, node) };
+  for (const key of ["DOCKER_HOST", "DOCKER_CONTEXT"]) if (context.env[key]) environment[key] = context.env[key];
   const content = generateUnit({
-    node: context.nodePath ?? process.execPath,
-    hostEntry: path.join(context.xdg.current, "src", "runtime", "host.js"),
+    node,
+    hostEntry: path.join(release, "src", "runtime", "host.js"),
     hostConfig,
-    workingDirectory: context.xdg.current,
-    environment: { PATH: [path.dirname(context.nodePath ?? process.execPath), "/usr/local/bin", "/usr/bin", "/bin"].filter((value, index, all) => all.indexOf(value) === index).join(":") },
+    workingDirectory: release,
+    environment,
   });
   return writeUnitAtomic(unitFile(context), content);
 }
@@ -248,7 +260,7 @@ export async function installFromSource(context, metadata, adapters = {}) {
   });
   if (direct.code !== 0 || !direct.stdout.includes(metadata.commit)) throw new CliError("The staged Storybench CLI did not report its exact commit; activation was not changed");
   const launcherChanged = writeAtomic(context.xdg.executable, launcherText(context.nodePath ?? process.execPath, context.xdg.current), 0o755);
-  const unitChanged = installUnit(context);
+  const unitChanged = installUnit(context, staged.release);
   if (unitChanged) {
     const result = await context.system.daemonReload();
     if (result.code !== 0) throw new CliError(`The systemd user manager could not reload units: ${firstLine(result.stderr) || `exit ${result.code}`}`);
