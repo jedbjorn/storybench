@@ -372,6 +372,7 @@ test("install.sh refuses a rootful Docker daemon during preflight", (t) => {
   script("id", "echo 1000");
   script("uname", "echo Linux");
   script("node", "echo v24.21.0");
+  for (const name of ["npm", "systemctl", "tar", "df"]) script(name, "exit 0");
   script("git", `case "$*" in
     *"rev-parse --show-toplevel"*) printf '%s\\n' "$STUB_REPO" ;;
     *"status --porcelain"*) ;;
