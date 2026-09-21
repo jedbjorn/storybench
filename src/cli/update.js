@@ -1,18 +1,21 @@
 import crypto from "node:crypto";
 import { existsSync, lstatSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { checkCompatibility, readReleaseManifest } from "../runtime/manifest.js";
 import { inspectDataRoot } from "../services/data-root.js";
-import { createMetadataBackup, currentRelease, restoreMetadataBackup, stopService } from "./backup.js";
+import { createMetadataBackup, currentRelease, mountPath, restoreMetadataBackup, stopService } from "./backup.js";
 import { CliError, EXIT } from "./errors.js";
-import { activateSymlink, assertActivationStopped, reusableRelease, stageRelease } from "./install.js";
+import { removeImagesIfUnused } from "./images.js";
+import { activateSymlink, assertActivationStopped, installerMinimumFreeBytes, reusableRelease, stageRelease } from "./install.js";
 import { prepareService, startAndVerify } from "./lifecycle.js";
 import { withLock } from "./lock.js";
-import { readReceipts, receiptName, writeJsonAtomic } from "./receipts.js";
+import { interruptedTransitionHint, markTransitionRecoveryHandled, readReceipts, receiptName, reconcileInterruptedTransition, transitionDirectory, writeJsonAtomic } from "./receipts.js";
 import { activeWork, healthProblems, serviceStatus } from "./service.js";
+import { nonInteractiveGitEnv } from "./system.js";
 import { unitName } from "./unit.js";
 import { configuredRoot } from "./root.js";
-import { writeConfigAtomic } from "./config.js";
+import { readConfig, writeConfigAtomic } from "./config.js";
 
 const COMMIT = /^[0-9a-f]{40}$/;
 const UPDATE_SCHEMA = "storybench.update/1";
@@ -24,8 +27,7 @@ function releaseRecord(release) {
     images: { app: release.identity.images.app, worker: release.identity.images.worker } } : null;
 }
 function step(adapters, name) { return adapters.injectFailure?.(name); }
-function transitionDirectory(context) { return path.join(context.xdg.state, "updates"); }
-function attemptFile(context, date = new Date()) { return path.join(transitionDirectory(context), receiptName(date)); }
+function attemptFile(context, date = new Date()) { return path.join(transitionDirectory(context.xdg), receiptName(date)); }
 function saveAttempt(file, receipt, adapters) { writeJsonAtomic(file, receipt, { beforeRename: adapters.beforeReceiptRename }); }
 
 function validateOrigin(remote, ref) {
@@ -49,7 +51,9 @@ function remoteRef(ref) {
 }
 
 async function git(context, args, label) {
-  const result = await context.runCommand("git", ["--git-dir", context.xdg.mirror, ...args], { timeoutMs: 120_000 });
+  const result = await context.runCommand("git", ["--git-dir", context.xdg.mirror, ...args], {
+    timeoutMs: 120_000, env: nonInteractiveGitEnv(context.env),
+  });
   if (result.code !== 0) throw new CliError(`${label} failed`, { hint: "Check network access and the host's Git credential helper, then retry." });
   return result.stdout.trim();
 }
@@ -63,7 +67,9 @@ export async function fetchAvailable(context, release, adapters = context.recove
   const sourceRef = remoteRef(ref);
   if (!sourceRef) return { local: release.identity.commit, current: release.identity.commit, available: release.identity.commit, ref };
   let local = null;
-  const before = await context.runCommand("git", ["--git-dir", context.xdg.mirror, "rev-parse", "--verify", `${sourceRef}^{commit}`], { timeoutMs: 30_000 });
+  const before = await context.runCommand("git", ["--git-dir", context.xdg.mirror, "rev-parse", "--verify", `${sourceRef}^{commit}`], {
+    timeoutMs: 30_000, env: nonInteractiveGitEnv(context.env),
+  });
   if (before.code === 0 && COMMIT.test(before.stdout.trim())) local = before.stdout.trim();
   await git(context, ["fetch", "--no-tags", "--prune", "origin", `+${sourceRef}:refs/storybench/update-candidate`], "Fetching update metadata");
   const available = await git(context, ["rev-parse", "--verify", "refs/storybench/update-candidate^{commit}"], "Resolving the fetched update");
@@ -81,14 +87,14 @@ async function verifyStaged(context, staged, adapters) {
   }
 }
 
-async function verifyIsolated(context, config, release, adapters) {
+export async function verifyIsolated(context, config, release, adapters = {}) {
   if (adapters.verifyIsolated) return adapters.verifyIsolated({ context, config, release });
   const name = `storybench-${config.installId}-verify-${crypto.randomUUID().slice(0, 12)}`;
   const identity = JSON.stringify(release.identity);
   const run = await context.runCommand("docker", ["run", "--detach", "--name", name,
     "--label", `io.storybench.install=${config.installId}`, "--label", "io.storybench.role=verify",
     "--network", "none", "--user", "0:0", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-    "--mount", `type=bind,source=${config.dataRoot},target=/storybench/data`, "--env", `STORYBENCH_RELEASE=${identity}`,
+    "--mount", `type=bind,source=${mountPath(config.dataRoot, "The data root")},target=/storybench/data`, "--env", `STORYBENCH_RELEASE=${identity}`,
     release.identity.images.app, "node", "src/server.js", "--data-root", "/storybench/data", "--port", "4173"], { timeoutMs: 60_000 });
   if (run.code !== 0) throw new CliError(`The isolated release container could not start: ${firstLine(run.stderr) || `exit ${run.code}`}`);
   const id = run.stdout.trim() || name;
@@ -112,7 +118,16 @@ async function verifyIsolated(context, config, release, adapters) {
   }
 }
 
-async function verifyActivation(context, config, release, wasRunning, adapters) {
+function databaseIdentity(dataRoot) {
+  let db;
+  try { db = new DatabaseSync(path.join(dataRoot, "storybench.sqlite"), { readOnly: true }); }
+  catch { return null; }
+  try { return db.prepare("SELECT id FROM data_root WHERE singleton=1").get()?.id ?? null; }
+  catch { return null; }
+  finally { db.close(); }
+}
+
+export async function verifyActivation(context, config, release, wasRunning, adapters = {}) {
   if (adapters.verifyActivation) return adapters.verifyActivation({ context, config, release, wasRunning });
   let health;
   if (wasRunning) {
@@ -122,7 +137,9 @@ async function verifyActivation(context, config, release, wasRunning, adapters) 
   const root = inspectDataRoot(config.dataRoot);
   if (!Number.isInteger(root.schemaVersion) || health.schema?.current !== root.schemaVersion)
     throw new CliError("Release health and the on-disk database schema do not match");
-  if (root.identity?.id && root.identity.id !== config.dataRootId) throw new CliError("The activated release opened a different database identity");
+  const identity = databaseIdentity(config.dataRoot);
+  if (!identity || identity !== config.dataRootId || health.database?.id !== identity)
+    throw new CliError("The activated release opened a different database identity");
   return health;
 }
 
@@ -150,23 +167,12 @@ async function releaseAt(directory) {
 }
 
 export async function selectPreviousRelease(context, currentCommit, schemaVersion) {
-  const transitions = readReceipts(transitionDirectory(context)).map(({ file, value }) => ({ file, ...value }))
+  const transitions = readReceipts(transitionDirectory(context.xdg)).map(({ file, value }) => ({ file, ...value }))
     .filter((value) => [UPDATE_SCHEMA, ROLLBACK_SCHEMA].includes(value.schema) && value.outcome === "success")
     .sort((a, b) => Date.parse(b.completedAt || b.attemptedAt) - Date.parse(a.completedAt || a.attemptedAt));
   const transition = transitions.find((value) => value.to?.commit === currentCommit && value.from?.commit && value.from.commit !== currentCommit);
   const candidates = [];
   if (transition) candidates.push({ commit: transition.from.commit, boundary: transition.backup?.path ?? null, transition });
-  let names = [];
-  try { names = readdirSync(context.xdg.releases).filter((name) => COMMIT.test(name) && name !== currentCommit); } catch { /* reported below */ }
-  if (!transition) {
-    const fallback = [];
-    for (const commit of names) {
-      const release = await releaseAt(path.join(context.xdg.releases, commit));
-      if (release) fallback.push({ commit, release, installedAt: release.manifest.builtAt });
-    }
-    fallback.sort((a, b) => Date.parse(b.installedAt || 0) - Date.parse(a.installedAt || 0));
-    for (const item of fallback) candidates.push({ commit: item.commit, release: item.release, boundary: null, transition: null });
-  }
   for (const candidate of candidates) {
     const release = candidate.release ?? await releaseAt(path.join(context.xdg.releases, candidate.commit));
     if (release) return { ...candidate, release, compatibility: checkCompatibility(release.manifest, { schemaVersion }) };
@@ -175,30 +181,44 @@ export async function selectPreviousRelease(context, currentCommit, schemaVersio
 }
 
 export function selectRetainedCommits(releases, { currentCommit, previousCommit, schemaVersion, maximum = 3 }) {
-  const ordered = [...releases].sort((a, b) => Date.parse(b.activatedAt || b.installedAt || 0) - Date.parse(a.activatedAt || a.installedAt || 0));
+  const ordered = releases.filter((release) => release.proven || release.commit === currentCommit || release.commit === previousCommit)
+    .sort((a, b) => Date.parse(b.activatedAt || 0) - Date.parse(a.activatedAt || 0));
   const keep = new Set([currentCommit, previousCommit].filter(Boolean));
-  const compatible = ordered.find(({ manifest }) => checkCompatibility(manifest, { schemaVersion }).compatible);
+  const compatible = ordered.find(({ manifest, proven }) => proven && checkCompatibility(manifest, { schemaVersion }).compatible);
   if (compatible) keep.add(compatible.commit);
-  for (const release of ordered) if (keep.size < maximum) keep.add(release.commit);
+  for (const release of ordered) if (release.proven && keep.size < maximum) keep.add(release.commit);
   return keep;
 }
 
-async function retainReleases(context, currentCommit, previousCommit, schemaVersion) {
+export async function retainReleases(context, currentCommit, previousCommit, schemaVersion) {
+  const successful = readReceipts(transitionDirectory(context.xdg)).map(({ value }) => value)
+    .filter((value) => [UPDATE_SCHEMA, ROLLBACK_SCHEMA].includes(value.schema) && value.outcome === "success")
+    .sort((a, b) => Date.parse(b.completedAt || 0) - Date.parse(a.completedAt || 0));
+  const activated = new Map();
+  for (const receipt of successful) {
+    if (receipt.to?.commit && !activated.has(receipt.to.commit)) activated.set(receipt.to.commit, receipt.completedAt);
+    if (receipt.from?.commit && !activated.has(receipt.from.commit)) activated.set(receipt.from.commit, receipt.attemptedAt);
+  }
   const releases = [];
   let names = [];
   try { names = readdirSync(context.xdg.releases).filter((name) => COMMIT.test(name)); } catch { return; }
   for (const commit of names) {
     const release = await releaseAt(path.join(context.xdg.releases, commit));
-    if (release) releases.push({ commit, manifest: release.manifest, installedAt: release.manifest.builtAt });
+    if (release) releases.push({ commit, manifest: release.manifest, proven: activated.has(commit), activatedAt: activated.get(commit) ?? null });
   }
   const keep = selectRetainedCommits(releases, { currentCommit, previousCommit, schemaVersion });
+  const retainedImages = new Set(releases.filter(({ commit }) => keep.has(commit))
+    .flatMap(({ manifest }) => [manifest.images.app.id, manifest.images.worker.id]));
+  const prunedImages = new Set();
   for (const release of releases) if (!keep.has(release.commit)) {
     const directory = path.join(context.xdg.releases, release.commit);
-    if (lstatSync(directory).isDirectory() && !lstatSync(directory).isSymbolicLink()) rmSync(directory, { recursive: true, force: true });
+    if (lstatSync(directory).isDirectory() && !lstatSync(directory).isSymbolicLink()) {
+      rmSync(directory, { recursive: true, force: true });
+      prunedImages.add(release.manifest.images.app.id); prunedImages.add(release.manifest.images.worker.id);
+    }
   }
-  // Image deletion is deliberately conservative: exact pairs can be shared by a stopped
-  // installation that Docker cannot attribute. Unreferenced layers remain cache, never a
-  // claimed retained release, and no global prune is used.
+  await removeImagesIfUnused(context.runCommand, prunedImages, { retained: retainedImages,
+    installId: readConfig(context.xdg.configFile)?.installId ?? null, env: context.env });
 }
 
 function beforeStateFailure(before, force) {
@@ -214,13 +234,53 @@ function beforeStateFailure(before, force) {
   }
 }
 
+function availableKilobytes(stdout) {
+  const fields = stdout.trim().split("\n").at(-1)?.trim().split(/\s+/) ?? [];
+  return Number(fields[3]);
+}
+
+export async function assertUpdateFreeSpace(context, adapters = {}) {
+  if (adapters.checkFreeSpace) return adapters.checkFreeSpace({ context });
+  const requested = context.env.STORYBENCH_MIN_FREE_KB;
+  const minimumKb = requested == null || requested === "" ? Math.ceil(installerMinimumFreeBytes() / 1024) : Number(requested);
+  if (!Number.isInteger(minimumKb) || minimumKb <= 0) throw new CliError("STORYBENCH_MIN_FREE_KB must be a positive integer");
+  const docker = await context.runCommand("docker", ["info", "--format", "{{.DockerRootDir}}"], { timeoutMs: 30_000, env: context.env });
+  if (docker.code !== 0 || !path.isAbsolute(docker.stdout.trim())) throw new CliError("Docker did not report an absolute image-store location for the update free-space check");
+  for (const target of new Set([context.xdg.share, docker.stdout.trim()])) {
+    const result = await context.runCommand("df", ["-Pk", target], { timeoutMs: 30_000, env: context.env });
+    const freeKb = result.code === 0 ? availableKilobytes(result.stdout) : NaN;
+    if (!Number.isFinite(freeKb) || freeKb < minimumKb)
+      throw new CliError(`Insufficient free space for update staging at ${target}`, { hint: `Free space until at least ${Math.ceil(minimumKb / 1024)} MiB is available, then retry.` });
+  }
+}
+
+async function recoverInterruptedTransition(context, config, found) {
+  if (!found) return;
+  let action = "left-stopped";
+  if (found.value.serviceWasRunning) {
+    const release = await currentRelease(context);
+    const unit = unitName(context.env);
+    const status = await serviceStatus({ system: context.system, unit, port: config.port, identity: release.identity,
+      dataRootId: config.dataRootId, probe: context.probeService });
+    if (status.state !== "healthy") {
+      if (["active", "activating", "reloading", "deactivating", "failed"].includes(status.unit.active)) await stopService(context, unit);
+      await startAndVerify(context, config, await prepareService(context, config, { releaseRoot: release.root, manifestPath: release.file }));
+    }
+    action = status.state === "healthy" ? "already-running" : "restarted";
+    context.out(`Recovered interrupted transition: the previously running service is ${action === "restarted" ? "running again" : "already running"}.`);
+  } else context.out("Recovered interrupted transition record; the service remains stopped. Run `storybench up` when ready.");
+  markTransitionRecoveryHandled(found, action);
+}
+
 export async function runUpdate(context, { options }) {
   const adapters = context.recoveryAdapters ?? {};
   const operation = options.check ? "update --check" : options.force ? "update --force" : "update";
   return withLock(context.xdg.lockDir, operation, async () => {
+    const interrupted = reconcileInterruptedTransition(context);
     const prior = await currentRelease(context);
     if (options.check) {
       const available = await fetchAvailable(context, prior, adapters);
+      if (interrupted) context.out(interruptedTransitionHint(interrupted));
       context.out(`Update ref: ${available.ref}\nLocal commit: ${available.local}\nCurrent commit: ${available.current}\nAvailable commit: ${available.available}\n${available.available === available.current ? "Storybench is current." : "An update is available."}`);
       return EXIT.OK;
     }
@@ -229,9 +289,11 @@ export async function runUpdate(context, { options }) {
       config = { ...config, installId: `sb${crypto.randomBytes(5).toString("hex")}` };
       writeConfigAtomic(context.xdg.configFile, config);
     }
+    await recoverInterruptedTransition(context, config, interrupted);
+    await assertUpdateFreeSpace(context, adapters);
     const unit = unitName(context.env);
     const receipt = { schema: UPDATE_SCHEMA, attemptedAt: new Date().toISOString(), completedAt: null, outcome: "in-progress", failureStep: null,
-      from: releaseRecord(prior), to: null, backup: null, serviceWasRunning: null };
+      pid: process.pid, from: releaseRecord(prior), to: null, backup: null, serviceWasRunning: null };
     const file = attemptFile(context);
     saveAttempt(file, receipt, adapters);
     let failureStep = "fetch", backup = null, downtime = false, wasRunning = false, target = null;
@@ -297,16 +359,18 @@ export async function runUpdate(context, { options }) {
 export async function runRollback(context) {
   const adapters = context.recoveryAdapters ?? {};
   return withLock(context.xdg.lockDir, "rollback", async () => {
+    const interrupted = reconcileInterruptedTransition(context);
     let config = configuredRoot(context);
     if (!config.installId) {
       config = { ...config, installId: `sb${crypto.randomBytes(5).toString("hex")}` };
       writeConfigAtomic(context.xdg.configFile, config);
     }
+    await recoverInterruptedTransition(context, config, interrupted);
     const prior = await currentRelease(context);
     const schemaVersion = databaseSchema(config);
     const selected = await selectPreviousRelease(context, prior.identity.commit, schemaVersion);
     const receipt = { schema: ROLLBACK_SCHEMA, attemptedAt: new Date().toISOString(), completedAt: null, outcome: "in-progress", failureStep: null,
-      from: releaseRecord(prior), to: selected ? releaseRecord(selected.release) : null, backup: null, serviceWasRunning: null };
+      pid: process.pid, from: releaseRecord(prior), to: selected ? releaseRecord(selected.release) : null, backup: null, serviceWasRunning: null };
     const file = attemptFile(context); saveAttempt(file, receipt, adapters);
     if (!selected) {
       Object.assign(receipt, { outcome: "refused", completedAt: new Date().toISOString(), failureStep: "select" }); saveAttempt(file, receipt, adapters);
@@ -316,7 +380,7 @@ export async function runRollback(context) {
       Object.assign(receipt, { outcome: "refused", completedAt: new Date().toISOString(), failureStep: "schema-gate",
         recoveryBoundary: { schema: schemaVersion, backup: selected.boundary } }); saveAttempt(file, receipt, adapters);
       throw new CliError(`Cannot roll back to ${selected.commit}: ${selected.compatibility.problems.join("; ")}`, {
-        hint: `The recovery boundary is database schema ${schemaVersion}. The relevant pre-update backup is ${selected.boundary ?? "not recorded"}; restoring it would discard newer metadata and is a separate deliberate recovery action.` });
+        hint: `The recovery boundary is database schema ${schemaVersion}. The relevant recorded transition backup is ${selected.boundary ?? "not recorded"}; restoring it would discard newer metadata and is a separate deliberate recovery action.` });
     }
     const target = selected.release, unit = unitName(context.env);
     let failureStep = "busy-gate", backup = null, downtime = false, wasRunning = false;

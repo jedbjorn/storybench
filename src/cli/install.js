@@ -13,7 +13,7 @@ import { CliError, EXIT } from "./errors.js";
 import { ensurePrivateDirectory } from "./fs-safety.js";
 import { withLock } from "./lock.js";
 import { probeService } from "./service.js";
-import { runCommand } from "./system.js";
+import { nonInteractiveGitEnv, runCommand } from "./system.js";
 import { generateUnit, unitName, writeUnitAtomic } from "./unit.js";
 
 const COMMIT = /^[0-9a-f]{40}$/;
@@ -40,6 +40,8 @@ async function checked(run, command, args, options = {}) {
   if (result.code !== 0) throw new CliError(`${command} ${args[0] || ""} failed: ${firstLine(result.stderr) || `exit ${result.code}`}`);
   return result.stdout.trim();
 }
+
+function gitOptions(env, options = {}) { return { ...options, env: nonInteractiveGitEnv(env) }; }
 
 export function releasePath(xdg, commit) {
   if (!COMMIT.test(commit)) throw new CliError("The installer commit must be a full lowercase Git object ID");
@@ -108,28 +110,28 @@ export function readInstallReceipt(file, manifest = null) {
   return { ok: true, receipt: value };
 }
 
-async function seedMirror(run, source, mirror, remote) {
-  if (!existsSync(mirror)) await checked(run, "git", ["clone", "--mirror", "--no-hardlinks", source, mirror], { timeoutMs: 120_000 });
-  const current = await checked(run, "git", ["--git-dir", mirror, "remote", "get-url", "origin"]).catch(() => "");
-  if (current !== remote) await checked(run, "git", ["--git-dir", mirror, "remote", "set-url", "origin", remote]);
+async function seedMirror(run, source, mirror, remote, env) {
+  if (!existsSync(mirror)) await checked(run, "git", ["clone", "--mirror", "--no-hardlinks", source, mirror], gitOptions(env, { timeoutMs: 120_000 }));
+  const current = await checked(run, "git", ["--git-dir", mirror, "remote", "get-url", "origin"], gitOptions(env)).catch(() => "");
+  if (current !== remote) await checked(run, "git", ["--git-dir", mirror, "remote", "set-url", "origin", remote], gitOptions(env));
 }
 
-async function materialize(run, mirror, commit, stage) {
+async function materialize(run, mirror, commit, stage, env) {
   mkdirSync(stage, { recursive: false, mode: 0o700 });
   const archive = path.join(path.dirname(stage), `.${commit}.archive.${crypto.randomUUID()}.tar`);
   try {
-    await checked(run, "git", ["--git-dir", mirror, "archive", "--format=tar", "--output", archive, commit], { timeoutMs: 120_000 });
+    await checked(run, "git", ["--git-dir", mirror, "archive", "--format=tar", "--output", archive, commit], gitOptions(env, { timeoutMs: 120_000 }));
     await checked(run, "tar", ["-xf", archive, "-C", stage], { timeoutMs: 120_000 });
   } finally { rmSync(archive, { force: true }); }
 }
 
-async function attachDetachedMetadata(run, mirror, commit, stage) {
+async function attachDetachedMetadata(run, mirror, commit, stage, env) {
   const metadata = path.join(path.dirname(stage), `.git-${commit}.${crypto.randomUUID()}`);
-  await checked(run, "git", ["init", "--quiet", metadata]);
-  await checked(run, "git", ["-C", metadata, "fetch", "--quiet", "--no-tags", mirror, commit], { timeoutMs: 120_000 });
-  await checked(run, "git", ["-C", metadata, "update-ref", "--no-deref", "HEAD", commit]);
-  await checked(run, "git", ["-C", metadata, "read-tree", commit]);
-  await checked(run, "git", ["-C", metadata, "config", "core.worktree", stage]);
+  await checked(run, "git", ["init", "--quiet", metadata], gitOptions(env));
+  await checked(run, "git", ["-C", metadata, "fetch", "--quiet", "--no-tags", mirror, commit], gitOptions(env, { timeoutMs: 120_000 }));
+  await checked(run, "git", ["-C", metadata, "update-ref", "--no-deref", "HEAD", commit], gitOptions(env));
+  await checked(run, "git", ["-C", metadata, "read-tree", commit], gitOptions(env));
+  await checked(run, "git", ["-C", metadata, "config", "core.worktree", stage], gitOptions(env));
   writeFileSync(path.join(stage, ".git"), `gitdir: ${path.join(metadata, ".git")}\n`, { mode: 0o600 });
   return () => { rmSync(path.join(stage, ".git"), { force: true }); rmSync(metadata, { recursive: true, force: true }); };
 }
@@ -169,10 +171,10 @@ export async function stageRelease(context, metadata, adapters = {}) {
   if (existsSync(final) && current === final)
     await assertActivationStopped(context, current, final, { replacing: true });
   const stage = path.join(context.xdg.releases, `.stage-${metadata.commit}.${crypto.randomUUID()}`);
-  await materialize(run, context.xdg.mirror, metadata.commit, stage);
+  await materialize(run, context.xdg.mirror, metadata.commit, stage, context.env);
   let detach = () => {};
   try {
-    detach = await attachDetachedMetadata(run, context.xdg.mirror, metadata.commit, stage);
+    detach = await attachDetachedMetadata(run, context.xdg.mirror, metadata.commit, stage, context.env);
     await checked(run, "npm", ["ci", "--omit=dev", "--ignore-scripts=false"], { cwd: stage, timeoutMs: 600_000 });
     const module = await import(`${pathToFileURL(path.join(stage, "src", "runtime", "release.js")).href}?install=${crypto.randomUUID()}`);
     const buildRelease = adapters.buildRelease ?? module.buildRelease;
@@ -183,7 +185,8 @@ export async function stageRelease(context, metadata, adapters = {}) {
     };
     const manifestModule = await import(`${pathToFileURL(path.join(stage, "src", "runtime", "manifest.js")).href}?install=${crypto.randomUUID()}`);
     const installedAt = new Date().toISOString();
-    const installer = { node: process.version, npm: firstLine(await checked(run, "npm", ["--version"])), git: firstLine(await checked(run, "git", ["--version"])), docker: metadata.dockerVersion ?? "unknown" };
+    const installer = { node: process.version, npm: firstLine(await checked(run, "npm", ["--version"])),
+      git: firstLine(await checked(run, "git", ["--version"], gitOptions(context.env))), docker: metadata.dockerVersion ?? "unknown" };
     manifest = {
       ...manifest,
       source: { ...manifest.source, commit: metadata.commit, ref: metadata.ref, remote: metadata.remote },
@@ -283,9 +286,9 @@ export async function installFromSource(context, metadata, adapters = {}) {
   if (process.platform !== "linux") throw new CliError(`Storybench installation supports Linux only (found ${process.platform})`);
   validateSourceFacts(metadata);
   const [head, status, remote] = await Promise.all([
-    checked(run, "git", ["-C", metadata.source, "rev-parse", "HEAD"]),
-    checked(run, "git", ["-C", metadata.source, "status", "--porcelain", "--untracked-files=all"]),
-    checked(run, "git", ["-C", metadata.source, "remote", "get-url", "origin"]),
+    checked(run, "git", ["-C", metadata.source, "rev-parse", "HEAD"], gitOptions(context.env)),
+    checked(run, "git", ["-C", metadata.source, "status", "--porcelain", "--untracked-files=all"], gitOptions(context.env)),
+    checked(run, "git", ["-C", metadata.source, "remote", "get-url", "origin"], gitOptions(context.env)),
   ]);
   if (head !== metadata.commit) throw new CliError("The source checkout changed after installer preflight; retry ./install.sh");
   if (status) throw new CliError("The source checkout is not clean; commit, stash or remove every change before installing");
@@ -293,9 +296,9 @@ export async function installFromSource(context, metadata, adapters = {}) {
   return withLock(context.xdg.lockDir, "install", async () => {
   for (const directory of [context.xdg.share, context.xdg.releases, context.xdg.state]) ensurePrivateDirectory(directory);
   mkdirSync(context.xdg.bin, { recursive: true, mode: 0o755 });
-  await seedMirror(run, metadata.source, context.xdg.mirror, metadata.remote);
-  if ((await run("git", ["--git-dir", context.xdg.mirror, "cat-file", "-e", `${metadata.commit}^{commit}`])).code !== 0)
-    await checked(run, "git", ["--git-dir", context.xdg.mirror, "fetch", "--no-tags", metadata.source, metadata.commit], { timeoutMs: 120_000 });
+  await seedMirror(run, metadata.source, context.xdg.mirror, metadata.remote, context.env);
+  if ((await run("git", ["--git-dir", context.xdg.mirror, "cat-file", "-e", `${metadata.commit}^{commit}`], gitOptions(context.env))).code !== 0)
+    await checked(run, "git", ["--git-dir", context.xdg.mirror, "fetch", "--no-tags", metadata.source, metadata.commit], gitOptions(context.env, { timeoutMs: 120_000 }));
   context.out(`Staging Storybench ${metadata.commit}...`);
   const staged = await stageRelease(context, metadata, adapters);
   const direct = await run(context.nodePath ?? process.execPath, [path.join(staged.release, "bin", "storybench.mjs"), "version"], {

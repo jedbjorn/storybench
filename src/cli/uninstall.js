@@ -6,6 +6,7 @@ import path from "node:path";
 import { readReleaseManifest } from "../runtime/manifest.js";
 import { readConfig } from "./config.js";
 import { CliError, EXIT } from "./errors.js";
+import { installationLabeledImages, removeImagesIfUnused } from "./images.js";
 import { withLock } from "./lock.js";
 import { runCommand } from "./system.js";
 import { unitName } from "./unit.js";
@@ -67,6 +68,7 @@ export async function runUninstall(context, { options }) {
   try { config = readConfig(context.xdg.configFile); } catch { /* preserve even invalid config */ }
   const images = await installedImages(context.xdg);
   const removedContainers = await removeOwnedContainers(run, config?.installId, context.env);
+  for (const image of await installationLabeledImages(run, config?.installId, context.env)) images.add(image);
 
   const executable = context.xdg.executable;
   if (existsSync(executable)) {
@@ -83,13 +85,7 @@ export async function runUninstall(context, { options }) {
   rmSync(context.xdg.mirror, { recursive: true, force: true });
   rmSync(context.xdg.releases, { recursive: true, force: true });
 
-  let removedImages = 0;
-  for (const image of images) {
-    const used = await run("docker", ["ps", "-a", "--filter", `ancestor=${image}`, "--format", "{{.ID}}"], { timeoutMs: 30_000, env: context.env });
-    if (used.code !== 0 || used.stdout.trim()) continue;
-    const removed = await run("docker", ["image", "rm", image], { timeoutMs: 120_000, env: context.env });
-    if (removed.code === 0) removedImages++;
-  }
+  const removedImages = await removeImagesIfUnused(run, images, { installId: config?.installId ?? null, env: context.env });
   try { rmdirSync(context.xdg.share); } catch (error) { if (!["ENOENT", "ENOTEMPTY"].includes(error.code)) throw error; }
   context.out(`Uninstalled Storybench application (${removedContainers} container(s), ${removedImages} unreferenced image(s)).`);
   context.out(`Preserved configuration: ${context.xdg.configFile}`);

@@ -13,6 +13,7 @@ import { PACKAGE_ROOT, manifestFile } from "./release.js";
 import { activeWork, probeService, requestJson, serviceStatus } from "./service.js";
 import { SERVICE_BUSY_STATES } from "./executor.js";
 import { generateUnit, unitName, writeUnitAtomic } from "./unit.js";
+import { interruptedTransitionHint, reconcileInterruptedTransition } from "./receipts.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const APP_STOP_TIMEOUT_S = 30;
@@ -72,6 +73,8 @@ export async function waitForHealth(context, { unit, port, identity, dataRootId,
   let last;
   for (;;) {
     last = await serviceStatus({ system: context.system, unit, port, identity, dataRootId, probe: context.probeService });
+    if ((last.unit.restarts ?? 0) > 0)
+      throw new CliError(`The Storybench service entered a restart loop (${last.unit.restarts} restart(s))`, { hint: "See `storybench logs`." });
     if (last.state === "healthy") return last;
     if (last.state === "failed" || (last.unit.active === "inactive" && Date.now() > deadline - timeoutMs + 3000))
       throw new CliError(`The Storybench service did not start (${last.unit.active}${last.unit.result && last.unit.result !== "success" ? `, ${last.unit.result}` : ""})`, { hint: "See `storybench logs`." });
@@ -232,6 +235,7 @@ export async function runOpen(context, _parsed, configuredRoot) {
 
 export async function runStatus(context) {
   const config = loadConfig(context);
+  const interrupted = reconcileInterruptedTransition(context);
   const unit = unitName(context.env);
   let rootProblem = null;
   try { verifiedRoot(context); } catch (error) { rootProblem = `${error.message}${error.hint ? ` — ${error.hint}` : ""}`; }
@@ -239,6 +243,7 @@ export async function runStatus(context) {
   try { release = await expectedRelease(context); } catch (error) { release = { error: error.message }; }
   const status = await serviceStatus({ system: context.system, unit, port: config.port, identity: release.identity ?? null, dataRootId: config.dataRootId, probe: context.probeService });
   const lines = [`Status: ${status.state}`, `Unit: ${unit} (${status.unit.load ?? "unknown"}, ${status.unit.active ?? "unknown"}${status.unit.sub ? `/${status.unit.sub}` : ""})`];
+  if (interrupted) lines.push(`Recovery: ${interruptedTransitionHint(interrupted)}`);
   if (status.unit.pid) lines.push(`Process: host PID ${status.unit.pid}${status.unit.startedAt ? ` since ${status.unit.startedAt}` : ""}`);
   let predates = false;
   if (config.installId) {

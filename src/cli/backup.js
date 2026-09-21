@@ -15,7 +15,7 @@ const STOP_TIMEOUT_MS = 120_000;
 
 function firstLine(value) { return String(value || "").trim().split("\n")[0]; }
 function inside(parent, child) { const relative = path.relative(parent, child); return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative)); }
-function mountPath(value, label) {
+export function mountPath(value, label) {
   if (!path.isAbsolute(value) || /[,\0\r\n]/.test(value)) throw new CliError(`${label} cannot be mounted safely`);
   return value;
 }

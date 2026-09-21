@@ -2,6 +2,10 @@
 // desktop opener. Every call passes an argument array (never shell text). Tests inject a fake with the same shape.
 import { spawn } from "node:child_process";
 
+export function nonInteractiveGitEnv(env = process.env) {
+  return { ...env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -oBatchMode=yes" };
+}
+
 export function runCommand(command, args, { timeoutMs = 120_000, env = process.env, input = null, cwd = undefined } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { env, cwd, stdio: [input == null ? "ignore" : "pipe", "pipe", "pipe"] });
@@ -21,7 +25,7 @@ export function hostSystem({ env = process.env } = {}) {
     systemctl,
     async unitState(unit) {
       let result;
-      try { result = await systemctl(["show", unit, "--timestamp=unix", "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStartTimestamp,Result,FragmentPath"], { timeoutMs: 15_000 }); }
+      try { result = await systemctl(["show", unit, "--timestamp=unix", "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStartTimestamp,Result,FragmentPath,NRestarts"], { timeoutMs: 15_000 }); }
       catch (error) {
         // No systemctl at all: no user manager can be running the service.
         if (error.code === "ENOENT") return { load: "not-found", active: "inactive", sub: "dead", pid: null, managerUnavailable: true };
@@ -36,7 +40,8 @@ export function hostSystem({ env = process.env } = {}) {
       // --timestamp=unix gives "@<seconds>"; report ISO time.
       const started = /^@(\d+)$/.exec(fields.ExecMainStartTimestamp || "");
       return { load: fields.LoadState, active: fields.ActiveState, sub: fields.SubState, pid: Number(fields.MainPID) || null,
-        startedAt: started ? new Date(Number(started[1]) * 1000).toISOString() : null, result: fields.Result || null, fragment: fields.FragmentPath || null };
+        startedAt: started ? new Date(Number(started[1]) * 1000).toISOString() : null, result: fields.Result || null,
+        fragment: fields.FragmentPath || null, restarts: Number(fields.NRestarts) || 0 };
     },
     daemonReload: () => systemctl(["daemon-reload"], { timeoutMs: 30_000 }),
     start: (unit) => systemctl(["start", unit], { timeoutMs: 60_000 }),
