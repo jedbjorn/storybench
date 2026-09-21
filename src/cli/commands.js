@@ -218,7 +218,9 @@ export const COMMANDS = {
     examples: ["storybench open"], run: (context, parsed) => runOpen(context, parsed, configuredRoot) },
   logs: { usage: "storybench logs [-f]", summary: "Show this installation's service journal", args: [0, 0],
     description: "Shows only this service's journal: the lifecycle host's events (service start/stop, app start/health/stop, worker start/stop,\n" +
-      "credential sync). App and worker container output is not forwarded to the journal in this build.",
+      "credential sync). Unfiltered container output is not forwarded to the journal in this build: app diagnostics are bounded,\n" +
+      "and worker forwarding keeps only allowlisted launcher diagnostics.\n" +
+      "Worker prompts, model text and chat content are not forwarded.",
     options: { follow: { type: "boolean", short: "f", help: "Keep following new entries" } }, examples: ["storybench logs", "storybench logs -f"],
     run: (context, parsed) => runLogs(context, parsed, configuredRoot) },
   doctor: { usage: "storybench doctor", summary: "Check installation, runtime, data and provider readiness", args: [0, 0],
