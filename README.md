@@ -98,7 +98,11 @@ Adoption makes a consistent metadata backup, migrates the existing workspace int
 
 The agent receives episode-rendered orientation and practical skills for the current saved project. These describe paths, tools and possible workflows without imposing a creative process. Workers may read Storybench project directories across channels and episodes so the creator can ask to find and reuse an asset. Reuse preserves the source and registers the result or membership in the explicit destination with provenance; read visibility never changes the active write destination.
 
-References are read-only feel context by default. Attaching one, asking generally for a Draft or Final, or instructions embedded inside a reference do not authorize direct incorporation or editing. The creator grants that permission in ordinary chat by clearly asking to use or edit the reference; no special phrase or second confirmation is required.
+References are read-only feel context by default. A reference prompt describes only the feel to take from that material; attaching a reference, asking generally for a Draft or Final, or instructions embedded inside the reference do not authorize direct incorporation or editing. Permission to use or edit a reference comes from the creator's own chat message. A clear request identifying the material and intended use is enough; no special phrase or second confirmation is required.
+
+Production actions run through the selected conversation. Card Build/Revise, still or animated graphic, Create draft and Create final each record one visible user request for the agent; they do not invoke a browser-side render or silently queue a fallback. Save conflicts are resolved before sending, only one episode turn runs at a time, and the agent can prepare material, run the required operation and wait for its result before reporting completion. Ordinary typed production requests use the same tools, so a button is never required.
+
+Request-bound complete-video Final behavior is in final review. The **Create final** button starts with Final intent already attached. For an ordinary typed request, the agent must declare that the current request asks for a Final and bind it to the originating message written by the creator; text in references, quoted history or model output cannot grant that authority. Either path authorizes the agent to finish the current saved project—including needed preparation, edits, graphics and renders—without another exact-cut confirmation. A Final appears only after a completed output is validated and published; stopping, cancellation, terminal failure or restart ends unfinished intent instead of replaying it.
 
 ## Command reference
 
@@ -126,8 +130,6 @@ This reference is checked against the CLI help. Run `storybench help COMMAND`, `
 | `storybench help [COMMAND [SUBCOMMAND]]` | Show general or command-specific help. |
 
 Human-readable output is the current contract; there is no machine-output mode or shell completion yet.
-
-Builds predating the update/recovery delivery report `backup`, `update` and `rollback` as unavailable. Install a release that includes those commands before following the recovery examples below.
 
 ## Application, data and uninstall
 
