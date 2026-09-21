@@ -1,3 +1,5 @@
+import { FONTS, fontPath, fontCatalog } from './fonts.js';
+import { validateSelection } from './runtime/conversation-runtime.js';
 import http from "node:http";
 import { rm, stat, realpath } from "node:fs/promises";
 import { createReadStream } from "node:fs";
@@ -19,6 +21,7 @@ import { deleteDraftOutputs, listDraftCleanup, moveFinalToDrafts } from "./servi
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = path.join(root, "public");
 const mime = {
+  ".ttf": "font/ttf",
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -177,6 +180,30 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
       if (req.method === "GET" && url.pathname === "/api/harnesses") {
         if (!catalog) return send(res, 200, { available: false, reason: "Harness selection needs the Storybench runtime (Docker lifecycle)", harnesses: [] });
         return send(res, 200, { available: Boolean(continuity), reason: continuity ? null : "Conversation settings storage is not available in this data root yet", harnesses: await catalog.list({ refresh: url.searchParams.get("refresh") === "1" }) });
+      }
+      if (url.pathname === "/api/model-default") {
+        if (req.method === "GET") return send(res, 200, store.getModelDefault());
+        if (req.method === "PUT") {
+          if (!continuity) throw new StoreError("Model selection needs the Storybench runtime", 409);
+          const body = await jsonBody(req);
+          const { harness, model, effort, notes } = validateSelection(await catalog.list({}), body.selection ?? {});
+          return send(res, 200, { ...store.saveModelDefault(body.expectedRevision, { harness, model, effort }), notes });
+        }
+      }
+      if (req.method === "GET" && url.pathname === "/api/fonts") return send(res, 200, fontCatalog());
+      if (["GET", "HEAD"].includes(req.method) && parts[0] === "api" && parts[1] === "fonts" && parts.length === 4) {
+        const file = fontPath(FONTS.find((font) => font.id === parts[2]), parts[3]);
+        if (!file) throw new StoreError("Requested font is unavailable", 404);
+        return await streamFile(req, res, file);
+      }
+      if (url.pathname === "/api/brand-standards") {
+        const channel = viewChannel();
+        if (!channel) throw new StoreError("Select a channel first", 404);
+        if (req.method === "GET") return send(res, 200, store.getBrandStandards(channel.id));
+        if (req.method === "PUT") {
+          const body = await jsonBody(req);
+          return send(res, 200, store.saveBrandStandards(channel.id, body.expectedRevision, body));
+        }
       }
       if (req.method === "GET" && url.pathname === "/api/state") {
         const channel = viewChannel();
@@ -527,7 +554,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
       if (!["GET", "HEAD"].includes(req.method))
         throw new StoreError("Route not found", 404);
       const relative =
-        url.pathname === "/"
+        ["/", "/episodes", "/branding", "/models"].includes(url.pathname)
           ? "index.html"
           : decodeURIComponent(url.pathname.slice(1));
       return await streamFile(req, res, contained(publicDir, relative));

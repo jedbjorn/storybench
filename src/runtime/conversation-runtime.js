@@ -97,10 +97,11 @@ export function changeSettings(persistence, conversationId, requested, { catalog
   return { settings, previous: current, changed: true, duplicate: false, notes: next.notes, advisory: next.advisory, harnessChanged: current.harness !== next.harness };
 }
 
-// Initial settings for a new conversation: the last explicit choice, else the defaults.
-export function initialSettings(persistence, defaults = { harness: "codex", model: null, effort: null }) {
+// A saved app default wins for new conversations. Preserve legacy inheritance until one is saved.
+export function initialSettings(persistence, defaults = null) {
+  if (defaults) return { ...defaults, source: "explicit-inherited" };
   const last = persistence.lastExplicitSettings();
-  return last ? { harness: last.harness, model: last.model ?? null, effort: last.effort ?? null, source: "explicit-inherited" } : { ...defaults, source: "default" };
+  return last ? { harness: last.harness, model: last.model ?? null, effort: last.effort ?? null, source: "explicit-inherited" } : { harness: "codex", model: null, effort: null, source: "default" };
 }
 
 export function createMemoryConversationPersistence({ now = () => new Date().toISOString() } = {}) {

@@ -1,3 +1,4 @@
+import { fontForFamily } from './fonts.js';
 import { DatabaseSync } from "node:sqlite";
 import {
   copyFileSync,
@@ -24,7 +25,7 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 export const DEFAULT_CHANNEL_NAME = "Main";
 // IDs become directory names, so they must be single safe path segments.
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
@@ -396,6 +397,7 @@ export class Store {
     if (version < 7) this.migrateV7();
     if (version < 8) this.migrateV8();
     if (version < 9) this.migrateV9();
+    if (version < 10) this.migrateV10();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -863,6 +865,51 @@ export class Store {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+  migrateV10() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec(`CREATE TABLE IF NOT EXISTS channel_standards (
+        channel_id TEXT PRIMARY KEY REFERENCES channels(id), colors TEXT NOT NULL DEFAULT '[]',
+        fonts TEXT NOT NULL DEFAULT '[]', style_prompt TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE TABLE IF NOT EXISTS model_default (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1), selection TEXT, revision INTEGER NOT NULL DEFAULT 1
+      );
+      INSERT OR IGNORE INTO model_default(singleton) VALUES(1);`);
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(10,?)").run(now());
+      this.db.exec("PRAGMA user_version=10; COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+  getBrandStandards(channelId) {
+    this.requireChannel(channelId);
+    const row = this.db.prepare("SELECT * FROM channel_standards WHERE channel_id=?").get(channelId);
+    return { channelId, colors: parse(row?.colors, []), fonts: parse(row?.fonts, []), stylePrompt: row?.style_prompt ?? "", revision: row?.revision ?? 1 };
+  }
+  saveBrandStandards(channelId, expectedRevision, { colors, fonts, stylePrompt } = {}) {
+    const current = this.getBrandStandards(channelId);
+    if (!Number.isInteger(expectedRevision) || expectedRevision !== current.revision)
+      throw new StoreError("Brand standards changed in another view. Reload before saving.", 409, { current });
+    if (!Array.isArray(colors) || colors.length > 3 || colors.some((color) => typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color)))
+      throw new StoreError("Choose up to three colors using six-digit hex values (for example #1255FF)");
+    if (!Array.isArray(fonts) || fonts.length > 3 || fonts.some((family) => !fontForFamily(family)) || new Set(fonts).size !== fonts.length)
+      throw new StoreError("Choose up to three different supported fonts");
+    if (typeof stylePrompt !== "string" || stylePrompt.length > 10000) throw new StoreError("Style prompt must be text of at most 10000 characters");
+    const result = this.db.prepare(`INSERT INTO channel_standards(channel_id,colors,fonts,style_prompt,revision) VALUES(?,?,?,?,?)
+      ON CONFLICT(channel_id) DO UPDATE SET colors=excluded.colors,fonts=excluded.fonts,style_prompt=excluded.style_prompt,revision=excluded.revision WHERE channel_standards.revision=?`)
+      .run(channelId, JSON.stringify(colors.map((color) => color.toUpperCase())), JSON.stringify(fonts), stylePrompt, current.revision + 1, expectedRevision);
+    if (!result.changes) throw new StoreError("Brand standards changed in another view. Reload before saving.", 409, { current: this.getBrandStandards(channelId) });
+    return this.getBrandStandards(channelId);
+  }
+  getModelDefault() {
+    const row = this.db.prepare("SELECT selection,revision FROM model_default WHERE singleton=1").get();
+    return { selection: parse(row.selection, null), revision: row.revision };
+  }
+  saveModelDefault(expectedRevision, selection) {
+    const result = this.db.prepare("UPDATE model_default SET selection=?,revision=revision+1 WHERE singleton=1 AND revision=?")
+      .run(JSON.stringify(selection), Number.isInteger(expectedRevision) ? expectedRevision : -1);
+    if (!result.changes) throw new StoreError("Default model changed in another view. Reload before saving.", 409, { current: this.getModelDefault() });
+    return this.getModelDefault();
   }
   insertHistory(episode, actor, createdAt, parentRevision) {
     this.db.prepare(`INSERT INTO episode_history(episode_id,revision,title,notes,cards,actor,created_at,parent_revision,reference_prompt,reference_item_ids)

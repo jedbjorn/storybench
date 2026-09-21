@@ -1,3 +1,4 @@
+import { SCHEMA_VERSION } from "../src/store.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -16,7 +17,7 @@ import { initDataRoot } from "../src/services/data-root.js";
 const OLD = "a".repeat(40), NEW = "c".repeat(40), OTHER = "d".repeat(40);
 const image = (letter) => `sha256:${letter.repeat(64)}`;
 
-function manifest(commit, app, worker, range = { min: 0, max: 9 }) {
+function manifest(commit, app, worker, range = { min: 0, max: SCHEMA_VERSION }) {
   const value = createManifest({ packageName: "storybench", packageVersion: "0.1.0", commit, ref: "main",
     images: { app: image(app), worker: image(worker) }, schema: range });
   value.source.remote = "/private/origin.git";
@@ -309,7 +310,7 @@ test("rollback uses the previous exact pair and refuses an incompatible schema w
     assert.equal((await s.run(["update"])).code, 0);
     const updateReceipt = readReceipts(path.join(s.xdg.state, "updates"), "storybench.update/1")[0].value;
     const result = await s.run(["rollback"]);
-    assert.equal(result.code, 1); assert.match(result.stderr, /schema 9 is outside the supported range 0-8/);
+    assert.equal(result.code, 1); assert.match(result.stderr, new RegExp(`schema ${SCHEMA_VERSION} is outside the supported range 0-8`));
     assert.match(result.stderr, /recorded transition backup/); assert.doesNotMatch(result.stderr, /pre-update backup/);
     assert.ok(result.stderr.includes(updateReceipt.backup.path));
     assert.equal(path.basename(readlinkSync(s.xdg.current)), NEW);

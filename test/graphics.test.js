@@ -33,7 +33,7 @@ test('renders and decodes a composed PNG with registered bitmap input', async t 
       { kind: 'line', x: 0, y: 100, x2: 200, y2: 100, stroke: 'white', strokeWidth: 4 },
       { kind: 'path', x: 220, y: 80, d: 'M 0 40 L 30 0 L 60 40 Z', fill: 'purple' },
       { kind: 'image', itemId: 'logo', x: 260, y: 10, width: 40, height: 40 },
-      { kind: 'text', x: 15, y: 160, text: 'Storybench', fontSize: 28, fontFamily: 'Unavailable Face', fill: 'white' },
+      { kind: 'text', x: 15, y: 160, text: 'Storybench', fontSize: 28, fontFamily: 'Liberation Serif', fill: 'white' },
     ] },
   });
   assert.equal(result.kind, 'image'); assert.equal(result.metadata.fontFallback, 'DejaVu Sans');
@@ -68,8 +68,7 @@ test('rejects limits and injection-shaped or unregistered resources with stable 
   await writeFile(join(root, 'fake.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
   await assert.rejects(renderGraphic({ workspace: root, outputPath: join(root, 'svg.png'), resolveImage: () => join(root, 'fake.svg'), recipe: { ...base, layers: [{ kind: 'image', itemId: 'svg' }] } }), error => error.code === 'INVALID_IMAGE');
   assert.throws(() => validateGraphicRecipe({ kind: 'motion', width: 321, height: 180, duration: 1, fps: 30, layers: [] }), error => error.code === 'MOTION_DIMENSIONS' && error.path === 'width');
-  const fallback = validateGraphicRecipe({ ...base, layers: [{ kind: 'text', text: 'Fallback', fontFamily: 'Unavailable Face' }] });
-  assert.equal(fallback.layers[0].fontFamily, 'DejaVu Sans');
+  assert.throws(() => validateGraphicRecipe({ ...base, layers: [{ kind: 'text', text: 'Fallback', fontFamily: 'Unavailable Face' }] }), { code: 'UNKNOWN_FONT' });
 });
 
 test('rejects excessive decoded image dimensions and aggregate resources before rasterization', async t => {
@@ -88,4 +87,29 @@ test('cancellation removes output and module temporary files while preserving so
   const sourceBefore = await readFile(source); const output = join(root, 'cancelled.mp4'); const controller = new AbortController();
   await assert.rejects(renderGraphic({ workspace: root, outputPath: output, resolveImage: () => source, signal: controller.signal, onProgress: value => { if (value > 0) controller.abort(); }, recipe: { kind: 'motion', width: 1920, height: 1080, duration: 30, fps: 30, background: 'black', layers: [{ kind: 'image', itemId: 'source', width: 80, height: 80, keyframes: { x: [{ time: 0, value: 0 }, { time: 30, value: 1000 }] } }] } }), error => error.name === 'AbortError');
   assert.deepEqual(await readFile(source), sourceBefore); assert.deepEqual((await readdir(root)).sort(), ['source.png']);
+});
+
+test('all six font families and their bold weights render distinct stills and motion', async (t) => {
+  const { fontCatalog } = await import('../src/fonts.js');
+  const root = await workspace(t), hashes = [];
+  for (const font of fontCatalog()) {
+    assert.ok(font.available, `${font.family} regular and bold must be installed`);
+    for (const weight of [400, 700]) {
+      const outputPath = join(root, `${font.id}-${weight}.png`);
+      await renderGraphic({ workspace: root, outputPath, recipe: { kind: 'still', width: 400, height: 100, layers: [
+        { kind: 'text', text: 'Storybench 123', x: 5, y: 60, fontSize: 38, fontFamily: font.family, fontWeight: weight },
+      ] } });
+      hashes.push((await readFile(outputPath)).toString('base64'));
+    }
+  }
+  assert.equal(new Set(hashes).size, 12, 'families and weights must produce different pixels');
+  const clips = [];
+  for (const family of ['DejaVu Sans', 'Liberation Serif']) {
+    const outputPath = join(root, `${family}.mp4`);
+    await renderGraphic({ workspace: root, outputPath, recipe: { kind: 'motion', width: 400, height: 100, duration: 0.2, fps: 30, layers: [
+      { kind: 'text', text: 'Storybench 123', x: 5, y: 60, fontSize: 38, fontFamily: family, fontWeight: 700 },
+    ] } });
+    clips.push(frameMd5(outputPath, 0));
+  }
+  assert.notEqual(clips[0], clips[1]);
 });

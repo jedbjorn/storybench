@@ -381,15 +381,27 @@ test("the service probe distinguishes Storybench, another program and nothing on
   assert.equal((await probeService(otherPort)).state, "stopped");
 });
 
-test("the installed bin entry runs as a process with only the environment it is given", (t) => {
+test("the installed bin entry runs as a process with only the environment it is given", async (t) => {
   const { env, home } = sandbox(t);
   const bin = path.join(REPO, JSON.parse(readFileSync(path.join(REPO, "package.json"), "utf8")).bin.storybench);
-  const run = (...args) => spawnSync(process.execPath, [bin, ...args], { env: { ...env, PATH: process.env.PATH }, cwd: home, encoding: "utf8" });
-  assert.equal(run("help").status, 0);
-  assert.equal(run("doctor").status, 1);
-  assert.equal(run("init", "root").status, 0);
-  assert.equal(run("channel", "create", "Main").status, 0);
-  const current = run("channel", "current");
+  const run = (...args) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [bin, ...args], { env: { ...env, PATH: process.env.PATH }, cwd: home });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (data) => { stdout += data; }); child.stderr.on("data", (data) => { stderr += data; });
+    child.on("error", reject); child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+  assert.equal((await run("help")).status, 0);
+  assert.equal((await run("doctor")).status, 1);
+  assert.equal((await run("init", "root")).status, 0);
+  // Reserve a private non-app port so this process never probes a developer's live service.
+  const other = http.createServer((req, res) => { res.writeHead(404); res.end(); });
+  const port = await listenInRange(other);
+  t.after(() => new Promise((resolve) => other.close(resolve)));
+  const configFile = path.join(env.XDG_CONFIG_HOME, "storybench", "config.json");
+  writeConfigAtomic(configFile, { ...readConfig(configFile), port });
+  const created = await run("channel", "create", "Main");
+  assert.equal(created.status, 0, created.stderr);
+  const current = await run("channel", "current");
   assert.equal(current.status, 0);
   assert.match(current.stdout, /^Main \(channel_/);
   assert.ok(existsSync(path.join(env.XDG_CONFIG_HOME, "storybench", "config.json")));

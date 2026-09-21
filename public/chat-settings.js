@@ -52,18 +52,18 @@ export class ChatSettings {
   entry(harness) { return this.catalog?.harnesses?.find((value) => value.harness === harness) ?? null; }
 
   // Render the editor for `conversation` into the panel; resolves with the saved conversation or null.
-  open(panel, conversation, { busy = false, onSaved = () => {} } = {}) {
+  open(panel, conversation, { busy = false, onSaved = () => {}, defaultMode = false, onDirty = () => {}, onCancel = null } = {}) {
     const settings = conversation.settings ?? { harness: "codex", model: null, effort: null, revision: 1 };
-    const unavailable = !this.catalog?.available;
+    let unavailable = !this.catalog?.available;
     panel.hidden = false;
     panel.innerHTML = `<form class="chat-settings" data-chat-settings-form>
       <fieldset ${unavailable || busy ? "disabled" : ""}>
         <label>Harness <select name="harness" data-settings-harness></select></label>
-        <label>Model <input name="model" data-settings-model list="chatModelOptions" autocomplete="off" placeholder="Harness default"><datalist id="chatModelOptions" data-settings-models></datalist></label>
+        <label>Model <input name="model" data-settings-model list="${defaultMode ? "defaultModelOptions" : "chatModelOptions"}" autocomplete="off" placeholder="Harness default"><datalist id="${defaultMode ? "defaultModelOptions" : "chatModelOptions"}" data-settings-models></datalist></label>
         <label>Thinking <select name="effort" data-settings-effort></select></label>
       </fieldset>
       <p class="chat-settings-note" data-settings-note role="status"></p>
-      <div class="chat-settings-actions"><button type="button" data-settings-refresh>Refresh models</button><button type="button" data-settings-cancel>Cancel</button><button type="submit" data-settings-apply ${unavailable || busy ? "disabled" : ""}>Apply</button></div>
+      <div class="chat-settings-actions"><button type="button" data-settings-refresh>Refresh models</button><button type="button" data-settings-cancel>${defaultMode ? "Reload saved" : "Cancel"}</button><button type="submit" data-settings-apply ${unavailable || busy ? "disabled" : ""}>${defaultMode ? "Save default" : "Apply"}</button></div>
     </form>`;
     const form = panel.querySelector("form"), harness = form.querySelector("[data-settings-harness]"), model = form.querySelector("[data-settings-model]"),
       effort = form.querySelector("[data-settings-effort]"), note = form.querySelector("[data-settings-note]"), list = form.querySelector("[data-settings-models]");
@@ -87,7 +87,7 @@ export class ChatSettings {
       if (entry?.advisory) parts.push(entry.note || "Claude model names are advisory; exact IDs are verified on first use.");
       if (entry?.stale) parts.push(`Model list may be stale${entry.discoveryError ? ` (${entry.discoveryError})` : ""}; use Refresh models.`);
       if (entry && !entry.available) parts.push(`${HARNESS_LABELS[entry.harness]} is unavailable: ${entry.reason}`);
-      if (harness.value !== settings.harness) parts.push("Switching harness starts a new native session on the next message, seeded with a summary of this conversation.");
+      if (!defaultMode && harness.value !== settings.harness) parts.push("Switching harness starts a new native session on the next message, seeded with a summary of this conversation.");
       note.textContent = parts.join(" ");
     };
     harness.value = settings.harness;
@@ -97,10 +97,15 @@ export class ChatSettings {
     paintModels();
     harness.onchange = () => { model.value = ""; effort.value = ""; paintModels(); };
     model.oninput = () => paintModels();
-    form.querySelector("[data-settings-cancel]").onclick = () => { panel.hidden = true; panel.innerHTML = ""; };
+    form.addEventListener("input", onDirty);
+    form.addEventListener("change", onDirty);
+    form.querySelector("[data-settings-cancel]").onclick = () => { if (onCancel) return onCancel(); panel.hidden = true; panel.innerHTML = ""; };
     form.querySelector("[data-settings-refresh]").onclick = async () => {
       note.textContent = "Refreshing models…";
       await this.loadCatalog({ refresh: true });
+      unavailable = !this.catalog?.available;
+      form.querySelector("fieldset").disabled = unavailable || busy;
+      form.querySelector("[data-settings-apply]").disabled = unavailable || busy;
       paintHarnesses(); paintModels();
     };
     // One client request ID per opened editor makes a double submit idempotent.
@@ -109,14 +114,17 @@ export class ChatSettings {
       event.preventDefault();
       const apply = form.querySelector("[data-settings-apply]");
       apply.disabled = true;
+      if (defaultMode) form.querySelector("fieldset").disabled = true;
       try {
-        const saved = await this.api(`/api/episodes/${conversation.episodeId}/chats/${conversation.id}/settings`, { method: "PUT",
-          body: JSON.stringify({ harness: harness.value, model: model.value.trim() || null, effort: effort.value || null, expectedRevision: settings.revision, clientRequestId }) });
+        const selection = { harness: harness.value, model: model.value.trim() || null, effort: effort.value || null };
+        const saved = await this.api(defaultMode ? "/api/model-default" : `/api/episodes/${conversation.episodeId}/chats/${conversation.id}/settings`, { method: "PUT",
+          body: JSON.stringify(defaultMode ? { selection, expectedRevision: settings.revision } : { ...selection, expectedRevision: settings.revision, clientRequestId }) });
         panel.hidden = true; panel.innerHTML = "";
-        onSaved(saved);
+        await onSaved(saved);
       } catch (cause) {
         note.textContent = cause.message;
         apply.disabled = false;
+        if (defaultMode) form.querySelector("fieldset").disabled = unavailable || busy;
       }
     };
   }

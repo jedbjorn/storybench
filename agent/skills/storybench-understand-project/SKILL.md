@@ -22,7 +22,8 @@ description: Orient in the current Storybench channel and episode - read directi
     "story": { "storyRevision": 3, "source": "# Overview\n…", "sections": [ { "id": "…", "title": "Intro", "order": 0 } ] },
     "library": [ { "id": "…", "label": "…", "category": "B-roll", "asset": { "kind": "video", "duration": 42.1, "width": 1920, "height": 1080 } } ],
     "references": { "rule": "…", "episode": { "prompt": "…", "items": [ … ] }, "cards": [ { "cardId": "…", "prompt": "…", "items": [ … ] } ] },
-    "branding": [ … ] }
+    "branding": [ … ], "brandStandards": { "colors": [ … ], "fonts": [ … ], "stylePrompt": "…", "revision": 1 },
+    "fonts": [ { "family": "DejaVu Sans", "available": true, "files": { "regular": "…", "bold": "…" } } ] }
 ```
 
 `search_project` — browse or search the whole installation with origin labels; the current episode is marked `current: true`. An empty query lists everything (bounded).

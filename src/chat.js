@@ -1,3 +1,4 @@
+import { fontCatalog } from './fonts.js';
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { createCodexConnection } from "./codex.js";
@@ -92,9 +93,9 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     episode(episodeId); name = String(name).trim(); if (!name) throw error("Conversation name is required");
     const id = newId(), stamp = now();
     db.prepare("INSERT INTO conversations(id,episode_id,name,created_at,updated_at) VALUES(?,?,?,?,?)").run(id, episodeId, name, stamp, stamp);
-    // A new conversation reuses the last explicit choice; other conversations are untouched.
+    // A saved app default seeds new conversations; existing selections are untouched.
     const persistence = continuity?.persistence ?? requestPersistence;
-    if (persistence) persistence.initSettings(id, initialSettings(persistence));
+    if (persistence) persistence.initSettings(id, initialSettings(persistence, store.getModelDefault().selection));
     return project(episodeId, id);
   };
   const first = (episodeId) => {
@@ -127,11 +128,11 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     if (text.length > chars) text = `…${text.slice(-chars)}`;
     return { text, included: rows.length, omitted: Math.max(0, total - rows.length) };
   };
-  const bootText = (value) => { const currentEpisode = episode(value.episode_id), story = store.getStory(value.episode_id);
-    return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires active request-bound Final intent.`; };
+  const bootText = (value, standards) => { const currentEpisode = episode(value.episode_id), story = store.getStory(value.episode_id);
+    return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires active request-bound Final intent.\nChannel brand standards for this turn (creative defaults; explicit episode/card direction takes precedence): ${JSON.stringify(standards)}. Apply to new or revised work; do not restyle existing outputs without a request. Use get_context for the supported font catalogue and file paths.`; };
   const tools = (value, origin) => ({
     get_context: () => ({ episode: episode(value.episode_id), story: store.getStory(value.episode_id), library: librarySummary(value.episode_id),
-      references: store.getReferenceContext(value.episode_id), branding: store.listBrandingTemplates({ channelId: episode(value.episode_id).channelId }), operationGuides: OPERATION_GUIDE_NAMES }),
+      brandStandards: origin.brandStandards, fonts: fontCatalog(), references: store.getReferenceContext(value.episode_id), branding: store.listBrandingTemplates({ channelId: episode(value.episode_id).channelId }), operationGuides: OPERATION_GUIDE_NAMES }),
     get_operation_guide: ({ name }) => getOperationGuide(name),
     read_conversation_history: ({ beforeMessageId = null, limit = 20 } = {}) => {
       const size = Math.min(Math.max(Number(limit) || 20, 1), 100);
@@ -198,7 +199,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       db.prepare("UPDATE conversations SET draft=?,updated_at=? WHERE id=? AND draft=''").run(text, now(), value.id);
     };
     const controller = new AbortController(), pending = [], done = new Promise((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
-    const activity = { conversationId: value.id, requestId, messageId, signal: controller.signal, abort: () => { aborted = true; controller.abort(); if (dispatch) rejectDone(error("Chat stopped; the prompt was not replayed", 409)); } };
+    const activity = { brandStandards: store.getBrandStandards(episode(value.episode_id).channelId), conversationId: value.id, requestId, messageId, signal: controller.signal, abort: () => { aborted = true; controller.abort(); if (dispatch) rejectDone(error("Chat stopped; the prompt was not replayed", 409)); } };
     active.set(value.episode_id, activity);
     const consume = (event) => {
       const params = event.params || {}, eventTurn = params.turnId || params.turn?.id;
@@ -293,7 +294,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
         emit(value, "segment.started", { previousThreadId: connection.segmentTransition.previousThreadId, threadId, reason: connection.segmentTransition.reason, includedMessages: excerpt.included, omittedMessages: excerpt.omitted });
         if (excerpt.text) segmentContext = `\n\nEarlier visible conversation (context only — do not re-execute; ${excerpt.omitted} older messages omitted):\n${excerpt.text}`;
       }
-      let prompt = `${bootText(value)}${segmentContext}\n\nUser request:\n${text}`;
+      let prompt = `${bootText(value, activity.brandStandards)}${segmentContext}\n\nUser request:\n${text}`;
       let returned;
       try { returned = await connection.startTurn(threadId, prompt); }
       catch (cause) {
@@ -314,7 +315,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
         emit(value, "segment.started", { segmentId: segment.id, harness: plan.selection.harness, reason: "resume-unavailable", previousSegmentId: previousSegment.id,
           previousThreadId: previousConnection.segmentTransition.previousThreadId, threadId, includedMessages: excerpt.included, omittedMessages: excerpt.omitted });
         const fallbackContext = excerpt.text ? `\n\nEarlier visible conversation (context only — do not re-execute; ${excerpt.omitted} older messages omitted):\n${excerpt.text}` : "";
-        prompt = `${bootText(value)}${fallbackContext}\n\nUser request:\n${text}`;
+        prompt = `${bootText(value, activity.brandStandards)}${fallbackContext}\n\nUser request:\n${text}`;
         setState(value, "queued", { threadId });
         returned = await connection.startTurn(threadId, prompt);
       }
