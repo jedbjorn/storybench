@@ -15,6 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as dockerCli from "./docker.js";
 import { followContainerLogs, workerDiagnostic } from "./log-forward.js";
+import { createModelDiscovery } from "./model-discovery.js";
 import { RUNTIME_PROTOCOL, checkCompatibility, manifestId, validateManifest } from "./manifest.js";
 import { CredentialLink, CREDENTIAL_FILES, harnessAvailability, shouldLogSyncAction } from "./credentials.js";
 import {
@@ -35,6 +36,7 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
   const paths = hostPaths(config);
   const n = names(config.installId);
   const workers = new Map();
+  const discovery = createModelDiscovery({ config, stageRoot: path.join(config.runtimeRoot, "credentials") });
   let server, syncTimer, appId, appLogs, stopped, stopping = false;
 
   async function presentRoots() {
@@ -168,8 +170,9 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
   async function handle(raw) {
     const request = validateControlRequest(raw);
     // While draining, the app may still stop and inspect its workers, but nothing new starts.
-    if (stopping && request.op === "worker.start") throw new RuntimeError("STOPPING", "Storybench is shutting down", { status: 503 });
+    if (stopping && ["worker.start", "harness.models"].includes(request.op)) throw new RuntimeError("STOPPING", "Storybench is shutting down", { status: 503 });
     if (request.op === "harness.availability") return harnessAvailability(config.credentials);
+    if (request.op === "harness.models") return discovery.discover(request.harness, { refresh: request.refresh });
     if (request.op === "worker.start") return startWorker(request);
     if (request.op === "worker.stop") return stopWorker(request.requestId);
     const worker = workers.get(request.requestId);

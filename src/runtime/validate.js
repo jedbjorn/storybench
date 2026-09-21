@@ -25,6 +25,7 @@ const CONTROL_OPS = {
   "worker.stop": ["op", "requestId"],
   "worker.status": ["op", "requestId"],
   "harness.availability": ["op"],
+  "harness.models": ["op", "harness", "refresh"],
 };
 
 export function assertId(value, field) {
@@ -89,6 +90,10 @@ export function validateControlRequest(input) {
   const extra = Object.keys(input).filter((key) => !allowed.includes(key));
   if (extra.length) throw new RuntimeError("UNEXPECTED_FIELDS", `Unexpected control fields: ${extra.join(", ")}`);
   if (input.op === "harness.availability") return { op: input.op };
+  if (input.op === "harness.models") {
+    if (input.refresh !== undefined && typeof input.refresh !== "boolean") throw new RuntimeError("INVALID_REQUEST", "refresh must be a boolean");
+    return { op: input.op, harness: assertHarness(input.harness), refresh: input.refresh === true };
+  }
   const request = { op: input.op, requestId: assertId(input.requestId, "requestId") };
   if (input.op === "worker.start") {
     request.harness = assertHarness(input.harness);
