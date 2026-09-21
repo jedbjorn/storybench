@@ -183,8 +183,12 @@ async function main() {
   await save("turn2-resume.json", { chat: trimChat(turn2.chat), workers: turn2Workers });
   record("session", "new worker container resumes the exact native thread", turn2.chat?.state === "idle" && turn2.chat.threadId === turn1.chat?.threadId && lastAssistant(turn2.chat).includes(word) && turn2Workers[0]?.split(" ")[0] !== workerLines[0]?.split(" ")[0] && !turn2.chat.events.some((e) => e.type === "segment.started"),
     `thread ${turn2.chat?.threadId}; worker ${workerLines[0]?.split(" ")[0]} -> ${turn2Workers[0]?.split(" ")[0]}`, "turn2-resume.json");
-  const sessionListing = (await run("find", [path.join(stateRoot, "harnesses"), "-maxdepth", "6", "-printf", "%M %u %p\n"], { allowFail: true })).stdout.replaceAll(stateRoot, "<state>");
-  await save("session-storage.txt", sessionListing.split("\n").filter((line) => !/auth\.json$/.test(line) || / -rw------- /.test(line)).join("\n"));
+  const sessionListing = (await run("find", [path.join(stateRoot, "harnesses"), "-maxdepth", "6", "-printf", "%M %u %s %p\n"], { allowFail: true })).stdout.replaceAll(stateRoot, "<state>");
+  await save("session-storage.txt", sessionListing);
+  // Credential mountpoints in session dirs must be empty 0600 placeholders; anything else fails.
+  const placeholders = sessionListing.split("\n").filter((line) => /\/(auth\.json|\.credentials\.json)$/.test(line));
+  const badPlaceholders = placeholders.filter((line) => !/^-rw------- \S+ 0 /.test(line));
+  record("session", "session-dir credential mountpoints are empty 0600 placeholders", placeholders.length > 0 && badPlaceholders.length === 0, badPlaceholders.join("; ") || `${placeholders.length} placeholder(s) ok`, "session-storage.txt");
 
   // 6. Stop mid-command kills descendants; busy health while channel B is viewed.
   const sleepPrompt = "Run this exact shell command in the foreground with a 10-minute timeout and wait for it to finish before replying (it takes about 8 minutes; do not background it): sh -c 'sleep 240; sleep 241'";

@@ -15,7 +15,9 @@ export class WorkerCodexConnection extends CodexConnection {
       async (args) => ({ [TOOL_CONTENT]: toCodexContentItems(await tools.call(definition.name, args)) }),
     ]));
     super({ ...options, tools: handlers, spawn: () => child });
-    this.dynamicTools = tools.definitions.map((definition) => ({ type: "function", ...definition }));
+    // Storybench tools are served over the request's MCP bridge (see the worker launch
+    // table); dynamic tools stay available for callers that pass `dynamicTools: true`.
+    this.dynamicTools = options.dynamicTools === true ? tools.definitions.map((definition) => ({ type: "function", ...definition })) : [];
   }
 
   threadParams() {

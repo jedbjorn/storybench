@@ -45,7 +45,7 @@ export function createWorkerCodexFactory({ store, controlSocket, templates, segm
     if (!episodeId || !conversationId || !requestId) throw new Error("Worker-backed Codex turns need episode, conversation and request identity");
     const request = await openWorkerRequest({
       controlSocket, store, requestId, conversationId, harness: "codex", segmentId: segmentFor(conversationId), episodeId, templates,
-      bootContext: bootContextFor(store, { episodeId, conversationId, model }),
+      bootContext: bootContextFor(store, { episodeId, conversationId, model }), model,
       wrapTools: (runtimeTools) => mergeTools(runtimeTools, tools),
     });
     onRequest({ requestId, episodeId, conversationId, containerId: request.started.containerId, render: request.render });

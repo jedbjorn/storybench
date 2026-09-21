@@ -1,12 +1,22 @@
 #!/usr/bin/env node
-// Storybench MCP stdio server inside the worker (for Claude Code). It holds no
+// Storybench MCP stdio server inside the worker (for Claude Code and Codex). It holds no
 // authority of its own: every tools/list and tools/call is forwarded to the app over the
 // request's bridge socket with the request-scoped token, and the app decides.
 import { connect } from "node:net";
 import { createInterface } from "node:readline";
 
-const SOCKET = process.env.STORYBENCH_BRIDGE_SOCKET;
-const TOKEN = process.env.STORYBENCH_BRIDGE_TOKEN;
+import { readFileSync } from "node:fs";
+
+// The socket and request token come from the environment (Claude's --mcp-config) or, for
+// Codex (configured with a fixed command), from the app-written request config on the
+// read-only app mount.
+const REQUEST_CONFIG = "/run/storybench/request/app/mcp.json";
+function fromRequestConfig() {
+  try { return JSON.parse(readFileSync(REQUEST_CONFIG, "utf8")).mcpServers.storybench.env; } catch { return {}; }
+}
+const configured = process.env.STORYBENCH_BRIDGE_TOKEN ? {} : fromRequestConfig();
+const SOCKET = process.env.STORYBENCH_BRIDGE_SOCKET ?? configured.STORYBENCH_BRIDGE_SOCKET;
+const TOKEN = process.env.STORYBENCH_BRIDGE_TOKEN ?? configured.STORYBENCH_BRIDGE_TOKEN;
 
 function forward(message) {
   return new Promise((resolve, reject) => {
