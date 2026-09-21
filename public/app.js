@@ -1,6 +1,7 @@
 import { StoryEditor } from "/story-editor.js?v=round2-editor";
 import { LibraryWorkspace, episodeNavigatorHTML, uploadLibraryFile } from "/library-workspace.js";
-import { attachMediaToCard, categoryForCardMedia, setCardType } from "/card-workspace.js";
+import { attachMediaToCard, categoryForCardMedia, duplicateCard, setCardType } from "/card-workspace.js";
+import { linkReference, referencePanelHTML, unlinkReference } from "/reference-workspace.js";
 import { ChatWorkspace } from "/chat-workspace.js";
 import { jobsForOutputView, refreshJobStatus, renderJobList } from "/job-status.js";
 
@@ -14,6 +15,8 @@ let state = { episodes: [], assets: [], jobs: [] },
   jobRefreshInFlight = null,
   boardSections = [],
   boardItems = [],
+  boardItemsEpisode = null,
+  openReferenceCards = new Set(),
   cardImports = new Set();
 // The channel this view is showing. It is captured once (from ?channel= or the default at first load) and sent
 // with every request, so changing the installation default elsewhere never retargets this open view.
@@ -82,6 +85,7 @@ function render() {
   if (!episode) return;
   $("#episodeTitle").value = episode.title;
   $("#episodeNotes").value = episode.notes;
+  renderEpisodeReferences();
   renderCards();
   renderJobs();
   if (!$("#storyPanel").hidden)
@@ -186,14 +190,84 @@ function preview(card) {
 }
 function cardHTML(c, i) {
   const visualCards = episode.cards.filter((value) => value.id !== c.id && value.type !== "Audio");
-  return `<article class="story-card typed-card" draggable="true" data-index="${i}" data-card-id="${c.id}"><div class="drag">⋮⋮</div><div class="card-main"><div class="card-primary"><select data-key="type">${cardTypes.map((type) => `<option ${type === c.type ? "selected" : ""}>${type}</option>`).join("")}</select><input class="card-title" data-key="title" value="${esc(c.title)}" placeholder="Card title"><select data-key="sectionId">${sectionOptions(c)}</select></div><textarea data-key="prompt" placeholder="What should this card accomplish?">${esc(c.prompt)}</textarea>${preview(c)}<div class="card-media-controls"><label>Registered media<select data-key="itemId">${itemOptions(c)}</select></label><div class="card-media-dropzone" data-card-media-drop tabindex="0">Drop media here or <button type="button" data-card-media-pick>choose a file</button><input data-card-media-file type="file" hidden></div></div><div class="card-media-status" data-card-media-status aria-live="polite"></div><details><summary>Timing, references and notes</summary><div class="timing"><label><span>In</span><input data-key="in" type="number" min="0" step=".033" value="${c.in ?? ""}"></label><label><span>Out</span><input data-key="out" type="number" min="0" step=".033" value="${c.out ?? ""}"></label><label><span>Duration</span><input data-key="duration" type="number" min=".033" step=".033" value="${c.duration ?? ""}"></label><label><span>Gain</span><input data-key="gain" type="number" min="0" max="8" step=".1" value="${c.gain ?? 1}"></label></div>${c.type === "Audio" ? `<div class="timing"><label>Role<select data-key="role">${["voiceover", "music", "sound effect", "other"].map((role) => `<option ${role === c.role ? "selected" : ""}>${role}</option>`).join("")}</select></label><label>Anchor<select data-key="anchorVisualCardId"><option value="">Choose visual</option>${visualCards.map((card) => `<option value="${card.id}" ${card.id === c.anchorVisualCardId ? "selected" : ""}>${esc(card.title)}</option>`).join("")}</select></label><label>Offset<input data-key="offset" type="number" min="0" step=".033" value="${c.offset ?? 0}"></label></div>` : ""}<label>Reference items<select data-key="referenceItemIds" multiple>${boardItems.filter((item) => item.category === "Reference").map((item) => `<option value="${item.id}" ${(c.referenceItemIds || []).includes(item.id) ? "selected" : ""}>${esc(item.label)}</option>`).join("")}</select></label><label>Reference URLs<textarea data-key="referenceUrls" placeholder="One URL per line">${esc((c.referenceUrls || []).join("\n"))}</textarea></label><label>Notes<textarea data-key="notes">${esc(c.notes)}</textarea></label><label><input data-key="excluded" type="checkbox" ${c.excluded ? "checked" : ""}> Exclude from assembled cut</label></details></div><div class="card-tools"><button data-promote title="Promote to channel">☆</button><button data-move="-1" title="Move up">↑</button><button data-move="1" title="Move down">↓</button><button data-delete title="Delete">×</button></div></article>`;
+  return `<article class="story-card typed-card" draggable="true" data-index="${i}" data-card-id="${c.id}"><div class="drag">⋮⋮</div><div class="card-main"><div class="card-primary"><select data-key="type">${cardTypes.map((type) => `<option ${type === c.type ? "selected" : ""}>${type}</option>`).join("")}</select><input class="card-title" data-key="title" value="${esc(c.title)}" placeholder="Card title"><select data-key="sectionId">${sectionOptions(c)}</select></div><textarea data-key="prompt" placeholder="What should this card accomplish?">${esc(c.prompt)}</textarea>${preview(c)}<div class="card-media-controls"><label>Output media (footage)<select data-key="itemId">${itemOptions(c)}</select></label><div class="card-media-dropzone" data-card-media-drop tabindex="0">Drop footage/output media here or <button type="button" data-card-media-pick>choose a file</button><input data-card-media-file type="file" hidden></div></div><div class="card-media-status" data-card-media-status aria-live="polite"></div><details class="card-references" data-card-references ${openReferenceCards.has(c.id) ? "open" : ""}><summary>References${(c.referenceItemIds || []).length || c.referencePrompt ? ` (${(c.referenceItemIds || []).length}${c.referencePrompt ? " + prompt" : ""})` : ""}</summary>${referencePanelHTML({ scope: "card", cardId: c.id, episodeId: episode.id, prompt: c.referencePrompt || "", itemIds: c.referenceItemIds || [], items: libraryForPanels() })}</details><details><summary>Timing, references and notes</summary><div class="timing"><label><span>In</span><input data-key="in" type="number" min="0" step=".033" value="${c.in ?? ""}"></label><label><span>Out</span><input data-key="out" type="number" min="0" step=".033" value="${c.out ?? ""}"></label><label><span>Duration</span><input data-key="duration" type="number" min=".033" step=".033" value="${c.duration ?? ""}"></label><label><span>Gain</span><input data-key="gain" type="number" min="0" max="8" step=".1" value="${c.gain ?? 1}"></label></div>${c.type === "Audio" ? `<div class="timing"><label>Role<select data-key="role">${["voiceover", "music", "sound effect", "other"].map((role) => `<option ${role === c.role ? "selected" : ""}>${role}</option>`).join("")}</select></label><label>Anchor<select data-key="anchorVisualCardId"><option value="">Choose visual</option>${visualCards.map((card) => `<option value="${card.id}" ${card.id === c.anchorVisualCardId ? "selected" : ""}>${esc(card.title)}</option>`).join("")}</select></label><label>Offset<input data-key="offset" type="number" min="0" step=".033" value="${c.offset ?? 0}"></label></div>` : ""}<label>Reference URLs<textarea data-key="referenceUrls" placeholder="One URL per line">${esc((c.referenceUrls || []).join("\n"))}</textarea></label><label>Notes<textarea data-key="notes">${esc(c.notes)}</textarea></label><label><input data-key="excluded" type="checkbox" ${c.excluded ? "checked" : ""}> Exclude from assembled cut</label></details></div><div class="card-tools"><button data-duplicate title="Duplicate card">⧉</button><button data-promote title="Promote to channel">☆</button><button data-move="-1" title="Move up">↑</button><button data-move="1" title="Move down">↓</button><button data-delete title="Delete">×</button></div></article>`;
 }
 async function loadBoardContext() {
   if (!episode) return;
   const id = episode.id;
   const [story, items] = await Promise.all([api(`/api/episodes/${id}/story`), api(`/api/episodes/${id}/library`)]);
   if (episode?.id !== id) return;
-  boardSections = story.sections || []; boardItems = items; renderCards();
+  boardSections = story.sections || []; boardItems = items; boardItemsEpisode = id; renderCards(); renderEpisodeReferences();
+}
+const libraryForPanels = () => (episode && boardItemsEpisode === episode.id ? boardItems : null);
+function renderEpisodeReferences() {
+  if (!episode) return;
+  const ids = episode.referenceItemIds || [];
+  $("#episodeReferenceCount").textContent = ids.length || episode.referencePrompt ? `(${ids.length}${episode.referencePrompt ? " + prompt" : ""})` : "";
+  $("#episodeReferences").innerHTML = referencePanelHTML({ scope: "episode", episodeId: episode.id, prompt: episode.referencePrompt || "", itemIds: ids, items: libraryForPanels() });
+}
+// The object whose references a panel edits: the episode itself or one card (by stable card ID).
+function referenceTarget(panel) {
+  if (!panel || !episode) return null;
+  if (panel.dataset.refScope === "episode") return episode;
+  return episode.cards.find((card) => card.id === panel.dataset.refCard) || null;
+}
+function setReferences(target, ids) {
+  target.referenceItemIds = ids;
+  dirty = true;
+  save();
+}
+async function uploadReferences(panel, files) {
+  const target = referenceTarget(panel);
+  if (!target || !files.length) return;
+  const episodeId = episode.id, cardId = panel.dataset.refCard || null;
+  const status = panel.querySelector("[data-ref-status]");
+  try {
+    await flushDraft();
+    for (const file of files) {
+      if (status) status.textContent = `Importing ${file.name}…`;
+      // Registers the item in the episode library and links it only to this scope; output media is untouched.
+      const item = await uploadLibraryFile({ episodeId, file, category: "Reference" });
+      if (episode?.id !== episodeId) return toast(`${file.name} was imported to the previous episode's library.`);
+      boardItems = [...boardItems.filter((value) => value.id !== item.id), item];
+      const current = cardId ? episode.cards.find((card) => card.id === cardId) : episode;
+      if (!current) return toast(`${file.name} was imported to the library, but the card was removed.`);
+      current.referenceItemIds = linkReference(current.referenceItemIds, item.id);
+      dirty = true;
+      await save();
+    }
+    toast(files.length === 1 ? `${files[0].name} linked as a reference` : `${files.length} references linked`);
+  } catch (error) {
+    const current = document.querySelector(cardId ? `[data-ref-card="${CSS.escape(cardId)}"] [data-ref-status]` : `[data-ref-scope="episode"] [data-ref-status]`);
+    if (current) { current.textContent = error.message; current.classList.add("error"); }
+    toast(error.message);
+  }
+}
+function handleReferenceChange(event) {
+  const panel = event.target.closest("[data-ref-scope]");
+  const target = referenceTarget(panel);
+  if (!target) return false;
+  if (event.target.matches("[data-ref-prompt]")) { target.referencePrompt = event.target.value; dirty = true; save(); return true; }
+  if (event.target.matches("[data-ref-add]")) { if (event.target.value) setReferences(target, linkReference(target.referenceItemIds, event.target.value)); return true; }
+  if (event.target.matches("[data-ref-file]")) { const files = [...event.target.files]; event.target.value = ""; uploadReferences(panel, files); return true; }
+  return false;
+}
+function handleReferenceClick(event) {
+  const panel = event.target.closest("[data-ref-scope]");
+  const target = referenceTarget(panel);
+  if (!target) return false;
+  const unlink = event.target.closest("[data-ref-unlink]");
+  if (unlink) { setReferences(target, unlinkReference(target.referenceItemIds, unlink.dataset.refUnlink)); return true; }
+  if (event.target.closest("[data-ref-pick]")) { panel.querySelector("[data-ref-file]").click(); return true; }
+  return Boolean(event.target.closest("[data-ref-scope]"));
+}
+function handleReferenceDrop(event) {
+  const drop = event.target.closest("[data-ref-drop]");
+  if (!drop || !event.dataTransfer?.files?.length) return false;
+  event.preventDefault();
+  drop.classList.remove("drag-over");
+  uploadReferences(drop.closest("[data-ref-scope]"), [...event.dataTransfer.files]);
+  return true;
 }
 let promotingCard = null;
 function openPromote(card) {
@@ -246,6 +320,8 @@ async function save(changes = {}) {
   const target = episode.id,
     revision = episode.revision,
     cards = structuredClone(episode.cards),
+    referencePrompt = episode.referencePrompt ?? "",
+    referenceItemIds = [...(episode.referenceItemIds || [])],
     title = $("#episodeTitle").value,
     notes = $("#episodeNotes").value;
   dirty = false;
@@ -260,11 +336,15 @@ async function save(changes = {}) {
           title,
           notes,
           cards,
+          referencePrompt,
+          referenceItemIds,
           ...changes,
         }),
       });
       if (episode?.id === target) {
         const localCards = episode.cards,
+          localReferencePrompt = episode.referencePrompt,
+          localReferenceItemIds = episode.referenceItemIds,
           localTitle = $("#episodeTitle").value,
           localNotes = $("#episodeNotes").value;
         episode =
@@ -274,6 +354,8 @@ async function save(changes = {}) {
                 title: localTitle,
                 notes: localNotes,
                 cards: localCards,
+                referencePrompt: localReferencePrompt,
+                referenceItemIds: localReferenceItemIds,
               }
             : updated;
         $("#saveState").textContent =
@@ -338,6 +420,7 @@ $("#episodes").onclick = async (e) => {
     await flushDraft();
     episode = state.episodes.find((x) => x.id === id);
     render();
+    if (!$("#boardPanel").hidden) loadBoardContext().catch((error) => toast(error.message));
     await chatWorkspace.open();
     if (!$("#mediaPanel").hidden) libraryWorkspace.open().catch((error) => toast(error.message));
   }
@@ -402,6 +485,7 @@ $("#cards").onchange = (e) => {
   const el = e.target,
     wrap = el.closest(".story-card");
   if (!wrap) return;
+  if (handleReferenceChange(e)) return;
   if (el.matches("[data-card-media-file]")) {
     const file = el.files[0];
     el.value = "";
@@ -423,6 +507,8 @@ $("#cards").onclick = (e) => {
   const wrap = e.target.closest(".story-card");
   if (!wrap) return;
   const i = Number(wrap.dataset.index);
+  if (handleReferenceClick(e)) return;
+  if (e.target.closest("[data-duplicate]")) { duplicateCard(episode.cards, episode.cards[i].id, crypto.randomUUID()); dirty = true; return save(); }
   if (e.target.closest("[data-card-media-pick]")) return wrap.querySelector("[data-card-media-file]").click();
   if (e.target.closest("[data-promote]")) return openPromote(episode.cards[i]);
   if (e.target.closest("[data-delete]")) episode.cards.splice(i, 1);
@@ -444,6 +530,8 @@ $("#cards").onkeydown = (event) => {
 };
 $("#cards").ondragstart = (event) => { const card = event.target.closest("[data-card-id]"); if (card) event.dataTransfer.setData("text/card-id", card.dataset.cardId); };
 $("#cards").ondragover = (event) => {
+  const referenceDrop = event.target.closest("[data-ref-drop]");
+  if (referenceDrop && [...event.dataTransfer.types].includes("Files")) { event.preventDefault(); referenceDrop.classList.add("drag-over"); return; }
   const mediaDrop = event.target.closest("[data-card-media-drop]");
   if (mediaDrop && [...event.dataTransfer.types].includes("Files")) {
     event.preventDefault();
@@ -451,7 +539,14 @@ $("#cards").ondragover = (event) => {
   } else if (event.target.closest("[data-card-section]")) event.preventDefault();
 };
 $("#cards").ondragleave = (event) => event.target.closest("[data-card-media-drop]")?.classList.remove("drag-over");
+$("#cards").addEventListener("toggle", (event) => {
+  const details = event.target.closest?.("[data-card-references]");
+  const cardId = details?.closest("[data-card-id]")?.dataset.cardId;
+  if (!cardId) return;
+  if (details.open) openReferenceCards.add(cardId); else openReferenceCards.delete(cardId);
+}, true);
 $("#cards").ondrop = (event) => {
+  if (handleReferenceDrop(event)) return;
   const mediaDrop = event.target.closest("[data-card-media-drop]");
   if (mediaDrop && event.dataTransfer.files.length) {
     event.preventDefault();
@@ -465,6 +560,14 @@ $("#cards").ondrop = (event) => {
   const card = episode.cards.find((value) => value.id === id);
   if (card) { card.sectionId = group.dataset.cardSection || null; card.order = episode.cards.filter((value) => value.sectionId === card.sectionId).length; dirty = true; save(); }
 };
+$("#episodeReferences").onchange = handleReferenceChange;
+$("#episodeReferences").onclick = handleReferenceClick;
+$("#episodeReferences").ondragover = (event) => {
+  const drop = event.target.closest("[data-ref-drop]");
+  if (drop && [...event.dataTransfer.types].includes("Files")) { event.preventDefault(); drop.classList.add("drag-over"); }
+};
+$("#episodeReferences").ondragleave = (event) => event.target.closest("[data-ref-drop]")?.classList.remove("drag-over");
+$("#episodeReferences").ondrop = handleReferenceDrop;
 $("#undo").onclick = async () => {
   try {
     await flushDraft();
