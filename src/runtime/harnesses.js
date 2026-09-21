@@ -20,7 +20,9 @@ export class WorkerCodexConnection extends CodexConnection {
     // table); dynamic tools stay available for callers that pass `dynamicTools: true`.
     this.dynamicTools = options.dynamicTools === true ? tools.definitions.map((definition) => ({ type: "function", ...definition })) : [];
     this.effort = effort;
-    // Model/effort as reported by the harness for this thread (never assumed).
+    // Model/effort as reported by the harness for this thread (never assumed). Codex's
+    // current app-server responses do not report the resolved effort, so effortResolved is
+    // normally null even when an effort was selected for the turn.
     this.resolved = { model: null, effort: null };
   }
 
@@ -89,7 +91,7 @@ export class WorkerCodexConnection extends CodexConnection {
 }
 
 export class ClaudeStreamSession {
-  constructor(child, { onEvent = () => {} } = {}) {
+  constructor(child, { onEvent = () => {}, onRaw = () => {} } = {}) {
     this.child = child;
     this.onEvent = onEvent;
     this.sessionId = null;
@@ -99,7 +101,7 @@ export class ClaudeStreamSession {
     const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
     lines.on("line", (line) => {
       let event;
-      try { event = JSON.parse(line); } catch { return; }
+      try { event = JSON.parse(line); } catch { onRaw(line); return; }
       if (event.type === "system" && event.subtype === "init") { this.init = event; this.sessionId = event.session_id; }
       if (event.session_id && !this.sessionId) this.sessionId = event.session_id;
       this.onEvent(event);
@@ -142,6 +144,7 @@ export class ClaudeChatConnection {
     this.toolNames = new Map();
     this.usage = null;
     this.interrupted = false;
+    this.attempt = null;
   }
 
   async open() { return this; }
@@ -160,6 +163,13 @@ export class ClaudeChatConnection {
   }
 
   #emit(method, params) { this.onEvent({ method, params: { threadId: this.threadId, turnId: this.turnId, ...params } }); }
+
+  #resumeUnavailable(detail) {
+    const previousThreadId = this.launch?.resume;
+    const message = String(detail || "Claude could not resume the saved session").slice(0, 500);
+    this.segmentTransition = { previousThreadId, threadId: null, reason: "CLAUDE_SESSION_LOST", detail: message, resumeUnavailable: true };
+    return Object.assign(new Error(message), { code: "CLAUDE_SESSION_LOST", resumeUnavailable: true });
+  }
 
   #normalize(event) {
     if (event.type === "system" && event.subtype === "init") {
@@ -199,19 +209,49 @@ export class ClaudeChatConnection {
 
   async startTurn(threadId, text) {
     if (!this.launch || threadId !== this.threadId) throw new Error("Start or resume the Claude session before starting a turn");
-    const child = await this.spawnSession({ harness: "claude", model: this.model, ...(this.effort ? { effort: this.effort } : {}), ...this.launch });
+    const launch = { ...this.launch }, resuming = Boolean(launch.resume);
+    const child = await this.spawnSession({ harness: "claude", model: this.model, ...(this.effort ? { effort: this.effort } : {}), ...launch });
     this.child = child;
-    this.session = new ClaudeStreamSession(child, { onEvent: (event) => this.#normalize(event) });
-    this.turnId = randomUUID();
+    this.completed = false;
+    this.turnId ??= randomUUID();
+    let raw = "", readyResolve, readyReject, readySettled = false;
+    const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+    const settleReady = (method, value) => { if (readySettled) return; readySettled = true; method(value); };
+    const unavailableResult = (event) => event?.type === "result" && /no conversation found|session[^\n]{0,80}(?:not found|missing|does not exist)/i.test(String(event.result || event.error || event.subtype || ""));
+    const attempt = { child, resuming };
+    this.attempt = attempt;
+    this.session = new ClaudeStreamSession(child, {
+      onRaw: (line) => { raw = `${raw}\n${line}`.slice(-1000); },
+      onEvent: (event) => {
+        if (resuming && !this.session?.init && unavailableResult(event)) {
+          settleReady(readyReject, this.#resumeUnavailable(event.result || event.error));
+          return;
+        }
+        this.#normalize(event);
+        if (event.type === "system" && event.subtype === "init") settleReady(readyResolve);
+        else if (event.type === "result") settleReady(readyResolve);
+      },
+    });
     this.#emit("turn/started", { turn: { id: this.turnId } });
     child.once("exit", () => {
+      if (this.attempt !== attempt) return;
       if (!this.completed) {
+        if (resuming && !this.session?.init) {
+          settleReady(readyReject, this.#resumeUnavailable(raw.trim() || "Claude exited before finding the saved session"));
+          return;
+        }
         const detail = this.interrupted ? null : "Claude Code exited before the turn completed";
         this.completed = true;
         this.#emit("turn/completed", { turn: { id: this.turnId, status: this.interrupted ? "interrupted" : "failed", ...(detail ? { error: detail } : {}) }, model: this.resolved.model });
       }
     });
-    this.session.send(text).then(() => { this.completed = true; }, (error) => { if (!this.completed) this.onError(error); });
+    this.session.send(text).then(() => { this.completed = true; }, (error) => {
+      if (resuming && !this.session?.init) settleReady(readyReject, this.#resumeUnavailable(raw.trim() || error.message));
+      else if (!this.completed) this.onError(error);
+    });
+    // A resumed CLI may reject a missing session only after its first input. Do not tell chat
+    // that dispatch succeeded until init proves the recorded session exists.
+    if (resuming) await ready;
     return this.turnId;
   }
 

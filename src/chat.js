@@ -48,7 +48,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
   // Unfinished turns from a previous process (crash, restart, reconciled worker) are marked
   // interrupted and never replayed.
   db.prepare("UPDATE conversation_messages SET state='interrupted',updated_at=? WHERE state IN ('queued','running','streaming')").run(restartStamp);
-  db.prepare(`UPDATE conversations SET state='interrupted',active_turn_id=NULL,error='The previous Codex turn was interrupted by an application restart. It was not replayed; send a new message to continue the saved thread.',updated_at=? WHERE state IN ('queued','running','interrupting')`).run(restartStamp);
+  db.prepare(`UPDATE conversations SET state='interrupted',active_turn_id=NULL,error='The previous assistant turn was interrupted by an application restart. It was not replayed; send a new message to continue the saved session.',updated_at=? WHERE state IN ('queued','running','interrupting')`).run(restartStamp);
 
   const active = new Map(), tasks = new Set(), listeners = new Map();
   let closing = false;
@@ -182,7 +182,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
         emit(value, "assistant.delta", { messageId: assistantId, text: params.delta, turnId });
       } else if (["item/started", "item/completed"].includes(event.method) && ["dynamicToolCall", "mcpToolCall"].includes(params.item?.type)) emit(value, event.method === "item/started" ? "tool.started" : "tool.completed", { name: params.item.tool || params.item.name, status: params.item.status, turnId });
       else if (event.method === "turn/completed") {
-        terminal = true; const status = params.turn?.status, state = status === "completed" ? "idle" : status === "interrupted" ? "interrupted" : "error", detail = state === "error" ? JSON.stringify(params.turn?.error || "Codex turn failed") : null;
+        terminal = true; const status = params.turn?.status, state = status === "completed" ? "idle" : status === "interrupted" ? "interrupted" : "error", detail = state === "error" ? JSON.stringify(params.turn?.error || "Harness turn failed") : null;
         db.prepare("UPDATE conversation_messages SET state=?,updated_at=? WHERE id=?").run(status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed", now(), messageId);
         if (assistantId) db.prepare("UPDATE conversation_messages SET state=?,updated_at=? WHERE id=?").run(status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed", now(), assistantId);
         finishRun({ state: status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed", error: detail, assistantMessageId: assistantId ?? null, nativeTurnId: turnId,
@@ -191,32 +191,43 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       }
     };
     try {
+      let plannedSegmentId = null;
       if (persistence) {
         // Decide the native session: resume the active segment of the selected harness, or open a
         // new segment. Native session IDs never cross harnesses.
         const earlier = Number(db.prepare("SELECT COUNT(*) n FROM conversation_messages WHERE conversation_id=? AND id<?").get(value.id, messageId).n) > 0;
         plan = planTurn(persistence, value.id, { hasEarlierMessages: earlier, legacyThreadId: value.thread_id, defaultModel: model });
-        segment = plan.segment ?? (plan.newSegment.reason === "migrated"
-          ? persistence.createSegment({ conversationId: value.id, harness: "codex", reason: "migrated", id: plan.newSegment.adoptId, nativeSessionId: plan.newSegment.nativeSessionId })
-          : persistence.createSegment({ conversationId: value.id, harness: plan.selection.harness, reason: plan.newSegment.reason, previousSegmentId: plan.newSegment.previousSegmentId, firstMessageId: messageId }));
-        persistence.createRun({ id: requestId, conversationId: value.id, segmentId: segment.id, userMessageId: messageId, harness: plan.selection.harness,
+        plannedSegmentId = plan.segment?.id ?? plan.newSegment.adoptId ?? `segment_${randomUUID()}`;
+        persistence.createRun({ id: requestId, conversationId: value.id, segmentId: null, userMessageId: messageId, harness: plan.selection.harness,
           modelSelected: plan.selection.model, effortSelected: plan.selection.effort, state: "starting", startedAt: now() });
       }
-      connection = await codexFactory({ cwd: store.workspace, model: plan ? plan.selection.model : model, tools: tools(value, activity), signal: controller.signal,
+      const openConnection = (segmentId) => codexFactory({ cwd: store.workspace, model: plan ? plan.selection.model : model, tools: tools(value, activity), signal: controller.signal,
         episodeId: value.episode_id, conversationId: value.id, requestId, request: { text, messageId, kind: "chat", cardId: null },
         // Every Storybench tool call of a worker-backed turn arrives through the request bridge.
         onToolCall: (call) => { try { emit(value, "tool.called", { name: call.name, requestId }); } catch { /* conversation gone */ } },
-        ...(plan ? { harness: plan.selection.harness, effort: plan.selection.effort, segmentId: segment.id } : {}),
+        ...(plan ? { harness: plan.selection.harness, effort: plan.selection.effort, segmentId } : {}),
         onEvent: (event) => dispatch ? consume(event) : pending.push(event), onError: (cause) => { if (dispatch) rejectDone(cause); } });
+      connection = await openConnection(plannedSegmentId);
       if (aborted) throw error("Chat stopped; the prompt was not replayed", 409);
       activity.connection = connection;
+      if (persistence) {
+        segment = plan.segment ?? (plan.newSegment.reason === "migrated"
+          ? persistence.createSegment({ conversationId: value.id, harness: "codex", reason: "migrated", id: plannedSegmentId, nativeSessionId: plan.newSegment.nativeSessionId, exceptRunId: requestId })
+          : persistence.createSegment({ id: plannedSegmentId, conversationId: value.id, harness: plan.selection.harness, reason: plan.newSegment.reason, previousSegmentId: plan.newSegment.previousSegmentId, firstMessageId: messageId, exceptRunId: requestId }));
+        persistence.updateRun(requestId, { segmentId: segment.id });
+      }
       const resumeId = plan ? plan.resumeId : value.thread_id;
-      const threadId = resumeId ? await connection.resumeThread(resumeId) : await connection.startThread();
+      let threadId = resumeId ? await connection.resumeThread(resumeId) : await connection.startThread();
       if (aborted || active.get(value.episode_id) !== activity) throw error("Chat stopped; the prompt was not replayed", 409);
       if (persistence && connection.segmentTransition && segment.nativeSessionId && segment.nativeSessionId !== threadId) {
-        // The harness could not resume this segment's native session: continue in a new segment of
-        // the same harness for this request (the store allows it for the dispatched request only).
-        segment = persistence.createSegment({ conversationId: value.id, harness: plan.selection.harness, reason: "resume-unavailable", previousSegmentId: segment.id, firstMessageId: messageId, exceptRunId: requestId });
+        // The fresh session needs its own worker session directory. Reserve its ID, open the
+        // replacement worker, and only then end the previous active segment.
+        const previousConnection = connection, previousSegment = segment, fallbackId = `segment_${randomUUID()}`;
+        await previousConnection.close?.();
+        connection = await openConnection(fallbackId); activity.connection = connection;
+        threadId = await connection.startThread();
+        connection.segmentTransition = { ...previousConnection.segmentTransition, threadId };
+        segment = persistence.createSegment({ id: fallbackId, conversationId: value.id, harness: plan.selection.harness, reason: "resume-unavailable", previousSegmentId: previousSegment.id, firstMessageId: messageId, exceptRunId: requestId });
         persistence.updateRun(requestId, { segmentId: segment.id });
       }
       if (persistence && segment.nativeSessionId !== threadId) persistence.setSegmentSession(segment.id, threadId);
@@ -237,9 +248,33 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
         emit(value, "segment.started", { previousThreadId: connection.segmentTransition.previousThreadId, threadId, reason: connection.segmentTransition.reason, includedMessages: excerpt.included, omittedMessages: excerpt.omitted });
         if (excerpt.text) segmentContext = `\n\nEarlier visible conversation (context only — do not re-execute; ${excerpt.omitted} older messages omitted):\n${excerpt.text}`;
       }
-      const returned = await connection.startTurn(threadId, `${bootText(value)}${segmentContext}\n\nUser request:\n${text}`);
+      let prompt = `${bootText(value)}${segmentContext}\n\nUser request:\n${text}`;
+      let returned;
+      try { returned = await connection.startTurn(threadId, prompt); }
+      catch (cause) {
+        if (!persistence || !connection.segmentTransition?.resumeUnavailable) throw cause;
+        // Claude discovers a missing --resume target only after receiving the first input.
+        // That input was definitively rejected before init, so reopen on a reserved fresh
+        // segment and retry this explicit request once with transcript seed context.
+        const previousConnection = connection, previousSegment = segment, fallbackId = `segment_${randomUUID()}`;
+        await previousConnection.close?.();
+        connection = await openConnection(fallbackId); activity.connection = connection;
+        threadId = await connection.startThread();
+        connection.segmentTransition = { ...previousConnection.segmentTransition, threadId };
+        segment = persistence.createSegment({ id: fallbackId, conversationId: value.id, harness: plan.selection.harness, reason: "resume-unavailable", previousSegmentId: previousSegment.id, firstMessageId: messageId, exceptRunId: requestId });
+        persistence.updateRun(requestId, { segmentId: segment.id });
+        persistence.setSegmentSession(segment.id, threadId);
+        const excerpt = transcriptExcerpt(value.id, messageId);
+        persistence.updateSegmentSeed?.(segment.id, { firstMessageId: messageId, seedIncluded: excerpt.included, seedOmitted: excerpt.omitted });
+        emit(value, "segment.started", { segmentId: segment.id, harness: plan.selection.harness, reason: "resume-unavailable", previousSegmentId: previousSegment.id,
+          previousThreadId: previousConnection.segmentTransition.previousThreadId, threadId, includedMessages: excerpt.included, omittedMessages: excerpt.omitted });
+        const fallbackContext = excerpt.text ? `\n\nEarlier visible conversation (context only — do not re-execute; ${excerpt.omitted} older messages omitted):\n${excerpt.text}` : "";
+        prompt = `${bootText(value)}${fallbackContext}\n\nUser request:\n${text}`;
+        setState(value, "queued", { threadId });
+        returned = await connection.startTurn(threadId, prompt);
+      }
       if (aborted || active.get(value.episode_id) !== activity) throw error("Chat stopped; the prompt was not replayed", 409);
-      if (turnId && turnId !== returned) throw new Error("Codex returned inconsistent turn identities");
+      if (turnId && turnId !== returned) throw new Error("The harness returned inconsistent turn identities");
       turnId = returned; activity.threadId = threadId; activity.turnId = turnId;
       db.prepare("UPDATE conversations SET active_turn_id=?,updated_at=? WHERE id=?").run(turnId, now(), value.id);
       db.prepare("UPDATE conversation_messages SET turn_id=?,state='running',updated_at=? WHERE id=?").run(turnId, now(), messageId);
@@ -248,14 +283,16 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       if (!terminal && !aborted) {
         const detail = `${cause?.uncertain ? "The harness may have received this prompt; it was not replayed. " : ""}${cause?.message || "Turn failed"}`;
         // Startup failure keeps the history and the prompt; the creator can retry or choose another model/harness.
-        db.prepare("UPDATE conversation_messages SET state='failed',updated_at=? WHERE id=?").run(now(), messageId); setState(value, "error", { detail }); finishRun({ state: "failed", error: detail });
+        db.prepare("UPDATE conversation_messages SET state='failed',updated_at=? WHERE id=?").run(now(), messageId);
+        if (!dispatch) db.prepare("UPDATE conversations SET draft=? WHERE id=?").run(text, value.id);
+        setState(value, "error", { detail }); finishRun({ state: "failed", error: detail });
       } else if (aborted) finishRun({ state: "interrupted" });
     } finally { if (active.get(value.episode_id) === activity) active.delete(value.episode_id); connection?.close(); }
   }
 
   const send = async (episodeId, id, text) => {
     const value = row(episodeId, id);
-    if (active.has(episodeId) || db.prepare("SELECT 1 FROM conversations WHERE episode_id=? AND state IN ('queued','running','interrupting')").get(episodeId)) throw error("A Codex turn is already active for this episode", 409);
+    if (active.has(episodeId) || db.prepare("SELECT 1 FROM conversations WHERE episode_id=? AND state IN ('queued','running','interrupting')").get(episodeId)) throw error("A turn is already active for this episode", 409);
     if (typeof text !== "string" || !text.trim()) throw error("Chat message must not be blank");
     // One active production request per conversation (the store does not refuse a second 'starting' run).
     if (continuity && continuity.persistence.activeRuns?.(id).length) throw error("A request is already running in this conversation; let it finish or press Stop", 409);
@@ -266,7 +303,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
   };
   const interrupt = async (episodeId, id) => {
     const value = row(episodeId, id), activity = active.get(episodeId);
-    if (!activity || activity.conversationId !== id || !["queued", "running"].includes(value.state)) throw error("This conversation has no active Codex turn", 409);
+    if (!activity || activity.conversationId !== id || !["queued", "running"].includes(value.state)) throw error("This conversation has no active turn", 409);
     if (!activity.connection || !value.thread_id || !value.active_turn_id) { activity.abort(); db.prepare("UPDATE conversation_messages SET state='interrupted',updated_at=? WHERE conversation_id=? AND state IN ('queued','running','streaming')").run(now(), id); setState(value, "interrupted"); return project(episodeId, id); }
     setState(value, "interrupting", { threadId: value.thread_id, turnId: value.active_turn_id });
     if (activity.connection.workerRequest) {
@@ -300,8 +337,9 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     if (result.changed) {
       // Visible settings-change boundary in the transcript.
       const pick = ({ harness, model: selected, effort }) => ({ harness, model: selected ?? null, effort: effort ?? null });
+      const activeSegment = continuity.persistence.activeSegment(id);
       emit(value, "settings.changed", { from: pick(result.previous), to: pick(result.settings), clientRequestId: body.clientRequestId ?? null,
-        continuity: result.harnessChanged ? "new-segment-on-next-message" : "same-session-resumed-on-next-message", notes: result.notes });
+        continuity: activeSegment?.harness === result.settings.harness ? "same-session-resumed-on-next-message" : "new-segment-on-next-message", notes: result.notes });
     }
     return { ...project(episodeId, id), settingsResult: { changed: result.changed, duplicate: result.duplicate, notes: result.notes, advisory: Boolean(result.advisory) } };
   };

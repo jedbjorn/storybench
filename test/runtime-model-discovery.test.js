@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import os from "node:os";
 import path from "node:path";
 import { createModelDiscovery, parseClaudeHelp, parseCodexModelList } from "../src/runtime/model-discovery.js";
@@ -63,4 +65,42 @@ test("a failed discovery reports the error, keeps exact IDs selectable and is re
   assert.equal(first.exactModelIds, true);
   await discovery.discover("codex");
   assert.equal(calls, 2, "a failed discovery is not cached");
+});
+
+test("concurrent forced discovery requests share one in-flight harness lookup", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "sb-disc-dedupe-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, "auth.json"), JSON.stringify({ tokens: { access_token: "a", refresh_token: "r" } }));
+  let calls = 0, release, markReady;
+  const ready = new Promise((resolve) => { markReady = resolve; });
+  const spawn = () => {
+    calls++;
+    const child = new EventEmitter();
+    child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    child.kill = () => true;
+    let input = "";
+    child.stdin.on("data", (chunk) => {
+      input += chunk;
+      for (;;) {
+        const newline = input.indexOf("\n");
+        if (newline < 0) break;
+        const message = JSON.parse(input.slice(0, newline)); input = input.slice(newline + 1);
+        if (message.id === 1) queueMicrotask(() => child.stdout.write(JSON.stringify({ id: 1, result: {} }) + "\n"));
+        if (message.id === 2) {
+          release = () => child.stdout.write(JSON.stringify({ id: 2, result: { data: [{ id: "gpt-test", model: "gpt-test" }] } }) + "\n");
+          markReady();
+        }
+      }
+    });
+    return child;
+  };
+  const discovery = createModelDiscovery({ config: { installId: "t", images: { worker: "sha256:x" }, credentials: { codex: path.join(dir, "auth.json"), claude: path.join(dir, "none.json") } }, stageRoot: path.join(dir, "stage"), spawn });
+  const first = discovery.discover("codex", { refresh: true });
+  const second = discovery.discover("codex", { refresh: true });
+  await ready;
+  assert.equal(calls, 1);
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.models[0].id, "gpt-test");
+  assert.deepEqual(b, a);
 });

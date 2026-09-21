@@ -12,7 +12,7 @@
 //   initSettings(conversationId, settings) -> settings (for a new conversation)
 //   activeSegment(conversationId) -> segment | null
 //   listSegments(conversationId) -> segment[] (oldest first)
-//   createSegment({ conversationId, harness, reason, previousSegmentId, firstMessageId, seedIncluded, seedOmitted }) -> segment
+//   createSegment({ id?, conversationId, harness, reason, previousSegmentId, firstMessageId, seedIncluded, seedOmitted, exceptRunId? }) -> segment
 //   setSegmentSession(segmentId, nativeSessionId)
 //   updateSegmentSeed(segmentId, { firstMessageId, seedIncluded, seedOmitted })
 //   activeRuns(conversationId) -> runs still starting/running

@@ -19,8 +19,8 @@ export function createV9ConversationPersistence(store) {
     lastExplicitSettings: () => store.lastExplicitSettings(),
     activeSegment: (conversationId) => segmentOf(store.getActiveSegment(conversationId)),
     listSegments: (conversationId) => store.listSegments(conversationId).map(segmentOf),
-    createSegment({ conversationId, harness, reason, previousSegmentId, firstMessageId = null, seedIncluded = null, seedOmitted = null, nativeSessionId = null, exceptRunId = null }) {
-      const segment = store.createSegment({ conversationId, harness, reason, ...(previousSegmentId !== undefined ? { previousSegmentId } : {}),
+    createSegment({ id = null, conversationId, harness, reason, previousSegmentId, firstMessageId = null, seedIncluded = null, seedOmitted = null, nativeSessionId = null, exceptRunId = null }) {
+      const segment = store.createSegment({ ...(id ? { id } : {}), conversationId, harness, reason, ...(previousSegmentId !== undefined ? { previousSegmentId } : {}),
         firstMessageId, seedIncludedMessages: seedIncluded, seedOmittedMessages: seedOmitted, exceptRunId });
       return segmentOf(nativeSessionId ? store.setSegmentNativeSession(segment.id, nativeSessionId) : segment);
     },

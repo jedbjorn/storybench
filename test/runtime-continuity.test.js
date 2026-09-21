@@ -10,6 +10,7 @@ import { Store } from "../src/store.js";
 import { createChatService } from "../src/chat.js";
 import { ClaudeChatConnection } from "../src/runtime/harnesses.js";
 import { createMemoryConversationPersistence, validateSelection, SelectionError } from "../src/runtime/conversation-runtime.js";
+import { createV9ConversationPersistence } from "../src/runtime/conversation-persistence.js";
 
 const catalog = [
   { harness: "codex", available: true, exactModelIds: true, models: [
@@ -53,7 +54,7 @@ function harnessFactory({ failStart = null } = {}) {
 function setup(t, options = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), "sb-cont-"));
   const store = new Store(root);
-  const persistence = options.persistence ?? createMemoryConversationPersistence();
+  const persistence = options.persistence ?? (options.v9 ? createV9ConversationPersistence(store) : createMemoryConversationPersistence());
   const fake = harnessFactory(options);
   const chat = createChatService({ store, codexFactory: fake.factory, continuity: { persistence, catalog: async () => catalog } });
   t.after(async () => { await chat.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
@@ -73,7 +74,7 @@ test("selection validation follows each harness/model contract", () => {
   assert.throws(() => validateSelection(catalog, { harness: "claude", model: "sonnet --flag" }), { code: "INVALID_MODEL" });
 });
 
-test("same-harness model change resumes the exact session; cross-harness starts a seeded segment; returning starts fresh", async (t) => {
+test("same-harness changes and a no-send away-and-back resume; returning after another harness turn starts fresh", async (t) => {
   const { chat, persistence, fake, episode } = setup(t);
   const c = chat.create(episode.id, { name: "Switching" });
   await chat.send(episode.id, c.id, "First, in Codex");
@@ -86,31 +87,43 @@ test("same-harness model change resumes the exact session; cross-harness starts 
   await idle(chat, episode.id, c.id);
   assert.deepEqual([fake.log[1].harness, fake.log[1].model, fake.log[1].effort, fake.log[1].resumed, fake.log[1].started], ["codex", "gpt-5.6-luna", "low", firstThread, null]);
   assert.equal(fake.log[1].segmentId, fake.log[0].segmentId);
-  // Cross-harness: new segment, never the Codex thread ID, seeded with a bounded excerpt.
+  // Switching away and back without sending leaves the Codex segment active. Both visible
+  // boundaries predict the actual next-send result.
   value = await chat.updateSettings(episode.id, c.id, { harness: "claude", model: "sonnet", expectedRevision: 2 });
+  assert.equal(value.events.at(-1).payload.continuity, "new-segment-on-next-message");
+  value = await chat.updateSettings(episode.id, c.id, { harness: "codex", model: "gpt-5.6-terra", expectedRevision: 3 });
+  assert.equal(value.events.at(-1).payload.continuity, "same-session-resumed-on-next-message");
+  await chat.send(episode.id, c.id, "Third, back before sending elsewhere");
+  await idle(chat, episode.id, c.id);
+  assert.equal(fake.log[2].resumed, firstThread);
+  assert.equal(fake.log[2].segmentId, fake.log[0].segmentId);
+  // Cross-harness after an intervening turn: new segment, never the Codex thread ID, seeded
+  // with a bounded excerpt.
+  value = await chat.updateSettings(episode.id, c.id, { harness: "claude", model: "sonnet", expectedRevision: 4 });
   await chat.send(episode.id, c.id, "Third, now Claude");
   await idle(chat, episode.id, c.id);
-  const claudeTurn = fake.log[2];
+  const claudeTurn = fake.log[3];
   assert.equal(claudeTurn.harness, "claude");
   assert.equal(claudeTurn.resumed, null, "no native ID crosses harnesses");
   assert.notEqual(claudeTurn.segmentId, fake.log[0].segmentId);
   assert.match(claudeTurn.prompts[0], /Earlier visible conversation[\s\S]*do not re-execute[\s\S]*First, in Codex[\s\S]*reply from codex[\s\S]*User request:\nThird, now Claude/);
   assert.equal(fake.log.filter((entry) => entry.prompts.some((prompt) => prompt.endsWith("First, in Codex"))).length, 1, "old prompts never re-sent as requests");
   // Back to Codex: a fresh segment (harness-return), not the stale Codex thread.
-  await chat.updateSettings(episode.id, c.id, { harness: "codex", model: "gpt-5.6-terra", expectedRevision: 3 });
+  await chat.updateSettings(episode.id, c.id, { harness: "codex", model: "gpt-5.6-terra", expectedRevision: 5 });
   await chat.send(episode.id, c.id, "Fourth, back to Codex");
   const final = await idle(chat, episode.id, c.id);
-  const back = fake.log[3];
+  const back = fake.log[4];
   assert.equal(back.resumed, null);
   assert.ok(back.started && back.started !== firstThread);
   const segments = persistence.listSegments(c.id);
   assert.deepEqual(segments.map((segment) => segment.reason), ["initial", "harness-switch", "harness-return"]);
   assert.equal(segments.filter((segment) => !segment.endedAt).length, 1);
   // Visible boundaries and run attribution.
-  assert.equal(final.events.filter((event) => event.type === "settings.changed").length, 3);
+  assert.equal(final.events.filter((event) => event.type === "settings.changed").length, 5);
   assert.equal(final.events.filter((event) => event.type === "segment.started").length, 2);
   assert.deepEqual(final.runs.map((run) => [run.harness, run.modelSelected, run.modelResolved, run.state]), [
     ["codex", null, "default-resolved", "completed"], ["codex", "gpt-5.6-luna", "gpt-5.6-luna-resolved", "completed"],
+    ["codex", "gpt-5.6-terra", "gpt-5.6-terra-resolved", "completed"],
     ["claude", "sonnet", "sonnet-resolved", "completed"], ["codex", "gpt-5.6-terra", "gpt-5.6-terra-resolved", "completed"]]);
   assert.deepEqual(final.messages.map((message) => message.text).filter((text) => text.startsWith("First") || text.startsWith("Second")).length, 2, "transcript preserved");
 });
@@ -142,7 +155,7 @@ test("settings changes are refused while busy, validated, idempotent and never r
 });
 
 test("a failed startup keeps history and the unsent draft and never falls back to the previous harness", async (t) => {
-  const { chat, fake, episode } = setup(t, { failStart: (options) => options.harness === "claude" });
+  const { chat, persistence, fake, episode } = setup(t, { v9: true, failStart: (options) => options.harness === "claude" });
   const c = chat.create(episode.id, { name: "Fail" });
   await chat.send(episode.id, c.id, "hello codex");
   await idle(chat, episode.id, c.id);
@@ -152,12 +165,19 @@ test("a failed startup keeps history and the unsent draft and never falls back t
   const failed = await idle(chat, episode.id, c.id);
   assert.equal(failed.state, "error");
   assert.match(failed.error, /claude could not start: model claude-nonexistent-9 unavailable/);
+  assert.equal(failed.draft, "hello claude", "the failed explicit request is offered again in the composer");
   assert.equal(fake.log.length, 1, "no silent Codex fallback");
   assert.deepEqual(failed.messages.map((message) => message.text), ["hello codex", "reply from codex", "hello claude"]);
   assert.equal(failed.runs.at(-1).state, "failed");
-  // The creator can choose another model and retry; the new segment is seeded.
-  await chat.updateSettings(episode.id, c.id, { harness: "claude", model: "sonnet", expectedRevision: 2 });
-  assert.equal(chat.get(episode.id, c.id).settings.model, "sonnet");
+  assert.equal(failed.runs.at(-1).segmentId, null, "startup failed before committing the target segment");
+  assert.equal(persistence.listSegments(c.id)[0].endedAt, null, "the original Codex segment remains active");
+  // Switching back before another harness turn resumes the original Codex session.
+  const boundary = await chat.updateSettings(episode.id, c.id, { harness: "codex", model: "gpt-5.6-terra", expectedRevision: 2 });
+  assert.equal(boundary.events.at(-1).payload.continuity, "same-session-resumed-on-next-message");
+  await chat.send(episode.id, c.id, "retry on codex");
+  await idle(chat, episode.id, c.id);
+  assert.equal(fake.log[1].resumed, fake.log[0].started);
+  assert.equal(fake.log[1].segmentId, fake.log[0].segmentId);
 });
 
 test("reopening a conversation keeps its settings, segments and runs", async (t) => {
@@ -204,7 +224,10 @@ test("Claude stream-json is normalized into the chat's turn/text/tool/completion
   // Resume uses the exact session ID; interrupt ends as interrupted.
   const resumed = new ClaudeChatConnection({ model: "opus", onEvent: (event) => events.push(event), spawnSession: async (header) => { launches.push(header); child = fakeClaudeChild(); return child; } });
   await resumed.resumeThread(threadId);
-  await resumed.startTurn(threadId, "again");
+  const resumedStart = resumed.startTurn(threadId, "again");
+  await delay();
+  write({ type: "system", subtype: "init", session_id: threadId, model: "claude-opus-5" });
+  await resumedStart;
   assert.deepEqual(launches[1], { harness: "claude", model: "opus", resume: threadId });
   await resumed.interrupt();
   assert.match(child.stdin.read()?.toString() ?? "", /"subtype":"interrupt"/);
@@ -217,8 +240,8 @@ test("Claude exiting before a result completes the turn as failed, plainly", asy
   const events = [];
   let child;
   const connection = new ClaudeChatConnection({ model: "sonnet", onEvent: (event) => events.push(event), spawnSession: async () => { child = fakeClaudeChild(); return child; } });
-  await connection.resumeThread("3ff05a59-8ffd-45bb-be71-f806f55e7c78");
-  await connection.startTurn("3ff05a59-8ffd-45bb-be71-f806f55e7c78", "hi");
+  const threadId = await connection.startThread();
+  await connection.startTurn(threadId, "hi");
   child.kill();
   await delay(5);
   assert.equal(events.at(-1).params.turn.status, "failed");
@@ -226,8 +249,69 @@ test("Claude exiting before a result completes the turn as failed, plainly", asy
   assert.ok(SelectionError);
 });
 
+test("Claude exposes a pre-init missing resume so chat can open a fresh segment", async () => {
+  let child;
+  const events = [];
+  const previous = "3ff05a59-8ffd-45bb-be71-f806f55e7c78";
+  const connection = new ClaudeChatConnection({ model: "sonnet", onEvent: (event) => events.push(event), spawnSession: async () => { child = fakeClaudeChild(); return child; } });
+  await connection.resumeThread(previous);
+  const starting = connection.startTurn(previous, "do this once");
+  await delay();
+  child.stdout.write("No conversation found with session ID 3ff05a59-8ffd-45bb-be71-f806f55e7c78\n");
+  child.kill();
+  await assert.rejects(starting, { code: "CLAUDE_SESSION_LOST", resumeUnavailable: true });
+  assert.deepEqual(connection.segmentTransition, {
+    previousThreadId: previous, threadId: null, reason: "CLAUDE_SESSION_LOST",
+    detail: "No conversation found with session ID 3ff05a59-8ffd-45bb-be71-f806f55e7c78", resumeUnavailable: true,
+  });
+  assert.equal(events.some((event) => event.method === "turn/completed"), false, "the rejected resume is not recorded as the request result");
+});
+
+test("chat retries a dead Claude resume once in a resume-unavailable segment", async (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "sb-claude-resume-"));
+  const store = new Store(root), persistence = createMemoryConversationPersistence();
+  const launches = [], openedSegments = [];
+  let failResume = true;
+  const factory = async (options) => {
+    openedSegments.push(options.segmentId);
+    return new ClaudeChatConnection({ model: options.model, effort: options.effort, onEvent: options.onEvent, onError: options.onError,
+      spawnSession: async (header) => {
+        launches.push(header);
+        const child = fakeClaudeChild();
+        setTimeout(() => {
+          if (header.resume && failResume) {
+            failResume = false;
+            child.stdout.write(`No conversation found with session ID ${header.resume}\n`);
+            child.kill();
+            return;
+          }
+          const sessionId = header.sessionId ?? header.resume;
+          child.stdout.write(JSON.stringify({ type: "system", subtype: "init", session_id: sessionId, model: "claude-sonnet" }) + "\n");
+          child.stdout.write(JSON.stringify({ type: "assistant", message: { model: "claude-sonnet", content: [{ type: "text", text: "ok" }] } }) + "\n");
+          child.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok", session_id: sessionId }) + "\n");
+        }, 0);
+        return child;
+      } });
+  };
+  const chat = createChatService({ store, codexFactory: factory, continuity: { persistence, catalog: async () => catalog } });
+  t.after(async () => { await chat.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
+  const episode = store.createEpisode(), c = chat.create(episode.id, { name: "Claude resume" });
+  await chat.updateSettings(episode.id, c.id, { harness: "claude", model: "sonnet", expectedRevision: 1 });
+  await chat.send(episode.id, c.id, "first");
+  await idle(chat, episode.id, c.id);
+  const originalThread = persistence.listSegments(c.id)[0].nativeSessionId;
+  await chat.send(episode.id, c.id, "second");
+  const value = await idle(chat, episode.id, c.id);
+  const segments = persistence.listSegments(c.id);
+  assert.deepEqual(segments.map((segment) => segment.reason), ["initial", "resume-unavailable"]);
+  assert.notEqual(segments[1].id, segments[0].id);
+  assert.equal(value.runs.at(-1).segmentId, segments[1].id);
+  assert.equal(launches.filter((launch) => launch.resume === originalThread).length, 1, "the dead --resume is attempted only once");
+  assert.equal(openedSegments.at(-1), segments[1].id, "the replacement worker uses the fresh segment directory");
+  assert.match(value.events.findLast((event) => event.type === "segment.started").payload.reason, /resume-unavailable/);
+});
+
 test("the real v9 store persistence carries selection, segments and request attribution", async (t) => {
-  const { createV9ConversationPersistence } = await import("../src/runtime/conversation-persistence.js");
   const root = mkdtempSync(path.join(os.tmpdir(), "sb-cont-v9-"));
   const store = new Store(root);
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });

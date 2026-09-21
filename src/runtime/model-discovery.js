@@ -108,32 +108,38 @@ async function claudeCliCatalog({ config, spawn, timeoutMs }) {
 }
 
 export function createModelDiscovery({ config, stageRoot, spawn = nodeSpawn, now = Date.now, timeoutMs = 60_000 }) {
-  const cache = new Map();
+  const cache = new Map(), pending = new Map();
   async function discover(harness, { refresh = false } = {}) {
     const availability = (await harnessAvailability(config.credentials))[harness];
     if (!availability?.available) return { harness, available: false, reason: availability?.reason ?? "Unknown harness", models: [], source: null, fetchedAt: null, stale: false };
     const cached = cache.get(harness);
     if (cached && !refresh) return { ...cached, cached: true, stale: now() - cached.fetchedAtMs > CATALOG_STALE_MS };
-    let entry;
-    try {
-      if (harness === "codex") {
-        const models = await codexModelList({ config, stageRoot, spawn, timeoutMs });
-        entry = { harness, available: true, reason: null, source: "native", advisory: false, exactModelIds: true, models, efforts: null };
-      } else {
-        const { aliases, efforts } = await claudeCliCatalog({ config, spawn, timeoutMs });
-        entry = { harness, available: true, reason: null, source: "installed-cli-help", advisory: true, exactModelIds: true,
-          note: "Aliases documented by the installed Claude Code CLI; an alias is not proof of account access. Exact model IDs are accepted and verified on first use.",
-          models: aliases.map((alias) => ({ id: alias, displayName: alias, description: "CLI alias (advisory)", isDefault: false, efforts, defaultEffort: null })), efforts };
+    if (pending.has(harness)) return pending.get(harness);
+    const task = (async () => {
+      let entry;
+      try {
+        if (harness === "codex") {
+          const models = await codexModelList({ config, stageRoot, spawn, timeoutMs });
+          entry = { harness, available: true, reason: null, source: "native", advisory: false, exactModelIds: true, models, efforts: null };
+        } else {
+          const { aliases, efforts } = await claudeCliCatalog({ config, spawn, timeoutMs });
+          entry = { harness, available: true, reason: null, source: "installed-cli-help", advisory: true, exactModelIds: true,
+            note: "Aliases documented by the installed Claude Code CLI; an alias is not proof of account access. Exact model IDs are accepted and verified on first use.",
+            models: aliases.map((alias) => ({ id: alias, displayName: alias, description: "CLI alias (advisory)", isDefault: false, efforts, defaultEffort: null })), efforts };
+        }
+      } catch (error) {
+        // Discovery failure is reported plainly; a previous successful list is shown as stale.
+        if (cached) return { ...cached, cached: true, stale: true, discoveryError: error.message };
+        return { harness, available: true, reason: null, models: [], source: null, fetchedAt: null, stale: true, exactModelIds: true, discoveryError: error.message };
       }
-    } catch (error) {
-      // Discovery failure is reported plainly; a previous successful list is shown as stale.
-      if (cached) return { ...cached, cached: true, stale: true, discoveryError: error.message };
-      return { harness, available: true, reason: null, models: [], source: null, fetchedAt: null, stale: true, exactModelIds: true, discoveryError: error.message };
-    }
-    const fetchedAtMs = now();
-    const stored = { ...entry, fetchedAt: new Date(fetchedAtMs).toISOString(), fetchedAtMs };
-    cache.set(harness, stored);
-    return { ...stored, cached: false, stale: false };
+      const fetchedAtMs = now();
+      const stored = { ...entry, fetchedAt: new Date(fetchedAtMs).toISOString(), fetchedAtMs };
+      cache.set(harness, stored);
+      return { ...stored, cached: false, stale: false };
+    })();
+    pending.set(harness, task);
+    try { return await task; }
+    finally { if (pending.get(harness) === task) pending.delete(harness); }
   }
   return { discover };
 }
