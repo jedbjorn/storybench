@@ -12,7 +12,7 @@ import { createApp } from "../src/server.js";
 import { initDataRoot, openDataRoot } from "../src/services/data-root.js";
 import { createChannel } from "../src/services/channels.js";
 import {
-  LEGACY_SUPPORTED_SCHEMA, MANIFEST_SCHEMA, RUNTIME_PROTOCOL, checkCompatibility, createManifest, manifestId, releaseIdentity, supportedSchemaOf, validateManifest,
+  LEGACY_SUPPORTED_SCHEMA, MANIFEST_SCHEMA, readReleaseManifest, RUNTIME_PROTOCOL, checkCompatibility, createManifest, manifestId, releaseIdentity, supportedSchemaOf, validateManifest,
 } from "../src/runtime/manifest.js";
 import { createHealth, releaseFromEnv } from "../src/runtime/health.js";
 import { createHost } from "../src/runtime/host.js";
@@ -20,6 +20,7 @@ import { appRunArgs, validateHostConfig } from "../src/runtime/layout.js";
 import { listConversationThreads, transferCodexSessions } from "../src/runtime/session-migrate.js";
 import { mergeTools } from "../src/runtime/app-runtime.js";
 import { activeRenderHolder, claimEpisodeRenders } from "../src/runtime/request.js";
+import { listenInRange } from "../test-support/loopback-port.js";
 
 const A = `sha256:${"a".repeat(64)}`, B = `sha256:${"b".repeat(64)}`;
 const manifest = () => createManifest({ packageName: "storybench", packageVersion: "0.1.0", commit: "5049150abcdef", ref: "main", builtAt: "2026-09-21T00:00:00Z", images: { app: A, worker: B }, tools: { codex: "0.155.1" }, schema: { min: 0, max: SCHEMA_VERSION } });
@@ -47,6 +48,20 @@ test("release manifests pin exact paired images, protocol and schema range", () 
   assert.deepEqual(supportedSchemaOf(null), { min: 0, max: 5 });
   assert.equal(LEGACY_SUPPORTED_SCHEMA.max, 5);
   assert.deepEqual(releaseIdentity(value).images, { app: A, worker: B });
+});
+
+test("the defensive manifest reader never throws and returns plain reasons", async (t) => {
+  const dir = await tempDir(t);
+  assert.match((await readReleaseManifest(path.join(dir, "none.json"))).reason, /No release manifest/);
+  await writeFile(path.join(dir, "bad.json"), "{nope");
+  assert.match((await readReleaseManifest(path.join(dir, "bad.json"))).reason, /not valid JSON/);
+  await writeFile(path.join(dir, "wrong.json"), JSON.stringify({ ...manifest(), schema: "other" }));
+  assert.match((await readReleaseManifest(path.join(dir, "wrong.json"))).reason, /schema must be/);
+  await writeFile(path.join(dir, "good.json"), JSON.stringify(manifest()));
+  const good = await readReleaseManifest(path.join(dir, "good.json"));
+  assert.equal(good.ok, true);
+  assert.equal(good.identity.manifestId, manifest().id);
+  assert.equal(good.manifest.database.supportedSchema.max, SCHEMA_VERSION);
 });
 
 test("host config takes image identity from the manifest and passes release identity to the app", () => {
@@ -96,8 +111,7 @@ test("GET /api/health keeps the loopback Host protection and reports draining", 
   initDataRoot(root);
   createChannel(root, "One");
   const app = await createApp({ dataRoot: root, chatOptions: { codexFactory: async () => { throw new Error("unused"); } } });
-  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
-  const port = app.server.address().port;
+  const port = await listenInRange(app.server);
   const ok = await fetch(`http://127.0.0.1:${port}/api/health`);
   assert.equal(ok.status, 200);
   assert.equal((await ok.json()).ready, true);

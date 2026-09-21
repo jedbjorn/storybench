@@ -84,3 +84,17 @@ export function releaseIdentity(manifest) {
     supportedSchema: { ...manifest.database.supportedSchema },
   };
 }
+
+// Defensive reader for tools that report a release (e.g. the CLI `version` command):
+// never throws; returns the validated manifest or a plain reason.
+export async function readReleaseManifest(file) {
+  const { readFile } = await import("node:fs/promises");
+  let text;
+  try { text = await readFile(file, "utf8"); }
+  catch (error) { return { ok: false, reason: error.code === "ENOENT" ? "No release manifest is installed" : `Release manifest is unreadable (${error.code})` }; }
+  if (text.length > 256 * 1024) return { ok: false, reason: "Release manifest is too large" };
+  let value;
+  try { value = JSON.parse(text); } catch { return { ok: false, reason: "Release manifest is not valid JSON" }; }
+  try { return { ok: true, manifest: validateManifest(value), identity: releaseIdentity(value) }; }
+  catch (error) { return { ok: false, reason: error.message }; }
+}
