@@ -8,10 +8,22 @@ const IMAGE_TOOLS = ["inspect_image", "inspect_contact_sheet"];
 // both harnesses must echo random text drawn in fresh images, 5/5). Codex 0.155.1 production
 // models run tools in code mode: an MCP result's image blocks are forwarded with image(...);
 // the earlier app-server dynamic-tool route flattened results to a string and was unreliable.
-const HARNESS_IMAGE_ROUTE = {
-  codex: { via: "Storybench MCP tool results as image content blocks (forwarded by Codex code mode with image())", verified: true, evidence: "scripts/image-receipt-proof.mjs 5/5 (gpt-5.6-terra)" },
-  claude: { via: "Storybench MCP tool results as image content blocks", verified: true, evidence: "scripts/image-receipt-proof.mjs 5/5 (sonnet)" },
-};
+// The image route counts as verified only for the exact harness versions the proof passed on.
+// The running version comes from this release's manifest (probed in the worker image); a
+// different or unknown version reports the route as unverified until the proof is rerun.
+export const IMAGE_ROUTE_PROOF = Object.freeze({
+  codex: { version: "0.155.1", via: "Storybench MCP tool results as image content blocks (forwarded by Codex code mode with image())", evidence: "scripts/image-receipt-proof.mjs 5/5 (gpt-5.6-terra), PR #26 re-review 10/10" },
+  claude: { version: "2.1.278", via: "Storybench MCP tool results as image content blocks", evidence: "scripts/image-receipt-proof.mjs 5/5 (sonnet), PR #26 re-review 10/10" },
+});
+
+export function imageRouteStatus(harness, release) {
+  const proof = IMAGE_ROUTE_PROOF[harness];
+  const running = release?.tools?.[harness] ?? null;
+  if (!proof) return { verified: false, reason: `no image-receipt proof exists for ${harness}` };
+  if (!running) return { verified: false, reason: `the running ${harness} version is unknown (no release manifest); the image route was proven on ${proof.version}` };
+  if (running !== proof.version) return { verified: false, reason: `${harness} ${running} differs from ${proof.version}, where the image route was proven; rerun scripts/image-receipt-proof.mjs` };
+  return { verified: true, via: proof.via, evidence: proof.evidence, version: running };
+}
 // Not provided by Storybench to either production harness in this release.
 export const NOT_AVAILABLE = Object.freeze([
   "image generation services",
@@ -30,10 +42,12 @@ export function describeCapabilities({ scope, served, release = null }) {
     harness: scope.harness,
     model: scope.model ?? null,
     tools: served.map((definition) => ({ name: definition.name, description: definition.description })),
-    imageInput: !imageTools.length ? { available: false, reason: "no image-returning tool is served in this request" }
-      : HARNESS_IMAGE_ROUTE[scope.harness]?.verified
-        ? { available: true, verified: true, via: HARNESS_IMAGE_ROUTE[scope.harness].via, evidence: HARNESS_IMAGE_ROUTE[scope.harness].evidence, tools: imageTools }
-        : { available: false, verified: false, reason: `image delivery to ${scope.harness} is unverified`, tools: imageTools },
+    imageInput: (() => {
+      if (!imageTools.length) return { available: false, reason: "no image-returning tool is served in this request" };
+      const route = imageRouteStatus(scope.harness, release);
+      // The tools are served either way; only a proven route is advertised as verified.
+      return route.verified ? { available: true, ...route, tools: imageTools } : { available: true, verified: false, reason: route.reason, tools: imageTools };
+    })(),
     commandExecution: {
       available: true,
       workingDirectory: scope.episodeDir,

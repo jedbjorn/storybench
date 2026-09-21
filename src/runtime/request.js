@@ -10,7 +10,7 @@ import path from "node:path";
 import { renderEpisodeBoot } from "./boot.js";
 import { startBridge } from "./bridge.js";
 import { connectHarness, controlRequest } from "./channel.js";
-import { ClaudeStreamSession, WorkerCodexConnection } from "./harnesses.js";
+import { ClaudeChatConnection, ClaudeStreamSession, WorkerCodexConnection } from "./harnesses.js";
 import { BRIDGE_SOCKET_NAME, DATA_MOUNT, WORKER_REQUEST_MOUNT } from "./layout.js";
 import { createScopedTools, defaultIsShortcutMessage } from "./tools.js";
 import { RuntimeError, assertModel, assertSessionId, parseEpisodeDir } from "./validate.js";
@@ -59,12 +59,6 @@ async function openHeldRequest({
   const location = store.episodeLocation(episodeId);
   const episodeDir = parseEpisodeDir(path.relative(dataRoot, location.directory));
   const workRelative = path.relative(dataRoot, store.episodeWorkDirectory(episodeId));
-  // Render before the worker starts so the harness never sees a half-written boot.
-  const render = await renderEpisodeBoot({
-    episodeDir: location.directory, templates,
-    context: { ...bootContext, paths: { ...bootContext.paths, episode: location.directory, work: store.episodeWorkDirectory(episodeId) } },
-  });
-  const started = await controlRequest(controlSocket, { op: "worker.start", requestId, harness, segmentId, episodeDir: episodeDir.relative, workDir: workRelative });
   // A request-specific working subdirectory inside the episode work area.
   const requestWorkDir = path.join(store.episodeWorkDirectory(episodeId), requestId);
   await mkdir(requestWorkDir, { recursive: true });
@@ -72,9 +66,20 @@ async function openHeldRequest({
     requestId, conversationId, harness, model: model ?? null, channelId: location.channelId, episodeId,
     dataRoot, episodeDir: location.directory, workDir: store.episodeWorkDirectory(episodeId), requestWorkDir,
   };
-  const scoped = createScopedTools(scope, { store, library: library ?? createLibraryService({ workspace: dataRoot, store }), release: release ?? releaseFromEnv(), isShortcutMessage });
+  const effectiveRelease = release ?? releaseFromEnv();
+  const scoped = createScopedTools(scope, { store, library: library ?? createLibraryService({ workspace: dataRoot, store }), release: effectiveRelease, isShortcutMessage });
   const tools = wrapTools(scoped);
   scoped.setServedDefinitions(tools.definitions);
+  // Render before the worker starts so the harness never sees a half-written boot. The boot
+  // context may be a function of what this request actually serves and where it works.
+  const context = typeof bootContext === "function"
+    ? bootContext({ requestWorkDir, served: tools.definitions.map((definition) => definition.name), release: effectiveRelease })
+    : bootContext;
+  const render = await renderEpisodeBoot({
+    episodeDir: location.directory, templates,
+    context: { ...context, paths: { ...context.paths, episode: location.directory, work: store.episodeWorkDirectory(episodeId), requestWork: requestWorkDir } },
+  });
+  const started = await controlRequest(controlSocket, { op: "worker.start", requestId, harness, segmentId, episodeDir: episodeDir.relative, workDir: workRelative });
   const token = randomBytes(32).toString("hex");
   let bridge;
   try {
@@ -91,10 +96,15 @@ async function openHeldRequest({
 
   return {
     started, render, scope, tools,
-    async codex({ model, onEvent, onError, requestTimeout } = {}) {
+    async codex({ model, effort = null, onEvent, onError, requestTimeout } = {}) {
       const child = await connectHarness(started.harnessSocket, { harness: "codex" });
-      const connection = new WorkerCodexConnection({ child, tools, cwd: started.episodeDir, model: model ? assertModel(model) : undefined, onEvent, onError, requestTimeout });
+      const connection = new WorkerCodexConnection({ child, tools, cwd: started.episodeDir, model: model ? assertModel(model) : undefined, effort, onEvent, onError, requestTimeout });
       return connection.open();
+    },
+    // Production Claude chat connection (same interface as the Codex connection).
+    claudeConnection({ model, effort = null, onEvent, onError } = {}) {
+      return new ClaudeChatConnection({ model: model ? assertModel(model) : null, effort, onEvent, onError,
+        spawnSession: (header) => connectHarness(started.harnessSocket, Object.fromEntries(Object.entries(header).filter(([, value]) => value != null))) });
     },
     async claude({ model, resume, onEvent } = {}) {
       const child = await connectHarness(started.harnessSocket, { harness: "claude", model: assertModel(model), ...(resume ? { resume: assertSessionId(resume) } : {}) });

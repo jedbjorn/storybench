@@ -14,6 +14,8 @@ import { chmod, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as dockerCli from "./docker.js";
+import { followContainerLogs, workerDiagnostic } from "./log-forward.js";
+import { createModelDiscovery } from "./model-discovery.js";
 import { RUNTIME_PROTOCOL, checkCompatibility, manifestId, validateManifest } from "./manifest.js";
 import { CredentialLink, CREDENTIAL_FILES, harnessAvailability, shouldLogSyncAction } from "./credentials.js";
 import {
@@ -24,7 +26,7 @@ import { RuntimeError, resolveEpisodeDirectory, validateControlRequest } from ".
 
 const MAX_CONTROL_BYTES = 64 * 1024;
 
-export function createHost(rawConfig, { log = (event) => console.log(JSON.stringify({ at: new Date().toISOString(), ...event })), syncIntervalMs = 2000, dockerApi = dockerCli } = {}) {
+export function createHost(rawConfig, { log = (event) => console.log(JSON.stringify({ at: new Date().toISOString(), ...event })), syncIntervalMs = 2000, dockerApi = dockerCli, followLogs = followContainerLogs } = {}) {
   const { docker, ensureNetwork, inspectContainer, listByLabels } = dockerApi;
   const config = validateHostConfig(rawConfig);
   if (config.manifest) {
@@ -34,7 +36,8 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
   const paths = hostPaths(config);
   const n = names(config.installId);
   const workers = new Map();
-  let server, syncTimer, appId, stopped, stopping = false;
+  const discovery = createModelDiscovery({ config, stageRoot: path.join(config.runtimeRoot, "credentials") });
+  let server, syncTimer, appId, appLogs, stopped, stopping = false;
 
   async function presentRoots() {
     const present = [];
@@ -120,7 +123,9 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
       credential = await CredentialLink.stage({ harness: request.harness, hostPath: config.credentials[request.harness], stageDir: paths.credentialDir(request.requestId) });
       const args = workerRunArgs(config, request, { presentRoots: await presentRoots(), credentialFile: credential.stagePath });
       const containerId = await docker(args);
-      const worker = { ...request, containerId, credential, startedAt: new Date().toISOString() };
+      // Only the worker launcher's structured diagnostics reach the journal (no prompt/model text).
+      const logs = followLogs({ containerId, event: "worker.output", fields: { requestId: request.requestId }, log, filter: workerDiagnostic });
+      const worker = { ...request, containerId, credential, logs, startedAt: new Date().toISOString() };
       workers.set(request.requestId, worker);
       log({ event: "worker.started", requestId: request.requestId, harness: request.harness, container: containerId.slice(0, 12) });
       const requestMount = `${APP_REQUESTS_MOUNT}/${request.requestId}`;
@@ -148,6 +153,7 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
 
   async function stopWorkerOnce(requestId) {
     const worker = workers.get(requestId);
+    worker?.logs?.stop();
     const ids = worker ? [worker.containerId] : await listByLabels({ [LABEL.install]: config.installId, [LABEL.request]: requestId });
     for (const id of ids) await removeContainer(id);
     let credentialSync = null;
@@ -164,8 +170,9 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
   async function handle(raw) {
     const request = validateControlRequest(raw);
     // While draining, the app may still stop and inspect its workers, but nothing new starts.
-    if (stopping && request.op === "worker.start") throw new RuntimeError("STOPPING", "Storybench is shutting down", { status: 503 });
+    if (stopping && ["worker.start", "harness.models"].includes(request.op)) throw new RuntimeError("STOPPING", "Storybench is shutting down", { status: 503 });
     if (request.op === "harness.availability") return harnessAvailability(config.credentials);
+    if (request.op === "harness.models") return discovery.discover(request.harness, { refresh: request.refresh });
     if (request.op === "worker.start") return startWorker(request);
     if (request.op === "worker.stop") return stopWorker(request.requestId);
     const worker = workers.get(request.requestId);
@@ -233,6 +240,7 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     await serveControl();
     appId = await docker(appRunArgs(config));
     log({ event: "app.started", container: appId.slice(0, 12), port: config.port });
+    appLogs = followLogs({ containerId: appId, event: "app.output", log });
     const health = await waitHealthy();
     log({ event: "app.healthy", port: config.port, release: health.release?.manifestId ?? null, schema: health.schema?.current ?? null, database: health.database?.id ?? null });
     syncTimer = setInterval(async () => {
@@ -257,9 +265,11 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     stopped = (async () => {
       log({ event: "host.stopping", activeWorkers: workers.size });
       if (appId) {
+        // Keep following the app's output while it drains, then stop the follower.
         await docker(["stop", "--time", String(config.appStopTimeoutS), appId], { timeout: (config.appStopTimeoutS + 30) * 1000 }).catch((error) => log({ event: "app.stop.failed", error: error.message }));
         const info = await inspectContainer(appId).catch(() => null);
         log({ event: "app.stopped", exitCode: info?.State?.ExitCode ?? null });
+        appLogs?.stop();
         await docker(["rm", "--force", appId]).catch(() => {});
       }
       for (const requestId of [...workers.keys()]) await stopWorker(requestId).catch((error) => log({ event: "worker.stop.failed", requestId, error: error.message }));
@@ -275,7 +285,9 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     return stopped;
   }
 
-  return { config, start, stop, handle, reconcile, workers, get appId() { return appId; } };
+  // Kill every log follower (used on process exit so no `docker logs` child outlives the host).
+  const killFollowers = () => { appLogs?.stop(); for (const worker of workers.values()) worker.logs?.stop(); };
+  return { config, start, stop, handle, reconcile, killFollowers, workers, get appId() { return appId; } };
 }
 
 async function main(argv) {
@@ -288,6 +300,7 @@ async function main(argv) {
     delete config.manifestPath;
   }
   const host = createHost(config);
+  process.once("exit", () => host.killFollowers());
   let exiting = false;
   const shutdown = async (code) => {
     if (exiting) return;

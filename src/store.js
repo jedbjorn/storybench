@@ -1960,14 +1960,22 @@ export class Store {
   }
   // Starts a new native-session segment and makes it active; the previous active segment ends. Native session IDs are
   // never carried across harnesses: set the new one with setSegmentNativeSession once the harness reports it.
-  createSegment({ conversationId, harness, reason, previousSegmentId, firstMessageId = null, seedIncludedMessages = null, seedOmittedMessages = null, exceptRunId = null } = {}) {
+  createSegment({ id: requestedId = null, conversationId, harness, reason, previousSegmentId, firstMessageId = null, seedIncludedMessages = null, seedOmittedMessages = null, exceptRunId = null } = {}) {
     const conversation = this.assertConversationIdle(conversationId, { exceptRunId });
     if (!HARNESSES.includes(harness)) throw new StoreError(`harness must be one of ${HARNESSES.join(", ")}`);
+    // A segment created on behalf of a dispatched request (exceptRunId) must be for that request's own
+    // conversation and harness: the exemption never lets a request open another harness's segment.
+    if (exceptRunId != null) {
+      const run = this.getProductionRun(exceptRunId);
+      if (!run || run.conversationId !== conversationId) throw new StoreError("The dispatched request is not in this conversation", 404);
+      if (run.harness !== harness) throw new StoreError(`A ${run.harness} request cannot open a ${harness} segment`, 409, { requestId: run.id });
+    }
     if (!SEGMENT_REASONS.includes(reason)) throw new StoreError(`reason must be one of ${SEGMENT_REASONS.join(", ")}`);
     const previous = previousSegmentId === undefined ? conversation.activeSegmentId : previousSegmentId;
     for (const [value, field] of [[firstMessageId, "firstMessageId"], [seedIncludedMessages, "seedIncludedMessages"], [seedOmittedMessages, "seedOmittedMessages"]])
       if (value != null && (!Number.isInteger(value) || value < 0)) throw new StoreError(`${field} must be a non-negative integer`);
-    const segmentId = id("segment"), stamp = now();
+    if (requestedId != null && (typeof requestedId !== "string" || !SAFE_SEGMENT.test(requestedId))) throw new StoreError("segment id must be a plain identifier");
+    const segmentId = requestedId ?? id("segment"), stamp = now();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       if (previous) this.db.prepare("UPDATE conversation_segments SET ended_at=? WHERE id=? AND conversation_id=? AND ended_at IS NULL").run(stamp, previous, conversationId);
