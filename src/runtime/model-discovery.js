@@ -10,7 +10,7 @@
 //    are labelled advisory (an alias is not proof of account access), and exact model IDs
 //    are accepted and validated on first use.
 import { spawn as nodeSpawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { CredentialLink, harnessAvailability } from "./credentials.js";
@@ -56,6 +56,7 @@ function collect(child, timeoutMs) {
 
 // Run `codex app-server` in a throwaway container and ask it for its model list.
 async function codexModelList({ config, stageRoot, spawn, timeoutMs }) {
+  await mkdir(stageRoot, { recursive: true, mode: 0o700 });
   const stageDir = await mkdtemp(path.join(stageRoot, "discovery-"));
   let link;
   try {
@@ -127,7 +128,7 @@ export function createModelDiscovery({ config, stageRoot, spawn = nodeSpawn, now
     } catch (error) {
       // Discovery failure is reported plainly; a previous successful list is shown as stale.
       if (cached) return { ...cached, cached: true, stale: true, discoveryError: error.message };
-      return { harness, available: true, reason: null, models: [], source: null, fetchedAt: null, stale: true, discoveryError: error.message };
+      return { harness, available: true, reason: null, models: [], source: null, fetchedAt: null, stale: true, exactModelIds: true, discoveryError: error.message };
     }
     const fetchedAtMs = now();
     const stored = { ...entry, fetchedAt: new Date(fetchedAtMs).toISOString(), fetchedAtMs };

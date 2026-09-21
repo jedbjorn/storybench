@@ -98,7 +98,8 @@ async function main() {
   const turns = (result.steps ?? []).filter((step) => step.send);
   const [t1, t2, t3, t4] = turns;
   const segments = result.segments ?? [];
-  const toolTurns = (turnId) => (result.events ?? []).filter((event) => event.type === "tool.started" && event.payload.turnId === turnId).map((event) => event.payload.name);
+  // Storybench tools used in a turn (Claude's own ToolSearch loads deferred MCP schemas; it is not a Storybench tool).
+  const toolTurns = (turnId) => (result.events ?? []).filter((event) => event.type === "tool.started" && event.payload.turnId === turnId && event.payload.name !== "ToolSearch").map((event) => event.payload.name);
   const hookWord = hook.split(" ")[5];
   const answered = (turn) => turn?.state === "idle" && turn.reply.includes(word) && turn.reply.includes(hookWord);
   record("codex", "first turn with gpt-5.6-terra (low effort) in a worker", t1?.state === "idle" && t1.run?.harness === "codex" && t1.run?.modelSelected === models.codex && t1.run?.modelResolved === models.codex, `resolved ${t1?.run?.modelResolved}, effort ${t1?.run?.effortResolved}`, "continuity.json");

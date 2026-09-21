@@ -49,3 +49,18 @@ test("the models control op is validated", () => {
   assert.throws(() => validateControlRequest({ op: "harness.models", harness: "codex", image: "x" }), { code: "UNEXPECTED_FIELDS" });
   assert.throws(() => validateControlRequest({ op: "harness.models", harness: "codex", refresh: "yes" }), /refresh must be a boolean/);
 });
+
+test("a failed discovery reports the error, keeps exact IDs selectable and is retried", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "sb-disc2-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, "auth.json"), JSON.stringify({ tokens: { access_token: "a", refresh_token: "r" } }));
+  let calls = 0;
+  const spawn = () => { calls++; throw new Error("docker unavailable"); };
+  const discovery = createModelDiscovery({ config: { installId: "t", images: { worker: "sha256:x" }, credentials: { codex: path.join(dir, "auth.json"), claude: path.join(dir, "none.json") } }, stageRoot: path.join(dir, "missing-parent", "credentials"), spawn });
+  const first = await discovery.discover("codex");
+  assert.equal(first.available, true);
+  assert.match(first.discoveryError, /docker unavailable/);
+  assert.equal(first.exactModelIds, true);
+  await discovery.discover("codex");
+  assert.equal(calls, 2, "a failed discovery is not cached");
+});
