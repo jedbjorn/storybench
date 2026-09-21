@@ -1,5 +1,5 @@
-export async function refreshJobStatus(api, getCurrentState) {
-  const incoming = await api("/api/state");
+export async function refreshJobStatus(api, getCurrentState, url = "/api/state") {
+  const incoming = await api(url);
   return { ...getCurrentState(), jobs: incoming.jobs };
 }
 

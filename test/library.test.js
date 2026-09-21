@@ -160,8 +160,10 @@ test("content deduplication reuses a registered asset without orphan episode cop
   const second = await service.registerText({ episodeId: other.id, title: "Two", text: "same bytes" });
   assert.equal(first.assetId, second.assetId);
   assert.equal(first.asset.path, second.asset.path);
-  const otherReference = path.join(f.workspace, "episodes", other.id, "reference");
-  assert.deepEqual(await import("node:fs/promises").then(({ readdir }) => readdir(otherReference)), []);
+  // New-layout episodes store library files in their channel's media folder: one copy for both memberships.
+  const channelMedia = f.store.channelMediaDirectory(other.channelId);
+  assert.equal(path.dirname(path.join(f.workspace, second.asset.path)), channelMedia);
+  assert.deepEqual(await import("node:fs/promises").then(({ readdir }) => readdir(channelMedia)), [path.basename(second.asset.path)]);
 });
 
 test("URL references reject private destinations and revalidate redirects", async (t) => {

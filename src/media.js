@@ -146,15 +146,19 @@ function validProbe(value) {
     && (value.duration === null || Number.isFinite(value.duration));
 }
 
-export async function importMedia({ workspace, sourcePath }) {
+// mediaDirectory selects the owning channel's managed media folder; it defaults to the prototype's <root>/media.
+export async function importMedia({ workspace, sourcePath, mediaDirectory = null }) {
   const root = resolve(workspace);
   const source = resolve(sourcePath);
+  const mediaRoot = mediaDirectory ? workspacePath(root, mediaDirectory, 'mediaDirectory') : join(root, 'media');
   const before = await stat(source).catch(() => null);
   if (!before?.isFile()) throw mediaError('Import source must be an existing regular file');
-  await mkdir(join(root, 'media'), { recursive: true });
+  await mkdir(mediaRoot, { recursive: true });
   await mkdir(join(root, 'cache'), { recursive: true });
-  const staging = join(root, 'media', `.import-${randomUUID()}.tmp`);
+  if (!within(await realpath(root), await realpath(mediaRoot))) throw mediaError('mediaDirectory must be inside the workspace');
+  const staging = join(mediaRoot, `.import-${randomUUID()}.tmp`);
   let published;
+  let createdFile = false;
   try {
     const hash = await hashAndCopy(source, staging);
     const after = await stat(source);
@@ -162,12 +166,12 @@ export async function importMedia({ workspace, sourcePath }) {
       throw mediaError('Import source changed while it was being copied');
     }
     // Content identity, not a user-controlled name or extension, is the managed key.
-    published = join(root, 'media', hash);
+    published = join(mediaRoot, hash);
     if (await fileExists(published)) {
       const managed = await stat(published);
       if (!managed.isFile() || managed.size !== after.size) throw mediaError('Managed media does not match its content identity');
       await unlink(staging);
-    } else await rename(staging, published);
+    } else { await rename(staging, published); createdFile = true; }
     const probeCache = join(root, 'cache', `${hash}-probe-v1.json`);
     let probe;
     try {
@@ -203,6 +207,7 @@ export async function importMedia({ workspace, sourcePath }) {
       metadata: { ...probe, originPath: source, importedSize: after.size },
       ...(thumbnailPath ? { thumbnailPath } : {}),
       createdAt: new Date().toISOString(),
+      createdFile,
     };
   } finally {
     await unlink(staging).catch(() => {});

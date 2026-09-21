@@ -15,9 +15,12 @@ let state = { episodes: [], assets: [], jobs: [] },
   boardSections = [],
   boardItems = [],
   cardImports = new Set();
-const api = async (url, opt = {}) => {
+// The channel this view is showing. It is captured once (from ?channel= or the default at first load) and sent
+// with every request, so changing the installation default elsewhere never retargets this open view.
+let channelId = new URLSearchParams(location.search).get("channel") || null;
+const api = async (url, { headers = {}, ...opt } = {}) => {
   const r = await fetch(url, {
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...(channelId ? { "x-storybench-channel": channelId } : {}), ...headers },
     ...opt,
   });
   const data = await r.json().catch(() => ({}));
@@ -42,8 +45,20 @@ const esc = (s) =>
         c
       ],
   );
+const stateUrl = () => channelId ? `/api/state?channel=${encodeURIComponent(channelId)}` : "/api/state";
+function showChannel(channel) {
+  if (channel && !channelId) {
+    channelId = channel.id;
+    const next = new URL(location.href);
+    next.searchParams.set("channel", channel.id);
+    history.replaceState(history.state, "", next);
+  }
+  $("#channelName").textContent = channel ? channel.name : "No channel";
+  $("#channelName").title = channel ? `Channel ${channel.name} (${channel.id})` : "Create a channel to start";
+}
 async function load(select) {
-  const incoming = await api("/api/state");
+  const incoming = await api(stateUrl());
+  showChannel(incoming.channel);
   if (dirty || saveInFlight) {
     state = { ...incoming, episodes: state.episodes };
     return;
@@ -86,7 +101,7 @@ function renderJobs() {
 
 async function refreshJobs(target = episode?.id) {
   if (!jobRefreshInFlight) {
-    jobRefreshInFlight = refreshJobStatus(api, () => state)
+    jobRefreshInFlight = refreshJobStatus(api, () => state, stateUrl())
       .then((next) => { state = next; })
       .finally(() => { jobRefreshInFlight = null; });
   }
@@ -305,9 +320,14 @@ async function flushDraft() {
 async function create() {
   if (!(await leaveStory())) return;
   await flushDraft();
+  if (!channelId) {
+    const name = prompt("Name your first channel", "Main");
+    if (!name) return;
+    showChannel(await api("/api/channels", { method: "POST", body: JSON.stringify({ name }) }));
+  }
   const e = await api("/api/episodes", {
     method: "POST",
-    body: JSON.stringify({ title: "Untitled episode" }),
+    body: JSON.stringify({ title: "Untitled episode", channelId }),
   });
   await load(e.id);
 }

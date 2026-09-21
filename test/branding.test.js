@@ -13,7 +13,7 @@ test("promotion preserves source and standards create editable fresh copies once
   t.after(async () => { store.close(); await rm(workspace, { recursive: true, force: true }); });
   const sourceEpisode = store.createEpisode({ title: "Source" });
   const bytes = Buffer.from("registered-image");
-  const sourcePath = path.join(workspace, "episodes", sourceEpisode.id, "graphics", "intro.png");
+  const sourcePath = path.join(store.episodeOutputDirectory(sourceEpisode.id, "graphics"), "intro.png");
   await mkdir(path.dirname(sourcePath), { recursive: true });
   await writeFile(sourcePath, bytes);
   const hash = crypto.createHash("sha256").update(bytes).digest("hex");
@@ -25,7 +25,7 @@ test("promotion preserves source and standards create editable fresh copies once
   const template = store.promoteCard(sourceEpisode.id, sourceCard.id, { name: "Standard intro", role: "intro" });
   assert.equal(store.getEpisode(sourceEpisode.id).cards[0].id, sourceCard.id, "promotion preserves source card");
   assert.deepEqual(await readFile(path.join(workspace, store.getAsset(asset.id).path)), bytes);
-  assert.match(store.getAsset(asset.id).path, /^branding\/assets\//);
+  assert.equal(path.dirname(store.getAsset(asset.id).path), path.join("channels", sourceEpisode.channelId, "branding"));
 
   const target = store.createEpisode({ title: "Target" });
   assert.equal(target.cards.length, 1);

@@ -127,6 +127,6 @@ test("graphic database publication rolls back before deleting a failed output", 
   assert.match(failed.error, /injected membership failure/);
   assert.deepEqual(store.listAssets(), []);
   assert.deepEqual(store.listEpisodeLibrary(episode.id), []);
-  const graphicsDir = path.join(workspace, "episodes", episode.id, "graphics");
+  const graphicsDir = store.episodeOutputDirectory(episode.id, "graphics");
   assert.deepEqual(await import("node:fs/promises").then(({ readdir }) => readdir(graphicsDir)), []);
 });
