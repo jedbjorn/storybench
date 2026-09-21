@@ -215,7 +215,12 @@ export class ChatWorkspace {
     const value = await this.api(this.itemUrl(episodeId, conversationId));
     if (!this.isCurrent(generation, episodeId, conversationId)) return;
     this.current = value;
-    this.root.querySelector("[data-chat-status]").textContent = value.error || value.state;
+    const status = this.root.querySelector("[data-chat-status]");
+    const active = !value.error && working(value.state);
+    const label = value.error || ({ running: "working", interrupting: "stopping" }[value.state] ?? value.state);
+    const statusHtml = `${escapeHtml(label)}${active ? ' <span class="chat-working-dots" aria-hidden="true">...</span>' : ""}`;
+    // Keep the animation and live region stable across the one-second refreshes.
+    if (status.innerHTML !== statusHtml) status.innerHTML = statusHtml;
     const chip = this.root.querySelector("[data-chat-selection]");
     chip.textContent = selectionLabel(value.settings);
     chip.dataset.selectable = value.settings ? "true" : "false";
