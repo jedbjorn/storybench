@@ -21,7 +21,7 @@ export function hostSystem({ env = process.env } = {}) {
     systemctl,
     async unitState(unit) {
       let result;
-      try { result = await systemctl(["show", unit, "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStartTimestamp,Result,FragmentPath"], { timeoutMs: 15_000 }); }
+      try { result = await systemctl(["show", unit, "--timestamp=unix", "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStartTimestamp,Result,FragmentPath"], { timeoutMs: 15_000 }); }
       catch (error) {
         // No systemctl at all: no user manager can be running the service.
         if (error.code === "ENOENT") return { load: "not-found", active: "inactive", sub: "dead", pid: null, managerUnavailable: true };
@@ -33,8 +33,10 @@ export function hostSystem({ env = process.env } = {}) {
         throw new Error(`systemctl --user show failed: ${result.stderr.trim().split("\n")[0] || `exit ${result.code}`}`);
       }
       const fields = Object.fromEntries(result.stdout.trim().split("\n").filter(Boolean).map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
+      // --timestamp=unix gives "@<seconds>"; report ISO time.
+      const started = /^@(\d+)$/.exec(fields.ExecMainStartTimestamp || "");
       return { load: fields.LoadState, active: fields.ActiveState, sub: fields.SubState, pid: Number(fields.MainPID) || null,
-        startedAt: fields.ExecMainStartTimestamp || null, result: fields.Result || null, fragment: fields.FragmentPath || null };
+        startedAt: started ? new Date(Number(started[1]) * 1000).toISOString() : null, result: fields.Result || null, fragment: fields.FragmentPath || null };
     },
     daemonReload: () => systemctl(["daemon-reload"], { timeoutMs: 30_000 }),
     start: (unit) => systemctl(["start", unit], { timeoutMs: 60_000 }),
@@ -47,7 +49,16 @@ export function hostSystem({ env = process.env } = {}) {
     async containers(installId) {
       const result = await runCommand("docker", ["ps", "--no-trunc", "--filter", `label=io.storybench.install=${installId}`, "--format", "{{.ID}} {{.Label \"io.storybench.role\"}}"], { env, timeoutMs: 20_000 });
       if (result.code !== 0) return null;
-      return result.stdout.trim().split("\n").filter(Boolean).map((line) => { const [id, role] = line.split(" "); return { id, role }; });
+      const containers = result.stdout.trim().split("\n").filter(Boolean).map((line) => { const [id, role] = line.split(" "); return { id, role, startedAt: null }; });
+      if (containers.length) {
+        const started = await runCommand("docker", ["inspect", "--format", "{{.Id}} {{.State.StartedAt}}", ...containers.map((container) => container.id)], { env, timeoutMs: 20_000 });
+        if (started.code === 0) for (const line of started.stdout.trim().split("\n")) {
+          const [id, at] = line.split(" ");
+          const container = containers.find((value) => value.id === id);
+          if (container && !Number.isNaN(Date.parse(at))) container.startedAt = new Date(at).toISOString();
+        }
+      }
+      return containers;
     },
     open(url) {
       const opener = env.STORYBENCH_OPENER || "xdg-open";

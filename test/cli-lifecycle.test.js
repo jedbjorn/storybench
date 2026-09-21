@@ -30,10 +30,23 @@ function healthBody({ databaseId, manifest = release, renders = 0, agents = 0, r
     activity: { renders: { queued: 0, running: renders }, agents: { active: agents } } };
 }
 
-// A fake user manager: start() launches a fake Storybench health server on the configured port, stop() closes it.
-function fakeSystem(t, { health = {}, startFails = false, portOf }) {
+// One loopback port per sandbox, bound for the sandbox's whole life so no other process or test can take it between
+// "reserve" and "use". Whoever plays the service (the fake unit, or a test's "other program") attaches a request
+// handler to this same socket; nothing ever rebinds. While no handler is attached the port counts as free.
+async function reservePort(t) {
+  const reservation = { handler: null, server: http.createServer((request, response) => {
+    if (reservation.handler) return reservation.handler(request, response);
+    response.writeHead(503); response.end();
+  }) };
+  reservation.port = await listenInRange(reservation.server);
+  t.after(() => new Promise((resolve) => reservation.server.close(resolve)));
+  return reservation;
+}
+
+// A fake user manager: start() makes the reserved port answer as a Storybench app, stop() detaches it.
+function fakeSystem(t, { health = {}, startFails = false, portOf, reservation }) {
   const calls = [];
-  let server = null, active = "inactive", pid = null;
+  let active = "inactive", pid = null;
   const system = {
     calls,
     health,
@@ -44,22 +57,21 @@ function fakeSystem(t, { health = {}, startFails = false, portOf }) {
       calls.push(["start", unit]);
       if (startFails) { active = "failed"; return { code: 0, stdout: "", stderr: "" }; }
       const port = portOf();
-      server = http.createServer((request, response) => {
+      if (port !== reservation.port) throw new Error(`the fake unit only serves its reserved port ${reservation.port}, not ${port}`);
+      reservation.handler = (request, response) => {
         const body = request.url === "/api/health" ? healthBody(system.health)
           : request.url === "/api/channels/default" ? { channel: { id: "channel_default", name: "Alpha" } } : null;
         response.writeHead(body ? 200 : 404, { "content-type": "application/json" });
         response.end(JSON.stringify(body ?? { error: "not found" }));
-      });
-      await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
+      };
       active = "active"; pid = 4242;
       return { code: 0, stdout: "", stderr: "" };
     },
-    async stop(unit) { calls.push(["stop", unit]); if (server) await new Promise((resolve) => server.close(resolve)); server = null; active = "inactive"; pid = null; return { code: 0 }; },
+    async stop(unit) { calls.push(["stop", unit]); reservation.handler = null; active = "inactive"; pid = null; return { code: 0 }; },
     async containers() { return pid ? [{ id: "c".repeat(64), role: "app" }] : []; },
     journal(unit, options) { calls.push(["journal", unit, options.follow]); const child = new EventEmitter(); setImmediate(() => child.emit("close", 0)); return child; },
     async open(url) { calls.push(["open", url]); },
   };
-  t.after(() => server?.close());
   return system;
 }
 
@@ -71,15 +83,15 @@ async function sandbox(t, systemOptions = {}) {
   const env = { HOME: home, PATH: process.env.PATH, XDG_CONFIG_HOME: path.join(home, "cfg"), XDG_DATA_HOME: path.join(home, "data"), XDG_STATE_HOME: path.join(home, "state"),
     XDG_RUNTIME_DIR: path.join(home, "run"), STORYBENCH_RELEASE_MANIFEST: manifestFile, STORYBENCH_UNIT_DIR: path.join(home, "units"), STORYBENCH_UNIT_NAME: "storybench-test-life.service" };
   mkdirSync(env.XDG_RUNTIME_DIR, { recursive: true });
-  // Reserve a free port in range for the fake service, then release it.
-  const probe = http.createServer();
-  const port = await listenInRange(probe);
-  await new Promise((resolve) => probe.close(resolve));
+  const reservation = await reservePort(t);
+  const port = reservation.port;
   let config = null;
-  const system = fakeSystem(t, { ...systemOptions, portOf: () => readConfig(path.join(env.XDG_CONFIG_HOME, "storybench", "config.json")).port });
+  const system = fakeSystem(t, { ...systemOptions, reservation, portOf: () => readConfig(path.join(env.XDG_CONFIG_HOME, "storybench", "config.json")).port });
+  // The reserved port with nothing attached is "free" to the CLI; everything else is probed for real.
+  const probe = (target, options) => (target === port && !reservation.handler ? Promise.resolve({ state: "stopped" }) : probeService(target, options));
   const run = async (args, overrides = {}) => {
     let stdout = "", stderr = "";
-    const code = await main(args, { env, home, cwd: home, lockTimeoutMs: 300, system, healthTimeoutMs: 3000, pollMs: 20, nodePath: FAKE_NODE,
+    const code = await main(args, { env, home, cwd: home, lockTimeoutMs: 300, system, probeService: probe, healthTimeoutMs: 3000, pollMs: 20, nodePath: FAKE_NODE,
       stdout: { write: (text) => { stdout += text; } }, stderr: { write: (text) => { stderr += text; } }, ...overrides });
     return { code, stdout, stderr };
   };
@@ -87,7 +99,8 @@ async function sandbox(t, systemOptions = {}) {
   assert.equal((await run(["init", root])).code, 0);
   config = readConfig(path.join(env.XDG_CONFIG_HOME, "storybench", "config.json"));
   system.health.databaseId ??= config.dataRootId;
-  return { home, env, run, port, system, root, config };
+  // occupy(): make the reserved port answer as some other program (null releases it again).
+  return { home, env, run, port, system, root, config, occupy: (handler) => { reservation.handler = handler; } };
 }
 
 test("the unit is generated with quoted absolute paths, bounded restarts, drain time and no login startup", () => {
@@ -157,17 +170,14 @@ test("up writes the host config and unit, starts it, waits for matching health, 
 
 test("up refuses a port held by another program or another Storybench, and reports failure and mismatch", async (t) => {
   const s = await sandbox(t);
-  const other = http.createServer((request, response) => response.end("not storybench"));
-  await new Promise((resolve) => other.listen(s.port, "127.0.0.1", resolve));
+  s.occupy((request, response) => response.end("not storybench"));
   let result = await s.run(["up", "--port", String(s.port)]);
   assert.equal(result.code, 1);
   assert.match(result.stderr, /Port \d+ is already in use by another program/);
-  await new Promise((resolve) => other.close(resolve));
-  const foreign = http.createServer((request, response) => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify(healthBody({ databaseId: "root_other" }))); });
-  await new Promise((resolve) => foreign.listen(s.port, "127.0.0.1", resolve));
+  s.occupy((request, response) => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify(healthBody({ databaseId: "root_other" }))); });
   result = await s.run(["up", "--port", String(s.port)]);
   assert.match(result.stderr, /Another Storybench server \(not storybench-test-life\.service\) answers/);
-  await new Promise((resolve) => foreign.close(resolve));
+  s.occupy(null);
   assert.equal(s.system.calls.filter(([name]) => name === "start").length, 0);
   const mismatched = await sandbox(t, { health: { databaseId: "root_somebody_else" } });
   result = await mismatched.run(["up", "--port", String(mismatched.port)]);
@@ -364,6 +374,21 @@ test("R6: one port rule (1024-65535): invalid --port is a usage error, a bad con
   const result = await s.run(["status"]);
   assert.equal(result.code, 1);
   assert.match(result.stderr, /1024 to 65535/);
+});
+
+test("status notes an app container that predates the current host start", async (t) => {
+  const s = await sandbox(t);
+  const hostStart = "2026-09-21T09:00:10.000Z";
+  const system = { ...stateSystem("active"), async unitState() { return { load: "loaded", active: "active", sub: "running", pid: 91, startedAt: hostStart }; },
+    async containers() { return [{ id: "d".repeat(64), role: "app", startedAt: "2026-09-21T08:59:00.000Z" }]; } };
+  const answering = async () => ({ state: "running", health: healthBody({ databaseId: s.config.dataRootId }), dataRootId: s.config.dataRootId, schemaVersion: 8 });
+  const configFile = path.join(s.env.XDG_CONFIG_HOME, "storybench", "config.json");
+  writeFileSync(configFile, JSON.stringify({ ...readConfig(configFile), installId: "sbtest" }));
+  let status = await s.run(["status"], { system, probeService: answering });
+  assert.match(status.stdout, /Note: the app container predates the current host start/);
+  system.containers = async () => [{ id: "d".repeat(64), role: "app", startedAt: "2026-09-21T09:00:11.000Z" }];
+  status = await s.run(["status"], { system, probeService: answering });
+  assert.doesNotMatch(status.stdout, /predates/);
 });
 
 test("R7 and notes: logs help is accurate; status words other answers by unit state and flags a foreign unit file", async (t) => {

@@ -239,9 +239,14 @@ export async function runStatus(context) {
   const status = await serviceStatus({ system: context.system, unit, port: config.port, identity: release.identity ?? null, dataRootId: config.dataRootId, probe: context.probeService });
   const lines = [`Status: ${status.state}`, `Unit: ${unit} (${status.unit.load ?? "unknown"}, ${status.unit.active ?? "unknown"}${status.unit.sub ? `/${status.unit.sub}` : ""})`];
   if (status.unit.pid) lines.push(`Process: host PID ${status.unit.pid}${status.unit.startedAt ? ` since ${status.unit.startedAt}` : ""}`);
+  let predates = false;
   if (config.installId) {
     const containers = await context.system.containers(config.installId).catch(() => null);
     if (containers) lines.push(`Containers: ${containers.length ? containers.map((container) => `${container.role} ${container.id.slice(0, 12)}`).join(", ") : "none"}`);
+    // During an automatic restart the previous app can still be running while the new host process starts.
+    const app = containers?.find((container) => container.role === "app");
+    const hostStart = Date.parse(status.unit.startedAt ?? "");
+    if (app?.startedAt && !Number.isNaN(hostStart) && Date.parse(app.startedAt) < hostStart - 2000) predates = true;
   }
   const channel = status.health ? await defaultChannel(config.port) : null;
   lines.push(`URL: ${urlFor(config.port, channel?.id)}${status.state === "healthy" ? "" : " (not serving)"}`);
@@ -263,6 +268,7 @@ export async function runStatus(context) {
     if (["activating", "deactivating", "reloading"].includes(status.unit.active)) lines.push(`Note: the service's own app is answering while the unit is ${status.unit.active}${status.unit.sub ? ` (${status.unit.sub})` : ""}`);
     else lines.push(`Note: a Storybench server not managed by ${unit} answers on port ${config.port}`);
   }
+  if (predates) lines.push("Note: the app container predates the current host start (the service is restarting or reconciling)");
   if (status.state === "failed") lines.push("Hint: see `storybench logs`, then `storybench up`.");
   context.out(lines.join("\n"));
   return EXIT.OK;
