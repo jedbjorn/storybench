@@ -500,8 +500,8 @@ h2 {
   font-size: 19px;
 }
 .chat-history-toggle:hover, .chat-icon:hover { border-color: var(--accent); color: var(--accent); }
-.chat-icon.danger { color: #a43b29; }
-.chat-icon.danger:hover { border-color: #a43b29; background: #fff5f1; }
+.chat-icon.chat-stop { border-color: transparent; background: transparent; color: #a43b29; }
+.chat-icon.chat-stop:hover { border-color: #a43b29; background: #fff5f1; color: #a43b29; }
 .chat-identity {
   min-width: 0;
   display: flex;
@@ -712,7 +712,17 @@ audio.reference-preview { width: 48px; }
 .reference-drop.drag-over { border-color: var(--accent); background: #fff4f0; }
 .reference-status:empty { display: none; }
 .reference-status.error { color: var(--accent); }
-@media (max-width: 720px) { .reference-actions { grid-template-columns: 1fr; } }
+.episode-references .reference-list { display: flex; flex-wrap: wrap; }
+.episode-references .reference-item { flex: 0 1 260px; max-width: 100%; }
+.episode-references .reference-actions { display: flex; align-items: center; }
+.episode-references .reference-actions label { flex: 1 1 420px; grid-template-columns: auto minmax(0, 1fr); align-items: center; }
+.episode-references .reference-actions select { min-width: 0; width: 100%; }
+.episode-references .reference-drop { flex: none; display: flex; align-items: center; gap: 4px; min-height: 34px; white-space: nowrap; }
+@media (max-width: 720px) {
+  .reference-actions, .episode-references .reference-actions { display: grid; grid-template-columns: 1fr; }
+  .episode-references .reference-actions label { grid-template-columns: 1fr; }
+  .episode-references .reference-drop { justify-content: center; white-space: normal; }
+}
 
 /* Draft cleanup */
 .cleanup-rows { display: grid; gap: 6px; max-height: 50vh; overflow: auto; margin: 8px 0; }

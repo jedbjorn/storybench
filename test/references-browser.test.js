@@ -69,6 +69,23 @@ test("episode and card reference panels link, upload, unlink and report unavaila
 
   // Episode references: prompt only, then an existing B-roll item (category does not limit the picker).
   await page.click("#episodeReferencesBox > summary");
+  const episodeLayout = await page.evaluate(() => {
+    const box = document.querySelector("#episodeReferencesBox");
+    const titleColumn = document.querySelector(".title-row > div:first-child");
+    const actions = document.querySelector("#episodeReferences .reference-actions");
+    const drop = document.querySelector("#episodeReferences .reference-drop");
+    return {
+      parent: box.parentElement.id,
+      panelWidth: box.getBoundingClientRect().width,
+      titleWidth: titleColumn.getBoundingClientRect().width,
+      actionsDisplay: getComputedStyle(actions).display,
+      dropWhiteSpace: getComputedStyle(drop).whiteSpace,
+    };
+  });
+  assert.equal(episodeLayout.parent, "editor", "episode references span the editor rather than the title column");
+  assert.ok(episodeLayout.panelWidth > episodeLayout.titleWidth, "episode references are wider than the title column");
+  assert.equal(episodeLayout.actionsDisplay, "flex", "episode reference controls share one desktop row");
+  assert.equal(episodeLayout.dropWhiteSpace, "nowrap", "drop/upload copy stays on one line");
   await page.fill("#episodeReferences [data-ref-prompt]", "Warm, unhurried, late-afternoon light");
   await page.press("#episodeReferences [data-ref-prompt]", "Tab");
   await until(() => store.getEpisode(episode.id).referencePrompt === "Warm, unhurried, late-afternoon light", "episode prompt saved");
@@ -77,6 +94,7 @@ test("episode and card reference panels link, upload, unlink and report unavaila
   await page.selectOption("#episodeReferences [data-ref-add]", clip.id);
   await until(() => store.getEpisode(episode.id).referenceItemIds.join() === clip.id, "episode reference linked");
   await page.waitForSelector(`#episodeReferences [data-ref-item="${clip.id}"] video`);
+  assert.equal(await page.$eval("#episodeReferences .reference-list", (element) => getComputedStyle(element).display), "flex", "episode previews render in a tile row");
   await shot(page, "1-episode-references");
 
   // Card reference upload registers a new item and links it only to that card; output media is unchanged.

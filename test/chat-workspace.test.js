@@ -163,6 +163,8 @@ test("Enter sends, Shift+Enter keeps a newline, and × interrupts the active cha
   const stop = root.querySelector("[data-chat-stop]");
   assert.equal(stop.hidden, false);
   assert.equal(stop.textContent, "×");
+  assert.equal(stop.classList.contains("chat-stop"), true);
+  assert.equal(stop.classList.contains("danger"), false);
   stop.click();
   await tick();
   assert.ok(calls.some((call) => call.url.endsWith("/interrupt") && call.method === "POST"));
