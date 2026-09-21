@@ -59,12 +59,6 @@ async function openHeldRequest({
   const location = store.episodeLocation(episodeId);
   const episodeDir = parseEpisodeDir(path.relative(dataRoot, location.directory));
   const workRelative = path.relative(dataRoot, store.episodeWorkDirectory(episodeId));
-  // Render before the worker starts so the harness never sees a half-written boot.
-  const render = await renderEpisodeBoot({
-    episodeDir: location.directory, templates,
-    context: { ...bootContext, paths: { ...bootContext.paths, episode: location.directory, work: store.episodeWorkDirectory(episodeId) } },
-  });
-  const started = await controlRequest(controlSocket, { op: "worker.start", requestId, harness, segmentId, episodeDir: episodeDir.relative, workDir: workRelative });
   // A request-specific working subdirectory inside the episode work area.
   const requestWorkDir = path.join(store.episodeWorkDirectory(episodeId), requestId);
   await mkdir(requestWorkDir, { recursive: true });
@@ -72,9 +66,20 @@ async function openHeldRequest({
     requestId, conversationId, harness, model: model ?? null, channelId: location.channelId, episodeId,
     dataRoot, episodeDir: location.directory, workDir: store.episodeWorkDirectory(episodeId), requestWorkDir,
   };
-  const scoped = createScopedTools(scope, { store, library: library ?? createLibraryService({ workspace: dataRoot, store }), release: release ?? releaseFromEnv(), isShortcutMessage });
+  const effectiveRelease = release ?? releaseFromEnv();
+  const scoped = createScopedTools(scope, { store, library: library ?? createLibraryService({ workspace: dataRoot, store }), release: effectiveRelease, isShortcutMessage });
   const tools = wrapTools(scoped);
   scoped.setServedDefinitions(tools.definitions);
+  // Render before the worker starts so the harness never sees a half-written boot. The boot
+  // context may be a function of what this request actually serves and where it works.
+  const context = typeof bootContext === "function"
+    ? bootContext({ requestWorkDir, served: tools.definitions.map((definition) => definition.name), release: effectiveRelease })
+    : bootContext;
+  const render = await renderEpisodeBoot({
+    episodeDir: location.directory, templates,
+    context: { ...context, paths: { ...context.paths, episode: location.directory, work: store.episodeWorkDirectory(episodeId), requestWork: requestWorkDir } },
+  });
+  const started = await controlRequest(controlSocket, { op: "worker.start", requestId, harness, segmentId, episodeDir: episodeDir.relative, workDir: workRelative });
   const token = randomBytes(32).toString("hex");
   let bridge;
   try {

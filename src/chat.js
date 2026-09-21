@@ -203,7 +203,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
           modelSelected: plan.selection.model, effortSelected: plan.selection.effort, state: "starting", startedAt: now() });
       }
       connection = await codexFactory({ cwd: store.workspace, model: plan ? plan.selection.model : model, tools: tools(value, activity), signal: controller.signal,
-        episodeId: value.episode_id, conversationId: value.id, requestId,
+        episodeId: value.episode_id, conversationId: value.id, requestId, request: { text, messageId, kind: "chat", cardId: null },
         ...(plan ? { harness: plan.selection.harness, effort: plan.selection.effort, segmentId: segment.id } : {}),
         onEvent: (event) => dispatch ? consume(event) : pending.push(event), onError: (cause) => { if (dispatch) rejectDone(cause); } });
       if (aborted) throw error("Chat stopped; the prompt was not replayed", 409);
