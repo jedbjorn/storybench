@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { main } from "../src/cli/main.js";
+import { COMMANDS } from "../src/cli/commands.js";
 import { SCHEMA_VERSION } from "../src/store.js";
 import { resolveXdg } from "../src/cli/xdg.js";
 import { readConfig, writeConfigAtomic } from "../src/cli/config.js";
@@ -184,6 +185,23 @@ test("help works at every level with exit 0; invalid invocations exit 2; recover
   }
 });
 
+test("the README command table exactly matches every public leaf command's help usage", async (t) => {
+  const { run } = sandbox(t);
+  const documented = [...readFileSync(path.join(REPO, "README.md"), "utf8").matchAll(/^\| `(storybench [^`]+)` \|/gm)]
+    .map((match) => match[1].replaceAll("\\|", "|")).sort();
+  const advertised = [];
+  for (const [name, spec] of Object.entries(COMMANDS)) {
+    if (spec.hidden) continue;
+    const targets = spec.subcommands ? Object.keys(spec.subcommands).map((sub) => [name, sub]) : [[name]];
+    for (const target of targets) {
+      const help = await run(name === "help" ? ["help", "help"] : [...target, "--help"]);
+      assert.equal(help.code, 0, target.join(" "));
+      advertised.push(help.stdout.match(/^Usage: (.+)$/m)?.[1]);
+    }
+  }
+  assert.deepEqual(documented, advertised.sort());
+});
+
 test("init is explicit and idempotent, writes canonical config, and refuses conflicts without creating state", async (t) => {
   const { home, xdg, run } = sandbox(t);
   const root = path.join(home, "Storybench");
@@ -221,6 +239,18 @@ test("init is explicit and idempotent, writes canonical config, and refuses conf
   writeFileSync(path.join(unrelated, "notes.txt"), "mine");
   assert.equal((await fresh.run(["init", unrelated])).code, 0);
   assert.equal(readFileSync(path.join(unrelated, "notes.txt"), "utf8"), "mine");
+});
+
+test("init refuses application-owned release, mirror, pointer, state and backup paths and their descendants", async (t) => {
+  const { xdg, run } = sandbox(t);
+  for (const owned of [xdg.releases, xdg.mirror, xdg.current, xdg.state, path.join(xdg.state, "backups")]) {
+    for (const target of [owned, path.join(owned, "creator-data")]) {
+      const result = await run(["init", target]);
+      assert.equal(result.code, 1, target);
+      assert.match(result.stderr, /inside the application-owned path/, target);
+      assert.equal(readConfig(xdg.configFile), null, `refusal did not configure ${target}`);
+    }
+  }
 });
 
 test("init --adopt on a legacy workspace twice: migrates once, then changes nothing; a running service blocks it", async (t) => {

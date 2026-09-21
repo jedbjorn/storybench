@@ -157,7 +157,7 @@ test("final intent is bound to its request: active, then published once or ended
   const { run } = w.store.createProductionRun({ conversationId: w.conversation.id, kind: "final", origin: "button", clientRequestId: "final-1", originatingMessageId: w.userMessage, harness: "codex" });
   assert.equal(run.finalIntent, "active");
   const job = w.store.saveJob({ episodeId: w.episode.id, kind: "final", outputClass: "final", state: "completed", progress: 1, revision: 1,
-    outputPath: "x.mp4", snapshot: { episode: { revision: w.store.getEpisode(w.episode.id).revision } }, requestId: run.id });
+    outputPath: "x.mp4", snapshot: { episode: { revision: w.store.getEpisode(w.episode.id).revision }, story: { storyRevision: w.store.getStory(w.episode.id).storyRevision } }, requestId: run.id });
   assert.equal(job.requestId, run.id);
   const stray = w.store.saveJob({ episodeId: w.episode.id, kind: "final", outputClass: "final", state: "completed", progress: 1, revision: 1, outputPath: "y.mp4", snapshot: {} });
   assert.throws(() => w.store.publishFinalIntent(run.id, stray.id), /not produced by this request/);
@@ -308,7 +308,7 @@ test("an application restart interrupts unfinished requests and ends their Final
 });
 
 const liveJob = (w, runId, extra = {}) => w.store.saveJob({ episodeId: w.episode.id, kind: "final", outputClass: "final", state: "completed", progress: 1,
-  revision: 1, outputPath: `${Math.random()}.mp4`, snapshot: { episode: { revision: w.store.getEpisode(w.episode.id).revision } }, requestId: runId, ...extra });
+  revision: 1, outputPath: `${Math.random()}.mp4`, snapshot: { episode: { revision: w.store.getEpisode(w.episode.id).revision }, story: { storyRevision: w.store.getStory(w.episode.id).storyRevision } }, requestId: runId, ...extra });
 
 test("review 1A: a failed Final request ends its intent at once and can never be published or given new work", (t) => {
   const w = world(t);

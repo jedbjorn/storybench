@@ -45,6 +45,14 @@ function fromService(error) {
 async function runInit(context, { positionals: [dir], options }) {
   if (options["channel-name"] !== undefined && !options.adopt) throw new CliError("--channel-name only applies with --adopt", { exitCode: EXIT.USAGE, hint: "Usage: storybench init [DIR] [--adopt] [--channel-name NAME]" });
   const target = canonicalPath(dir ?? ".", context.cwd);
+  const appOwned = [context.xdg.releases, context.xdg.mirror, context.xdg.current, context.xdg.state, path.join(context.xdg.state, "backups")]
+    .map((owned) => canonicalPath(owned, context.cwd));
+  const owner = appOwned.find((owned) => {
+    const relative = path.relative(owned, target);
+    return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== "..");
+  });
+  if (owner) throw new CliError(`Refusing to use ${target} as a data root because it is inside the application-owned path ${owner}`, {
+    hint: "Choose a durable creator-data directory outside Storybench releases, source mirror, current pointer, state, and backups." });
   const existing = readConfig(context.xdg.configFile);
   if (existing && existing.dataRoot !== target)
     throw new CliError(`Storybench is already configured for the data root ${existing.dataRoot}`, {

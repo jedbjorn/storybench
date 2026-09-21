@@ -79,6 +79,7 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
   let missingImageInspects = 0;
   let failPointerVerification = false;
   let buildInstallId;
+  let rootlessDocker = true;
   const fakeRun = async (executable, args, options = {}) => {
     calls.push([executable, ...args]);
     callRecords.push({ executable, args, options });
@@ -89,6 +90,8 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
         if (missingImageInspects > 0) { missingImageInspects--; return { code: 1, stdout: "", stderr: "missing" }; }
         return { code: 0, stdout: `${args[2]}\n`, stderr: "" };
       }
+      if (args[0] === "info" && args.includes("{{json .SecurityOptions}}"))
+        return { code: 0, stdout: rootlessDocker ? '["name=seccomp","name=rootless"]\n' : '["name=seccomp"]\n', stderr: "" };
       if (args[0] === "info") return { code: 0, stdout: "29.7.2\n", stderr: "" };
       if (args[0] === "run") {
         const image = args.find((value) => value === APP || value === WORKER);
@@ -273,6 +276,12 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
   assert.match(stdout, /PASS health: healthy/);
   assert.doesNotMatch(stdout, /FAIL health/);
   assert.doesNotMatch(stdout, /fixture-only/, "doctor never prints credential content");
+  rootlessDocker = false; stdout = ""; stderr = "";
+  code = await main(["doctor"], { env: s.env, home: s.home, system, runCommand: fakeRun, probeService: async () => ({ state: "stopped" }),
+    stdout: { write: (text) => { stdout += text; } }, stderr: { write: (text) => { stderr += text; } } });
+  assert.equal(code, 1);
+  assert.match(stdout, /FAIL Docker rootless: the selected daemon must report name=rootless/);
+  rootlessDocker = true;
   const sourceCheck = callRecords.findLast((call) => call.executable === "git" && call.args[0] === "ls-remote");
   assert.equal(sourceCheck.args.at(-1), "HEAD", "detached commit refs probe a real remote ref");
   assert.equal(sourceCheck.options.env.GIT_TERMINAL_PROMPT, "0");
@@ -354,6 +363,35 @@ test("install.sh refuses root and unsupported platforms before mutation", (t) =>
   result = spawnSync("bash", [path.join(REPO, "install.sh")], { env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` }, encoding: "utf8" });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /unsupported platform Darwin/);
+});
+
+test("install.sh refuses a rootful Docker daemon during preflight", (t) => {
+  const bin = mkdtempSync(path.join(os.tmpdir(), "storybench-install-rootless-"));
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  const script = (name, body) => writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  script("id", "echo 1000");
+  script("uname", "echo Linux");
+  script("node", "echo v24.21.0");
+  script("git", `case "$*" in
+    *"rev-parse --show-toplevel"*) printf '%s\\n' "$STUB_REPO" ;;
+    *"status --porcelain"*) ;;
+    *"rev-parse HEAD"*) printf '%040d\\n' 1 ;;
+    *"remote get-url origin"*) echo https://example.invalid/storybench.git ;;
+    *"symbolic-ref --quiet --short HEAD"*) echo main ;;
+    *) exit 1 ;;
+  esac`);
+  script("docker", `case "$*" in
+    *"{{.ServerVersion}}"*) echo 29.7.2 ;;
+    *"{{.DockerRootDir}}"*) echo /tmp/storybench-docker-root ;;
+    *"{{json .SecurityOptions}}"*) echo '["name=seccomp"]' ;;
+    *) exit 1 ;;
+  esac`);
+  const result = spawnSync("bash", [path.join(REPO, "install.sh")], {
+    env: { ...process.env, STUB_REPO: REPO, PATH: `${bin}:/usr/bin:/bin` }, encoding: "utf8",
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /rootless Docker is required/);
+  assert.match(result.stderr, /Hint: configure and select a rootless Docker daemon/);
 });
 
 function realpath(file) {
