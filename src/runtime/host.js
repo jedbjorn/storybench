@@ -60,10 +60,13 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
   // the per-request runtime state. Requests whose workers are removed here are unfinished;
   // the restarted app marks them interrupted and never replays them.
   async function reconcile({ reason = "start" } = {}) {
-    const owned = await listByLabels({ [LABEL.install]: config.installId });
+    const owned = [];
+    for (const id of await listByLabels({ [LABEL.install]: config.installId })) owned.push({ id, info: await inspectContainer(id) });
+    // A surviving app goes first, so it cannot observe its workers vanish and record the
+    // turn as a failure; the restarted app then marks those requests interrupted.
+    owned.sort((a, b) => (a.info?.Config?.Labels?.[LABEL.role] === "app" ? 0 : 1) - (b.info?.Config?.Labels?.[LABEL.role] === "app" ? 0 : 1));
     const removed = [];
-    for (const id of owned) {
-      const info = await inspectContainer(id);
+    for (const { id, info } of owned) {
       const labels = info?.Config?.Labels ?? {};
       const entry = { container: id.slice(0, 12), role: labels[LABEL.role] ?? "unknown", requestId: labels[LABEL.request] ?? null, harness: labels[LABEL.harness] ?? null, state: info?.State?.Status ?? "absent" };
       log({ event: "reconcile.remove", reason, ...entry });

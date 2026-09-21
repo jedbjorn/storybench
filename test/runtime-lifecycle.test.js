@@ -116,7 +116,7 @@ function fakeDocker(containers) {
 test("reconciliation removes this installation's orphans only and reports their requests", async (t) => {
   const runtimeRoot = await tempDir(t, "sb-rt-");
   const label = (install, role, request) => ({ Config: { Labels: { "io.storybench.install": install, "io.storybench.role": role, ...(request ? { "io.storybench.request": request, "io.storybench.harness": "codex" } : {}) } }, State: { Status: "running" } });
-  const containers = new Map([["c1".padEnd(64, "0"), label("inst1", "app")], ["c2".padEnd(64, "0"), label("inst1", "worker", "request_orphan")], ["c3".padEnd(64, "0"), label("other", "worker", "request_foreign")]]);
+  const containers = new Map([["c2".padEnd(64, "0"), label("inst1", "worker", "request_orphan")], ["c1".padEnd(64, "0"), label("inst1", "app")], ["c3".padEnd(64, "0"), label("other", "worker", "request_foreign")]]);
   const api = fakeDocker(containers);
   const events = [];
   await mkdir(path.join(runtimeRoot, "credentials", "request_orphan"), { recursive: true });
@@ -126,6 +126,8 @@ test("reconciliation removes this installation's orphans only and reports their 
   const result = await host.reconcile();
   assert.deepEqual(result.orphanRequests, ["request_orphan"]);
   assert.deepEqual([...containers.keys()], ["c3".padEnd(64, "0")], "another installation's container is untouched");
+  const removals = api.calls.filter((args) => args[0] === "rm").map((args) => args.at(-1).slice(0, 2));
+  assert.deepEqual(removals, ["c1", "c2"], "the surviving app is removed before its workers");
   assert.ok(events.some((event) => event.event === "reconcile.remove" && event.role === "worker" && event.requestId === "request_orphan"));
   await assert.rejects(stat(path.join(runtimeRoot, "credentials")));
 });
