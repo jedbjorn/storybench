@@ -4,6 +4,7 @@ import os from "node:os";
 import { COMMANDS, UNAVAILABLE } from "./commands.js";
 import { CliError, EXIT, usageError } from "./errors.js";
 import { probeService } from "./service.js";
+import { hostSystem } from "./system.js";
 import { resolveXdg } from "./xdg.js";
 
 const COMMON_OPTIONS = { help: { type: "boolean", help: "Show this help" } };
@@ -15,6 +16,13 @@ export function parseArgs(tokens, options = {}) {
     const token = tokens[index];
     if (token === "--") { positionals.push(...tokens.slice(index + 1)); break; }
     if (token === "-h") { values.help = true; continue; }
+    const short = /^-([A-Za-z])$/.exec(token);
+    if (short) {
+      const match = Object.entries(known).find(([, spec]) => spec.short === short[1] && spec.type === "boolean");
+      if (!match) throw usageError(`Unknown option ${token}`);
+      values[match[0]] = true;
+      continue;
+    }
     if (token.startsWith("--")) {
       const [name, inline] = token.slice(2).split(/=(.*)/s, 2);
       const spec = known[name];
@@ -45,7 +53,7 @@ function commandHelp(name, spec) {
   }
   const options = { ...(spec.options || {}), ...COMMON_OPTIONS };
   lines.push("", "Options:");
-  for (const [option, value] of Object.entries(options)) lines.push(`  --${option}${value.type === "string" ? " VALUE" : ""}`.padEnd(26) + value.help);
+  for (const [option, value] of Object.entries(options)) lines.push(`  ${value.short ? `-${value.short}, ` : ""}--${option}${value.type === "string" ? " VALUE" : ""}`.padEnd(26) + value.help);
   if (spec.examples?.length) lines.push("", "Examples:", ...spec.examples.map((example) => `  ${example}`));
   return lines.join("\n");
 }
@@ -83,6 +91,10 @@ export async function main(argv, overrides = {}) {
     xdg: resolveXdg({ env, home: overrides.home ?? env.HOME ?? os.homedir() }),
     lockTimeoutMs: overrides.lockTimeoutMs ?? (Number(env.STORYBENCH_LOCK_TIMEOUT_MS) || 10_000),
     probeService: overrides.probeService ?? probeService,
+    system: overrides.system ?? hostSystem({ env }),
+    home: overrides.home ?? env.HOME ?? os.homedir(),
+    healthTimeoutMs: overrides.healthTimeoutMs ?? (Number(env.STORYBENCH_HEALTH_TIMEOUT_MS) || 180_000),
+    pollMs: overrides.pollMs,
     out: (text) => stdout.write(`${text}\n`),
   };
   try {

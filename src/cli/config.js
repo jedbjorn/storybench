@@ -20,7 +20,17 @@ export function validateConfig(value) {
   if (value.version !== CONFIG_VERSION) throw new CliError(`Unsupported configuration version ${JSON.stringify(value.version)}`);
   if (typeof value.dataRoot !== "string" || !path.isAbsolute(value.dataRoot)) throw new CliError("The configured data root must be an absolute path");
   if (value.dataRootId != null && typeof value.dataRootId !== "string") throw new CliError("The configured data-root identity is invalid");
-  return { version: CONFIG_VERSION, dataRoot: path.resolve(value.dataRoot), dataRootId: value.dataRootId ?? null, port: validatePort(value.port ?? DEFAULT_PORT) };
+  if (value.installId != null && (typeof value.installId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(value.installId)))
+    throw new CliError("The configured installation ID is invalid");
+  const credentials = {};
+  for (const harness of ["codex", "claude"]) {
+    const file = value.credentials?.[harness];
+    if (file == null) continue;
+    if (typeof file !== "string" || !path.isAbsolute(file)) throw new CliError(`The configured ${harness} login path must be absolute`);
+    credentials[harness] = path.resolve(file);
+  }
+  return { version: CONFIG_VERSION, dataRoot: path.resolve(value.dataRoot), dataRootId: value.dataRootId ?? null, port: validatePort(value.port ?? DEFAULT_PORT),
+    ...(value.installId ? { installId: value.installId } : {}), ...(Object.keys(credentials).length ? { credentials } : {}) };
 }
 
 export function readConfig(file) {

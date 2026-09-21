@@ -8,6 +8,7 @@ import { CliError, EXIT } from "./errors.js";
 import { withLock } from "./lock.js";
 import { versionInfo } from "./release.js";
 import { assertCurrentSchema, selectExecutor } from "./executor.js";
+import { assertServiceStopped, runDown, runLogs, runOpen, runRestart, runStatus, runUp } from "./lifecycle.js";
 import { assertOwnedWritable } from "./fs-safety.js";
 
 // Canonical absolute path: resolve symlinks of the longest existing prefix; the rest is kept as data.
@@ -57,10 +58,8 @@ async function runInit(context, { positionals: [dir], options }) {
   assertOwnedWritable(target, "the data root");
   assertOwnedWritable(path.dirname(context.xdg.configFile), "the configuration directory");
   if (options.adopt) {
-    // Adoption migrates the database in place, so no Storybench service may have it open. Task #15 replaces
-    // this probe with the user-service status check.
-    const service = await context.probeService(port);
-    if (service.state === "running") throw new CliError(`A Storybench service is running on port ${port}`, { hint: "Stop it before adopting, then run this command again." });
+    // Adoption migrates the database in place, so no Storybench service may have it open.
+    await assertServiceStopped(context, existing ?? { port }, "adopting");
   }
   const operation = options.adopt ? "init --adopt" : "init";
   let result;
@@ -100,7 +99,7 @@ async function runInit(context, { positionals: [dir], options }) {
 
 async function channelExecutor(context) {
   const config = configuredRoot(context);
-  return selectExecutor({ dataRoot: config.dataRoot, lockDir: context.xdg.lockDir, lockTimeoutMs: context.lockTimeoutMs,
+  return selectExecutor({ dataRoot: config.dataRoot, dataRootId: config.dataRootId, lockDir: context.xdg.lockDir, lockTimeoutMs: context.lockTimeoutMs,
     port: config.port, probeService: context.probeService });
 }
 const channelLine = (channel) => `${channel.isDefault ? "*" : " "} ${channel.id}  ${channel.name}`;
@@ -181,8 +180,30 @@ export const COMMANDS = {
   version: { usage: "storybench version", summary: "Print the CLI version, release identity and supported schema range", args: [0, 0],
     description: "Works while the service is stopped. A checkout without a release manifest reports itself as a development checkout.",
     examples: ["storybench version"], run: runVersion },
+  up: { usage: "storybench up [--port N] [--open]", summary: "Start the Storybench service and wait until it is healthy", args: [0, 0],
+    description: "Starts the one user service for the configured data root and waits for health that matches this release and data root.\n" +
+      "--port validates and saves a new port first; a port already in use is reported. Running `up` again while healthy changes nothing.",
+    options: { port: { type: "string", help: "Serve on this loopback port (1024-65535) from now on" }, open: { type: "boolean", help: "Open Storybench in the browser once healthy" } },
+    examples: ["storybench up", "storybench up --port 4180 --open"], run: (context, parsed) => runUp(context, parsed, configuredRoot) },
+  down: { usage: "storybench down", summary: "Stop the Storybench service gracefully", args: [0, 0],
+    description: "Drains and stops the service. Running it again succeeds. Channels and the default channel are never changed.",
+    examples: ["storybench down"], run: (context, parsed) => runDown(context, parsed, configuredRoot) },
+  restart: { usage: "storybench restart [--force]", summary: "Stop and start the service, protecting active work", args: [0, 0],
+    description: "Refuses while any channel has active renders or agent turns unless --force is given (interrupted work is not replayed).\n" +
+      "Verifies that the same release and data root are served afterwards.",
+    options: { force: { type: "boolean", help: "Restart even though work is active" } }, examples: ["storybench restart"], run: (context, parsed) => runRestart(context, parsed, configuredRoot) },
+  status: { usage: "storybench status", summary: "Report service state, URL, release, data root and default channel", args: [0, 0],
+    description: "States: stopped, starting, healthy, mismatched (serving another release or data root), stopping or failed.",
+    examples: ["storybench status"], run: (context, parsed) => runStatus(context, parsed, configuredRoot) },
+  open: { usage: "storybench open", summary: "Open the running Storybench in the browser", args: [0, 0],
+    description: "Opens the healthy URL, on the default channel, with the desktop's opener. Fails with a hint when Storybench is stopped.",
+    examples: ["storybench open"], run: (context, parsed) => runOpen(context, parsed, configuredRoot) },
+  logs: { usage: "storybench logs [-f]", summary: "Show this installation's service log", args: [0, 0],
+    description: "Shows only this service's journal (lifecycle, app and worker diagnostics).",
+    options: { follow: { type: "boolean", short: "f", help: "Keep following new entries" } }, examples: ["storybench logs", "storybench logs -f"],
+    run: (context, parsed) => runLogs(context, parsed, configuredRoot) },
   help: { usage: "storybench help [COMMAND [SUBCOMMAND]]", summary: "Show help for Storybench or one command", args: [0, 2], examples: ["storybench help channel use"] },
 };
 
 // Registered for a stable surface; hidden from help until their tasks land.
-export const UNAVAILABLE = ["up", "down", "restart", "status", "open", "logs", "doctor", "update", "rollback", "backup", "uninstall"];
+export const UNAVAILABLE = ["doctor", "update", "rollback", "backup", "uninstall"];
