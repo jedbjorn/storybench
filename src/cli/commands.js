@@ -1,13 +1,13 @@
 // Command registry: usage, options and handlers. Help text is generated from these definitions so it stays complete.
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { StoreError } from "../store.js";
 import { adoptWorkspace, initDataRoot, inspectDataRoot } from "../services/data-root.js";
 import { DEFAULT_PORT, readConfig, writeConfigAtomic } from "./config.js";
 import { CliError, EXIT } from "./errors.js";
 import { withLock } from "./lock.js";
-import { versionInfo } from "./release.js";
-import { assertCurrentSchema, selectExecutor } from "./executor.js";
+import { installedRelease, versionInfo } from "./release.js";
+import { assertCurrentSchema, runImageDataCommand, selectExecutor } from "./executor.js";
 import { assertServiceStopped, runDown, runLogs, runOpen, runRestart, runStatus, runUp } from "./lifecycle.js";
 import { unitName } from "./unit.js";
 import { configuredRoot, restoreHint } from "./root.js";
@@ -19,7 +19,7 @@ import { runBackup } from "./backup.js";
 import { runRollback, runUpdate } from "./update.js";
 
 export { configuredRoot };
-import { assertOwnedWritable } from "./fs-safety.js";
+import { assertOwnedWritable, mountPath } from "./fs-safety.js";
 
 // Canonical absolute path: resolve symlinks of the longest existing prefix; the rest is kept as data.
 export function canonicalPath(input, cwd) {
@@ -70,6 +70,18 @@ async function runInit(context, { positionals: [dir], options }) {
       // Plain init never upgrades a database; --adopt is the explicit, backed-up migration path.
       if (!options.adopt && info.state === "initialized") assertCurrentSchema(info, target);
       if (info.state === "newer") assertCurrentSchema(info, target);
+      const release = await installedRelease(context);
+      if (release) {
+        // Plain init is normally a first-use operation, but never start a second database process if this
+        // installation is already active. Adoption has the same check above for development checkouts too.
+        if (!options.adopt) await assertServiceStopped(context, existing ?? { port }, "initializing");
+        if (info.state === "missing") {
+          mountPath(target, "The data root");
+          mkdirSync(target, { recursive: true, mode: 0o700 });
+        }
+        return runImageDataCommand({ ...context, dataRoot: target, installId: existing?.installId ?? null }, release,
+          options.adopt ? "adopt" : "init", options["channel-name"] === undefined ? [] : [options["channel-name"]]);
+      }
       return options.adopt ? adoptWorkspace(target, { channelName: options["channel-name"] ?? undefined }) : initDataRoot(target);
     }, { timeoutMs: context.lockTimeoutMs });
   } catch (error) {
@@ -95,7 +107,8 @@ async function runInit(context, { positionals: [dir], options }) {
 async function channelExecutor(context) {
   const config = configuredRoot(context);
   return selectExecutor({ dataRoot: config.dataRoot, dataRootId: config.dataRootId, lockDir: context.xdg.lockDir, lockTimeoutMs: context.lockTimeoutMs,
-    port: config.port, probeService: context.probeService, system: context.system, unit: unitName(context.env) });
+    port: config.port, probeService: context.probeService, system: context.system, unit: unitName(context.env), xdg: context.xdg,
+    runCommand: context.runCommand, installId: config.installId });
 }
 const channelLine = (channel) => `${channel.isDefault ? "*" : " "} ${channel.id}  ${channel.name}`;
 
@@ -117,7 +130,8 @@ async function runChannel(context, sub, { positionals }) {
       context.out(`Default channel is now ${channel.name} (${channel.id}). Running work and open views are unaffected.`);
     }
   } catch (error) {
-    if (error instanceof StoreError && error.statusCode === 404) throw new CliError(`Unknown channel: ${positionals[0]}`, { hint: "Run `storybench channel list` to see channel names and IDs." });
+    if ((error instanceof StoreError || error instanceof CliError) && error.statusCode === 404)
+      throw new CliError(`Unknown channel: ${positionals[0]}`, { hint: "Run `storybench channel list` to see channel names and IDs." });
     throw fromService(error);
   }
   return EXIT.OK;
@@ -125,18 +139,21 @@ async function runChannel(context, sub, { positionals }) {
 
 async function runVersion(context) {
   const info = await versionInfo({ env: context.env });
+  let selected = null, selectedError = null;
+  try { selected = await installedRelease(context); } catch (error) { selectedError = error; }
   context.out(`storybench ${info.package.version} (CLI and package ${info.package.name})`);
   const { manifest } = info;
   if (manifest.state === "release") {
     const { identity, manifest: value } = manifest;
     context.out(`Release: ${identity.manifestId}\nCommit: ${identity.commit}${value.source.ref ? ` (${value.source.ref})` : ""}\nBuilt: ${value.builtAt ?? "unknown"}`);
     context.out(`Images: app ${identity.images.app}, worker ${identity.images.worker}\nRuntime protocol: ${identity.protocol}`);
-    try {
-      const active = realpathSync(context.xdg.current);
-      if (active === realpathSync(path.dirname(manifestFileForInfo(context)))) context.out(`Installed release: ${value.source.commit} at ${active}`);
-    } catch { /* a development checkout or inactive installed pointer */ }
   } else if (manifest.state === "absent") context.out("Release: development checkout (no release manifest)");
   else context.out(`Release: the release manifest is not valid (${manifest.reason}); reporting this checkout's own schema support`);
+  if (selected) {
+    context.out(`Installed release: ${selected.identity.commit} at ${selected.root}`);
+    context.out(`Stopped data commands: selected app image ${selected.identity.images.app}`);
+  } else if (selectedError) context.out(`Stopped data commands: unavailable (${selectedError.message})`);
+  else context.out("Stopped data commands: development checkout (host Node fallback)");
   context.out(`Supported database schema: ${info.supportedSchema.min}-${info.supportedSchema.max}`);
   let config = null;
   try { config = readConfig(context.xdg.configFile); } catch { /* reported by other commands */ }
@@ -149,10 +166,6 @@ async function runVersion(context) {
   } else if (service.state === "other") context.out(`Service: port ${config.port} is used by another program`);
   else context.out(`Service: not running on port ${config.port}`);
   return EXIT.OK;
-}
-
-function manifestFileForInfo(context) {
-  return context.env.STORYBENCH_RELEASE_MANIFEST || path.join(realpathSync(context.xdg.current), "manifest.json");
 }
 
 async function runInstall(context, { options }) {
@@ -188,13 +201,16 @@ export const COMMANDS = {
     description: "Explicitly initializes DIR (default: the current directory) as the Storybench data root and records it in the configuration.\n" +
       "Unrelated files in DIR are left alone and never imported; conflicting Storybench state is refused.\n" +
       "--adopt migrates an existing prototype workspace in place into its first channel after a consistent metadata backup,\n" +
-      "preserving IDs, media bytes and recorded paths. Adopting again changes nothing. The service must be stopped.",
+      "preserving IDs, media bytes and recorded paths. Adopting again changes nothing. The service must be stopped.\n" +
+      "An installed, stopped Storybench runs this through its selected app image; a development checkout uses host Node.",
     options: { adopt: { type: "boolean", help: "Adopt a prototype workspace instead of initializing an empty root" },
       "channel-name": { type: "string", help: "Name for the first channel when adopting (default: Main)" } },
     examples: ["storybench init ~/Storybench", "storybench init ~/.local/share/storybench/prototype --adopt --channel-name Prototype"],
     run: runInit,
   },
-  channel: { usage: "storybench channel <create|list|current|use>", summary: "Create, list and select channels", subcommands: CHANNEL_SUBCOMMANDS, run: runChannel },
+  channel: { usage: "storybench channel <create|list|current|use>", summary: "Create, list and select channels",
+    description: "Uses the running app while the service is healthy. When stopped, an installation uses its exact selected app image; a development checkout uses host Node.",
+    subcommands: CHANNEL_SUBCOMMANDS, run: runChannel },
   version: { usage: "storybench version", summary: "Print the CLI version, release identity and supported schema range", args: [0, 0],
     description: "Works while the service is stopped. A checkout without a release manifest reports itself as a development checkout.",
     examples: ["storybench version"], run: runVersion },

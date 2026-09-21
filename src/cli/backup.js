@@ -1,12 +1,13 @@
 import crypto from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
-import { readReleaseManifest } from "../runtime/manifest.js";
 import { readConfig, validateConfig, writeConfigAtomic } from "./config.js";
 import { CliError, EXIT } from "./errors.js";
+import { mountPath } from "./fs-safety.js";
 import { withLock } from "./lock.js";
-import { expectedRelease, lifecyclePaths, prepareService, startAndVerify } from "./lifecycle.js";
+import { lifecyclePaths, prepareService, startAndVerify } from "./lifecycle.js";
 import { writeJsonAtomic } from "./receipts.js";
+import { installedRelease } from "./release.js";
 import { activeWork, serviceStatus } from "./service.js";
 import { unitName } from "./unit.js";
 import { configuredRoot } from "./root.js";
@@ -15,23 +16,10 @@ const STOP_TIMEOUT_MS = 120_000;
 
 function firstLine(value) { return String(value || "").trim().split("\n")[0]; }
 function inside(parent, child) { const relative = path.relative(parent, child); return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative)); }
-export function mountPath(value, label) {
-  if (!path.isAbsolute(value) || /[,\0\r\n]/.test(value)) throw new CliError(`${label} cannot be mounted safely`);
-  return value;
-}
+export { mountPath } from "./fs-safety.js";
 
 export async function currentRelease(context) {
-  let root;
-  try { root = realpathSync(context.xdg.current); }
-  catch { throw new CliError("No active Storybench release is installed", { hint: "Run the repository installer first." }); }
-  let releases;
-  try { releases = realpathSync(context.xdg.releases); }
-  catch { throw new CliError("The Storybench release store is missing"); }
-  if (path.dirname(root) !== releases || !/^[0-9a-f]{40}$/.test(path.basename(root)))
-    throw new CliError("The active release pointer does not select a commit directory in the Storybench release store");
-  const file = path.join(root, "manifest.json");
-  const release = await expectedRelease(context, file);
-  return { ...release, root };
+  return installedRelease(context, { required: true });
 }
 
 export function backupLocation(xdg, date = new Date(), id = crypto.randomUUID()) {

@@ -27,6 +27,13 @@ export function assertOwnedWritable(target, label) {
   return existing;
 }
 
+// Docker's comma-separated --mount form cannot represent these bytes safely. Keep this validation on the host;
+// paths are always passed as one argv item and never interpolated into a shell command.
+export function mountPath(value, label) {
+  if (!path.isAbsolute(value) || /[,\0\r\n]/.test(value)) throw new CliError(`${label} cannot be mounted safely`);
+  return path.resolve(value);
+}
+
 export function ensurePrivateDirectory(directory) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
 }
