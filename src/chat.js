@@ -128,7 +128,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     return { text, included: rows.length, omitted: Math.max(0, total - rows.length) };
   };
   const bootText = (value) => { const currentEpisode = episode(value.episode_id), story = store.getStory(value.episode_id);
-    return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires the user's one-use Storybench authorization.`; };
+    return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires active request-bound Final intent.`; };
   const tools = (value, origin) => ({
     get_context: () => ({ episode: episode(value.episode_id), story: store.getStory(value.episode_id), library: librarySummary(value.episode_id),
       references: store.getReferenceContext(value.episode_id), branding: store.listBrandingTemplates({ channelId: episode(value.episode_id).channelId }), operationGuides: OPERATION_GUIDE_NAMES }),
@@ -143,8 +143,11 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     update_cards: ({ expectedRevision, cards }) => { ensureActive(value, origin); return store.updateEpisode(value.episode_id, expectedRevision, { cards }, "agent"); },
     validate_render: () => renders.validateRender(value.episode_id),
     create_draft: ({ expectedRenderRevision }) => { ensureActive(value, origin); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "draft", expectedRenderRevision, conversationId: value.id, requestId: origin.requestId }); },
-    request_final: () => ({ requiredAction: "Use Create final in Storybench", conversationId: value.id, renderRevision: renders.validateRender(value.episode_id).renderRevision }),
-    create_final: ({ expectedRenderRevision, finalGrantId }) => { ensureActive(value, origin); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "final", expectedRenderRevision, finalGrantId, conversationId: value.id, requestId: origin.requestId }); },
+    declare_final_request: ({ messageId }) => {
+      ensureActive(value, origin);
+      return store.declareFinalRequest(origin.requestId, messageId);
+    },
+    create_final: ({ expectedRenderRevision }) => { ensureActive(value, origin); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "final", expectedRenderRevision, conversationId: value.id, requestId: origin.requestId }); },
     get_job: ({ jobId }) => renders.getJob(value.episode_id, jobId),
     await_job: async ({ jobId, timeoutSeconds = 120 }) => {
       const timeout = Math.min(300, Math.max(1, Number(timeoutSeconds) || 120)) * 1000;
@@ -165,7 +168,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       const job = renders.getJob(value.episode_id, jobId);
       throw error(`Job ${jobId} is still ${job.state}; it has not succeeded`, 408, { current: job });
     },
-    cancel_job: ({ jobId }) => { ensureActive(value, origin); return renders.cancelJob(value.episode_id, jobId); },
+    cancel_job: ({ jobId }) => { ensureActive(value, origin); return renders.cancelJob(value.episode_id, jobId, { finalEndReason: "cancelled" }); },
     move_final_to_drafts: ({ outputId = null, expectedRevision = null } = {}) => { ensureActive(value, origin); return moveFinalToDrafts(store, { episodeId: value.episode_id, outputId, expectedRevision, actor: "agent", requestId: origin.requestId }); },
     list_graphic_recipes: () => renders.listGraphicRecipes(value.episode_id),
     get_graphic_recipe: ({ recipeId }) => { const recipe = renders.getGraphicRecipe(value.episode_id, recipeId); if (!recipe) throw error("Graphic recipe not found", 404); return recipe; },
@@ -195,7 +198,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       db.prepare("UPDATE conversations SET draft=?,updated_at=? WHERE id=? AND draft=''").run(text, now(), value.id);
     };
     const controller = new AbortController(), pending = [], done = new Promise((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
-    const activity = { conversationId: value.id, requestId, signal: controller.signal, abort: () => { aborted = true; controller.abort(); if (dispatch) rejectDone(error("Chat stopped; the prompt was not replayed", 409)); } };
+    const activity = { conversationId: value.id, requestId, messageId, signal: controller.signal, abort: () => { aborted = true; controller.abort(); if (dispatch) rejectDone(error("Chat stopped; the prompt was not replayed", 409)); } };
     active.set(value.episode_id, activity);
     const consume = (event) => {
       const params = event.params || {}, eventTurn = params.turnId || params.turn?.id;
@@ -244,7 +247,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
           clientRequestId: request.clientRequestId ?? null, targetCardId: request.targetCardId ?? null, successorOf: request.successorOf ?? null });
       }
       const openConnection = (segmentId) => codexFactory({ cwd: store.workspace, model: plan ? plan.selection.model : model, tools: tools(value, activity), signal: controller.signal,
-        episodeId: value.episode_id, conversationId: value.id, requestId, request: { text, messageId, kind: request.kind ?? "chat", cardId: request.targetCardId ?? null },
+        episodeId: value.episode_id, conversationId: value.id, requestId, request: { text, messageId: request.authorityMessageId ?? messageId, kind: request.kind ?? "chat", cardId: request.targetCardId ?? null },
         // Every Storybench tool call of a worker-backed turn arrives through the request bridge.
         onToolCall: (call) => { toolActivity = true; try { emit(value, "tool.called", { name: call.name, requestId }); } catch { /* conversation gone */ } },
         ...(plan ? { harness: plan.selection.harness, effort: plan.selection.effort, segmentId } : {}),
@@ -391,6 +394,14 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     if (duplicate) return { ...project(episodeId, id), requestResult: { created: false, run: duplicate } };
     if (active.has(episodeId) || db.prepare("SELECT 1 FROM conversations WHERE episode_id=? AND state IN ('queued','running','interrupting')").get(episodeId))
       throw error("A request is already active for this episode. Let it finish or press Stop; this retry was not queued.", 409);
+    let root = previous;
+    const seen = new Set();
+    while (root.successorOf) {
+      if (seen.has(root.id)) throw error("The request retry chain is invalid", 409);
+      seen.add(root.id);
+      root = store.getProductionRun(root.successorOf);
+      if (!root || root.conversationId !== id) throw error("The original request is unavailable", 409);
+    }
     const old = db.prepare("SELECT text FROM conversation_messages WHERE id=? AND conversation_id=?").get(previous.originatingMessageId, id);
     if (!old) throw error("The original request message is unavailable", 409);
     let message, created;
@@ -404,13 +415,15 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       if (db.isTransaction) db.exec("ROLLBACK");
       throw cause;
     }
-    const result = dispatch(value, message.id, old.text, { id: created.run.id, kind: created.run.kind, origin: "button", targetCardId: created.run.targetCardId, existingRun: true, successorOf: runId });
+    const authorityMessageId = root.origin === "typed" ? root.originatingMessageId : null;
+    const result = dispatch(value, message.id, old.text, { id: created.run.id, kind: created.run.kind, origin: "button", targetCardId: created.run.targetCardId,
+      existingRun: true, successorOf: runId, authorityMessageId });
     return { ...result, requestResult: created };
   };
   const cancelOwnedJobs = (activity) => {
     if (!activity?.requestId || !db.isOpen) return;
     for (const job of store.listRequestJobs(activity.requestId, { activeOnly: true })) {
-      if (["queued", "running"].includes(job.state)) try { renders.cancelJob(job.episodeId, job.id); } catch { /* terminal race */ }
+      if (["queued", "running"].includes(job.state)) try { renders.cancelJob(job.episodeId, job.id, { finalEndReason: "stopped" }); } catch { /* terminal race */ }
     }
   };
   const interrupt = async (episodeId, id) => {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -36,22 +36,41 @@ async function fixture(overrides = {}) {
   return { workspace, store, renders, episode: () => store.getEpisode(episode.id), episodeId: episode.id, source };
 }
 
-test("final intent is exact, one-use and stale-safe while drafts need no grant", async (t) => {
+function finalRequest(value, { id = `request_${randomUUID()}`, conversationId = `conversation_${randomUUID()}` } = {}) {
+  const stamp = new Date().toISOString();
+  value.store.db.prepare("INSERT INTO conversations(id,episode_id,name,created_at,updated_at) VALUES(?,?,?,?,?)")
+    .run(conversationId, value.episodeId, "Final", stamp, stamp);
+  const message = value.store.addConversationMessage({ conversationId, role: "user", text: "Create final", shortcut: true });
+  const run = value.store.createProductionRun({ id, conversationId, kind: "final", origin: "button", originatingMessageId: message.id, harness: "codex" }).run;
+  return { run, conversationId, message };
+}
+
+test("Final publication uses request-bound intent once, pins output bytes, and drafts need no intent", async (t) => {
   const value = await fixture();
   t.after(async () => { await value.renders.close(); value.store.close(); await rm(value.workspace, { recursive: true, force: true }); });
   const snapshot = value.renders.getRenderSnapshot(value.episodeId);
   const draft = value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "draft", expectedRenderRevision: snapshot.renderRevision });
   assert.equal((await waitFor(value.store, draft.id)).state, "completed");
 
-  assert.throws(() => value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final", expectedRenderRevision: snapshot.renderRevision }), /authorization/i);
-  const grant = value.renders.mintFinalGrant({ episodeId: value.episodeId, expectedRenderRevision: snapshot.renderRevision, requestId: "gui-request" });
+  assert.throws(() => value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final", expectedRenderRevision: snapshot.renderRevision }), /request-bound Final intent/i);
+  const authority = finalRequest(value);
+  const publish = value.store.publishFinalIntent.bind(value.store);
+  let publicationCalls = 0;
+  value.store.publishFinalIntent = (...args) => { publicationCalls++; return publish(...args); };
   assert.throws(() => value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final", expectedRenderRevision: snapshot.renderRevision,
-    finalGrantId: grant.id, requestId: "another-request" }), /does not match/i);
+    conversationId: "another-conversation", requestId: authority.run.id }), /does not match/i);
   const final = value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final", expectedRenderRevision: snapshot.renderRevision,
-    finalGrantId: grant.id, requestId: "gui-request" });
-  assert.throws(() => value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final", expectedRenderRevision: snapshot.renderRevision,
-    finalGrantId: grant.id, requestId: "gui-request" }), /already used/i);
+    conversationId: authority.conversationId, requestId: authority.run.id });
+  const repeated = value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final", expectedRenderRevision: snapshot.renderRevision,
+    conversationId: authority.conversationId, requestId: authority.run.id });
+  assert.equal(repeated.id, final.id, "a repeated create_final call returns the same operation");
   const completed = await waitFor(value.store, final.id);
+  assert.equal(value.store.getProductionRun(authority.run.id).finalIntent, "published");
+  assert.equal(publicationCalls, 1, "the successful publication calls publishFinalIntent exactly once");
+  assert.equal(value.store.getProductionRun(authority.run.id).finalOutputJobId, final.id);
+  assert.equal(completed.snapshot.output.sha256, await digest(path.join(value.workspace, completed.outputPath)));
+  assert.equal(completed.snapshot.output.bytes, Buffer.byteLength("immutable output"));
+  assert.throws(() => value.store.publishFinalIntent(authority.run.id, final.id), /no active Final intent/i);
   const output = path.join(value.workspace, completed.outputPath), before = await digest(output);
   const episode = value.episode();
   let changed = value.store.updateEpisode(value.episodeId, episode.revision, { notes: "changed after final" });
@@ -62,27 +81,130 @@ test("final intent is exact, one-use and stale-safe while drafts need no grant",
   assert.equal(await digest(value.source), createHash("sha256").update("source remains unchanged").digest("hex"));
 });
 
-test("changed render inputs invalidate an unconsumed final grant", async (t) => {
+test("changed render inputs at publication fail instead of publishing stale Final inputs", async (t) => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const value = await fixture({ fakeRender: async ({ outputPath }) => { await gate; await writeFile(outputPath, "stale output"); return { path: outputPath, width: 1280, height: 720, duration: 1 }; } });
+  t.after(async () => { await value.renders.close(); value.store.close(); await rm(value.workspace, { recursive: true, force: true }); });
+  const snapshot = value.renders.getRenderSnapshot(value.episodeId);
+  const authority = finalRequest(value);
+  const final = value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final", expectedRenderRevision: snapshot.renderRevision,
+    conversationId: authority.conversationId, requestId: authority.run.id });
+  const episode = value.episode();
+  value.store.updateEpisode(value.episodeId, episode.revision, { notes: "new revision" });
+  release();
+  const failed = await waitFor(value.store, final.id);
+  assert.equal(failed.state, "failed");
+  assert.match(failed.error, /inputs changed before Final publication/i);
+  assert.equal(failed.outputPath, null);
+  assert.equal(value.store.getProductionRun(authority.run.id).finalIntent, "active", "the agent may validate current inputs and retry in this request");
+  const current = value.renders.getRenderSnapshot(value.episodeId);
+  const retried = value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final", expectedRenderRevision: current.renderRevision,
+    conversationId: authority.conversationId, requestId: authority.run.id });
+  assert.notEqual(retried.id, final.id);
+  assert.equal((await waitFor(value.store, retried.id)).state, "completed");
+  assert.equal(value.store.getProductionRun(authority.run.id).finalOutputJobId, retried.id, "the retry publishes within the same active request");
+});
+
+test("the database revision guard closes a creator-save race immediately before Final publication", async (t) => {
   const value = await fixture();
   t.after(async () => { await value.renders.close(); value.store.close(); await rm(value.workspace, { recursive: true, force: true }); });
   const snapshot = value.renders.getRenderSnapshot(value.episodeId);
-  const grant = value.renders.mintFinalGrant({ episodeId: value.episodeId, expectedRenderRevision: snapshot.renderRevision, requestId: "intent" });
-  const episode = value.episode();
-  value.store.updateEpisode(value.episodeId, episode.revision, { notes: "new revision" });
-  assert.throws(() => value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final",
-    expectedRenderRevision: snapshot.renderRevision, finalGrantId: grant.id, requestId: "intent" }), /inputs changed/i);
+  const authority = finalRequest(value);
+  const publish = value.store.publishFinalIntent.bind(value.store);
+  let raced = false;
+  value.store.publishFinalIntent = (...args) => {
+    if (!raced) {
+      raced = true;
+      const current = value.episode();
+      value.store.updateEpisode(value.episodeId, current.revision, { notes: "creator save between preflight and publication" });
+    }
+    return publish(...args);
+  };
+  const final = value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final", expectedRenderRevision: snapshot.renderRevision,
+    conversationId: authority.conversationId, requestId: authority.run.id });
+  const failed = await waitFor(value.store, final.id);
+  assert.equal(failed.state, "failed");
+  assert.match(failed.error, /inputs changed before Final publication/i);
+  assert.equal(failed.outputPath, null);
+  assert.equal(value.store.getProductionRun(authority.run.id).finalIntent, "active");
 });
 
-test("closed worker rejects final enqueue before consuming intent or creating a job", async (t) => {
+test("closed worker rejects Final enqueue before using request intent or creating a job", async (t) => {
   const value = await fixture();
   t.after(async () => { value.store.close(); await rm(value.workspace, { recursive: true, force: true }); });
   const snapshot = value.renders.getRenderSnapshot(value.episodeId);
-  const grant = value.renders.mintFinalGrant({ episodeId: value.episodeId, expectedRenderRevision: snapshot.renderRevision, requestId: "shutdown" });
+  const authority = finalRequest(value);
   await value.renders.close();
   assert.throws(() => value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final",
-    expectedRenderRevision: snapshot.renderRevision, finalGrantId: grant.id, requestId: "shutdown" }), /worker is closed/i);
+    expectedRenderRevision: snapshot.renderRevision, conversationId: authority.conversationId, requestId: authority.run.id }), /worker is closed/i);
   assert.equal(value.store.listJobs(value.episodeId).length, 0);
-  assert.equal(value.store.db.prepare("SELECT consumed_at FROM final_authorizations WHERE id=?").get(grant.id).consumed_at, null);
+  assert.equal(value.store.getProductionRun(authority.run.id).finalIntent, "active");
+  assert.equal(value.store.tableExists("final_authorizations"), true, "historical grant rows remain readable");
+  for (const method of ["createFinalAuthorization", "consumeFinalAuthorization", "saveAuthorizedFinalJob"])
+    assert.equal(value.store[method], undefined, `${method} is retired`);
+  value.store.db.prepare("INSERT INTO final_authorizations VALUES(?,?,?,?,?,?,?,?)")
+    .run("historical-grant", value.episodeId, "a".repeat(64), null, null, "2025-01-01T00:05:00.000Z", "2025-01-01T00:01:00.000Z", "2025-01-01T00:00:00.000Z");
+  assert.deepEqual({ ...value.store.db.prepare("SELECT id,render_revision,consumed_at FROM final_authorizations WHERE id=?").get("historical-grant") },
+    { id: "historical-grant", render_revision: "a".repeat(64), consumed_at: "2025-01-01T00:01:00.000Z" });
+});
+
+test("request-bound Final intent outlives the retired five-minute grant window", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-21T10:00:00.000Z") });
+  const value = await fixture();
+  t.after(async () => { await value.renders.close(); value.store.close(); await rm(value.workspace, { recursive: true, force: true }); });
+  const authority = finalRequest(value);
+  t.mock.timers.tick(10 * 60_000);
+  const edited = value.episode();
+  value.store.updateEpisode(value.episodeId, edited.revision, { notes: "prepared by the agent after Final intent was bound" }, "agent");
+  const snapshot = value.renders.getRenderSnapshot(value.episodeId);
+  const final = value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final", expectedRenderRevision: snapshot.renderRevision,
+    conversationId: authority.conversationId, requestId: authority.run.id });
+  assert.equal((await waitFor(value.store, final.id)).state, "completed");
+  assert.equal(value.store.getProductionRun(authority.run.id).finalIntent, "published");
+});
+
+test("cancelling a request-owned Final job ends its intent as cancelled without publishing", async (t) => {
+  let started, release;
+  const running = new Promise((resolve) => { started = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  const value = await fixture({ fakeRender: async ({ outputPath, signal }) => {
+    started(); await gate; if (signal.aborted) throw signal.reason; await writeFile(outputPath, "must not publish"); return { path: outputPath };
+  } });
+  t.after(async () => { release(); await value.renders.close(); value.store.close(); await rm(value.workspace, { recursive: true, force: true }); });
+  const authority = finalRequest(value), snapshot = value.renders.getRenderSnapshot(value.episodeId);
+  const final = value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final", expectedRenderRevision: snapshot.renderRevision,
+    conversationId: authority.conversationId, requestId: authority.run.id });
+  await running;
+  value.renders.cancelJob(value.episodeId, final.id);
+  assert.deepEqual((({ finalIntent, finalEndedReason }) => ({ finalIntent, finalEndedReason }))(value.store.getProductionRun(authority.run.id)),
+    { finalIntent: "ended", finalEndedReason: "cancelled" });
+  release();
+  assert.equal((await waitFor(value.store, final.id)).state, "cancelled");
+  assert.equal(value.store.getProductionRun(authority.run.id).finalOutputJobId, null);
+});
+
+test("moving a published Final to Drafts and requesting Final again creates a new version", async (t) => {
+  const value = await fixture();
+  t.after(async () => { await value.renders.close(); value.store.close(); await rm(value.workspace, { recursive: true, force: true }); });
+  const firstRequest = finalRequest(value), snapshot = value.renders.getRenderSnapshot(value.episodeId);
+  const first = value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final", expectedRenderRevision: snapshot.renderRevision,
+    conversationId: firstRequest.conversationId, requestId: firstRequest.run.id });
+  await waitFor(value.store, first.id);
+  value.store.updateProductionRun(firstRequest.run.id, { state: "completed" });
+  const moved = value.store.moveFinalToDrafts({ episodeId: value.episodeId, outputId: first.id, expectedRevision: 1, actor: "human" });
+  assert.equal(moved.designation, "draft");
+
+  const message = value.store.addConversationMessage({ conversationId: firstRequest.conversationId, role: "user", text: "Create another final", shortcut: true });
+  const secondRequest = value.store.createProductionRun({ conversationId: firstRequest.conversationId, kind: "final", origin: "button",
+    originatingMessageId: message.id, harness: "codex" }).run;
+  const second = value.renders.enqueueRender({ episodeId: value.episodeId, outputClass: "final", expectedRenderRevision: snapshot.renderRevision,
+    conversationId: firstRequest.conversationId, requestId: secondRequest.id });
+  await waitFor(value.store, second.id);
+  assert.notEqual(second.id, first.id);
+  assert.equal(value.store.getJob(first.id).designation, "draft");
+  assert.equal(value.store.getJob(second.id).designation, "final");
+  assert.equal(value.store.getProductionRun(secondRequest.id).finalOutputJobId, second.id);
 });
 
 test("graphic output registers once and never overwrites a card changed during rendering", async (t) => {
