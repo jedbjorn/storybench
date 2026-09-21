@@ -2,9 +2,9 @@
 // desktop opener. Every call passes an argument array (never shell text). Tests inject a fake with the same shape.
 import { spawn } from "node:child_process";
 
-export function runCommand(command, args, { timeoutMs = 120_000, env = process.env, input = null } = {}) {
+export function runCommand(command, args, { timeoutMs = 120_000, env = process.env, input = null, cwd = undefined } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env, stdio: [input == null ? "ignore" : "pipe", "pipe", "pipe"] });
+    const child = spawn(command, args, { env, cwd, stdio: [input == null ? "ignore" : "pipe", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     const timer = timeoutMs ? setTimeout(() => child.kill("SIGTERM"), timeoutMs) : null;
     child.stdout.on("data", (chunk) => { if (stdout.length < 4_000_000) stdout += chunk; });

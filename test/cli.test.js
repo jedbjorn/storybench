@@ -149,18 +149,20 @@ test("12 concurrent processes never overlap, and a kill -9 of the holder frees t
   release();
 });
 
-test("help works at every level with exit 0; invalid invocations exit 2; unavailable commands are hidden and exit 2", async (t) => {
+test("help works at every level with exit 0; invalid invocations exit 2; unfinished commands stay hidden", async (t) => {
   const { run } = sandbox(t);
   for (const args of [[], ["--help"], ["-h"], ["help"], ["help", "init"], ["help", "channel"], ["help", "channel", "use"], ["init", "--help"], ["channel", "--help"],
-    ["channel", "create", "--help"], ["channel", "list", "--help"], ["channel", "current", "-h"], ["channel", "use", "--help"], ["version", "--help"], ["help", "version"]]) {
+    ["channel", "create", "--help"], ["channel", "list", "--help"], ["channel", "current", "-h"], ["channel", "use", "--help"], ["version", "--help"], ["help", "version"],
+    ["doctor", "--help"], ["help", "doctor"], ["uninstall", "--help"], ["help", "uninstall"], ["__install", "--help"]]) {
     const result = await run(args);
     assert.equal(result.code, 0, args.join(" "));
     assert.match(result.stdout, /Usage: storybench/, args.join(" "));
     assert.equal(result.stderr, "");
   }
   const top = (await run(["help"])).stdout;
-  for (const name of ["init", "channel", "version", "up", "down", "restart", "status", "open", "logs", "help"]) assert.match(top, new RegExp(`\\n  ${name} `));
-  for (const name of ["doctor", "update", "rollback", "backup", "uninstall"]) {
+  for (const name of ["init", "channel", "version", "up", "down", "restart", "status", "open", "logs", "doctor", "uninstall", "help"]) assert.match(top, new RegExp(`\\n  ${name} `));
+  assert.doesNotMatch(top, /\n  __install /, "internal installer stays hidden");
+  for (const name of ["update", "rollback", "backup"]) {
     assert.doesNotMatch(top, new RegExp(`\\n  ${name} `), `${name} hidden`);
     const result = await run([name]);
     assert.deepEqual({ code: result.code, stderr: result.stderr.trim() }, { code: 2, stderr: `storybench: ${name} is not available in this build.` });
@@ -348,7 +350,7 @@ test("the installed bin entry runs as a process with only the environment it is 
   const bin = path.join(REPO, JSON.parse(readFileSync(path.join(REPO, "package.json"), "utf8")).bin.storybench);
   const run = (...args) => spawnSync(process.execPath, [bin, ...args], { env: { ...env, PATH: process.env.PATH }, cwd: home, encoding: "utf8" });
   assert.equal(run("help").status, 0);
-  assert.equal(run("doctor").status, 2);
+  assert.equal(run("doctor").status, 1);
   assert.equal(run("init", "root").status, 0);
   assert.equal(run("channel", "create", "Main").status, 0);
   const current = run("channel", "current");

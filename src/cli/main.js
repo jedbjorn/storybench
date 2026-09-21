@@ -4,7 +4,7 @@ import os from "node:os";
 import { COMMANDS, UNAVAILABLE } from "./commands.js";
 import { CliError, EXIT, usageError } from "./errors.js";
 import { probeService } from "./service.js";
-import { hostSystem } from "./system.js";
+import { hostSystem, runCommand } from "./system.js";
 import { resolveXdg } from "./xdg.js";
 
 const COMMON_OPTIONS = { help: { type: "boolean", help: "Show this help" } };
@@ -60,7 +60,7 @@ function commandHelp(name, spec) {
 
 export function topHelp() {
   const lines = ["Usage: storybench <command> [options]", "", "Storybench keeps channels, episodes and media in one data root and runs as one local service.", "", "Commands:"];
-  for (const [name, spec] of Object.entries(COMMANDS)) lines.push(`  ${name.padEnd(10)}${spec.summary}`);
+  for (const [name, spec] of Object.entries(COMMANDS)) if (!spec.hidden) lines.push(`  ${name.padEnd(10)}${spec.summary}`);
   lines.push("", "Run `storybench help COMMAND` or `storybench COMMAND --help` for details.",
     "Configuration follows XDG locations (default ~/.config/storybench/config.json).");
   return lines.join("\n");
@@ -92,6 +92,8 @@ export async function main(argv, overrides = {}) {
     lockTimeoutMs: overrides.lockTimeoutMs ?? (Number(env.STORYBENCH_LOCK_TIMEOUT_MS) || 10_000),
     probeService: overrides.probeService ?? probeService,
     system: overrides.system ?? hostSystem({ env }),
+    runCommand: overrides.runCommand ?? runCommand,
+    installAdapters: overrides.installAdapters,
     home: overrides.home ?? env.HOME ?? os.homedir(),
     healthTimeoutMs: overrides.healthTimeoutMs ?? (Number(env.STORYBENCH_HEALTH_TIMEOUT_MS) || 180_000),
     pollMs: overrides.pollMs,

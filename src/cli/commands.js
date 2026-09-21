@@ -11,6 +11,9 @@ import { assertCurrentSchema, selectExecutor } from "./executor.js";
 import { assertServiceStopped, runDown, runLogs, runOpen, runRestart, runStatus, runUp } from "./lifecycle.js";
 import { unitName } from "./unit.js";
 import { configuredRoot, restoreHint } from "./root.js";
+import { installFromSource } from "./install.js";
+import { runDoctor } from "./doctor.js";
+import { runUninstall } from "./uninstall.js";
 
 export { configuredRoot };
 import { assertOwnedWritable } from "./fs-safety.js";
@@ -124,6 +127,10 @@ async function runVersion(context) {
     const { identity, manifest: value } = manifest;
     context.out(`Release: ${identity.manifestId}\nCommit: ${identity.commit}${value.source.ref ? ` (${value.source.ref})` : ""}\nBuilt: ${value.builtAt ?? "unknown"}`);
     context.out(`Images: app ${identity.images.app}, worker ${identity.images.worker}\nRuntime protocol: ${identity.protocol}`);
+    try {
+      const active = realpathSync(context.xdg.current);
+      if (active === realpathSync(path.dirname(manifestFileForInfo(context)))) context.out(`Installed release: ${value.source.commit} at ${active}`);
+    } catch { /* a development checkout or inactive installed pointer */ }
   } else if (manifest.state === "absent") context.out("Release: development checkout (no release manifest)");
   else context.out(`Release: the release manifest is not valid (${manifest.reason}); reporting this checkout's own schema support`);
   context.out(`Supported database schema: ${info.supportedSchema.min}-${info.supportedSchema.max}`);
@@ -138,6 +145,19 @@ async function runVersion(context) {
   } else if (service.state === "other") context.out(`Service: port ${config.port} is used by another program`);
   else context.out(`Service: not running on port ${config.port}`);
   return EXIT.OK;
+}
+
+function manifestFileForInfo(context) {
+  return context.env.STORYBENCH_RELEASE_MANIFEST || path.join(realpathSync(context.xdg.current), "manifest.json");
+}
+
+async function runInstall(context, { options }) {
+  for (const name of ["source", "commit", "remote", "ref"])
+    if (!options[name]) throw new CliError(`--${name} is required`, { exitCode: EXIT.USAGE, hint: "Run the repository's ./install.sh bootstrap." });
+  return installFromSource(context, {
+    source: path.resolve(options.source), commit: options.commit, remote: options.remote, ref: options.ref,
+    dockerVersion: options["docker-version"],
+  }, context.installAdapters);
 }
 
 const CHANNEL_SUBCOMMANDS = {
@@ -191,8 +211,26 @@ export const COMMANDS = {
       "credential sync). App and worker container output is not forwarded to the journal in this build.",
     options: { follow: { type: "boolean", short: "f", help: "Keep following new entries" } }, examples: ["storybench logs", "storybench logs -f"],
     run: (context, parsed) => runLogs(context, parsed, configuredRoot) },
+  doctor: { usage: "storybench doctor", summary: "Check installation, runtime, data and provider readiness", args: [0, 0],
+    description: "Runs read-only checks for host dependencies, PATH/XDG safety, private-origin access, the user unit and port,\n" +
+      "the configured database, exact release images and packaged tools, live login-file validity, and health when running.\n" +
+      "Provider-login warnings do not make the editor itself unavailable; real installation failures exit nonzero.",
+    examples: ["storybench doctor"], run: runDoctor },
+  uninstall: { usage: "storybench uninstall [--yes]", summary: "Remove the app while preserving all user data and login state", args: [0, 0],
+    description: "Stops only this installation, removes its launcher, unit, source mirror, releases, owned containers and safe-to-remove images.\n" +
+      "The configured data root, configuration, backups, native sessions, and host Codex/Claude credentials are always preserved.\n" +
+      "No global Docker prune is performed.",
+    options: { yes: { type: "boolean", help: "Confirm removal without an interactive prompt" } },
+    examples: ["storybench uninstall", "storybench uninstall --yes"], run: runUninstall },
+  __install: { usage: "storybench __install --source DIR --commit SHA --remote URL --ref REF [--docker-version VERSION]", summary: "Internal exact-release installer handoff", args: [0, 0], hidden: true,
+    description: "Internal entry used by install.sh after host preflight. It seeds the private mirror, exports and verifies the exact commit,\n" +
+      "builds the paired images, atomically selects the release, installs the launcher and unit, and never starts the service.",
+    options: { source: { type: "string", help: "Absolute clean source checkout" }, commit: { type: "string", help: "Exact full commit ID" },
+      remote: { type: "string", help: "Recorded origin fetch URL" }, ref: { type: "string", help: "Recorded source branch/ref" },
+      "docker-version": { type: "string", help: "Docker server version recorded by preflight" } },
+    examples: ["./install.sh"], run: runInstall },
   help: { usage: "storybench help [COMMAND [SUBCOMMAND]]", summary: "Show help for Storybench or one command", args: [0, 2], examples: ["storybench help channel use"] },
 };
 
 // Registered for a stable surface; hidden from help until their tasks land.
-export const UNAVAILABLE = ["doctor", "update", "rollback", "backup", "uninstall"];
+export const UNAVAILABLE = ["update", "rollback", "backup"];
