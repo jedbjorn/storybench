@@ -519,7 +519,10 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const config = options(process.argv);
   const { server, close } = await createApp(config);
-  server.listen(config.port, "127.0.0.1", () =>
+  // Loopback by default. The Docker app container sets STORYBENCH_BIND_HOST=0.0.0.0 so its
+  // host publication (bound to 127.0.0.1 on the host by the lifecycle entry point) works.
+  const bindHost = process.env.STORYBENCH_BIND_HOST === "0.0.0.0" ? "0.0.0.0" : "127.0.0.1";
+  server.listen(config.port, bindHost, () =>
     console.log(
       `Storybench: http://127.0.0.1:${server.address().port} — ${config.dataRoot ? `data root ${config.dataRoot}` : `workspace ${config.workspace}`}`,
     ),

@@ -1,0 +1,7 @@
+# Allowlist: only tracked application sources enter the image build context.
+*
+!package.json
+!package-lock.json
+!src/
+!public/
+!agent/

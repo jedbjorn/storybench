@@ -11,6 +11,10 @@ export class CodexError extends Error {
   }
 }
 
+// A tool handler may return { [TOOL_CONTENT]: contentItems } to supply app-server
+// content items directly (for example inputImage results) instead of JSON text.
+export const TOOL_CONTENT = Symbol.for('storybench.codex.toolContent');
+
 const empty = { type: 'object', properties: {}, additionalProperties: false };
 const object = (required, properties) => ({ type: 'object', additionalProperties: false, required, properties });
 const toolSpecs = [
@@ -147,7 +151,8 @@ export class CodexConnection {
       const handler = this.tools?.[tool];
       if (!handler) throw new Error(`Unsupported Storybench tool: ${tool}`);
       const result = await handler(args ?? {});
-      this.#write({ id: message.id, result: { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(result) }] } });
+      const contentItems = result?.[TOOL_CONTENT] ?? [{ type: 'inputText', text: JSON.stringify(result) }];
+      this.#write({ id: message.id, result: { success: true, contentItems } });
     } catch (error) {
       this.#write({ id: message.id, result: { success: false, contentItems: [{ type: 'inputText', text: error?.message || 'Tool failed' }] } });
     }
