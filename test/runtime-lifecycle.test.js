@@ -266,3 +266,21 @@ test("a request never replaces another active request's boot renders on the same
   releaseTwo(); releaseOther();
   assert.equal(activeRenderHolder("/storybench/data/channels/c/episodes/e"), null);
 });
+
+test("a stop that leaves installation containers behind is reported at error level", async (t) => {
+  const runtimeRoot = await tempDir(t, "sb-rt-");
+  const stuck = { Config: { Labels: { "io.storybench.install": "inst2", "io.storybench.role": "worker", "io.storybench.request": "request_stuck" } }, State: { Status: "running" } };
+  const events = [];
+  const api = {
+    docker: async () => "",
+    listByLabels: async () => ["s1".padEnd(64, "0")],
+    inspectContainer: async () => stuck,
+    ensureNetwork: async () => {},
+  };
+  const host = createHost({ installId: "inst2", dataRoot: "/srv/d", stateRoot: "/srv/s", runtimeRoot, port: 18852, images: { app: A, worker: B },
+    credentials: { codex: "/h/a.json", claude: "/h/c.json" } }, { dockerApi: api, log: (event) => events.push(event) });
+  const result = await host.stop();
+  assert.equal(result.containersRemaining, 1);
+  assert.ok(events.some((event) => event.event === "host.stop.incomplete" && event.level === "error"));
+  assert.ok(events.some((event) => event.event === "host.stopped" && event.level === "error"));
+});
