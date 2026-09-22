@@ -54,6 +54,30 @@ test("library items preserve membership identity, scoped metadata, and optimisti
   assert.equal(f.store.getLibraryItem(f.episode.id, first.id).sectionId, null);
 });
 
+test("deleting a library item detaches its episode links without affecting another episode", async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  const asset = f.store.saveAsset({ channelId: f.episode.channelId, name: "Clip", hash: "deletion-test", kind: "video", path: "clip.mp4", duration: 1, metadata: {} });
+  const item = f.store.attachLibraryItem(f.episode.id, asset.id);
+  const other = f.store.createEpisode({ title: "Other" });
+  const otherItem = f.store.attachLibraryItem(other.id, item.assetId);
+  const linked = f.store.updateEpisode(f.episode.id, f.episode.revision, {
+    referenceItemIds: [item.id],
+    cards: [{ id: "one", title: "One", type: "Video", itemId: item.id, referenceItemIds: [item.id] }],
+  });
+  assert.throws(() => f.store.deleteLibraryItem(f.episode.id, item.id, item.revision + 1, linked.revision), /Stale library revision/);
+  assert.throws(() => f.store.deleteLibraryItem(f.episode.id, item.id, item.revision, linked.revision - 1), /Stale episode revision/);
+  const updated = f.store.deleteLibraryItem(f.episode.id, item.id, item.revision, linked.revision);
+  assert.equal(updated.revision, linked.revision + 1);
+  assert.deepEqual(updated.referenceItemIds, []);
+  assert.equal(updated.cards[0].itemId, null);
+  assert.deepEqual(updated.cards[0].referenceItemIds, []);
+  assert.equal(f.store.getLibraryItem(f.episode.id, item.id), null);
+  assert.equal(f.store.getLibraryItem(other.id, otherItem.id).assetId, item.assetId);
+  assert.equal(f.store.getAsset(item.assetId).path, item.asset.path);
+  assert.throws(() => f.store.deleteLibraryItem(f.episode.id, item.id, item.revision, updated.revision), /not found/);
+});
+
 test("reference file imports are atomic, serialized, bounded, and report extraction", async (t) => {
   const f = await fixture();
   t.after(() => f.close());
