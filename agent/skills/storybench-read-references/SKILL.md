@@ -16,7 +16,7 @@ description: Find episode and card references and their reference prompts, read 
 ```json
 { "rule": "…",
   "episode": { "scope": "episode", "prompt": "calm, slow, morning light", "items": [ { "itemId": "…", "available": true, "label": "…", "category": "Reference", "kind": "image", "hasText": false, "extractionStatus": null, "directions": [] } ] },
-  "cards": [ { "scope": "card", "cardId": "…", "title": "Opening", "prompt": "this pace, not this colour", "items": [ … ], "legacyUrls": [] } ] }
+  "cards": [ { "scope": "card", "cardId": "…", "title": "Opening", "prompt": "this pace, not this colour", "items": [ … ] } ] }
 ```
 
 Episode references apply across the episode; card references inform only that card. An item with `available: false` is linked but missing — report it, do not guess its content. `directions` lists creator instructions already recorded for that item.
