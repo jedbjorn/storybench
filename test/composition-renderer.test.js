@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { createHash } from "node:crypto";
 import { renderComposition } from "../src/composition-renderer.js";
+import { importMedia, probeMedia } from "../src/media.js";
 import { createApp } from "../src/server.js";
 
 const ffmpeg = (args) => {
@@ -53,8 +54,11 @@ test("composition renderer decodes ordered visuals and cross-boundary anchored a
   t.after(() => rm(value.workspace, { recursive: true, force: true }));
   const before = await Promise.all([value.red, value.blue, value.voice].map(digest));
   const outputPath = join(value.workspace, "exports", "composition.mp4");
-  const result = await renderComposition({ ...value, outputPath, preview: true });
+  const progress = [];
+  const result = await renderComposition({ ...value, outputPath, preview: true,
+    onProgress: (fraction) => progress.push(fraction) });
   assert.deepEqual([result.duration, result.width, result.height], [.6, 1280, 720]);
+  assert.equal(progress.at(-1), 1);
   const sampled = spawnSync("ffmpeg", ["-v", "error", "-i", outputPath, "-vf", "select='eq(n,3)+eq(n,13)',scale=1:1,format=rgb24", "-fps_mode", "vfr", "-f", "rawvideo", "-"]);
   assert.equal(sampled.status, 0, sampled.stderr?.toString());
   assert.equal(sampled.stdout.length, 6);
@@ -78,9 +82,76 @@ test("composition renderer rejects unresolved plans, traversal, aliases and clea
   await assert.rejects(renderComposition({ ...value, plan: { ...value.plan, visualSpine: [{ ...value.plan.visualSpine[0], itemId: "missing" }] }, outputPath }), /unresolved/);
   await assert.rejects(renderComposition({ ...value, outputPath: "../escape.mp4" }), /inside/);
   await assert.rejects(renderComposition({ ...value, outputPath: value.red }), /overwrite/);
+  const alias = join(value.workspace, "red-alias.mp4");
+  await symlink(value.red, alias);
+  const before = await digest(value.red);
+  await assert.rejects(renderComposition({ ...value, outputPath: alias }), /overwrite/);
+  assert.equal(await digest(value.red), before);
   const controller = new AbortController(); controller.abort();
   await assert.rejects(renderComposition({ ...value, outputPath, signal: controller.signal }), { name: "AbortError" });
   await assert.rejects(access(outputPath));
+});
+
+test("composition renderer decodes fractional source cuts at the card boundary", async (t) => {
+  const value = await fixture();
+  t.after(() => rm(value.workspace, { recursive: true, force: true }));
+  const source = join(value.workspace, "media", "timeline.mp4");
+  ffmpeg([
+    "-f", "lavfi", "-i", "color=c=red:s=160x90:r=30:d=0.4",
+    "-f", "lavfi", "-i", "color=c=green:s=160x90:r=30:d=0.4",
+    "-f", "lavfi", "-i", "color=c=blue:s=160x90:r=30:d=0.4",
+    "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]", "-map", "[v]",
+    "-c:v", "libx264", "-g", "30", "-pix_fmt", "yuv420p", source,
+  ]);
+  const libraryItems = [{ id: "timeline", assetId: "timeline", asset: { kind: "video", path: "media/timeline.mp4" } }];
+  const plan = { fps: 30, durationFrames: 24, visualSpine: [
+    { cardId: "green", itemId: "timeline", assetId: "timeline", sourceInFrame: 12, sourceOutFrame: 24, startFrame: 0, durationFrames: 12 },
+    { cardId: "blue", itemId: "timeline", assetId: "timeline", sourceInFrame: 24, sourceOutFrame: 36, startFrame: 12, durationFrames: 12 },
+  ], audioPlacements: [] };
+  const outputPath = join(value.workspace, "exports", "precise.mp4");
+  await renderComposition({ workspace: value.workspace, plan, libraryItems, outputPath, preview: true });
+  const sampled = spawnSync("ffmpeg", ["-v", "error", "-i", outputPath, "-vf",
+    "select='eq(n,0)+eq(n,11)+eq(n,12)+eq(n,23)',scale=1:1,format=rgb24",
+    "-fps_mode", "vfr", "-f", "rawvideo", "-"]);
+  assert.equal(sampled.status, 0, sampled.stderr?.toString());
+  assert.equal(sampled.stdout.length, 12);
+  const samples = Array.from({ length: 4 }, (_, index) => [...sampled.stdout.subarray(index * 3, index * 3 + 3)]);
+  for (const [red, green, blue] of samples.slice(0, 2))
+    assert.ok(green > red * 1.5 && green > blue * 1.5, `expected green source segment, got ${[red, green, blue]}`);
+  for (const [red, green, blue] of samples.slice(2))
+    assert.ok(blue > red * 1.5 && blue > green * 1.5, `expected blue source segment, got ${[red, green, blue]}`);
+});
+
+test("composition export produces a 1920x1080 artifact", async (t) => {
+  const value = await fixture();
+  t.after(() => rm(value.workspace, { recursive: true, force: true }));
+  const outputPath = join(value.workspace, "exports", "full.mp4");
+  const result = await renderComposition({ ...value, outputPath, preview: false });
+  const rendered = await probeMedia(outputPath);
+  assert.deepEqual([result.width, result.height, rendered.width, rendered.height], [1920, 1080, 1920, 1080]);
+  assert.ok(Math.abs(rendered.duration - result.duration) <= 1 / 30);
+});
+
+test("optional real VP9 footage renders odd and ultrawide sources without mutation", {
+  skip: !process.env.STORYBENCH_REAL_MEDIA_DIR,
+}, async (t) => {
+  const value = await fixture();
+  t.after(() => rm(value.workspace, { recursive: true, force: true }));
+  const sources = ["Screencast_20260911_001824.webm", "Screencast_20260911_002734.webm"]
+    .map((name) => join(process.env.STORYBENCH_REAL_MEDIA_DIR, name));
+  const before = await Promise.all(sources.map(digest));
+  const imported = await Promise.all(sources.map((sourcePath) => importMedia({ workspace: value.workspace, sourcePath })));
+  const libraryItems = imported.map((asset, index) => ({ id: `real-${index}`, assetId: `real-${index}`, asset }));
+  const plan = { fps: 30, durationFrames: 30, visualSpine: libraryItems.map((item, index) => ({
+    cardId: `real-${index}`, itemId: item.id, assetId: item.assetId,
+    startFrame: index * 15, durationFrames: 15, sourceInFrame: 3, sourceOutFrame: 18,
+  })), audioPlacements: [] };
+  const outputPath = join(value.workspace, "exports", "real-preview.mp4");
+  await renderComposition({ workspace: value.workspace, plan, libraryItems, outputPath, preview: true });
+  const rendered = await probeMedia(outputPath);
+  assert.deepEqual([rendered.width, rendered.height], [1280, 720]);
+  assert.ok(Math.abs(rendered.duration - 1) <= 1 / 30);
+  assert.deepEqual(await Promise.all(sources.map(digest)), before);
 });
 
 test("typed render enqueue snapshots story, board, library and executes the composition renderer", async (t) => {

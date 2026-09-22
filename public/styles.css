@@ -327,34 +327,6 @@ h2 {
   font-weight: 750;
   font-size: 16px;
 }
-.card-main > .card-purpose {
-  border: 0;
-  padding: 2px 0;
-  width: 100%;
-  color: var(--muted);
-}
-.placements {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  margin-top: 10px;
-}
-.placement {
-  padding: 10px;
-  background: #f8f8f5;
-  border-radius: 8px;
-}
-.placement label {
-  display: block;
-  font-size: 11px;
-  text-transform: uppercase;
-  font-weight: 800;
-  color: var(--muted);
-  margin-bottom: 5px;
-}
-.placement select {
-  width: 100%;
-}
 .timing {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -377,25 +349,6 @@ h2 {
 .card-tools button {
   border: 0;
   padding: 3px 6px;
-}
-.import-box {
-  padding: 20px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: #fff;
-}
-.import-box p {
-  color: var(--muted);
-}
-#importForm {
-  display: flex;
-  gap: 8px;
-}
-#importForm input {
-  flex: 1;
-  border: 1px solid var(--line);
-  padding: 10px;
-  border-radius: 8px;
 }
 .error {
   color: #a43b29;
@@ -620,12 +573,6 @@ h2 {
   white-space: nowrap !important;
   border: 0 !important;
 }
-.welcome {
-  background: var(--pale);
-  border-radius: 10px;
-  padding: 12px;
-  color: #37534e;
-}
 .message {
   padding: 9px 11px;
   border-radius: 10px;
@@ -640,22 +587,6 @@ h2 {
 .message.assistant {
   background: #f0f0ec;
   margin-right: 15px;
-}
-#chatForm {
-  border-top: 1px solid var(--line);
-  padding: 12px;
-}
-#chatForm textarea {
-  width: 100%;
-  min-height: 72px;
-  resize: none;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  padding: 9px;
-}
-#chatForm div {
-  text-align: right;
-  margin-top: 6px;
 }
 #toast {
   position: fixed;
@@ -694,9 +625,6 @@ h2 {
   }
   .title-row {
     display: block;
-  }
-  .placements {
-    grid-template-columns: 1fr;
   }
   .card-media-controls {
     grid-template-columns: 1fr;

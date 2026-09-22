@@ -39,6 +39,21 @@ test("section order creates the visual spine and anchored audio may span cards",
   });
 });
 
+test("fractional video cuts are quantized before deriving the duration", () => {
+  const values = [{ id: "cut", title: "Cut", type: "Video", sectionId: "body", order: 0,
+    itemId: "item-body", in: 0.101, out: 0.284 }];
+  const plan = buildRenderPlan({ sections, cards: values, libraryItems });
+  assert.deepEqual([plan.visualSpine[0].sourceInFrame, plan.visualSpine[0].sourceOutFrame,
+    plan.visualSpine[0].durationFrames, plan.durationFrames], [3, 9, 6, 6]);
+  values[0].in = 0.02;
+  values[0].out = 0.08;
+  assert.equal(buildRenderPlan({ sections, cards: values, libraryItems }).durationFrames, 1);
+  values[0].in = 0.001;
+  values[0].out = 0.01;
+  assert.throws(() => buildRenderPlan({ sections, cards: values, libraryItems }),
+    (error) => error.issues.some((entry) => entry.code === "trim-below-frame"));
+});
+
 test("reordering sections recomputes anchored placement from the visual spine", () => {
   const initialCards = cards();
   initialCards.find((card) => card.id === "music-card").out = 2;

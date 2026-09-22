@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from "node:os";
 import path from "node:path";
 import { JSDOM } from "jsdom";
-import { Store, SCHEMA_VERSION } from "../src/store.js";
+import { SCHEMA_VERSION } from "../src/store.js";
 import { createApp } from "../src/server.js";
 import { initDataRoot, openDataRoot } from "../src/services/data-root.js";
 import { deleteDraftOutputs, isDeletableOutputPath, listDraftCleanup, moveFinalToDrafts } from "../src/services/outputs.js";

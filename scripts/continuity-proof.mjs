@@ -44,15 +44,6 @@ function run(command, args, { allowFail = false, timeout = 1_800_000 } = {}) {
 }
 const save = (name, content) => writeFile(path.join(evidence, name), typeof content === "string" ? content : JSON.stringify(content, null, 2) + "\n");
 const record = (area, check, pass, detail, file) => { results.push({ area, check, pass: Boolean(pass), detail, evidence: file }); log(pass ? "PASS" : "FAIL", area, check, "-", detail); };
-const appName = `storybench-${installId}-app`;
-let copied = null;
-async function driver(spec) {
-  const id = (await run("docker", ["inspect", appName, "--format", "{{.Id}}"], { allowFail: true })).stdout.trim();
-  if (id && copied !== id) { await run("docker", ["cp", DRIVER, `${appName}:/opt/storybench/app/src/runtime/slice-proof-driver.js`]); copied = id; }
-  const out = await run("docker", ["exec", appName, "node", "src/runtime/slice-proof-driver.js", JSON.stringify(spec)], { allowFail: true });
-  try { return JSON.parse(out.stdout.trim().split("\n").pop()); } catch { return { fatal: `${out.stdout.slice(-2000)} ${out.stderr.slice(-2000)}` }; }
-}
-
 async function main() {
   await mkdir(evidence, { recursive: true });
   await rm(work, { recursive: true, force: true });

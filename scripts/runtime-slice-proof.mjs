@@ -9,7 +9,7 @@
 // lifecycle entry point's per-request credential staging; never writes token contents
 // to evidence. Runs the host lifecycle entry point as a transient user unit
 // (systemd-run --user --unit=storybench-slice-test-<stamp>) and removes it afterwards.
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
