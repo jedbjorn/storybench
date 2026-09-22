@@ -707,8 +707,8 @@ h2 {
 }
 
 /* Episode and card references */
-.episode-references, .card-references { margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
-.episode-references > summary, .card-references > summary { padding: 6px 10px; cursor: pointer; font-size: 13px; color: var(--deep); font-weight: 600; }
+.episode-references { margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+.episode-references > summary { padding: 6px 10px; cursor: pointer; font-size: 13px; color: var(--deep); font-weight: 600; }
 .reference-panel { display: grid; gap: 8px; padding: 8px 10px 10px; font-size: 13px; }
 .reference-prompt { display: grid; gap: 4px; color: var(--muted); }
 .reference-prompt textarea { min-height: 52px; resize: vertical; }
@@ -728,6 +728,23 @@ audio.reference-preview { width: 48px; }
 .reference-drop.drag-over { border-color: var(--accent); background: #fff4f0; }
 .reference-status:empty { display: none; }
 .reference-status.error { color: var(--accent); }
+.card-main { min-width: 0; container-type: inline-size; }
+.card-media-workspace { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; align-items: start; margin: 9px 0; }
+.card-media-workspace > .card-preview { width: 100%; margin: 0; }
+.card-reference-panel { min-width: 0; padding: 0; }
+.reference-heading { color: var(--deep); font-weight: 600; }
+.reference-heading small { margin-left: 4px; color: var(--muted); font-weight: 400; }
+.card-reference-panel .reference-list { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+.card-reference-panel .reference-item { min-width: 0; grid-template-columns: minmax(0, 1fr); align-content: start; }
+.card-reference-panel .reference-preview { width: 100%; height: 90px; object-fit: contain; }
+.card-reference-panel audio.reference-preview { height: 54px; }
+.card-reference-panel .reference-item button { justify-self: start; padding: 3px 7px; font-size: 12px; }
+.reference-add-tile { min-height: 140px; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 4px; }
+.reference-add-tile select { width: 100%; min-width: 0; font: inherit; }
+.card-reference-panel .reference-prompt textarea { margin: 0; }
+@container (max-width: 620px) {
+  .card-media-workspace { grid-template-columns: minmax(0, 1fr); }
+}
 .episode-references .reference-list { display: flex; flex-wrap: wrap; }
 .episode-references .reference-item { flex: 0 1 260px; max-width: 100%; }
 .episode-references .reference-actions { display: flex; align-items: center; }

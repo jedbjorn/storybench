@@ -55,7 +55,7 @@ test("episode and card reference panels link, upload, unlink and report unavaila
     for (let attempt = 0; attempt < 200; attempt++) { const value = check(); if (value) return value; await new Promise((resolve) => setTimeout(resolve, 25)); }
     assert.fail(message);
   };
-  const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+  const page = await browser.newPage({ viewport: { width: 1920, height: 1000 } });
   page.setDefaultTimeout(60_000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -98,7 +98,13 @@ test("episode and card reference panels link, upload, unlink and report unavaila
   await shot(page, "1-episode-references");
 
   // Card reference upload registers a new item and links it only to that card; output media is unchanged.
-  await page.click('[data-card-id="still-card"] [data-card-references] > summary');
+  const cardPanel = page.locator('[data-ref-card="still-card"]');
+  assert.equal(await cardPanel.isVisible(), true, "card references are visible without expanding a disclosure");
+  assert.equal(await cardPanel.locator('[data-ref-pick]').count(), 2, "an empty card offers two reference tiles");
+  const previewBox = await page.locator('[data-card-id="still-card"] .card-preview').boundingBox();
+  const referenceBox = await cardPanel.boundingBox();
+  assert.ok(referenceBox.x >= previewBox.x + previewBox.width, "references sit beside the output on a wide card");
+  await shot(page, "2-empty-card-references");
   await page.setInputFiles('[data-ref-card="still-card"] [data-ref-file]', moodFile);
   const linked = await until(() => { const card = store.getEpisode(episode.id).cards[0]; return card.referenceItemIds.length === 1 && card; }, "card reference uploaded");
   assert.equal(linked.itemId, logo.id, "card output media is not replaced");
@@ -111,6 +117,21 @@ test("episode and card reference panels link, upload, unlink and report unavaila
   await page.waitForSelector(`[data-ref-card="still-card"] [data-ref-item="${uploaded.id}"] img`);
   assert.match(await page.textContent('[data-card-id="still-card"] .card-media-controls'), /Output media \(footage\)/);
   await shot(page, "2-card-reference");
+
+  // Existing media can also be linked from the remaining tile, without changing output or episode scope.
+  await cardPanel.locator('[data-ref-add]').selectOption(clip.id);
+  await until(() => store.getEpisode(episode.id).cards[0].referenceItemIds.length === 2, "existing card reference linked");
+  await cardPanel.locator(`[data-ref-unlink="${clip.id}"]`).click();
+  await until(() => store.getEpisode(episode.id).cards[0].referenceItemIds.length === 1, "card reference unlinked");
+  assert.ok(store.getLibraryItem(episode.id, clip.id));
+  await page.waitForFunction((revision) => document.querySelector('#saveState').textContent === `Saved · r${revision}`, store.getEpisode(episode.id).revision);
+  await page.setViewportSize({ width: 1400, height: 1000 });
+  const narrowPreview = await page.locator('[data-card-id="still-card"] .card-preview').boundingBox();
+  const narrowReferences = await cardPanel.boundingBox();
+  assert.ok(narrowReferences.y >= narrowPreview.y + narrowPreview.height, "references stack below the output on a narrow card");
+  assert.ok(await cardPanel.evaluate((element) => element.scrollWidth <= element.clientWidth), "reference tiles stay within their panel");
+  await shot(page, "2-narrow-card-references");
+  await page.setViewportSize({ width: 1920, height: 1000 });
 
   // Unlink keeps the library item.
   await page.click(`#episodeReferences [data-ref-unlink="${clip.id}"]`);
