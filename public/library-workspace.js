@@ -219,9 +219,17 @@ export async function runImportBatch({ rows, episodeId, upload, signal, onChange
 }
 
 export function episodeNavigatorHTML(episodes, filter, selectedId) {
-  return ["Scaffold", "Draft", "Final", "Published"].map((state) => {
-    const rows = episodes.filter((episode) => episode.state === state && (filter === "All" || filter === state));
+  const states = ["Scaffold", "Draft", "Final", "Published"];
+  const options = (selected) => [...states, "Archived"].map((value) => `<option ${selected === value ? "selected" : ""}>${value}</option>`).join("");
+  const rowsHTML = (rows, selected) => rows.map((episode) => `<div class="episode-row" draggable="true" data-id="${episode.id}"><button data-episode-select class="${selectedId === episode.id ? "active" : ""}">${esc(episode.title)}</button><select data-episode-state-select aria-label="Move ${esc(episode.title)}">${options(selected)}</select></div>`).join("");
+  const active = states.map((state) => {
     if (filter !== "All" && filter !== state) return "";
-    return `<section class="episode-group" data-episode-state="${state}"><h3>${state}<span>${rows.length}</span></h3>${rows.map((episode) => `<div class="episode-row" draggable="true" data-id="${episode.id}"><button data-episode-select class="${selectedId === episode.id ? "active" : ""}">${esc(episode.title)}</button><select data-episode-state-select aria-label="Move ${esc(episode.title)}"><option ${state === "Scaffold" ? "selected" : ""}>Scaffold</option><option ${state === "Draft" ? "selected" : ""}>Draft</option><option ${state === "Final" ? "selected" : ""}>Final</option><option ${state === "Published" ? "selected" : ""}>Published</option></select></div>`).join("") || '<p class="episode-empty">Drop episode here</p>'}</section>`;
+    const rows = episodes.filter((episode) => !episode.archivedAt && episode.state === state);
+    return `<section class="episode-group" data-episode-state="${state}"><h3>${state}<span>${rows.length}</span></h3>${rowsHTML(rows, state) || '<p class="episode-empty">Drop episode here</p>'}</section>`;
   }).join("");
+  if (filter !== "All" && filter !== "Archived") return active;
+  const archived = episodes.filter((episode) => episode.archivedAt);
+  const rows = filter === "Archived" ? rowsHTML(archived, "Archived") : "";
+  const empty = filter === "Archived" || !archived.length ? "Drop episode here to archive" : `${archived.length} ${archived.length === 1 ? "episode" : "episodes"} hidden`;
+  return `${active}<section class="episode-group episode-group-archived" data-episode-state="Archived"><h3>Archived<span>${archived.length}</span></h3>${rows || `<p class="episode-empty">${empty}</p>`}</section>`;
 }
