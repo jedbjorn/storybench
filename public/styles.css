@@ -671,7 +671,7 @@ audio.reference-preview { width: 48px; }
 .reference-add-tile { min-height: 140px; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 4px; }
 .reference-add-tile select { width: 100%; min-width: 0; font: inherit; }
 .card-reference-panel .reference-prompt textarea { margin: 0; }
-@container (max-width: 620px) {
+@container (max-width: 680px) {
   .card-media-workspace { grid-template-columns: minmax(0, 1fr); }
 }
 .episode-references .reference-list { display: flex; flex-wrap: wrap; }
