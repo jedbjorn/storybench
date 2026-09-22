@@ -359,6 +359,7 @@ async function save(changes = {}) {
           ...changes,
         }),
       });
+      state.episodes = state.episodes.map((candidate) => candidate.id === target ? updated : candidate);
       if (episode?.id === target) {
         const localCards = episode.cards,
           localReferencePrompt = episode.referencePrompt,
