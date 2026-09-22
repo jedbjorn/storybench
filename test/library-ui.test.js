@@ -8,16 +8,26 @@ test("episode navigator groups states, applies filters, and keeps dropdown alter
   const episodes = [
     { id: "one", title: "One", state: "Scaffold" },
     { id: "two", title: "Two", state: "Final" },
+    { id: "old", title: "Old idea", state: "Draft", archivedAt: "2026-09-22T10:00:00.000Z" },
   ];
   const all = episodeNavigatorHTML(episodes, "All", "two");
   assert.match(all, /data-episode-state="Scaffold"/);
   assert.match(all, /data-episode-state="Final"/);
+  assert.match(all, /data-episode-state="Archived"/);
+  assert.match(all, /Archived<span>1<\/span>/);
+  assert.doesNotMatch(all, />Old idea</);
   assert.match(all, /data-episode-state-select/);
   assert.match(all, /data-id="two"[\s\S]*class="active"/);
   const filtered = episodeNavigatorHTML(episodes, "Scaffold", "two");
   assert.match(filtered, />One</);
   assert.doesNotMatch(filtered, />Two</);
+  assert.doesNotMatch(filtered, />Old idea</);
   assert.doesNotMatch(filtered, /data-episode-state="Final"/);
+  assert.doesNotMatch(filtered, /data-episode-state="Archived"/);
+  const archived = episodeNavigatorHTML(episodes, "Archived", "old");
+  assert.match(archived, />Old idea</);
+  assert.match(archived, /<option selected>Archived<\/option>/);
+  assert.doesNotMatch(archived, />One</);
 });
 
 test("episode navigator escapes user labels", () => {

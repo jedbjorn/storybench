@@ -80,9 +80,10 @@ async function load(select) {
 function render() {
   const filter = $("#episodeFilter").value;
   $("#episodes").innerHTML = episodeNavigatorHTML(state.episodes, filter, episode?.id);
-  const selectedHidden = episode && filter !== "All" && episode.state !== filter;
+  const episodeGroup = episode?.archivedAt ? "Archived" : episode?.state;
+  const selectedHidden = episode && (filter === "All" ? episodeGroup === "Archived" : episodeGroup !== filter);
   $("#filteredEpisodeNotice").hidden = !selectedHidden;
-  $("#filteredEpisodeNotice").innerHTML = selectedHidden ? `Current episode is in ${esc(episode.state)}. <button data-reveal-episode>Show it</button>` : "";
+  $("#filteredEpisodeNotice").innerHTML = selectedHidden ? `Current episode is in ${esc(episodeGroup)}. <button data-reveal-episode>Show it</button>` : "";
   $("#empty").hidden = !!episode;
   $("#editor").hidden = !episode;
   if (!episode) return;
@@ -460,17 +461,19 @@ $("#episodes").ondrop = async (event) => {
 };
 async function moveEpisodeState(id, nextState) {
   const target = state.episodes.find((candidate) => candidate.id === id);
-  if (!target || target.state === nextState) return;
+  const archived = nextState === "Archived";
+  if (!target || (archived ? target.archivedAt : !target.archivedAt && target.state === nextState)) return;
   try {
     if (id === episode?.id) await flushDraft();
-    const updated = await api(`/api/episodes/${id}`, { method: "PUT", body: JSON.stringify({ expectedRevision: target.revision, state: nextState }) });
+    const changes = archived ? { archived: true } : { state: nextState, archived: false };
+    const updated = await api(`/api/episodes/${id}`, { method: "PUT", body: JSON.stringify({ expectedRevision: target.revision, ...changes }) });
     state.episodes = state.episodes.map((candidate) => candidate.id === id ? updated : candidate);
     if (episode?.id === id) episode = updated;
     render();
   } catch (error) { toast(error.message); await load(episode?.id); }
 }
 $("#episodeFilter").onchange = render;
-$("#filteredEpisodeNotice").onclick = (event) => { if (event.target.closest("[data-reveal-episode]")) { $("#episodeFilter").value = "All"; render(); } };
+$("#filteredEpisodeNotice").onclick = (event) => { if (event.target.closest("[data-reveal-episode]")) { $("#episodeFilter").value = episode?.archivedAt ? "Archived" : "All"; render(); } };
 $("#newEpisode").onclick = $("#firstEpisode").onclick = create;
 $("#episodeTitle").oninput = $("#episodeNotes").oninput = () => {
   dirty = true;
