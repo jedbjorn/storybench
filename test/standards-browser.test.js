@@ -115,6 +115,8 @@ for (const browserType of [chromium, firefox]) test(`${browserType.name()}: Bran
     await page.keyboard.insertText('X');
     assert.equal(await field.inputValue(), 'abcdefghijklmno'.slice(0, middle) + 'X' + 'abcdefghijklmno'.slice(middle));
     await page.locator(other).click();
+    if (selector.startsWith('#cards'))
+      await page.waitForFunction(() => document.querySelector('#saveState').textContent.startsWith('Saved'));
     await field.waitFor({ state: 'visible' });
     const width = await field.evaluate((element) => element.getBoundingClientRect().width);
     await field.click({ position: { x: width - 12, y: 12 } });
