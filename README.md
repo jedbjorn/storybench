@@ -1,19 +1,26 @@
 # Storybench
 
+[![test](https://github.com/jedbjorn/storybench/actions/workflows/test.yml/badge.svg)](https://github.com/jedbjorn/storybench/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 ## What Storybench does
 
-Storybench is a private, local workspace for developing videos with a production agent. Its browser UI keeps stories, cards, references, B-roll, graphics, drafts, finals and chat together. A creator can choose Codex or Claude Code and an available model, then ask the agent to inspect material, edit assets and assemble or revise a video.
+Storybench is a local workspace for developing videos with a production agent. Its browser UI keeps stories, cards, references, B-roll, graphics, drafts, finals and chat together. A creator can choose Codex or Claude Code and an available model, then ask the agent to inspect material, edit assets and assemble or revise a video.
 
 One local Node 24 application serves every channel from one SQLite database. A systemd user service supervises separate Docker app and request-scoped worker containers, and the `storybench` CLI manages installation and lifecycle. The browser is published only on loopback; there is no Storybench account or remote server.
 
-This is a single-creator private alpha. CachyOS is the primary operating environment; the supported platform contract is Linux with Docker and a systemd user manager. macOS, Windows, remote hosting and alternative service managers are not supported. Technical readiness is tested, but output quality and real-footage evaluation remain post-delivery work for the creator.
+Storybench is built with [Subfloor](https://github.com/jedbjorn/subfloor), an open-source meta-harness for running coding agents against a repository.
+
+Storybench is released under the [MIT License](LICENSE).
+
+This is a single-creator alpha, developed on CachyOS and open-source. The supported platform contract is Linux with Docker and a systemd user manager; macOS, Windows, remote hosting and alternative service managers are not supported. Technical readiness is tested, but output quality and real-footage evaluation remain post-delivery work for the creator.
 
 ## Requirements and diagnostics
 
 The host needs:
 
 - Node.js 24 or newer and npm, for the installer and CLI;
-- Git, with access to the private repository;
+- Git, to clone the repository and reuse the host credential helper for updates;
 - rootless Docker usable by the current user; `docker info --format '{{json .SecurityOptions}}'` must report `name=rootless`;
 - a working `systemctl --user` session and a writable, absolute `XDG_RUNTIME_DIR`;
 - at least 5 GiB free by default in the application store and Docker image store.
@@ -30,16 +37,16 @@ The release images package the production tools rather than relying on host copi
 | Media and extraction | FFmpeg/ffprobe (`7.1.5-0+deb13u1` in the verified image), Poppler, Python 3/Pillow and resvg from the image's Debian base |
 | Fonts | DejaVu, Noto Core and Liberation 2 |
 
-Every installed release records its exact image IDs, base-image identity and detected binary versions in its manifest and install receipt. `storybench version` reports release and schema identity; `storybench doctor` checks the host, XDG paths, private origin, unit, data root, images, packaged binaries, provider logins and live health.
+Every installed release records its exact image IDs, base-image identity and detected binary versions in its manifest and install receipt. `storybench version` reports release and schema identity; `storybench doctor` checks the host, XDG paths, origin access, unit, data root, images, packaged binaries, provider logins and live health.
 
 Storybench reuses the current host logins at `~/.codex/auth.json` and `~/.claude/.credentials.json`. Sign in on the host with `codex login` and by running `claude`. Only the selected login material is staged for a worker; it is not baked into images or release metadata. The host login is the live authority: if its usable token is absent, that harness is unavailable, with no cached credential, alternate harness or model fallback. A provider warning does not prevent use of the editor.
 
 ## Install
 
-Clone a clean checkout of the private repository, then run the bootstrap from its root. Replace `PRIVATE_REPOSITORY_URL` with the URL available to your account.
+Clone the repository, then run the bootstrap from its root.
 
 ```sh
-git clone PRIVATE_REPOSITORY_URL /tmp/storybench-src
+git clone https://github.com/jedbjorn/storybench /tmp/storybench-src
 cd /tmp/storybench-src
 ./install.sh
 ```
@@ -124,7 +131,7 @@ This reference is checked against the CLI help. Run `storybench help COMMAND`, `
 | `storybench logs [-f]` | Read or follow this unit's lifecycle and forwarded app/worker diagnostics. |
 | `storybench doctor` | Run read-only installation, runtime, data and provider-readiness checks. |
 | `storybench backup` | Back up shared SQLite metadata and configuration; media is excluded. |
-| `storybench update [--check \| --force]` | Compare or activate the recorded private origin/ref; force only bypasses the active-work gate. |
+| `storybench update [--check \| --force]` | Compare or activate the recorded origin/ref; force only bypasses the active-work gate. |
 | `storybench rollback` | Activate the previous retained release only when its schema range is compatible. |
 | `storybench uninstall [--yes]` | Remove the installed application while preserving user data and login state. |
 | `storybench help [COMMAND [SUBCOMMAND]]` | Show general or command-specific help. |
@@ -154,7 +161,7 @@ The data root contains one authoritative `storybench.sqlite` plus managed channe
 
 ## Updates, backups and recovery
 
-Check the recorded private origin/ref without changing the installed release or data:
+Check the recorded origin/ref without changing the installed release or data:
 
 ```sh
 storybench update --check
@@ -210,7 +217,7 @@ Lifecycle failures do not implicitly create storage, switch channels, delete med
 
 ## Current limitations
 
-- The repository and installation flow are private; there are no public packages, images, badges, `curl | sh` installer or release-hosting promises.
+- The repository is public and MIT-licensed. There are still no published packages, images, badges, `curl | sh` installer or release-hosting promises — install from a clone as described above.
 - Support is limited to a single local Linux creator account with Docker and `systemd --user`. There is no LAN binding, multi-user tenancy, remote host, app authentication or automatic login startup.
 - All channels share one SQLite database and one service. Portable self-contained channels, arbitrary workspace merging, generic channel import/export and channel deletion are not delivered.
 - Codex and Claude Code are the supported production harnesses. Available models and effort controls depend on the installed harness and account; failed discovery or access is reported without substitution.
