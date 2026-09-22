@@ -364,6 +364,12 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
             notify(episodeId);
             return send(res, 200, value);
           }
+          if (parts[4] && parts.length === 5 && req.method === "DELETE") {
+            const body = await jsonBody(req);
+            const value = store.deleteLibraryItem(episodeId, parts[4], body.expectedRevision, body.expectedEpisodeRevision);
+            notify(episodeId);
+            return send(res, 200, value);
+          }
           if (parts[4] && parts[5] === "file" && parts.length === 6 && ["GET", "HEAD"].includes(req.method)) {
             const item = store.getLibraryItem(episodeId, parts[4]);
             if (!item) throw new StoreError("Library item not found", 404);
