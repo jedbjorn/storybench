@@ -53,6 +53,7 @@ test("every production shortcut creates one visible server-scoped button request
   for (const [kind, targetCardId, prompt] of cases) {
     const result = await chat.sendProduction(episode.id, conversation.id, { kind, targetCardId, prompt, clientRequestId: crypto.randomUUID() });
     assert.equal(result.requestResult.created, true);
+    assert.ok(result.requestResult.run?.id, "the accepted response includes a persisted request receipt");
     if (kind === "final") assert.equal(result.requestResult.run.finalIntent, "active", "the Final button binds intent before dispatch");
     await until(() => !chat.busyReason(episode.id));
     const run = store.getProductionRun(result.requestResult.run.id);

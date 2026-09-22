@@ -437,7 +437,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           if (conversationId && parts.length === 5 && req.method === "GET") return send(res, 200, chat.get(episodeId, conversationId));
           if (conversationId && parts.length === 5 && req.method === "PUT") return send(res, 200, chat.update(episodeId, conversationId, await jsonBody(req)));
           if (conversationId && parts[5] === "messages" && req.method === "POST") {
-            const body = await jsonBody(req); return send(res, 202, await chat.send(episodeId, conversationId, body.text));
+            const body = await jsonBody(req); return send(res, 202, await chat.send(episodeId, conversationId, body.text ?? "", body.attachmentIds ?? []));
           }
           if (conversationId && parts[5] === "production-requests" && parts.length === 6 && req.method === "POST")
             return send(res, 202, await chat.sendProduction(episodeId, conversationId, await jsonBody(req)));

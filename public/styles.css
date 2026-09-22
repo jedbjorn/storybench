@@ -92,7 +92,7 @@ header {
 main {
   height: calc(100vh - 66px);
   display: grid;
-  grid-template-columns: 210px minmax(520px, 1fr) clamp(420px, 32vw, 560px);
+  grid-template-columns: var(--episode-rail-width, 210px) minmax(0, 1fr) clamp(360px, 27vw, 440px);
 }
 aside {
   background: #fff;
@@ -428,7 +428,7 @@ h2 {
   border-left: 1px solid var(--line);
   position: relative;
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
   display: flex;
   flex-direction: column;
 }
@@ -484,21 +484,22 @@ h2 {
 }
 .chat-history-backdrop {
   position: absolute;
-  inset: 0;
+  inset: 0 100% 0 auto;
+  width: calc(100vw - 100%);
   z-index: 3;
-  background: #17282233;
+  background: #17282222;
 }
 .chat-history-backdrop[hidden], .chat-history-drawer[hidden] { display: none; }
 .chat-history-drawer {
   position: absolute;
   z-index: 4;
-  inset: 0 auto 0 0;
-  width: min(270px, calc(100% - 54px));
+  inset: 0 100% 0 auto;
+  width: 240px;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--line);
   background: #fff;
-  box-shadow: 10px 0 28px #17282226;
+  box-shadow: -10px 0 28px #17282218;
 }
 .chat-history-heading {
   min-height: 58px;
@@ -744,4 +745,69 @@ header .page-nav { display: flex; align-self: stretch; align-items: center; gap:
   .settings-page { padding: 20px 16px; }
   .standards-grid { grid-template-columns: 1fr; }
   .settings-card { padding: 18px; }
+}
+
+/* Shared control chrome */
+.sb-select { position: relative; display: inline-grid; min-width: 0; max-width: 100%; vertical-align: middle; }
+.sb-select-trigger { width: 100%; min-width: 0; min-height: 34px; padding: 7px 30px 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); font: inherit; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-select::after { content: ''; position: absolute; right: 12px; top: calc(50% - 4px); width: 6px; height: 6px; border-right: 1.5px solid var(--deep); border-bottom: 1.5px solid var(--deep); transform: rotate(45deg); pointer-events: none; }
+.sb-select-trigger:hover { border-color: #aeb7b2; }
+.sb-select-trigger:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sb-select-trigger[aria-expanded=true] { border-color: var(--deep); }
+select.sb-select-native { position: absolute; width: 1px !important; height: 1px !important; min-width: 0 !important; padding: 0 !important; border: 0; opacity: 0; pointer-events: none; }
+.sb-select-menu { position: fixed; z-index: 1000; overflow: auto; overscroll-behavior: contain; padding: 5px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); box-shadow: 0 8px 28px #173d391f; font: 13px/1.4 Inter, ui-sans-serif, system-ui; color: var(--ink); }
+.sb-select-menu [role=option] { padding: 8px 28px 8px 9px; border-radius: 6px; cursor: pointer; position: relative; overflow-wrap: anywhere; }
+.sb-select-menu [aria-selected=true] { background: var(--pale); color: var(--deep); font-weight: 600; }
+.sb-select-menu [aria-selected=true]::after { content: '✓'; position: absolute; right: 9px; }
+.sb-select-menu [role=option]:hover, .sb-select-menu .active { background: var(--pale); outline: 1px solid #b8ccc3; outline-offset: -1px; }
+.sb-select-menu [aria-disabled=true] { opacity: .45; cursor: default; }
+.sb-select-empty { padding: 8px; color: var(--muted); }
+label > .sb-select, .episode-filter .sb-select { width: 100%; }
+.card-primary > .sb-select { width: 100%; }
+.episode-row > .sb-select { width: 28px; }
+.episode-row > .sb-select .sb-select-trigger { color: transparent; padding: 4px; }
+.reference-add-tile .sb-select { width: 100%; }
+.chat-settings .sb-select-trigger { font-size: 12px; padding: 7px 30px 7px 10px; }
+.episode-rail { position: relative; }
+#episodeRailToggle { position: absolute; top: 5px; right: 5px; z-index: 1; width: 26px; height: 26px; padding: 0; border-color: transparent; color: var(--deep); font-size: 22px; }
+.episode-rail .aside-head { padding-top: 34px; }
+#episodesPage.episodes-collapsed { --episode-rail-width: 38px; }
+.episodes-collapsed #episodeRailContent { display: none; }
+.workspace { min-width: 0; }
+.chat-toolbar { flex-wrap: wrap; }
+.chat-identity { flex: 1; }
+.chat-selection { max-width: 100%; }
+@media (max-width: 1100px) {
+  #episodesPage { display: grid; grid-template-columns: var(--episode-rail-width, 180px) minmax(0, 1fr); height: auto; min-height: calc(100vh - 66px); }
+  #episodesPage > .chat { display: flex; grid-column: 2; min-height: 480px; height: 65vh; border-top: 1px solid var(--line); }
+  .episode-rail { grid-row: 1 / span 2; }
+  .chat-history-drawer { width: min(240px, calc(100vw - 48px)); inset: 0 auto 0 0; }
+  .chat-history-backdrop { inset: 0; width: auto; }
+}
+@media (max-width: 700px) {
+  #episodesPage { grid-template-columns: var(--episode-rail-width, 150px) minmax(0, 1fr); }
+  #episodesPage > .episode-rail { display: block; }
+  .episode-rail .privacy { display: none; }
+  .workspace { padding: 12px; }
+  .tabs { display: flex; overflow-x: auto; }
+  .tabs button { flex: none; padding: 10px; }
+  .card-primary > * { min-width: 0; }
+}
+.chat-attachments, .chat-upload-status { grid-column: 1 / -1; }
+.chat-attachments:empty, .chat-upload-status:empty { display: none; }
+.chat-attachments { display: flex; flex-wrap: wrap; gap: 8px; max-height: 180px; overflow: auto; }
+.chat-attachment { position: relative; width: 90px; padding: 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); font-size: 10px; }
+.chat-attachment img { width: 100%; height: 64px; object-fit: contain; display: block; border-radius: 4px; }
+.chat-attachment span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-attachment button { position: absolute; top: 1px; right: 1px; padding: 0; width: 22px; height: 22px; border-radius: 50%; }
+.chat-attachment.uploading { width: auto; max-width: 100%; color: var(--muted); }
+.chat-upload-status { font-size: 12px; color: #a43b29; }
+.chat-composer.drag-over { background: var(--pale); outline: 2px dashed var(--deep); outline-offset: -4px; }
+.chat-image-link { display: block; margin-top: 6px; }
+.chat-image-link img { display: block; max-width: 100%; max-height: 220px; border-radius: 6px; }
+
+@container (max-width: 480px) {
+  .card-primary { grid-template-columns: minmax(0, 1fr); }
+  .card-primary > * { width: 100%; min-width: 0; }
+  .timing { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

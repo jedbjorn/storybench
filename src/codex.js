@@ -193,11 +193,11 @@ export class CodexConnection {
     return threadId;
   }
 
-  async startTurn(threadId, text) {
+  async startTurn(threadId, text, images = []) {
     this.startingEvents = [];
     try {
       const result = await this.request('turn/start', {
-        threadId, input: [{ type: 'text', text }], cwd: this.cwd,
+        threadId, input: [{ type: 'text', text }, ...images.map((image) => ({ type: 'image', url: `data:${image.mimeType};base64,${image.data}` }))], cwd: this.cwd,
         clientUserMessageId: crypto.randomUUID(), approvalPolicy: 'never',
         sandboxPolicy: { type: 'readOnly', networkAccess: false }
       }, { uncertain: true });
