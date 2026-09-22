@@ -3,7 +3,7 @@ import { installWorkspaceChrome } from "/workspace-chrome.js";
 import { SettingsPages } from "/settings-pages.js";
 import { StoryEditor } from "/story-editor.js?v=round2-editor";
 import { LibraryWorkspace, episodeNavigatorHTML, uploadLibraryFile } from "/library-workspace.js";
-import { attachMediaToCard, categoryForCardMedia, duplicateCard, setCardType } from "/card-workspace.js";
+import { attachMediaToCard, categoryForCardMedia, setCardType } from "/card-workspace.js";
 import { linkReference, referencePanelHTML, unlinkReference } from "/reference-workspace.js";
 import { ChatWorkspace } from "/chat-workspace.js";
 import { formatBytes, jobsForOutputView, refreshJobStatus, releasePlayer, renderJobList } from "/job-status.js";
@@ -23,7 +23,9 @@ let state = { episodes: [], assets: [], jobs: [] },
   boardSections = [],
   boardItems = [],
   boardItemsEpisode = null,
-  cardImports = new Set();
+  cardImports = new Set(),
+  collapsedCardIds = new Set(),
+  cardCollapseEpisode = null;
 // The channel this view is showing. It is captured once (from ?channel= or the default at first load) and sent
 // with every request, so changing the installation default elsewhere never retargets this open view.
 let channelId = new URLSearchParams(location.search).get("channel") || null;
@@ -128,7 +130,7 @@ const storyEditor = new StoryEditor({
   toast,
   onSaved: () => refreshJobs().catch((error) => toast(error.message)),
 });
-const libraryWorkspace = new LibraryWorkspace({ api, toast, getEpisode: () => episode, refreshState: () => load(episode?.id), onMutation: () => refreshJobs().catch((error) => toast(error.message)) });
+const libraryWorkspace = new LibraryWorkspace({ api, toast, getEpisode: () => episode, refreshState: () => load(episode?.id), beforeDelete: flushDraft, onMutation: () => refreshJobs().catch((error) => toast(error.message)) });
 const chatWorkspace = new ChatWorkspace({ root: $("#chatWorkspace"), api, toast, getEpisode: () => episode, onBusyChange: setProductionBusy });
 async function syncChat() {
   if (episode?.id === chatWorkspace.episodeId) return;
@@ -158,6 +160,10 @@ async function askAssistant(kind, { targetCardId = null, prompt = "" } = {}) {
 const cardTypes = ["Video/Audio", "Video", "Audio", "Static Graphic", "Video Graphic"];
 function renderCards() {
   if (!episode) return;
+  if (cardCollapseEpisode !== episode.id) {
+    collapsedCardIds.clear();
+    cardCollapseEpisode = episode.id;
+  }
   const groups = [...boardSections.map((section) => ({ id: section.id, title: section.title })), { id: "", title: "Unassigned planning" }];
   $("#cards").innerHTML = groups.map((group) => {
     const cards = episode.cards.map((card, index) => ({ card, index })).filter(({ card }) => (card.sectionId || "") === group.id).sort((a, b) => (a.card.order || 0) - (b.card.order || 0));
@@ -213,7 +219,8 @@ function preview(card) {
 }
 function cardHTML(c, i) {
   const visualCards = episode.cards.filter((value) => value.id !== c.id && value.type !== "Audio");
-  return `<article class="story-card typed-card" data-index="${i}" data-card-id="${c.id}"><div class="drag" draggable="true" title="Drag to move card">⋮⋮</div><div class="card-main"><div class="card-primary"><select data-key="type">${cardTypes.map((type) => `<option ${type === c.type ? "selected" : ""}>${type}</option>`).join("")}</select><input class="card-title" data-key="title" value="${esc(c.title)}" placeholder="Card title"><select data-key="sectionId">${sectionOptions(c)}</select></div><textarea data-key="prompt" placeholder="What should this card accomplish?">${esc(c.prompt)}</textarea><div class="card-media-workspace">${preview(c)}${referencePanelHTML({ scope: "card", cardId: c.id, episodeId: episode.id, prompt: c.referencePrompt || "", itemIds: c.referenceItemIds || [], items: libraryForPanels() })}</div><button type="button" data-card-build aria-label="Ask the assistant to ${c.itemId ? "revise" : "build"} the output for ${esc(c.title || "this card")}">${c.itemId ? "Revise" : "Build"} with assistant</button><div class="card-media-controls"><label>Output media (footage)<select data-key="itemId">${itemOptions(c)}</select></label><div class="card-media-dropzone" data-card-media-drop tabindex="0">Drop footage/output media here or <button type="button" data-card-media-pick>choose a file</button><input data-card-media-file type="file" hidden></div></div><div class="card-media-status" data-card-media-status aria-live="polite"></div><details><summary>Timing and notes</summary><div class="timing"><label><span>In</span><input data-key="in" type="number" min="0" step=".033" value="${c.in ?? ""}"></label><label><span>Out</span><input data-key="out" type="number" min="0" step=".033" value="${c.out ?? ""}"></label><label><span>Duration</span><input data-key="duration" type="number" min=".033" step=".033" value="${c.duration ?? ""}"></label><label><span>Gain</span><input data-key="gain" type="number" min="0" max="8" step=".1" value="${c.gain ?? 1}"></label></div>${c.type === "Audio" ? `<div class="timing"><label>Role<select data-key="role">${["voiceover", "music", "sound effect", "other"].map((role) => `<option ${role === c.role ? "selected" : ""}>${role}</option>`).join("")}</select></label><label>Anchor<select data-key="anchorVisualCardId"><option value="">Choose visual</option>${visualCards.map((card) => `<option value="${card.id}" ${card.id === c.anchorVisualCardId ? "selected" : ""}>${esc(card.title)}</option>`).join("")}</select></label><label>Offset<input data-key="offset" type="number" min="0" step=".033" value="${c.offset ?? 0}"></label></div>` : ""}<label>Notes<textarea data-key="notes">${esc(c.notes)}</textarea></label><label><input data-key="excluded" type="checkbox" ${c.excluded ? "checked" : ""}> Exclude from assembled cut</label></details></div><div class="card-tools"><button data-duplicate title="Duplicate card">⧉</button><button data-promote title="Promote to channel">☆</button><button data-move="-1" title="Move up">↑</button><button data-move="1" title="Move down">↓</button><button data-delete title="Delete">×</button></div></article>`;
+  const collapsed = collapsedCardIds.has(c.id);
+  return `<article class="story-card typed-card" data-index="${i}" data-card-id="${c.id}"><div class="card-move-tools"><div class="drag" draggable="true" title="Drag to move card">⋮⋮</div><button type="button" data-move="-1" aria-label="Move ${esc(c.title || "card")} up" title="Move up">↑</button><button type="button" data-move="1" aria-label="Move ${esc(c.title || "card")} down" title="Move down">↓</button></div><div class="card-body"><button type="button" class="card-collapse" data-card-collapse aria-expanded="${!collapsed}" aria-controls="card-content-${esc(c.id)}"><span aria-hidden="true">${collapsed ? "▸" : "▾"}</span><strong>${esc(c.title || "Untitled card")}</strong></button><div class="card-expanded" id="card-content-${esc(c.id)}" ${collapsed ? "hidden" : ""}><div class="card-expanded-actions"><button type="button" data-promote aria-label="Promote ${esc(c.title || "card")} to channel" title="Promote to channel">☆</button><button type="button" data-delete aria-label="Delete ${esc(c.title || "card")}" title="Delete card">×</button></div><div class="card-main"><div class="card-primary"><select data-key="type">${cardTypes.map((type) => `<option ${type === c.type ? "selected" : ""}>${type}</option>`).join("")}</select><input class="card-title" data-key="title" value="${esc(c.title)}" placeholder="Card title"><select data-key="sectionId">${sectionOptions(c)}</select></div><textarea data-key="prompt" placeholder="What should this card accomplish?">${esc(c.prompt)}</textarea><div class="card-media-workspace">${preview(c)}${referencePanelHTML({ scope: "card", cardId: c.id, episodeId: episode.id, prompt: c.referencePrompt || "", itemIds: c.referenceItemIds || [], items: libraryForPanels() })}</div><button type="button" data-card-build aria-label="Ask the assistant to ${c.itemId ? "revise" : "build"} the output for ${esc(c.title || "this card")}">${c.itemId ? "Revise" : "Build"} with assistant</button><div class="card-media-controls"><label>Output media (footage)<select data-key="itemId">${itemOptions(c)}</select></label><div class="card-media-dropzone" data-card-media-drop tabindex="0">Drop footage/output media here or <button type="button" data-card-media-pick>choose a file</button><input data-card-media-file type="file" hidden></div></div><div class="card-media-status" data-card-media-status aria-live="polite"></div><details><summary>Timing and notes</summary><div class="timing"><label><span>In</span><input data-key="in" type="number" min="0" step=".033" value="${c.in ?? ""}"></label><label><span>Out</span><input data-key="out" type="number" min="0" step=".033" value="${c.out ?? ""}"></label><label><span>Duration</span><input data-key="duration" type="number" min=".033" step=".033" value="${c.duration ?? ""}"></label><label><span>Gain</span><input data-key="gain" type="number" min="0" max="8" step=".1" value="${c.gain ?? 1}"></label></div>${c.type === "Audio" ? `<div class="timing"><label>Role<select data-key="role">${["voiceover", "music", "sound effect", "other"].map((role) => `<option ${role === c.role ? "selected" : ""}>${role}</option>`).join("")}</select></label><label>Anchor<select data-key="anchorVisualCardId"><option value="">Choose visual</option>${visualCards.map((card) => `<option value="${card.id}" ${card.id === c.anchorVisualCardId ? "selected" : ""}>${esc(card.title)}</option>`).join("")}</select></label><label>Offset<input data-key="offset" type="number" min="0" step=".033" value="${c.offset ?? 0}"></label></div>` : ""}<label>Notes<textarea data-key="notes">${esc(c.notes)}</textarea></label><label><input data-key="excluded" type="checkbox" ${c.excluded ? "checked" : ""}> Exclude from assembled cut</label></details></div></div></div></article>`;
 }
 async function loadBoardContext() {
   if (!episode) return;
@@ -531,10 +538,19 @@ $("#cards").onchange = (e) => {
 $("#cards").onclick = (e) => {
   const wrap = e.target.closest(".story-card");
   if (!wrap) return;
+  if (e.target.closest("[data-card-collapse]")) {
+    const collapsed = collapsedCardIds.has(wrap.dataset.cardId);
+    if (collapsed) collapsedCardIds.delete(wrap.dataset.cardId);
+    else collapsedCardIds.add(wrap.dataset.cardId);
+    const button = wrap.querySelector("[data-card-collapse]");
+    button.setAttribute("aria-expanded", String(collapsed));
+    button.querySelector("[aria-hidden]").textContent = collapsed ? "▾" : "▸";
+    wrap.querySelector(".card-expanded").hidden = !collapsed;
+    return;
+  }
   const i = Number(wrap.dataset.index);
   if (handleReferenceClick(e)) return;
   if (e.target.closest("[data-card-build]")) return askAssistant("card_build", { targetCardId: episode.cards[i].id }).catch((error) => toast(error.message));
-  if (e.target.closest("[data-duplicate]")) { duplicateCard(episode.cards, episode.cards[i].id, crypto.randomUUID()); dirty = true; return save(); }
   if (e.target.closest("[data-card-media-pick]")) return wrap.querySelector("[data-card-media-file]").click();
   if (e.target.closest("[data-promote]")) return openPromote(episode.cards[i]);
   if (e.target.closest("[data-delete]")) episode.cards.splice(i, 1);

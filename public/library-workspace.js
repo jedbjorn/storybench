@@ -45,11 +45,12 @@ export async function uploadLibraryFile({ episodeId, file, label = file.name, ca
 }
 
 export class LibraryWorkspace {
-  constructor({ api, toast, getEpisode, refreshState, onMutation = () => {} }) {
+  constructor({ api, toast, getEpisode, refreshState, beforeDelete = () => {}, onMutation = () => {} }) {
     this.api = api;
     this.toast = toast;
     this.getEpisode = getEpisode;
     this.refreshState = refreshState;
+    this.beforeDelete = beforeDelete;
     this.onMutation = onMutation;
     this.items = [];
     this.importQueue = Promise.resolve();
@@ -79,6 +80,8 @@ export class LibraryWorkspace {
     document.querySelector("#startLibraryFiles").onclick = () => this.startFiles();
     document.querySelector("#cancelLibraryFiles").onclick = () => this.cancelFiles();
     this.groups.onclick = (event) => {
+      const deleteId = event.target.closest("[data-library-delete]")?.dataset.libraryDelete;
+      if (deleteId) return this.deleteItem(deleteId);
       const id = event.target.closest("[data-library-edit]")?.dataset.libraryEdit;
       if (id) this.openEdit(id);
     };
@@ -119,7 +122,7 @@ export class LibraryWorkspace {
     else if (item.asset.kind === "video") preview = `<video src="${base}/file" preload="metadata" muted></video>`;
     else if (item.asset.kind === "audio") preview = `<audio src="${base}/file" controls preload="metadata"></audio>`;
     const extraction = item.category === "Reference" ? `<span class="extraction ${item.extractionStatus}">${esc(item.extractionStatus)}</span>` : "";
-    return `<article class="asset library-item" draggable="true" data-library-item="${item.id}">${preview}<div><b>${esc(item.label)}</b><span>${esc(item.asset.kind)} ${extraction}</span><div class="library-card-actions"><a href="${base}/file" target="_blank">Open</a><button data-library-edit="${item.id}">Edit</button></div></div></article>`;
+    return `<article class="asset library-item" draggable="true" data-library-item="${item.id}">${preview}<div><b>${esc(item.label)}</b><span>${esc(item.asset.kind)} ${extraction}</span><div class="library-card-actions"><a href="${base}/file" target="_blank">Open</a><div><button data-library-edit="${item.id}">Edit</button><button data-library-delete="${item.id}" aria-label="Delete ${esc(item.label)} from library">Delete</button></div></div></div></article>`;
   }
   queueFiles(files) {
     if (!files.length) return;
@@ -198,6 +201,23 @@ export class LibraryWorkspace {
       await this.api(`/api/episodes/${this.getEpisode().id}/library/${this.editing.id}`, { method: "PUT", body: JSON.stringify(body) });
       this.editModal.close(); await this.open(); await this.onMutation(); this.toast("Library item saved");
     } catch (error) { form.querySelector("[data-library-edit-error]").textContent = error.message; }
+  }
+  async deleteItem(id) {
+    const item = this.items.find((candidate) => candidate.id === id);
+    const episode = this.getEpisode();
+    if (!item || !episode || item.episodeId !== episode.id) return;
+    if (!window.confirm(`Delete “${item.label}” from this episode library? It will also be removed from any cards and references using it. This cannot be undone.`)) return;
+    try {
+      await this.beforeDelete();
+      const current = this.getEpisode();
+      if (current?.id !== episode.id) return;
+      await this.api(`/api/episodes/${episode.id}/library/${id}`, { method: "DELETE",
+        body: JSON.stringify({ expectedRevision: item.revision, expectedEpisodeRevision: current.revision }) });
+      await this.refreshState?.();
+      if (this.getEpisode()?.id === episode.id) await this.open();
+      await this.onMutation();
+      this.toast("Library item deleted");
+    } catch (error) { this.toast(error.message); }
   }
   async move(id, category) {
     const item = this.items.find((candidate) => candidate.id === id);

@@ -1462,6 +1462,37 @@ export class Store {
     if (!result.changes) throw new StoreError("Stale library revision", 409);
     return this.getLibraryItem(episodeId, itemId);
   }
+  deleteLibraryItem(episodeId, itemId, expectedRevision, expectedEpisodeRevision) {
+    const current = this.getLibraryItem(episodeId, itemId);
+    if (!current) throw new StoreError("Library item not found", 404);
+    if (!Number.isInteger(expectedRevision) || expectedRevision !== current.revision)
+      throw new StoreError(`Stale library revision: expected ${current.revision}`, 409, { current });
+    const episode = this.getEpisode(episodeId);
+    if (!Number.isInteger(expectedEpisodeRevision) || expectedEpisodeRevision !== episode.revision)
+      throw new StoreError(`Stale episode revision: expected ${episode.revision}`, 409);
+    const cards = episode.cards.map((card) => ({ ...card,
+      itemId: card.itemId === itemId ? null : card.itemId,
+      referenceItemIds: (card.referenceItemIds || []).filter((id) => id !== itemId),
+    }));
+    const referenceItemIds = episode.referenceItemIds.filter((id) => id !== itemId);
+    const updatedAt = now();
+    const updated = { ...episode, cards, referenceItemIds, revision: episode.revision + 1, updatedAt };
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const episodeChange = this.db.prepare(`UPDATE episodes SET cards=?,reference_item_ids=?,revision=?,updated_at=? WHERE id=? AND revision=?`)
+        .run(JSON.stringify(cards), JSON.stringify(referenceItemIds), updated.revision, updatedAt, episodeId, expectedEpisodeRevision);
+      if (!episodeChange.changes) throw new StoreError("Stale episode revision", 409);
+      this.insertHistory(updated, "human", updatedAt, episode.revision);
+      const itemChange = this.db.prepare("DELETE FROM library_items WHERE id=? AND episode_id=? AND revision=?")
+        .run(itemId, episodeId, expectedRevision);
+      if (!itemChange.changes) throw new StoreError("Stale library revision", 409);
+      this.db.exec("COMMIT");
+      return updated;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
   listBrandingTemplates({ channelId = null } = {}) {
     const rows = channelId
       ? this.db.prepare("SELECT * FROM branding_templates WHERE channel_id=? ORDER BY created_at,id").all(channelId)
