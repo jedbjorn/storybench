@@ -1,0 +1,1 @@
+export default [{ ignores: ['public/story-editor.js'] }, { files: ['**/*.{js,mjs}'], languageOptions: { ecmaVersion: 'latest', sourceType: 'module' }, rules: { 'no-unused-vars': ['warn', { args: 'none', caughtErrors: 'none', ignoreRestSiblings: true }], 'no-unreachable': 'warn', 'no-constant-condition': ['warn', { checkLoops: false }] } }];
