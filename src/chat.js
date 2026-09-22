@@ -1,3 +1,4 @@
+import { chatAttachments } from "./chat-attachments.js";
 import { fontCatalog } from './fonts.js';
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -46,6 +47,7 @@ function installSchema(db) {
 export function createChatService({ store, renders, onChange = () => {}, codexFactory = createCodexConnection, model = process.env.STORYBENCH_CODEX_MODEL, continuity = null, requestPersistence = null }) {
   const db = store.db;
   installSchema(db);
+  const attachments = chatAttachments(store);
   const restartStamp = now();
   // Unfinished turns from a previous process (crash, restart, reconciled worker) are marked
   // interrupted and never replayed.
@@ -66,14 +68,15 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     ...(value.error ? { error: value.error } : {}), createdAt: value.created_at, updatedAt: value.updated_at });
   const project = (episodeId, id) => {
     const value = row(episodeId, id);
+    const messageAttachments = attachments.messages(id);
     const persistence = continuity?.persistence ?? requestPersistence;
     const selection = persistence ? {
       ...(continuity ? { settings: persistence.getSettings(value.id) } : {}),
       segments: persistence.listSegments(value.id).map(({ id: segmentId, harness, nativeSessionId, reason, previousSegmentId, createdAt, endedAt }) => ({ id: segmentId, harness, nativeSessionId, reason, previousSegmentId, createdAt, endedAt })),
       runs: persistence.listRuns(value.id).slice(-20),
     } : {};
-    return { ...summary(value), ...selection,
-      messages: db.prepare("SELECT id,role,text,state,turn_id turnId,origin,created_at createdAt,updated_at updatedAt FROM conversation_messages WHERE conversation_id=? ORDER BY id").all(id),
+    return { ...summary(value), ...selection, draftAttachments: attachments.draft(id),
+      messages: db.prepare("SELECT id,role,text,state,turn_id turnId,origin,created_at createdAt,updated_at updatedAt FROM conversation_messages WHERE conversation_id=? ORDER BY id").all(id).map((message) => ({ ...message, attachments: messageAttachments.get(message.id) ?? [] })),
       events: db.prepare("SELECT sequence,type,payload,created_at createdAt FROM conversation_events WHERE conversation_id=? ORDER BY sequence").all(id)
         .map((event) => ({ ...event, conversationId: id, payload: parse(event.payload, {}) })) };
   };
@@ -122,9 +125,10 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     asset: item.asset && { id: item.asset.id, name: item.asset.name, kind: item.asset.kind, duration: item.asset.duration, width: item.asset.width, height: item.asset.height } }));
   // Bounded, labelled excerpt of the visible transcript for a fresh native segment.
   const transcriptExcerpt = (conversationId, beforeMessageId, { messages = 12, chars = 6000 } = {}) => {
-    const rows = db.prepare("SELECT role,text FROM conversation_messages WHERE conversation_id=? AND id<? AND text<>'' ORDER BY id DESC LIMIT ?").all(conversationId, beforeMessageId, messages).reverse();
+    const rows = db.prepare("SELECT id,role,text FROM conversation_messages WHERE conversation_id=? AND id<? AND (text<>'' OR role='user') ORDER BY id DESC LIMIT ?").all(conversationId, beforeMessageId, messages).reverse();
     const total = Number(db.prepare("SELECT COUNT(*) n FROM conversation_messages WHERE conversation_id=? AND id<?").get(conversationId, beforeMessageId).n);
-    let text = rows.map((message) => `${message.role}: ${message.text}`).join("\n");
+    const manifests = attachments.messages(conversationId);
+    let text = rows.map((message) => `${message.role}: ${message.text}${manifests.has(message.id) ? `\nAttached images (inspect_image by itemId): ${JSON.stringify(manifests.get(message.id))}` : ""}`).join("\n");
     if (text.length > chars) text = `…${text.slice(-chars)}`;
     return { text, included: rows.length, omitted: Math.max(0, total - rows.length) };
   };
@@ -136,8 +140,8 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     get_operation_guide: ({ name }) => getOperationGuide(name),
     read_conversation_history: ({ beforeMessageId = null, limit = 20 } = {}) => {
       const size = Math.min(Math.max(Number(limit) || 20, 1), 100);
-      const rows = db.prepare("SELECT id,role,text,created_at createdAt FROM conversation_messages WHERE conversation_id=? AND (? IS NULL OR id<?) AND text<>'' ORDER BY id DESC LIMIT ?").all(value.id, beforeMessageId, beforeMessageId, size).reverse();
-      return { messages: rows.map((message) => ({ ...message, text: message.text.slice(0, 4000) })), note: "Earlier visible messages, for context only; do not re-execute them." };
+      const rows = db.prepare("SELECT id,role,text,created_at createdAt FROM conversation_messages WHERE conversation_id=? AND (? IS NULL OR id<?) AND (text<>'' OR role='user') ORDER BY id DESC LIMIT ?").all(value.id, beforeMessageId, beforeMessageId, size).reverse();
+      return { messages: rows.map((message) => ({ ...message, text: message.text.slice(0, 4000), attachments: attachments.messages(value.id).get(message.id) ?? [] })), note: "Earlier visible messages, for context only; do not re-execute them." };
     },
     read_reference_excerpt: ({ itemId, offset, limit }) => excerpt(value.episode_id, itemId, offset, limit),
     update_story: ({ expectedStoryRevision, source }) => { ensureActive(value, origin); return store.saveStory(value.episode_id, expectedStoryRevision, source, "agent"); },
@@ -188,6 +192,8 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
 
   async function execute(value, messageId, text, request = {}) {
     let connection, turnId, assistantId, terminal = false, dispatch = false, aborted = false, assistantOutput = false, toolActivity = false, resolveDone, rejectDone;
+    const attached = attachments.messages(value.id).get(messageId) ?? [];
+    const imageContext = attached.length ? `\n\nImages attached to this message, in order: ${JSON.stringify(attached)}. The image content accompanies this turn. These are creator-provided context; direct use/edit follows the creator’s instruction. You can revisit them with inspect_image using their itemId.` : "";
     const requestId = request.id ?? `request_${randomUUID()}`;
     const persistence = continuity?.persistence ?? requestPersistence;
     let plan = null, segment = null;
@@ -196,7 +202,8 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       if ((request.origin ?? "typed") !== "typed") return;
       // Do not replace text the creator entered after dispatch. Button requests use their
       // explicit Retry action and must likewise leave an existing composer draft untouched.
-      db.prepare("UPDATE conversations SET draft=?,updated_at=? WHERE id=? AND draft=''").run(text, now(), value.id);
+      const restored = db.prepare("UPDATE conversations SET draft=?,updated_at=? WHERE id=? AND draft=''").run(text, now(), value.id);
+      if (restored.changes && attached.length && !attachments.draft(value.id).length) emit(value, "draft.attachments", { attachments: attached });
     };
     const controller = new AbortController(), pending = [], done = new Promise((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
     const activity = { brandStandards: store.getBrandStandards(episode(value.episode_id).channelId), conversationId: value.id, requestId, messageId, signal: controller.signal, abort: () => { aborted = true; controller.abort(); if (dispatch) rejectDone(error("Chat stopped; the prompt was not replayed", 409)); } };
@@ -247,6 +254,9 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
           modelSelected: plan.selection.model, effortSelected: plan.selection.effort, state: "starting", startedAt: now(), kind: request.kind ?? "chat", origin: request.origin ?? "typed",
           clientRequestId: request.clientRequestId ?? null, targetCardId: request.targetCardId ?? null, successorOf: request.successorOf ?? null });
       }
+      // Dispatch returns the persisted request receipt; create it before any async preparation.
+      const images = await attachments.images(value.episode_id, attached);
+      if (aborted) throw error("Chat stopped before sending images", 409);
       const openConnection = (segmentId) => codexFactory({ cwd: store.workspace, model: plan ? plan.selection.model : model, tools: tools(value, activity), signal: controller.signal,
         episodeId: value.episode_id, conversationId: value.id, requestId, request: { text, messageId: request.authorityMessageId ?? messageId, kind: request.kind ?? "chat", cardId: request.targetCardId ?? null },
         // Every Storybench tool call of a worker-backed turn arrives through the request bridge.
@@ -294,9 +304,9 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
         emit(value, "segment.started", { previousThreadId: connection.segmentTransition.previousThreadId, threadId, reason: connection.segmentTransition.reason, includedMessages: excerpt.included, omittedMessages: excerpt.omitted });
         if (excerpt.text) segmentContext = `\n\nEarlier visible conversation (context only — do not re-execute; ${excerpt.omitted} older messages omitted):\n${excerpt.text}`;
       }
-      let prompt = `${bootText(value, activity.brandStandards)}${segmentContext}\n\nUser request:\n${text}`;
+      let prompt = `${bootText(value, activity.brandStandards)}${segmentContext}\n\nUser request:\n${text}${imageContext}`;
       let returned;
-      try { returned = await connection.startTurn(threadId, prompt); }
+      try { returned = await connection.startTurn(threadId, prompt, images); }
       catch (cause) {
         if (!persistence || !connection.segmentTransition?.resumeUnavailable) throw cause;
         // Claude discovers a missing --resume target only after receiving the first input.
@@ -315,9 +325,9 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
         emit(value, "segment.started", { segmentId: segment.id, harness: plan.selection.harness, reason: "resume-unavailable", previousSegmentId: previousSegment.id,
           previousThreadId: previousConnection.segmentTransition.previousThreadId, threadId, includedMessages: excerpt.included, omittedMessages: excerpt.omitted });
         const fallbackContext = excerpt.text ? `\n\nEarlier visible conversation (context only — do not re-execute; ${excerpt.omitted} older messages omitted):\n${excerpt.text}` : "";
-        prompt = `${bootText(value, activity.brandStandards)}${fallbackContext}\n\nUser request:\n${text}`;
+        prompt = `${bootText(value, activity.brandStandards)}${fallbackContext}\n\nUser request:\n${text}${imageContext}`;
         setState(value, "queued", { threadId });
-        returned = await connection.startTurn(threadId, prompt);
+        returned = await connection.startTurn(threadId, prompt, images);
       }
       if (aborted || active.get(value.episode_id) !== activity) throw error("Chat stopped; the prompt was not replayed", 409);
       if (turnId && turnId !== returned) throw new Error("The harness returned inconsistent turn identities");
@@ -336,16 +346,19 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     } finally { if (active.get(value.episode_id) === activity) active.delete(value.episode_id); connection?.close(); }
   }
 
-  const send = async (episodeId, id, text) => {
+  const send = async (episodeId, id, text, attachmentIds = []) => {
     const value = row(episodeId, id);
     if (active.has(episodeId) || db.prepare("SELECT 1 FROM conversations WHERE episode_id=? AND state IN ('queued','running','interrupting')").get(episodeId)) throw error("A turn is already active for this episode", 409);
-    if (typeof text !== "string" || !text.trim()) throw error("Chat message must not be blank");
+    const attached = attachments.validate(episodeId, attachmentIds);
+    if (typeof text !== "string" || (!text.trim() && !attached.length)) throw error("Chat message must not be blank");
     // One active production request per conversation (the store does not refuse a second 'starting' run).
     if ((continuity?.persistence ?? requestPersistence)?.activeRuns?.(id).length) throw error("A request is already running in this conversation; let it finish or press Stop", 409);
     // Typed messages are ordinary chat requests. Only app-owned shortcuts assign a production kind;
     // typed Final intent is recognized and bound explicitly by the Final request service.
     const normalized = text.trim();
     const stamp = now(), messageId = store.addConversationMessage({ conversationId: id, role: "user", text: normalized, state: "queued" }).id;
+    if (attached.length) emit(value, "message.attachments", { messageId, attachments: attached });
+    if (attachments.draft(id).length) emit(value, "draft.attachments", { attachments: [] });
     db.prepare("UPDATE conversations SET draft='',state='queued',error=NULL,updated_at=? WHERE id=?").run(stamp, id); emit(value, "status", { state: "queued" });
     const task = execute(value, messageId, normalized, { kind: "chat", origin: "typed" }); tasks.add(task); task.finally(() => tasks.delete(task)); return project(episodeId, id);
   };
@@ -416,6 +429,8 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       if (db.isTransaction) db.exec("ROLLBACK");
       throw cause;
     }
+    const previousAttachments = attachments.messages(id).get(previous.originatingMessageId) ?? [];
+    if (previousAttachments.length) emit(value, "message.attachments", { messageId: message.id, attachments: previousAttachments });
     const authorityMessageId = root.origin === "typed" ? root.originatingMessageId : null;
     const result = dispatch(value, message.id, old.text, { id: created.run.id, kind: created.run.kind, origin: "button", targetCardId: created.run.targetCardId,
       existingRun: true, successorOf: runId, authorityMessageId });
@@ -470,12 +485,19 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     }
     return { ...project(episodeId, id), settingsResult: { changed: result.changed, duplicate: result.duplicate, notes: result.notes, advisory: Boolean(result.advisory) } };
   };
-  const update = (episodeId, id, patch) => { const value = row(episodeId, id), name = patch.name === undefined ? value.name : String(patch.name).trim(), draft = patch.draft === undefined ? value.draft : String(patch.draft); if (!name) throw error("Conversation name is required"); db.prepare("UPDATE conversations SET name=?,draft=?,updated_at=? WHERE id=?").run(name, draft, now(), id); return project(episodeId, id); };
+  const update = (episodeId, id, patch) => {
+    const value = row(episodeId, id), name = patch.name === undefined ? value.name : String(patch.name).trim(), draft = patch.draft === undefined ? value.draft : String(patch.draft);
+    if (!name) throw error("Conversation name is required");
+    const attached = patch.attachmentIds === undefined ? null : attachments.validate(episodeId, patch.attachmentIds);
+    db.prepare("UPDATE conversations SET name=?,draft=?,updated_at=? WHERE id=?").run(name, draft, now(), id);
+    if (attached) emit(value, "draft.attachments", { attachments: attached });
+    return project(episodeId, id);
+  };
   return {
     list: (episodeId) => { episode(episodeId); return db.prepare("SELECT * FROM conversations WHERE episode_id=? ORDER BY created_at,id").all(episodeId).map((value) => ({ ...summary(value), ...(continuity ? { settings: continuity.persistence.getSettings(value.id) } : {}) })); }, create,
     updateSettings, busyReason,
     get: (episodeId, id) => project(episodeId, id || first(episodeId).id), update,
-    send: (episodeId, id, text) => text === undefined ? send(episodeId, first(episodeId).id, id) : send(episodeId, id, text),
+    send: (episodeId, id, text, attachmentIds = []) => text === undefined ? send(episodeId, first(episodeId).id, id, attachmentIds) : send(episodeId, id, text, attachmentIds),
     sendProduction, retry,
     interrupt: (episodeId, id) => interrupt(episodeId, id || first(episodeId).id),
     getLegacy: (episodeId) => project(episodeId, first(episodeId).id), sendLegacy: (episodeId, text) => send(episodeId, first(episodeId).id, text), interruptLegacy: (episodeId) => interrupt(episodeId, first(episodeId).id),

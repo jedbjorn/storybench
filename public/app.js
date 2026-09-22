@@ -1,3 +1,5 @@
+import { installSelectControls } from "/select-control.js";
+import { installWorkspaceChrome } from "/workspace-chrome.js";
 import { SettingsPages } from "/settings-pages.js";
 import { StoryEditor } from "/story-editor.js?v=round2-editor";
 import { LibraryWorkspace, episodeNavigatorHTML, uploadLibraryFile } from "/library-workspace.js";
@@ -6,6 +8,9 @@ import { linkReference, referencePanelHTML, unlinkReference } from "/reference-w
 import { ChatWorkspace } from "/chat-workspace.js";
 import { formatBytes, jobsForOutputView, refreshJobStatus, releasePlayer, renderJobList } from "/job-status.js";
 import { cleanupRowsHTML, selectedTotal, toggleSelection } from "/draft-cleanup.js";
+
+installSelectControls();
+installWorkspaceChrome();
 
 const $ = (s) => document.querySelector(s);
 let state = { episodes: [], assets: [], jobs: [] },

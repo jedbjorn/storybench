@@ -21,7 +21,9 @@
       <div id="saveState" class="pill" role="status">Ready</div>
     </header>
     <main id="episodesPage">
-      <aside>
+      <aside class="episode-rail">
+        <button id="episodeRailToggle" type="button" aria-controls="episodeRailContent" aria-expanded="true" aria-label="Collapse Episodes">‹</button>
+        <div id="episodeRailContent">
         <div class="aside-head">
           <span>Episodes</span><button id="newEpisode" class="icon">＋</button>
         </div>
@@ -31,6 +33,7 @@
         <div class="privacy">
           <b>Private workspace</b
           ><span>Media stays in your selected local folder.</span>
+        </div>
         </div>
       </aside>
       <section class="workspace">
