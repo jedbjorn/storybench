@@ -5,6 +5,7 @@ import path from "node:path";
 import { inspectDataRoot } from "../services/data-root.js";
 import { readCredential } from "../runtime/credentials.js";
 import { readReleaseManifest } from "../runtime/manifest.js";
+import { checkImage } from "../runtime/image-verification.js";
 import { readConfig } from "./config.js";
 import { EXIT } from "./errors.js";
 import { readInstallReceipt } from "./install.js";
@@ -95,12 +96,10 @@ export async function runDoctor(context) {
         const inspect = await run("docker", ["image", "inspect", expected, "--format", "{{.Id}}"], { timeoutMs: 30_000, env: context.env });
         report(inspect.code === 0 && inspect.stdout.trim() === expected ? "PASS" : "FAIL", `${role} image`, inspect.code === 0 ? expected : "exact image is missing");
         if (inspect.code === 0) {
-          const script = role === "worker"
-            ? "node --version; ffmpeg -version | head -1; ffprobe -version | head -1; codex --version; claude --version"
-            : "node --version; ffmpeg -version | head -1; ffprobe -version | head -1";
-          const probe = await run("docker", ["run", "--rm", "--network", "none", expected, "sh", "-c", script], { timeoutMs: 120_000, env: context.env });
-          report(probe.code === 0 && /^v(2[4-9]|[3-9]\d)\./.test(probe.stdout) ? "PASS" : "FAIL", `${role} packaged tools`,
-            probe.code === 0 ? probe.stdout.trim().split("\n").join(", ") : `probe failed (${oneLine(probe.stderr) || `exit ${probe.code}`})`);
+          try {
+            const tools = await checkImage(run, expected, role, "probe", { env: context.env });
+            report("PASS", `${role} packaged tools`, Object.entries(tools).map(([name, version]) => `${name} ${version}`).join(", "));
+          } catch (error) { report("FAIL", `${role} packaged tools`, error.message); }
         }
       }
     }

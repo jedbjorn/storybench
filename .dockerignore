@@ -5,5 +5,8 @@
 !src/
 !public/
 !agent/
+!docker/
+docker/*
+!docker/harness/
 # Proof-only tooling never ships in release images.
 src/runtime/slice-proof-driver.js
