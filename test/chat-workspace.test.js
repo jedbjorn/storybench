@@ -170,3 +170,30 @@ test("Enter sends, Shift+Enter keeps a newline, and × interrupts the active cha
   assert.ok(calls.some((call) => call.url.endsWith("/interrupt") && call.method === "POST"));
   workspace.close();
 });
+
+test('late image uploads persist only to the captured conversation and failures preserve the draft', async (t) => {
+  const { dom, root } = page(); t.after(() => dom.window.close());
+  let episode = { id: 'one' }, finishUpload; const writes = [];
+  const api = async (url, options = {}) => {
+    if (options.method === 'PUT') { writes.push({ url, body: JSON.parse(options.body) }); return {}; }
+    if (url.endsWith('/messages')) throw new Error('Send failed');
+    const id = url.includes('/one/') ? 'one-chat' : 'two-chat';
+    return url.endsWith('/chats') ? [{ id, state: 'idle' }] : { id, state: 'idle', messages: [], draft: '' };
+  };
+  const workspace = new ChatWorkspace({ root, api, getEpisode: () => episode, uploadImage: () => new Promise((resolve) => { finishUpload = resolve; }) });
+  await workspace.open();
+  const pending = workspace.addImages([{ name: 'image.png', type: 'image/png', size: 20 }]);
+  assert.equal(root.querySelector('[data-chat-send]').disabled, true);
+  episode = { id: 'two' }; await workspace.open();
+  finishUpload({ id: 'one-image', label: 'Image', asset: { kind: 'image' } }); await pending;
+  assert.deepEqual(writes, [{ url: '/api/episodes/one/chats/one-chat', body: { attachmentIds: ['one-image'] } }]);
+  assert.equal(root.querySelector('.chat-attachment'), null);
+  workspace.imageDraft().attachments = [{ itemId: 'two-image', label: 'Two image', episodeId: 'two' }];
+  workspace.paintImages();
+  await root.querySelector('[data-chat-send]').onclick();
+  assert.equal(workspace.imageDraft().attachments[0].itemId, 'two-image');
+  assert.equal(root.querySelector('[data-chat-send]').disabled, false);
+  await workspace.addImages([{ name: 'not-image.txt', type: 'text/plain', size: 1 }]);
+  assert.match(root.querySelector('[data-chat-upload-status]').textContent, /PNG/);
+  workspace.close();
+});

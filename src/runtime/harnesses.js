@@ -57,11 +57,11 @@ export class WorkerCodexConnection extends CodexConnection {
     };
   }
 
-  async startTurn(threadId, text) {
+  async startTurn(threadId, text, images = []) {
     this.startingEvents = [];
     try {
       const result = await this.request("turn/start", {
-        threadId, input: [{ type: "text", text }], cwd: this.cwd,
+        threadId, input: [{ type: "text", text }, ...images.map((image) => ({ type: "image", url: `data:${image.mimeType};base64,${image.data}` }))], cwd: this.cwd,
         approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" },
         ...(this.effort ? { effort: this.effort } : {}),
       }, { uncertain: true });
@@ -114,10 +114,10 @@ export class ClaudeStreamSession {
   }
 
   // Send one user turn and resolve with the stream's `result` event.
-  send(text) {
+  send(text, images = []) {
     if (this.closed) return Promise.reject(new Error("Claude session is closed"));
     const done = new Promise((resolve, reject) => this.waiters.push({ resolve, reject }));
-    this.child.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text }] } }) + "\n");
+    this.child.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text }, ...images.map((image) => ({ type: "image", source: { type: "base64", media_type: image.mimeType, data: image.data } }))] } }) + "\n");
     return done;
   }
 
@@ -207,7 +207,7 @@ export class ClaudeChatConnection {
     }
   }
 
-  async startTurn(threadId, text) {
+  async startTurn(threadId, text, images = []) {
     if (!this.launch || threadId !== this.threadId) throw new Error("Start or resume the Claude session before starting a turn");
     const launch = { ...this.launch }, resuming = Boolean(launch.resume);
     const child = await this.spawnSession({ harness: "claude", model: this.model, ...(this.effort ? { effort: this.effort } : {}), ...launch });
@@ -245,7 +245,7 @@ export class ClaudeChatConnection {
         this.#emit("turn/completed", { turn: { id: this.turnId, status: this.interrupted ? "interrupted" : "failed", ...(detail ? { error: detail } : {}) }, model: this.resolved.model });
       }
     });
-    this.session.send(text).then(() => { this.completed = true; }, (error) => {
+    this.session.send(text, images).then(() => { this.completed = true; }, (error) => {
       if (resuming && !this.session?.init) settleReady(readyReject, this.#resumeUnavailable(raw.trim() || error.message));
       else if (!this.completed) this.onError(error);
     });
