@@ -1,13 +1,6 @@
-// App-side wiring of worker-backed production turns into the existing chat service.
-// createWorkerCodexFactory() returns a drop-in `codexFactory` for createChatService: each
-// Codex turn runs in its own request-scoped worker (started through the host control
-// channel), with the chat's existing Storybench tools plus the runtime tools
-// (register_work_file, inspect_image) served through one scoped tool set. Closing the
-// connection stops the worker, which also terminates every descendant command.
-//
-// Seams for later lanes: `segmentFor` maps a conversation to its native-session segment
-// (#26 adds per-harness segments and switching); `bootContextFor` supplies boot template
-// values (#25); `harness` is fixed to Codex here (#26 adds the Claude adapter selection).
+// App-side wiring of Codex and Claude production turns into the chat service.
+// Each turn runs in a request-scoped worker with Storybench and runtime tools.
+// Closing the connection stops the worker and its descendant commands.
 import path from "node:path";
 import { STORYBENCH_TOOLS } from "../codex.js";
 import { controlRequest } from "./channel.js";
@@ -74,7 +67,7 @@ export function mergeTools(runtimeTools, chatHandlers = {}) {
 // Worker-backed production turns for either harness. The chat passes the conversation's
 // selected harness/model/effort and its native-session segment; each turn runs in its own
 // request-scoped worker whose session directory is that segment's. Without a segment
-// (legacy single-Codex path) the conversation ID is the segment.
+// the conversation ID is the segment.
 export function createWorkerHarnessFactory({ store, controlSocket, templates, segmentFor = defaultSegmentFor, bootContextFor = defaultBootContextFor, onRequest = () => {} }) {
   return async function workerHarnessFactory({ episodeId, conversationId, requestId, harness = "codex", model, effort = null, segmentId = null, request: turnRequest = {}, tools, onEvent, onError, onToolCall = () => {} }) {
     if (!episodeId || !conversationId || !requestId) throw new Error("Worker-backed turns need episode, conversation and request identity");
@@ -103,9 +96,6 @@ export function createWorkerHarnessFactory({ store, controlSocket, templates, se
     return connection;
   };
 }
-
-// Backwards-compatible name used by the lifecycle foundation.
-export const createWorkerCodexFactory = createWorkerHarnessFactory;
 
 // App-side model catalogue backed by the host's harness.models control operation.
 export function createModelCatalog({ controlSocket, request = controlRequest }) {

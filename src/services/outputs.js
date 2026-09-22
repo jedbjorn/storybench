@@ -1,6 +1,6 @@
 // Output management shared by the server, UI and (later) agent tools: Final-to-Draft reclassification and
 // creator-selected draft cleanup. Deletion is explicit only; nothing here runs automatically.
-import { lstat, realpath, stat, unlink } from "node:fs/promises";
+import { lstat, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import { StoreError } from "../store.js";
 

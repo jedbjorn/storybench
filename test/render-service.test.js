@@ -75,7 +75,7 @@ test("Final publication uses request-bound intent once, pins output bytes, and d
   const episode = value.episode();
   let changed = value.store.updateEpisode(value.episodeId, episode.revision, { notes: "changed after final" });
   assert.equal(value.renders.getJob(value.episodeId, final.id).stale, true);
-  changed = value.store.updateEpisode(value.episodeId, changed.revision, { cards: changed.cards.map((card) => ({ ...card, excluded: true })) });
+  value.store.updateEpisode(value.episodeId, changed.revision, { cards: changed.cards.map((card) => ({ ...card, excluded: true })) });
   assert.equal(value.renders.getJob(value.episodeId, final.id).stale, true, "an invalid current plan cannot make an old output look current");
   assert.equal(await digest(output), before);
   assert.equal(await digest(value.source), createHash("sha256").update("source remains unchanged").digest("hex"));

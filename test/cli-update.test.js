@@ -9,7 +9,7 @@ import { backupDatabase, restoreDatabase } from "../src/cli/backup-image.js";
 import { writeConfigAtomic } from "../src/cli/config.js";
 import { main } from "../src/cli/main.js";
 import { readReceipts, writeJsonAtomic } from "../src/cli/receipts.js";
-import { assertUpdateFreeSpace, retainReleases, selectRetainedCommits, verifyActivation, verifyIsolated } from "../src/cli/update.js";
+import { retainReleases, selectRetainedCommits, verifyActivation, verifyIsolated } from "../src/cli/update.js";
 import { resolveXdg } from "../src/cli/xdg.js";
 import { createManifest, manifestId } from "../src/runtime/manifest.js";
 import { initDataRoot } from "../src/services/data-root.js";

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { access, mkdir, realpath, rename, stat, unlink } from "node:fs/promises";
+import { mkdir, realpath, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 const error = (message) => Object.assign(new Error(message), { statusCode: 400 });

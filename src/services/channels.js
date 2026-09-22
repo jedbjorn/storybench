@@ -33,10 +33,6 @@ export function renameChannel(target, nameOrId, name) {
   });
 }
 
-export function listChannelEpisodes(target, channelId) {
-  return run(target, (store) => store.listEpisodes({ channelId: store.requireChannel(channelId).id }));
-}
-
 export function createChannelEpisode(target, channelId, { title, notes } = {}) {
   return run(target, (store) => store.createEpisode({ title, notes, channelId: store.requireChannel(channelId).id }));
 }
