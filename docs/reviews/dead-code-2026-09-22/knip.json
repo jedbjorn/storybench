@@ -1,0 +1,37 @@
+{
+  "entry": [
+    "src/server.js",
+    "bin/storybench.mjs",
+    "src/cli/install-entry.js",
+    "src/cli/data-image.js",
+    "src/cli/backup-image.js",
+    "src/runtime/host.js",
+    "src/runtime/worker/agent.mjs",
+    "src/runtime/worker/mcp-bridge.mjs",
+    "src/story-editor.js",
+    "public/app.js",
+    "scripts/*.mjs",
+    "src/runtime/slice-proof-driver.js",
+    "test-support/**/*.mjs",
+    "test/**/*.test.js",
+    "src/runtime/release.js",
+    "src/runtime/session-migrate.js"
+  ],
+  "project": [
+    "src/**/*.{js,mjs}",
+    "public/**/*.js",
+    "bin/*.mjs",
+    "scripts/*.mjs",
+    "test-support/**/*.{js,mjs}",
+    "test/**/*.test.js"
+  ],
+  "paths": {
+    "/*": [
+      "./public/*"
+    ]
+  },
+  "ignore": [
+    "public/story-editor.js"
+  ],
+  "includeEntryExports": true
+}
