@@ -6,7 +6,7 @@ import path from 'node:path';
 import { chromium, firefox, webkit } from 'playwright-core';
 import { createApp } from '../src/server.js';
 import { listenInRange } from '../test-support/loopback-port.js';
-const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVQImWP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==', 'base64');
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAACXBIWXMAAAABAAAAAQBPJcTWAAAANklEQVR4nO3QwQkAMAwDsRS6/8aFjnCv/KQBbLjzZtdd3h8HSaIkUZIoSZQkShIliZJESaIpHwOEAXtEFT2UAAAAAElFTkSuQmCC', 'base64');
 for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared chrome, outward history and chat image upload/paste/drop`, { timeout: 60000 }, async (t) => {
   let browser;
   try { browser = await engine.launch(); }
@@ -52,6 +52,7 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
   await page.reload(); await page.locator('.chat-attachment img').waitFor();
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   await page.locator('.chat-image-link img').waitFor();
+  await page.waitForFunction(() => document.querySelector('.chat-image-link img').naturalWidth > 0);
   await page.waitForFunction(() => document.querySelector('[data-chat-status]').textContent === 'idle');
   assert.equal(received[0].images[0].mimeType, 'image/png');
   // Exercise actual clipboard/drop handlers without depending on OS clipboard permissions.

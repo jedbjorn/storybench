@@ -10,7 +10,7 @@ import { createChatService } from '../src/chat.js';
 import { CodexConnection } from '../src/codex.js';
 import { WorkerCodexConnection, ClaudeStreamSession } from '../src/runtime/harnesses.js';
 import { createV9ConversationPersistence } from '../src/runtime/conversation-persistence.js';
-const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVQImWP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==', 'base64');
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAACXBIWXMAAAABAAAAAQBPJcTWAAAANklEQVR4nO3QwQkAMAwDsRS6/8aFjnCv/KQBbLjzZtdd3h8HSaIkUZIoSZQkShIliZJESaIpHwOEAXtEFT2UAAAAAElFTkSuQmCC', 'base64');
 const until = async (check) => { for (let i = 0; i < 400; i++) { if (check()) return; await new Promise((resolve) => setTimeout(resolve, 10)); } throw new Error('Timed out'); };
 
 test('chat images survive reopen, reach the adapter as PNG content, and remain on explicit retry', async (t) => {
