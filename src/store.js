@@ -25,7 +25,7 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 export const DEFAULT_CHANNEL_NAME = "Main";
 // IDs become directory names, so they must be single safe path segments.
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
@@ -175,9 +175,6 @@ export function validateCards(cards) {
     const referenceItemIds = card.referenceItemIds == null ? [] : card.referenceItemIds;
     if (!Array.isArray(referenceItemIds) || referenceItemIds.some((value) => typeof value !== "string"))
       throw new StoreError("card referenceItemIds must be an array of strings");
-    const referenceUrls = card.referenceUrls == null ? [] : card.referenceUrls;
-    if (!Array.isArray(referenceUrls) || referenceUrls.some((value) => typeof value !== "string"))
-      throw new StoreError("card referenceUrls must be an array of strings");
     return {
       id: cardId,
       title: String(card.title ?? ""),
@@ -197,7 +194,6 @@ export function validateCards(cards) {
       itemId: card.itemId == null || card.itemId === "" ? null : String(card.itemId),
       referencePrompt: String(card.referencePrompt ?? ""),
       referenceItemIds: [...new Set(referenceItemIds)],
-      referenceUrls: [...new Set(referenceUrls)],
       enabled: card.enabled !== false,
       excluded: Boolean(card.excluded),
       role: card.role == null ? null : String(card.role),
@@ -400,6 +396,7 @@ export class Store {
     if (version < 9) this.migrateV9();
     if (version < 10) this.migrateV10();
     if (version < 11) this.migrateV11();
+    if (version < 12) this.migrateV12();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -635,7 +632,7 @@ export class Store {
   }
   // Schema 7: episode/card references. Episodes gain a reference prompt and an explicit ordered reference set,
   // initialized once from the prototype's Reference-category items (the old implicit episode-wide scope). After
-  // that, library category is organization only. Card JSON, links and URL strings are left exactly as stored.
+  // that, library category is organization only. Card JSON and links are left exactly as stored.
   migrateV7() {
     const stamp = now();
     this.db.exec("BEGIN IMMEDIATE");
@@ -890,6 +887,37 @@ export class Store {
         this.db.exec("ALTER TABLE episodes ADD COLUMN archived_at TEXT");
       this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(11,?)").run(now());
       this.db.exec("PRAGMA user_version=11; COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+  // Remove the obsolete card URL field from current cards, undo history and reusable templates.
+  migrateV12() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const strip = (json, many) => {
+        const value = JSON.parse(json);
+        const cards = many ? value : [value];
+        let changed = false;
+        for (const card of cards) {
+          if (card && Object.hasOwn(card, "referenceUrls")) {
+            delete card.referenceUrls;
+            changed = true;
+          }
+        }
+        return changed ? JSON.stringify(value) : null;
+      };
+      for (const [table, column, key, many] of [
+        ["episodes", "cards", "id", true],
+        ["episode_history", "cards", "rowid", true],
+        ["branding_templates", "card_snapshot", "id", false],
+      ]) {
+        const update = this.db.prepare(`UPDATE ${table} SET ${column}=? WHERE ${key}=?`);
+        for (const row of this.db.prepare(`SELECT ${key} AS key, ${column} AS value FROM ${table}`).all()) {
+          const cleaned = strip(row.value, many);
+          if (cleaned !== null) update.run(cleaned, row.key);
+        }
+      }
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(12,?)").run(now());
+      this.db.exec("PRAGMA user_version=12; COMMIT");
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
   getBrandStandards(channelId) {
@@ -1306,7 +1334,7 @@ export class Store {
     for (let order = 0; order < cards.length; order++) {
       const card = cards[order];
       if (card.type) { converted.push(card); continue; }
-      const common = { ...card, prompt: card.purpose || "", referenceItemIds: [], referenceUrls: [], enabled: true, excluded: false, order };
+      const common = { ...card, prompt: card.purpose || "", referenceItemIds: [], enabled: true, excluded: false, order };
       if (!card.visual && !card.narration) { converted.push({ ...common, type: "Video", itemId: null }); continue; }
       if (card.visual) {
         const asset = this.getAsset(card.visual.assetId);
@@ -1379,9 +1407,9 @@ export class Store {
       rule: REFERENCE_RULE,
       episode: { scope: "episode", prompt: episode.referencePrompt, items: episode.referenceItemIds.map(describe) },
       cards: episode.cards
-        .filter((card) => card.referencePrompt || card.referenceItemIds?.length || card.referenceUrls?.length)
+        .filter((card) => card.referencePrompt || card.referenceItemIds?.length)
         .map((card) => ({ scope: "card", cardId: card.id, title: card.title, prompt: card.referencePrompt ?? "",
-          items: (card.referenceItemIds || []).map(describe), legacyUrls: card.referenceUrls || [] })),
+          items: (card.referenceItemIds || []).map(describe) })),
     };
   }
   attachLibraryItem(episodeId, assetId, details = {}) {

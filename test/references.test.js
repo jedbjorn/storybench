@@ -79,18 +79,18 @@ test("undo, duplication and branding promotion/application preserve prompts and 
   const { store, episode, attach } = fixture(t);
   const look = attach(episode.id, "look.png", "image", "Graphics");
   let current = store.updateEpisode(episode.id, episode.revision, { referencePrompt: "v1", referenceItemIds: [look.id],
-    cards: [card("intro", "Static Graphic", { itemId: look.id, referencePrompt: "card v1", referenceItemIds: [look.id], referenceUrls: ["https://example.com/legacy"] })] });
+    cards: [card("intro", "Static Graphic", { itemId: look.id, referencePrompt: "card v1", referenceItemIds: [look.id] })] });
   current = store.updateEpisode(episode.id, current.revision, { referencePrompt: "v2", referenceItemIds: [],
     cards: [card("intro", "Static Graphic", { itemId: look.id, referencePrompt: "card v2", referenceItemIds: [] })] });
   current = store.undoEpisode(episode.id, current.revision);
   assert.deepEqual({ prompt: current.referencePrompt, ids: current.referenceItemIds }, { prompt: "v1", ids: [look.id] });
-  assert.deepEqual({ prompt: current.cards[0].referencePrompt, ids: current.cards[0].referenceItemIds, urls: current.cards[0].referenceUrls },
-    { prompt: "card v1", ids: [look.id], urls: ["https://example.com/legacy"] });
+  assert.deepEqual({ prompt: current.cards[0].referencePrompt, ids: current.cards[0].referenceItemIds },
+    { prompt: "card v1", ids: [look.id] });
 
   const cards = structuredClone(current.cards);
   const copy = duplicateCard(cards, "intro", "intro-copy");
-  assert.deepEqual({ prompt: copy.referencePrompt, ids: copy.referenceItemIds, urls: copy.referenceUrls, itemId: copy.itemId },
-    { prompt: "card v1", ids: [look.id], urls: ["https://example.com/legacy"], itemId: look.id });
+  assert.deepEqual({ prompt: copy.referencePrompt, ids: copy.referenceItemIds, itemId: copy.itemId },
+    { prompt: "card v1", ids: [look.id], itemId: look.id });
   copy.referenceItemIds.push("changed");
   assert.deepEqual(cards[0].referenceItemIds, [look.id], "the copy does not share arrays with its source");
   copy.referenceItemIds.pop();
@@ -108,6 +108,36 @@ test("undo, duplication and branding promotion/application preserve prompts and 
   assert.notEqual(added.referenceItemIds[0], look.id, "reference links are remapped to the target episode's items");
   assert.ok(targetItems.some((item) => item.id === added.referenceItemIds[0] && item.assetId === look.assetId));
   assert.equal(added.itemId, added.referenceItemIds[0], "one source item maps to one target item");
+});
+
+test("schema 12 removes old card URLs from episodes, undo history and branding templates", (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "storybench-reference-urls-"));
+  let store = new Store(root);
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  const episode = store.createEpisode({ title: "Old URLs" });
+  let current = store.updateEpisode(episode.id, episode.revision, { cards: [card("open", "Video", { referencePrompt: "soft light" })] });
+  current = store.updateEpisode(episode.id, current.revision, { cards: [card("open", "Video", { referencePrompt: "warm light" })] });
+  const template = store.promoteCard(episode.id, "open", { name: "Opening" });
+  const inject = (json, many) => JSON.stringify(many
+    ? JSON.parse(json).map((value) => ({ ...value, referenceUrls: ["https://example.invalid/old"] }))
+    : { ...JSON.parse(json), referenceUrls: ["https://example.invalid/old"] });
+  for (const table of ["episodes", "episode_history"]) {
+    for (const row of store.db.prepare(`SELECT rowid, cards FROM ${table}`).all())
+      store.db.prepare(`UPDATE ${table} SET cards=? WHERE rowid=?`).run(inject(row.cards, true), row.rowid);
+  }
+  const snapshot = store.db.prepare("SELECT card_snapshot FROM branding_templates WHERE id=?").get(template.id).card_snapshot;
+  store.db.prepare("UPDATE branding_templates SET card_snapshot=? WHERE id=?").run(inject(snapshot, false), template.id);
+  store.db.exec("PRAGMA user_version=11");
+  store.close();
+  store = new Store(root);
+  assert.equal(Object.hasOwn(store.getEpisode(episode.id).cards[0], "referenceUrls"), false);
+  assert.equal(store.getEpisode(episode.id).cards[0].referencePrompt, "warm light");
+  assert.equal(store.getReferenceContext(episode.id).cards[0].prompt, "warm light");
+  assert.ok(store.db.prepare("SELECT cards FROM episode_history").all().every((row) => !row.cards.includes("referenceUrls")));
+  assert.equal(Object.hasOwn(store.getBrandingTemplate(template.id).card, "referenceUrls"), false);
+  const undone = store.undoEpisode(episode.id, current.revision);
+  assert.equal(undone.cards[0].referencePrompt, "soft light");
+  assert.equal(Object.hasOwn(undone.cards[0], "referenceUrls"), false);
 });
 
 function v6Root(t) {
@@ -144,8 +174,9 @@ test("schema 7 initializes the episode reference set once from Reference items a
   assert.deepEqual(migrated.referenceItemIds, libraryOrder, "Reference-category items become the explicit episode set, in library order");
   const initialSet = migrated.referenceItemIds;
   assert.equal(migrated.referencePrompt, "");
-  assert.equal(store.db.prepare("SELECT cards FROM episodes WHERE id=?").get(episode.id).cards, cardsJson, "card JSON, links and URL strings are byte-identical");
-  assert.deepEqual(migrated.cards[0].referenceUrls, ["https://example.invalid/never-fetched", "not even a url"]);
+  assert.deepEqual(JSON.parse(cardsJson)[0].referenceUrls, ["https://example.invalid/never-fetched", "not even a url"]);
+  assert.equal(Object.hasOwn(migrated.cards[0], "referenceUrls"), false, "obsolete URLs are removed on upgrade");
+  assert.deepEqual(migrated.cards[0].referenceItemIds, [broll.id], "card reference links survive upgrade");
   assert.equal(store.listEpisodeLibrary(episode.id).length, 3, "no URL was fetched or registered");
   assert.equal(store.listReferenceDirections(episode.id).length, 0, "migration never manufactures creator direction");
   // After migration, category is organization only: recategorizing never changes scope, even on a forced re-run.
