@@ -8,6 +8,7 @@ import {
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { readReleaseManifest } from "../runtime/manifest.js";
+import { checkImage } from "../runtime/image-verification.js";
 import { DEFAULT_PORT, readConfig } from "./config.js";
 import { CliError, EXIT } from "./errors.js";
 import { ensurePrivateDirectory } from "./fs-safety.js";
@@ -139,22 +140,6 @@ async function attachDetachedMetadata(run, mirror, commit, stage, env) {
   return () => { rmSync(path.join(stage, ".git"), { force: true }); rmSync(metadata, { recursive: true, force: true }); };
 }
 
-function parseProbe(stdout) {
-  return Object.fromEntries(stdout.trim().split("\n").map((line) => line.split(/=(.*)/s, 2)).filter(([key, value]) => key && value));
-}
-
-async function probeImage(run, image, role) {
-  const script = role === "worker"
-    ? "printf 'node='; node --version; printf 'ffmpeg='; ffmpeg -version | head -1; printf 'ffprobe='; ffprobe -version | head -1; printf 'codex='; codex --version; printf 'claude='; claude --version"
-    : "printf 'node='; node --version; printf 'ffmpeg='; ffmpeg -version | head -1; printf 'ffprobe='; ffprobe -version | head -1";
-  const result = await run("docker", ["run", "--rm", "--network", "none", image, "sh", "-c", script], { timeoutMs: 120_000 });
-  if (result.code !== 0) throw new CliError(`The ${role} image failed its packaged-binary verification: ${firstLine(result.stderr) || `exit ${result.code}`}`);
-  const tools = parseProbe(result.stdout);
-  if (!/^v(2[4-9]|[3-9]\d)\./.test(tools.node || "") || !tools.ffmpeg || !tools.ffprobe || (role === "worker" && (!tools.codex || !tools.claude)))
-    throw new CliError(`The ${role} image does not contain the required Node 24+, ffmpeg/ffprobe${role === "worker" ? ", Codex and Claude" : ""} binaries`);
-  return tools;
-}
-
 function nodeBaseIdentity(stage) {
   const dockerfile = readFileSync(path.join(stage, "docker", "Dockerfile"), "utf8");
   return /^ARG NODE_IMAGE=(\S+)$/m.exec(dockerfile)?.[1] ?? "unknown";
@@ -165,7 +150,13 @@ export async function stageRelease(context, metadata, adapters = {}) {
   const final = releasePath(context.xdg, metadata.commit);
   const manifestFile = path.join(final, "manifest.json");
   const reusable = await reusableRelease(manifestFile, metadata.commit, run);
-  if (reusable) return { release: final, manifest: reusable, reused: true };
+  if (reusable) {
+    for (const role of ["app", "worker"]) {
+      await checkImage(run, reusable.images[role].id, role, "probe", { env: context.env });
+      await checkImage(run, reusable.images[role].id, role, "smoke", { env: context.env });
+    }
+    return { release: final, manifest: reusable, reused: true };
+  }
   let current = null;
   try {
     if (lstatSync(context.xdg.current).isSymbolicLink())
@@ -185,9 +176,10 @@ export async function stageRelease(context, metadata, adapters = {}) {
     let manifest = await buildRelease({ repo: stage, tag: `storybench-${metadata.commit.slice(0, 12)}`, installId,
       log: (line) => context.out(`  ${line}`) });
     const roleTools = {
-      app: await probeImage(run, manifest.images.app.id, "app"),
-      worker: await probeImage(run, manifest.images.worker.id, "worker"),
+      app: await checkImage(run, manifest.images.app.id, "app", "probe", { env: context.env }),
+      worker: await checkImage(run, manifest.images.worker.id, "worker", "probe", { env: context.env }),
     };
+    for (const role of ["app", "worker"]) await checkImage(run, manifest.images[role].id, role, "smoke", { env: context.env });
     const manifestModule = await import(`${pathToFileURL(path.join(stage, "src", "runtime", "manifest.js")).href}?install=${crypto.randomUUID()}`);
     const installedAt = new Date().toISOString();
     const installer = { node: process.version, npm: firstLine(await checked(run, "npm", ["--version"])),

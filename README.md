@@ -34,10 +34,10 @@ The release images package the production tools rather than relying on host copi
 | Node.js | `node:24-trixie-slim` at the digest pinned in `docker/Dockerfile` (`24.21.0` in the verified image) |
 | Codex CLI | `0.155.1` |
 | Claude Code | `2.1.278` |
-| Media and extraction | FFmpeg/ffprobe (`7.1.5-0+deb13u1` in the verified image), Poppler, Python 3/Pillow and resvg from the image's Debian base |
-| Fonts | DejaVu, Noto Core and Liberation 2 |
+| Media and extraction | FFmpeg/ffprobe, Poppler, Python 3/Pillow and resvg from Debian's `20260922T000000Z` snapshot |
+| Fonts | DejaVu, Noto Core and Liberation 2 from the same snapshot |
 
-Every installed release records its exact image IDs, base-image identity and detected binary versions in its manifest and install receipt. `storybench version` reports release and schema identity; `storybench doctor` checks the host, XDG paths, origin access, unit, data root, images, packaged binaries, provider logins and live health.
+The base image is digest pinned; both Debian install layers use the same dated, signed snapshot, and the app and harness npm trees use lockfiles with `npm ci`. npm install scripts are disabled except for Claude's reviewed local binary placement script, which selects its lockfile-pinned native package. Upgrading any of these inputs is a reviewed source change. Every installed release records its exact image IDs, base-image identity and detected binary versions in its manifest and install receipt. Before activation, installation and updates probe required tools in each exact app/worker image, then run bounded Pillow, SVG, PDF, AAC audio, H.264/AAC animation, metadata and decode checks without network access. A missing or broken tool stops staging before the active database or service is touched. `storybench doctor` reports per-tool failures against the installed images; it does not claim a pass from partial version output.
 
 Storybench reuses the current host logins at `~/.codex/auth.json` and `~/.claude/.credentials.json`. Sign in on the host with `codex login` and by running `claude`. Only the selected login material is staged for a worker; it is not baked into images or release metadata. The host login is the live authority: if its usable token is absent, that harness is unavailable, with no cached credential, alternate harness or model fallback. A provider warning does not prevent use of the editor.
 
@@ -234,4 +234,4 @@ npm test
 npm run lint
 ```
 
-`npm test` runs the Node test suite. `npm run lint` rebuilds the browser editor bundle and checks the declared server, browser, CLI and runtime JavaScript entry points. Development commands do not install or start the user service; exercise installer/lifecycle work only with disposable XDG paths, data, ports and a namespaced unit. Because `systemd --user` reads units only from its own configuration directory, a disposable `XDG_CONFIG_HOME` needs `STORYBENCH_UNIT_DIR` set to a directory the live manager searches (for example `$XDG_RUNTIME_DIR/systemd/user`), plus `STORYBENCH_UNIT_NAME` for the namespaced unit.
+`npm test` runs the Node test suite. `npm run lint` rebuilds the browser editor bundle and checks the declared server, browser, CLI and runtime JavaScript entry points. CI also builds the exact app/worker images and runs their tool probes and media smoke checks. Development commands do not install or start the user service; exercise installer/lifecycle work only with disposable XDG paths, data, ports and a namespaced unit. Because `systemd --user` reads units only from its own configuration directory, a disposable `XDG_CONFIG_HOME` needs `STORYBENCH_UNIT_DIR` set to a directory the live manager searches (for example `$XDG_RUNTIME_DIR/systemd/user`), plus `STORYBENCH_UNIT_NAME` for the namespaced unit.

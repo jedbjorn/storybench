@@ -13,3 +13,20 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test
+  release-media:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f docker/Dockerfile --target app --provenance=false --sbom=false -t storybench-ci-app .
+      - run: docker build -f docker/Dockerfile --target worker --provenance=false --sbom=false -t storybench-ci-worker .
+      - name: Probe and smoke exact release images
+        run: |
+          set -eu
+          app_image=$(docker image inspect storybench-ci-app --format '{{.Id}}')
+          worker_image=$(docker image inspect storybench-ci-worker --format '{{.Id}}')
+          for role in app worker; do
+            if [ "$role" = app ]; then image="$app_image"; else image="$worker_image"; fi
+            printf '%s image %s\n' "$role" "$image"
+            docker run --rm --network none "$image" node /opt/storybench/app/src/runtime/image-check.js probe "$role"
+            docker run --rm --network none "$image" node /opt/storybench/app/src/runtime/image-check.js smoke
+          done

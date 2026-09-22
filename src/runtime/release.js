@@ -13,25 +13,20 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { SCHEMA_VERSION } from "../store.js";
 import { MIN_SUPPORTED_SCHEMA, createManifest, readReleaseManifest } from "./manifest.js";
+import { checkImage } from "./image-verification.js";
 
 const run = promisify(execFile);
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const DOCKERFILE = path.join(REPO_ROOT, "docker/Dockerfile");
-
-const TOOL_PROBE = [
-  "echo node=$(node --version)",
-  "echo codex=$(codex --version | awk '{print $NF}')",
-  "echo claude=$(claude --version | awk '{print $1}')",
-  "echo ffmpeg=$(ffmpeg -version | head -1 | awk '{print $3}')",
-  "echo poppler=$(pdftotext -v 2>&1 | head -1 | awk '{print $3}')",
-  "echo pillow=$(python3 -c 'import PIL; print(PIL.__version__)')",
-  "echo resvg=$(resvg --version)",
-].join("; ");
+const dockerCheck = async (command, args, options = {}) => {
+  try { const result = await run(command, args, { timeout: options.timeoutMs, maxBuffer: 1024 * 1024 }); return { code: 0, ...result }; }
+  catch (error) { return { code: error.code || 1, stderr: error.stderr || error.message }; }
+};
 
 // Release idempotency is defined by the manifest: an existing valid manifest for the same
 // commit whose exact images are still present is the release, and is returned unchanged.
 // (Image IDs are reproducible for one commit and installation when the build cache is
-// warm, but a cold rebuild can differ — distro package drift and file timestamps — so
+// warm, but a cold rebuild can differ through file timestamps — so
 // IDs alone are not relied on for idempotency.)
 export async function findReusableRelease(manifestPath, commit) {
   if (!manifestPath) return null;
@@ -40,6 +35,10 @@ export async function findReusableRelease(manifestPath, commit) {
   for (const role of ["app", "worker"]) {
     try { await run("docker", ["image", "inspect", found.manifest.images[role].id, "--format", "{{.Id}}"]); }
     catch { return null; }
+  }
+  for (const role of ["app", "worker"]) {
+    await checkImage(dockerCheck, found.manifest.images[role].id, role);
+    await checkImage(dockerCheck, found.manifest.images[role].id, role, "smoke");
   }
   return found.manifest;
 }
@@ -79,8 +78,12 @@ export async function buildRelease({ repo = REPO_ROOT, tag = "storybench", allow
       { maxBuffer: 64 * 1024 * 1024, env: { ...process.env, SOURCE_DATE_EPOCH: epoch } });
     images[target] = (await run("docker", ["image", "inspect", imageTag, "--format", "{{.Id}}"])).stdout.trim();
   }
-  const probe = (await run("docker", ["run", "--rm", "--network", "none", images.worker, "sh", "-c", TOOL_PROBE])).stdout;
-  const tools = Object.fromEntries(probe.trim().split("\n").map((line) => line.split("=")).filter(([key, value]) => key && value));
+  const roleTools = {};
+  for (const role of ["app", "worker"]) {
+    roleTools[role] = await checkImage(dockerCheck, images[role], role);
+    await checkImage(dockerCheck, images[role], role, "smoke");
+  }
+  const tools = roleTools.worker;
   return createManifest({
     packageName: pkg.name, packageVersion: pkg.version, commit, ref,
     images, tools: { ...tools, ...(dirty ? { dirtyCheckout: "true" } : {}) }, schema: { min: MIN_SUPPORTED_SCHEMA, max: SCHEMA_VERSION },
