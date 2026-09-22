@@ -8,8 +8,8 @@
 // slice level) inside the app container. Disposable data only; real credential files are
 // only read through per-request staging.
 import { execFile } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

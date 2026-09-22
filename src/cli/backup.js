@@ -1,11 +1,11 @@
 import crypto from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { readConfig, validateConfig, writeConfigAtomic } from "./config.js";
 import { CliError, EXIT } from "./errors.js";
 import { mountPath } from "./fs-safety.js";
 import { withLock } from "./lock.js";
-import { lifecyclePaths, prepareService, startAndVerify } from "./lifecycle.js";
+import { prepareService, startAndVerify } from "./lifecycle.js";
 import { writeJsonAtomic } from "./receipts.js";
 import { installedRelease } from "./release.js";
 import { activeWork, serviceStatus } from "./service.js";

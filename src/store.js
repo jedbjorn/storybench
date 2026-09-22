@@ -36,7 +36,6 @@ export const HARNESSES = Object.freeze(["codex", "claude"]);
 export const SEGMENT_REASONS = Object.freeze(["initial", "migrated", "harness-switch", "harness-return", "resume-unavailable"]);
 export const RUN_KINDS = Object.freeze(["chat", "card_build", "still_graphic", "animated_graphic", "draft", "final", "other"]);
 export const RUN_ORIGINS = Object.freeze(["typed", "button"]);
-export const MESSAGE_ORIGINS = Object.freeze(["typed", "button", "agent", "system"]);
 export const FINAL_END_REASONS = Object.freeze(["stopped", "cancelled", "failed", "restart", "unfulfilled"]);
 // How Final intent ends when its request reaches a terminal state without publishing.
 const FINAL_END_ON_TERMINAL = { failed: "failed", completed: "unfulfilled" };

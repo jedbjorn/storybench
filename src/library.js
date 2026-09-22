@@ -4,7 +4,7 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import path from "node:path";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createWriteStream } from "node:fs";
 import { copyFile, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
