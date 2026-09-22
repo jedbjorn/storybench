@@ -243,8 +243,6 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       }
     };
     try {
-      const images = await attachments.images(value.episode_id, attached);
-      if (aborted) throw error("Chat stopped before sending images", 409);
       let plannedSegmentId = null;
       if (persistence) {
         // Decide the native session: resume the active segment of the selected harness, or open a
@@ -256,6 +254,9 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
           modelSelected: plan.selection.model, effortSelected: plan.selection.effort, state: "starting", startedAt: now(), kind: request.kind ?? "chat", origin: request.origin ?? "typed",
           clientRequestId: request.clientRequestId ?? null, targetCardId: request.targetCardId ?? null, successorOf: request.successorOf ?? null });
       }
+      // Dispatch returns the persisted request receipt; create it before any async preparation.
+      const images = await attachments.images(value.episode_id, attached);
+      if (aborted) throw error("Chat stopped before sending images", 409);
       const openConnection = (segmentId) => codexFactory({ cwd: store.workspace, model: plan ? plan.selection.model : model, tools: tools(value, activity), signal: controller.signal,
         episodeId: value.episode_id, conversationId: value.id, requestId, request: { text, messageId: request.authorityMessageId ?? messageId, kind: request.kind ?? "chat", cardId: request.targetCardId ?? null },
         // Every Storybench tool call of a worker-backed turn arrives through the request bridge.
