@@ -34,6 +34,19 @@ export function referencePanelHTML({ scope, cardId = null, episodeId, prompt = "
   const linked = new Set(itemIds || []);
   const choices = (items || []).filter((item) => !linked.has(item.id));
   const where = scope === "episode" ? "across this episode" : "for this card";
+  if (scope === "card") {
+    const addTile = `<li class="reference-add-tile reference-drop" data-ref-drop>
+<button type="button" data-ref-pick>Upload</button><span>or</span>
+<select data-ref-add aria-label="Choose a reference for this card" ${items ? "" : "disabled"}><option value="">${items ? "Choose…" : "Loading…"}</option>${choices.map((item) => `<option value="${esc(item.id)}">${esc(item.label)} · ${esc(item.category)} · ${esc(item.asset?.kind || item.sourceKind)}</option>`).join("")}</select>
+</li>`;
+    return `<section class="reference-panel card-reference-panel" data-ref-scope="card" data-ref-card="${esc(cardId)}" aria-label="References for this card">
+<span class="reference-heading">References for this card <small>Optional</small></span>
+<ul class="reference-list">${itemIds.map((itemId) => itemHTML(episodeId, itemId, library)).join("")}${addTile.repeat(Math.max(1, 2 - itemIds.length))}</ul>
+<input type="file" data-ref-file multiple hidden>
+<label class="reference-prompt">Reference prompt<textarea data-ref-prompt placeholder="What should these references inform for this card?">${esc(prompt)}</textarea></label>
+<p class="reference-status" data-ref-status aria-live="polite"></p>
+</section>`;
+  }
   return `<section class="reference-panel" data-ref-scope="${scope}"${cardId ? ` data-ref-card="${esc(cardId)}"` : ""}>
 <label class="reference-prompt">Reference prompt<textarea data-ref-prompt placeholder="Optional: how supporting material should inform the result ${where}">${esc(prompt)}</textarea></label>
 ${(itemIds || []).length ? `<ul class="reference-list">${itemIds.map((itemId) => itemHTML(episodeId, itemId, library)).join("")}</ul>` : `<p class="reference-empty">No reference attachments. Text, attachments, both or neither are all fine.</p>`}
