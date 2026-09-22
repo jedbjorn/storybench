@@ -3,6 +3,8 @@
 [![test](https://github.com/jedbjorn/storybench/actions/workflows/test.yml/badge.svg)](https://github.com/jedbjorn/storybench/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+<img width="1877" height="955" alt="storybench" src="https://github.com/user-attachments/assets/cb35f2a2-7287-43db-8d3c-41d942f44a42" />
+
 ## What Storybench does
 
 Storybench is a local workspace for developing videos with a production agent. Its browser UI keeps stories, cards, references, B-roll, graphics, drafts, finals and chat together. A creator can choose Codex or Claude Code and an available model, then ask the agent to inspect material, edit assets and assemble or revise a video.
