@@ -11,7 +11,7 @@ async function launch(browserType) {
   try { return await browserType.launch(); }
   catch { return browserType === chromium && existsSync('/usr/bin/chromium') ? chromium.launch({ executablePath: '/usr/bin/chromium' }).catch(() => null) : null; }
 }
-for (const browserType of [chromium, firefox]) test(`${browserType.name()}: Branding and Models pages save settings, render fonts, preserve episodes and guard navigation`, { timeout: 60000 }, async (t) => {
+for (const browserType of [chromium, firefox]) test(`${browserType.name()}: Branding and Models pages save settings, render fonts, preserve and archive episodes, and guard navigation`, { timeout: 60000 }, async (t) => {
   const browser = await launch(browserType);
   if (!browser) return t.skip(`No launchable ${browserType.name()} on this seat`);
   t.after(() => browser.close());
@@ -115,8 +115,11 @@ for (const browserType of [chromium, firefox]) test(`${browserType.name()}: Bran
     await page.keyboard.insertText('X');
     assert.equal(await field.inputValue(), 'abcdefghijklmno'.slice(0, middle) + 'X' + 'abcdefghijklmno'.slice(middle));
     await page.locator(other).click();
-    const bounds = await field.boundingBox();
-    await field.click({ position: { x: bounds.width - 12, y: 12 } });
+    if (selector.startsWith('#cards'))
+      await page.waitForFunction(() => document.querySelector('#saveState').textContent.startsWith('Saved'));
+    await field.waitFor({ state: 'visible' });
+    const width = await field.evaluate((element) => element.getBoundingClientRect().width);
+    await field.click({ position: { x: width - 12, y: 12 } });
     assert.equal(await field.evaluate((el) => el.selectionStart), 16);
   }
   await checkCaret('[name="stylePrompt"]', '[name="color0"]');
@@ -130,6 +133,40 @@ for (const browserType of [chromium, firefox]) test(`${browserType.name()}: Bran
     page.waitForResponse((response) => response.url().includes('/api/episodes/' + episode.id) && response.request().method() === 'PUT'),
     page.locator('#cards .drag').dragTo(page.locator('#cards .card-group-heading').last()),
   ]);
+  await page.waitForFunction(() => document.querySelector('#saveState').textContent.startsWith('Saved'));
   assert.equal(app.store.getEpisode(episode.id).cards[0].order, 1);
+
+  const episodeState = `[data-id="${episode.id}"] [data-episode-state-select]`;
+  async function moveEpisode(nextState) {
+    const previous = await page.locator(episodeState).elementHandle();
+    await page.selectOption(episodeState, nextState);
+    await new Promise((resolve, reject) => {
+      const deadline = Date.now() + 5000;
+      const check = () => {
+        const value = app.store.getEpisode(episode.id);
+        const moved = nextState === 'Archived' ? Boolean(value.archivedAt) : !value.archivedAt && value.state === nextState;
+        if (moved) resolve();
+        else if (Date.now() >= deadline) reject(new Error(`Episode did not move to ${nextState}`));
+        else setTimeout(check, 10);
+      };
+      check();
+    });
+    await page.waitForFunction((element) => !element.isConnected, previous);
+  }
+  await moveEpisode('Draft');
+  assert.equal(app.store.getEpisode(episode.id).state, 'Draft');
+  await moveEpisode('Archived');
+  assert.equal(app.store.getEpisode(episode.id).state, 'Draft');
+  assert.ok(app.store.getEpisode(episode.id).archivedAt);
+  assert.doesNotMatch(await page.textContent('#episodes'), /Brand demo/);
+  assert.match(await page.textContent('[data-episode-state="Archived"]'), /Archived1[\s\S]*1 episode hidden/);
+  await page.click('[data-reveal-episode]');
+  assert.equal(await page.inputValue('#episodeFilter'), 'Archived');
+  await moveEpisode('Draft');
+  assert.equal(app.store.getEpisode(episode.id).archivedAt, null);
+  assert.equal(app.store.getEpisode(episode.id).state, 'Draft');
+  await page.click('[data-reveal-episode]');
+  assert.equal(await page.inputValue('#episodeFilter'), 'All');
+  assert.match(await page.textContent('#episodes'), /Brand demo/);
   assert.deepEqual(errors, []);
 });

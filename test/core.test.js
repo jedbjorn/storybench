@@ -55,6 +55,27 @@ test("workspace persists episodes, assets, and jobs", async (t) => {
   assert.equal(store.listJobs()[0].state, "completed");
 });
 
+test("archiving preserves an episode's workflow stage and can be reversed", async (t) => {
+  const dir = await fixture(t);
+  let store = new Store(dir);
+  let episode = store.createEpisode({ title: "Shelved cut" });
+  episode = store.updateEpisode(episode.id, episode.revision, { state: "Draft" });
+  episode = store.updateEpisode(episode.id, episode.revision, { archived: true });
+  assert.equal(episode.state, "Draft");
+  assert.match(episode.archivedAt, /^\d{4}-\d{2}-\d{2}T/);
+  store.close();
+
+  store = new Store(dir);
+  t.after(() => store.close());
+  episode = store.getEpisode(episode.id);
+  assert.equal(episode.state, "Draft");
+  assert.ok(episode.archivedAt);
+  episode = store.updateEpisode(episode.id, episode.revision, { archived: false });
+  assert.equal(episode.archivedAt, null);
+  assert.equal(episode.state, "Draft");
+  assert.throws(() => store.updateEpisode(episode.id, episode.revision, { archived: "yes" }), /true or false/);
+});
+
 test("stale update fails and repeated undo traverses edits without toggling", async (t) => {
   const store = new Store(await fixture(t));
   t.after(() => store.close());

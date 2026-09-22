@@ -25,7 +25,7 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 export const DEFAULT_CHANNEL_NAME = "Main";
 // IDs become directory names, so they must be single safe path segments.
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
@@ -222,6 +222,7 @@ function episodeRow(row) {
       title: row.title,
       notes: row.notes,
       state: row.state || "Scaffold",
+      archivedAt: row.archived_at ?? null,
       revision: row.revision,
       referencePrompt: row.reference_prompt ?? "",
       referenceItemIds: parse(row.reference_item_ids, []),
@@ -398,6 +399,7 @@ export class Store {
     if (version < 8) this.migrateV8();
     if (version < 9) this.migrateV9();
     if (version < 10) this.migrateV10();
+    if (version < 11) this.migrateV11();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -881,6 +883,15 @@ export class Store {
       this.db.exec("PRAGMA user_version=10; COMMIT");
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
+  migrateV11() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (!this.columns("episodes").has("archived_at"))
+        this.db.exec("ALTER TABLE episodes ADD COLUMN archived_at TEXT");
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(11,?)").run(now());
+      this.db.exec("PRAGMA user_version=11; COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
   getBrandStandards(channelId) {
     this.requireChannel(channelId);
     const row = this.db.prepare("SELECT * FROM channel_standards WHERE channel_id=?").get(channelId);
@@ -1202,27 +1213,32 @@ export class Store {
       for (const key of ["in", "out", "offset", "gain", "fadeIn", "fadeOut"])
         if (card[key] != null && !Number.isFinite(card[key])) throw new StoreError(`${key} must be finite`);
     }
+    if (changes.archived != null && typeof changes.archived !== "boolean")
+      throw new StoreError("archived must be true or false");
+    const updatedAt = now();
     const next = {
       ...current,
       title: changes.title == null ? current.title : String(changes.title),
       notes: changes.notes == null ? current.notes : String(changes.notes),
       cards,
       state,
+      archivedAt: changes.archived == null ? current.archivedAt : changes.archived ? current.archivedAt ?? updatedAt : null,
       referencePrompt,
       referenceItemIds,
       revision: current.revision + 1,
-      updatedAt: now(),
+      updatedAt,
     };
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const result = this.db
         .prepare(
-          "UPDATE episodes SET title=?,notes=?,state=?,revision=?,cards=?,reference_prompt=?,reference_item_ids=?,updated_at=? WHERE id=? AND revision=?",
+          "UPDATE episodes SET title=?,notes=?,state=?,archived_at=?,revision=?,cards=?,reference_prompt=?,reference_item_ids=?,updated_at=? WHERE id=? AND revision=?",
         )
         .run(
           next.title,
           next.notes,
           next.state,
+          next.archivedAt,
           next.revision,
           JSON.stringify(next.cards),
           next.referencePrompt,
