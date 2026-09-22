@@ -9,7 +9,7 @@ import { createManifest, readReleaseManifest } from "../src/runtime/manifest.js"
 import { SCHEMA_VERSION } from "../src/store.js";
 import { initDataRoot } from "../src/services/data-root.js";
 import { writeConfigAtomic } from "../src/cli/config.js";
-import { activateSymlink, installFromSource, launcherText, readInstallReceipt } from "../src/cli/install.js";
+import { activateSymlink, installFromSource, launcherText, readInstallReceipt, stageRelease } from "../src/cli/install.js";
 import { acquireLock } from "../src/cli/lock.js";
 import { main } from "../src/cli/main.js";
 import { nonInteractiveGitEnv, runCommand } from "../src/cli/system.js";
@@ -17,6 +17,7 @@ import { resolveXdg } from "../src/cli/xdg.js";
 import { ensureInstallationId } from "../src/cli/installation.js";
 import { removeImagesIfUnused } from "../src/cli/images.js";
 import { imageBuildLabels, imageBuildTag } from "../src/runtime/release.js";
+import { REQUIRED_TOOLS } from "../src/runtime/image-verification.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const APP = `sha256:${"a".repeat(64)}`;
@@ -72,6 +73,23 @@ test("atomic current pointer and launcher are idempotent and safely quote paths"
     /embedded credentials/);
 });
 
+test("reused candidate fails a broken media smoke before activation", async (t) => {
+  const s = fixture(t);
+  const release = path.join(s.xdg.releases, s.commit);
+  mkdirSync(release, { recursive: true });
+  const manifest = createManifest({ packageName: "storybench", packageVersion: "0.1.0", commit: s.commit,
+    images: { app: APP, worker: WORKER }, schema: { min: 0, max: SCHEMA_VERSION } });
+  writeFileSync(path.join(release, "manifest.json"), JSON.stringify(manifest));
+  const run = async (_command, args) => {
+    if (args[0] === "image") return { code: 0, stdout: `${args[2]}\n` };
+    if (args.includes("smoke")) return { code: 1, stderr: "animated video encode: ffmpeg: exit 1" };
+    const role = args.at(-1);
+    return { code: 0, stdout: JSON.stringify(Object.fromEntries(REQUIRED_TOOLS[role].map((name) => [name, name === "node" ? "v24.21.0" : name === "codex" ? "0.155.1" : name === "claude" ? "2.1.278" : "version 1"]))) };
+  };
+  await assert.rejects(stageRelease({ xdg: s.xdg }, { commit: s.commit }, { runCommand: run }), /app image smoke failed: animated video encode: ffmpeg: exit 1/);
+  assert.equal(existsSync(s.xdg.current), false);
+});
+
 test("exact install, doctor, idempotent rerun and uninstall preserve configuration, data and state", async (t) => {
   const s = fixture(t);
   const calls = [], callRecords = [], systemCalls = [];
@@ -80,6 +98,7 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
   let failPointerVerification = false;
   let buildInstallId;
   let rootlessDocker = true;
+  let brokenImageTool = null;
   const fakeRun = async (executable, args, options = {}) => {
     calls.push([executable, ...args]);
     callRecords.push({ executable, args, options });
@@ -94,16 +113,13 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
         return { code: 0, stdout: rootlessDocker ? '["name=seccomp","name=rootless"]\n' : '["name=seccomp"]\n', stderr: "" };
       if (args[0] === "info") return { code: 0, stdout: "29.7.2\n", stderr: "" };
       if (args[0] === "run") {
-        const image = args.find((value) => value === APP || value === WORKER);
-        const installing = String(args.at(-1)).includes("printf 'node='");
-        const stdout = installing
-          ? (image === WORKER
-              ? "node=v24.21.0\nffmpeg=ffmpeg version 7\nffprobe=ffprobe version 7\ncodex=codex-cli 0.155.1\nclaude=2.1.278\n"
-              : "node=v24.21.0\nffmpeg=ffmpeg version 7\nffprobe=ffprobe version 7\n")
-          : (image === WORKER
-              ? "v24.21.0\nffmpeg version 7\nffprobe version 7\ncodex-cli 0.155.1\n2.1.278\n"
-              : "v24.21.0\nffmpeg version 7\nffprobe version 7\n");
-        return { code: 0, stdout, stderr: "" };
+        if (brokenImageTool && args.includes("probe")) return { code: 1, stdout: "", stderr: `${brokenImageTool}: not found` };
+        const role = args.includes(WORKER) ? "worker" : "app";
+        const operation = args.at(-2) === "probe" ? "probe" : args.at(-1);
+        const evidence = operation === "smoke"
+          ? { pillowPng: true, svgPng: true, pdfPng: true, aacAudio: true, h264AacAnimation: true, decodedPng: true }
+          : Object.fromEntries(REQUIRED_TOOLS[role].map((name) => [name, name === "node" ? "v24.21.0" : name === "codex" ? "0.155.1" : name === "claude" ? "2.1.278" : "available"]));
+        return { code: 0, stdout: `${JSON.stringify(evidence)}\n`, stderr: "" };
       }
       if (args[0] === "ps") {
         if (args.includes(`label=io.storybench.install=${buildInstallId}`)) return { code: 0, stdout: "owned-container\n", stderr: "" };
@@ -276,6 +292,12 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
   assert.match(stdout, /PASS health: healthy/);
   assert.doesNotMatch(stdout, /FAIL health/);
   assert.doesNotMatch(stdout, /fixture-only/, "doctor never prints credential content");
+  brokenImageTool = "ffprobe"; stdout = ""; stderr = "";
+  code = await main(["doctor"], { env: s.env, home: s.home, system, runCommand: fakeRun, probeService: async () => ({ state: "stopped" }),
+    stdout: { write: (text) => { stdout += text; } }, stderr: { write: (text) => { stderr += text; } } });
+  assert.equal(code, 1);
+  assert.match(stdout, /FAIL worker packaged tools: worker image probe failed: ffprobe: not found/);
+  brokenImageTool = null;
   rootlessDocker = false; stdout = ""; stderr = "";
   code = await main(["doctor"], { env: s.env, home: s.home, system, runCommand: fakeRun, probeService: async () => ({ state: "stopped" }),
     stdout: { write: (text) => { stdout += text; } }, stderr: { write: (text) => { stderr += text; } } });
