@@ -1,6 +1,55 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createStoryRenderer, isStorySaveShortcut, mappingChangeSummary, matchesSubmittedCommit, STARTER_STORY, StoryEditor } from "../src/story-editor.js";
+import { JSDOM } from "jsdom";
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { deleteCharBackward } from "@codemirror/commands";
+import { createStoryRenderer, sectionMarkerExtensions, isStorySaveShortcut, mappingChangeSummary, matchesSubmittedCommit, STARTER_STORY, StoryEditor } from "../src/story-editor.js";
+
+test("write editor hides section markers while retaining them through edits", (t) => {
+  const dom = new JSDOM('<div id="editor"></div>', { pretendToBeVisual: true });
+  const previous = Object.fromEntries(["window", "document", "MutationObserver", "ResizeObserver", "requestAnimationFrame", "cancelAnimationFrame"].map((key) => [key, globalThis[key]]));
+  Object.assign(globalThis, {
+    window: dom.window,
+    document: dom.window.document,
+    MutationObserver: dom.window.MutationObserver,
+    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
+    requestAnimationFrame: (callback) => setTimeout(callback, 0),
+    cancelAnimationFrame: (id) => clearTimeout(id),
+  });
+  const marker = "<!-- storybench:section 123e4567-e89b-42d3-a456-426614174000 -->";
+  const source = `# Sections\n${marker}\n## Intro\n`;
+  const view = new EditorView({
+    parent: document.getElementById("editor"),
+    state: EditorState.create({ doc: source, extensions: [sectionMarkerExtensions] }),
+  });
+  t.after(() => {
+    view.destroy();
+    dom.window.close();
+    Object.assign(globalThis, previous);
+  });
+  assert.doesNotMatch(view.dom.textContent, /storybench:section/);
+  assert.equal(view.state.doc.toString(), source);
+  view.dispatch({ selection: { anchor: source.indexOf("## Intro") } });
+  deleteCharBackward(view);
+  assert.equal(view.state.doc.toString(), source, "Backspace at the heading must not erase its hidden ID");
+  view.dispatch({ changes: { from: source.indexOf("Intro"), to: source.indexOf("Intro") + 5, insert: "Opening" } });
+  assert.doesNotMatch(view.dom.textContent, /storybench:section/);
+  assert.match(view.dom.textContent, /Opening/);
+  assert.match(view.state.doc.toString(), new RegExp(`${marker}\\n## Opening`));
+  const headingStart = view.state.doc.toString().indexOf("## Opening");
+  view.dispatch({ selection: { anchor: headingStart, head: headingStart + "## Opening".length } });
+  let clipboard = "";
+  const cut = new dom.window.Event("cut", { bubbles: true, cancelable: true });
+  Object.defineProperty(cut, "clipboardData", { value: { setData: (_type, value) => { clipboard = value; } } });
+  view.contentDOM.dispatchEvent(cut);
+  assert.equal(clipboard, `${marker}\n## Opening`);
+  assert.doesNotMatch(view.state.doc.toString(), /storybench:section/);
+  view.dispatch({ changes: { from: view.state.doc.length, insert: clipboard } });
+  assert.match(view.state.doc.toString(), new RegExp(`${marker}\\n## Opening`), "pasting the cut heading keeps its ID");
+  view.dispatch({ changes: { from: view.state.doc.toString().indexOf(marker), to: view.state.doc.length } });
+  assert.doesNotMatch(view.state.doc.toString(), /storybench:section/, "deleting a whole section still works");
+});
 
 test("story renderer supports the agreed markdown without executing document HTML", () => {
   const render = createStoryRenderer();
