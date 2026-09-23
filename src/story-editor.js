@@ -27,11 +27,11 @@ export function isStorySaveShortcut(event) {
 }
 
 const sectionMarker = /^ {0,3}<!--\s*storybench:section\s+[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\s*-->\s*$/gim;
-const sectionMarkerLine = /^ {0,3}<!--[ \t]*storybench:section[ \t]+[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}[ \t]*-->[ \t]*$/gim;
+const sectionMarkerLine = /^ {0,3}<!--[ \t]*storybench:section[ \t]+[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}[ \t]*-->[ \t]*$/i;
 
 function markerDecorations(source) {
   const ranges = [];
-  for (const match of source.matchAll(sectionMarkerLine)) {
+  for (const match of source.matchAll(new RegExp(sectionMarkerLine.source, "gim"))) {
     const afterMarker = match.index + match[0].length;
     const end = afterMarker + (source[afterMarker] === "\n" ? 1 : 0);
     ranges.push(Decoration.replace({}).range(match.index, end));
@@ -50,6 +50,21 @@ const hiddenSectionMarkers = StateField.define({
 
 export const sectionMarkerExtensions = [
   hiddenSectionMarkers,
+  EditorView.domEventHandlers({
+    cut(event, view) {
+      const selection = view.state.selection;
+      if (!event.clipboardData || selection.ranges.length !== 1 || selection.main.empty) return false;
+      const { from, to } = selection.main;
+      const heading = view.state.doc.lineAt(from);
+      if (from !== heading.from || to < heading.to || heading.number === 1) return false;
+      const marker = view.state.doc.line(heading.number - 1);
+      if (!sectionMarkerLine.test(marker.text)) return false;
+      event.clipboardData.setData("text/plain", view.state.doc.sliceString(marker.from, to));
+      event.preventDefault();
+      view.dispatch({ changes: { from: marker.from, to }, userEvent: "delete.cut" });
+      return true;
+    },
+  }),
   EditorState.changeFilter.of((transaction) => {
     let removesMarkerAlone = false;
     const markers = transaction.startState.field(hiddenSectionMarkers);

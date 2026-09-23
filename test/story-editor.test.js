@@ -37,7 +37,17 @@ test("write editor hides section markers while retaining them through edits", (t
   assert.doesNotMatch(view.dom.textContent, /storybench:section/);
   assert.match(view.dom.textContent, /Opening/);
   assert.match(view.state.doc.toString(), new RegExp(`${marker}\\n## Opening`));
-  view.dispatch({ changes: { from: source.indexOf(marker), to: view.state.doc.toString().indexOf("## Opening") + "## Opening".length } });
+  const headingStart = view.state.doc.toString().indexOf("## Opening");
+  view.dispatch({ selection: { anchor: headingStart, head: headingStart + "## Opening".length } });
+  let clipboard = "";
+  const cut = new dom.window.Event("cut", { bubbles: true, cancelable: true });
+  Object.defineProperty(cut, "clipboardData", { value: { setData: (_type, value) => { clipboard = value; } } });
+  view.contentDOM.dispatchEvent(cut);
+  assert.equal(clipboard, `${marker}\n## Opening`);
+  assert.doesNotMatch(view.state.doc.toString(), /storybench:section/);
+  view.dispatch({ changes: { from: view.state.doc.length, insert: clipboard } });
+  assert.match(view.state.doc.toString(), new RegExp(`${marker}\\n## Opening`), "pasting the cut heading keeps its ID");
+  view.dispatch({ changes: { from: view.state.doc.toString().indexOf(marker), to: view.state.doc.length } });
   assert.doesNotMatch(view.state.doc.toString(), /storybench:section/, "deleting a whole section still works");
 });
 
