@@ -68,6 +68,31 @@ test("creating a conversation selects the new conversation", async (t) => {
   workspace.close();
 });
 
+test("refresh opens the most recent conversation while polling keeps the current selection", async (t) => {
+  const { dom, root } = page(); t.after(() => dom.window.close());
+  const conversations = [
+    { id: "new", name: "Conversation 2", state: "idle", draft: "new draft" },
+    { id: "old", name: "Conversation 1", state: "idle", draft: "old draft" },
+  ];
+  const api = async (url) => url.endsWith("/chats")
+    ? conversations
+    : { ...conversations.find((value) => url.endsWith(value.id)), messages: [] };
+  const workspace = new ChatWorkspace({ root, api, getEpisode: () => ({ id: "episode" }) });
+  await workspace.open();
+  assert.deepEqual([...root.querySelectorAll("[data-chat-id]")].map((item) => item.dataset.chatId), ["new", "old"]);
+  assert.equal(workspace.currentId, "new");
+  assert.equal(root.querySelector("[data-chat-draft]").value, "new draft");
+
+  await root.querySelector('[data-chat-history-list]').onclick({ target: root.querySelector('[data-chat-id="old"]') });
+  await workspace.refreshList(workspace.generation, "episode", { preserveSelection: true });
+  assert.equal(workspace.currentId, "old");
+
+  await workspace.open();
+  assert.equal(workspace.currentId, "new");
+  assert.equal(root.querySelector('[data-chat-id="new"]').getAttribute("aria-current"), "true");
+  workspace.close();
+});
+
 test("episode switch flushes the captured draft without cross-writing the next episode", async (t) => {
   const { dom, root } = page(); t.after(() => dom.window.close());
   let episode = { id: "one" }; const writes = [];

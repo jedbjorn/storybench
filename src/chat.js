@@ -494,7 +494,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     return project(episodeId, id);
   };
   return {
-    list: (episodeId) => { episode(episodeId); return db.prepare("SELECT * FROM conversations WHERE episode_id=? ORDER BY created_at,id").all(episodeId).map((value) => ({ ...summary(value), ...(continuity ? { settings: continuity.persistence.getSettings(value.id) } : {}) })); }, create,
+    list: (episodeId) => { episode(episodeId); return db.prepare("SELECT * FROM conversations WHERE episode_id=? ORDER BY updated_at DESC,created_at DESC,rowid DESC").all(episodeId).map((value) => ({ ...summary(value), ...(continuity ? { settings: continuity.persistence.getSettings(value.id) } : {}) })); }, create,
     updateSettings, busyReason,
     get: (episodeId, id) => project(episodeId, id || first(episodeId).id), update,
     send: (episodeId, id, text, attachmentIds = []) => text === undefined ? send(episodeId, first(episodeId).id, id, attachmentIds) : send(episodeId, id, text, attachmentIds),

@@ -159,6 +159,19 @@ test('multiple conversations keep names and drafts while one turn per episode is
   await chat.close(); store.close(); rmSync(root, { recursive: true, force: true });
 });
 
+test('conversation history puts the latest activity first', async () => {
+  const root = workspace(); const store = new Store(root); const episode = store.createEpisode();
+  const chat = createChatService({ store, renders: {} });
+  const first = chat.create(episode.id, { name: 'First' });
+  const second = chat.create(episode.id, { name: 'Second' });
+  store.db.prepare('UPDATE conversations SET created_at=?,updated_at=? WHERE id=?').run('2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', first.id);
+  store.db.prepare('UPDATE conversations SET created_at=?,updated_at=? WHERE id=?').run('2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z', second.id);
+  assert.deepEqual(chat.list(episode.id).map((item) => item.id), [second.id, first.id]);
+  store.db.prepare('UPDATE conversations SET updated_at=? WHERE id=?').run('2026-01-03T00:00:00.000Z', first.id);
+  assert.deepEqual(chat.list(episode.id).map((item) => item.id), [first.id, second.id]);
+  await chat.close(); store.close(); rmSync(root, { recursive: true, force: true });
+});
+
 test('legacy episode chat migrates once with exact thread and history', async () => {
   const root = workspace(); const store = new Store(root); const episode = store.createEpisode(); const stamp = new Date().toISOString();
   store.db.exec(`CREATE TABLE chats(episode_id TEXT PRIMARY KEY,state TEXT,thread_id TEXT,active_turn_id TEXT,error TEXT,created_at TEXT,updated_at TEXT,name TEXT);
