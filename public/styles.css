@@ -266,7 +266,6 @@ h2 {
 .story-mode button:first-child { border-radius: 8px 0 0 8px; }
 .story-mode button:last-child { border-radius: 0 8px 8px 0; }
 .story-mode button.active { background: var(--pale); color: var(--deep); font-weight: 700; }
-.story-metadata-note { margin: 5px 0 9px; color: var(--muted); font-size: 12px; }
 .story-codemirror { min-height: 420px; border: 1px solid var(--line); border-radius: 10px; background: white; overflow: hidden; }
 .story-codemirror .cm-editor { min-height: 420px; }
 .story-codemirror .cm-scroller { font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
