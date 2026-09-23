@@ -29747,6 +29747,38 @@ function isStorySaveShortcut(event) {
   return (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "s";
 }
 var sectionMarker = /^ {0,3}<!--\s*storybench:section\s+[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\s*-->\s*$/gim;
+var sectionMarkerLine = /^ {0,3}<!--[ \t]*storybench:section[ \t]+[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}[ \t]*-->[ \t]*$/gim;
+function markerDecorations(source) {
+  const ranges = [];
+  for (const match of source.matchAll(sectionMarkerLine)) {
+    const afterMarker = match.index + match[0].length;
+    const end = afterMarker + (source[afterMarker] === "\n" ? 1 : 0);
+    ranges.push(Decoration.replace({}).range(match.index, end));
+  }
+  return Decoration.set(ranges);
+}
+var hiddenSectionMarkers = StateField.define({
+  create: (state) => markerDecorations(state.doc.toString()),
+  update: (decorations2, transaction) => transaction.docChanged ? markerDecorations(transaction.state.doc.toString()) : decorations2,
+  provide: (field) => [
+    EditorView.decorations.from(field),
+    EditorView.atomicRanges.of((view) => view.state.field(field))
+  ]
+});
+var sectionMarkerExtensions = [
+  hiddenSectionMarkers,
+  EditorState.changeFilter.of((transaction) => {
+    let removesMarkerAlone = false;
+    const markers = transaction.startState.field(hiddenSectionMarkers);
+    transaction.changes.iterChanges((from, to, _newFrom, _newTo, inserted) => {
+      if (inserted.length || from === to) return;
+      markers.between(from, to, (markerFrom, markerTo) => {
+        if (from === markerFrom && to === markerTo) removesMarkerAlone = true;
+      });
+    });
+    return !removesMarkerAlone;
+  })
+];
 function createStoryRenderer() {
   const renderer = new MarkdownItCallable({ html: false, linkify: false, typographer: false });
   renderer.renderer.rules.image = (tokens, index) => {
@@ -29858,6 +29890,7 @@ var StoryEditor = class {
           history(),
           markdown(),
           EditorView.lineWrapping,
+          sectionMarkerExtensions,
           keymap.of([...defaultKeymap, ...historyKeymap, ...markdownKeymap]),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) this.setStatus("Story has unsaved changes");
@@ -30041,7 +30074,8 @@ export {
   createStoryRenderer,
   isStorySaveShortcut,
   mappingChangeSummary,
-  matchesSubmittedCommit
+  matchesSubmittedCommit,
+  sectionMarkerExtensions
 };
 /*! Bundled license information:
 

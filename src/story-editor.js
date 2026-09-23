@@ -1,5 +1,5 @@
-import { EditorState } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
+import { EditorState, StateField } from "@codemirror/state";
+import { Decoration, EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown, markdownKeymap } from "@codemirror/lang-markdown";
 import MarkdownIt from "markdown-it";
@@ -27,6 +27,41 @@ export function isStorySaveShortcut(event) {
 }
 
 const sectionMarker = /^ {0,3}<!--\s*storybench:section\s+[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\s*-->\s*$/gim;
+const sectionMarkerLine = /^ {0,3}<!--[ \t]*storybench:section[ \t]+[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}[ \t]*-->[ \t]*$/gim;
+
+function markerDecorations(source) {
+  const ranges = [];
+  for (const match of source.matchAll(sectionMarkerLine)) {
+    const afterMarker = match.index + match[0].length;
+    const end = afterMarker + (source[afterMarker] === "\n" ? 1 : 0);
+    ranges.push(Decoration.replace({}).range(match.index, end));
+  }
+  return Decoration.set(ranges);
+}
+
+const hiddenSectionMarkers = StateField.define({
+  create: (state) => markerDecorations(state.doc.toString()),
+  update: (decorations, transaction) => transaction.docChanged ? markerDecorations(transaction.state.doc.toString()) : decorations,
+  provide: (field) => [
+    EditorView.decorations.from(field),
+    EditorView.atomicRanges.of((view) => view.state.field(field)),
+  ],
+});
+
+export const sectionMarkerExtensions = [
+  hiddenSectionMarkers,
+  EditorState.changeFilter.of((transaction) => {
+    let removesMarkerAlone = false;
+    const markers = transaction.startState.field(hiddenSectionMarkers);
+    transaction.changes.iterChanges((from, to, _newFrom, _newTo, inserted) => {
+      if (inserted.length || from === to) return;
+      markers.between(from, to, (markerFrom, markerTo) => {
+        if (from === markerFrom && to === markerTo) removesMarkerAlone = true;
+      });
+    });
+    return !removesMarkerAlone;
+  }),
+];
 
 export function createStoryRenderer() {
   const renderer = new MarkdownIt({ html: false, linkify: false, typographer: false });
@@ -144,7 +179,7 @@ export class StoryEditor {
       state: EditorState.create({
         doc: initial,
         extensions: [
-          history(), markdown(), EditorView.lineWrapping,
+          history(), markdown(), EditorView.lineWrapping, sectionMarkerExtensions,
           keymap.of([...defaultKeymap, ...historyKeymap, ...markdownKeymap]),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) this.setStatus("Story has unsaved changes");
