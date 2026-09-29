@@ -18,7 +18,7 @@
   "dependencies": {
     "@codemirror/commands": "6.10.3",
     "@codemirror/lang-markdown": "6.5.2",
-    "@codemirror/state": "6.7.5",
+    "@codemirror/state": "6.7.6",
     "@codemirror/view": "6.43.12",
     "@mozilla/readability": "0.6.0",
     "@resvg/resvg-js": "2.6.2",
