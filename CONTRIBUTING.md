@@ -72,5 +72,5 @@ request you agree that your contribution is licensed under the same terms.
 
 ## Credits
 
-Storybench is built with [Subfloor](https://github.com/jedbjorn/subfloor), an
+Storybench is built with [Subfloor](https://subfloor.designs-os.com), an
 open-source meta-harness for running coding agents against a repository.

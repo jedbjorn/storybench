@@ -11,7 +11,7 @@ Storybench is a local workspace for developing videos with a production agent. I
 
 One local Node 24 application serves every channel from one SQLite database. A systemd user service supervises separate Docker app and request-scoped worker containers, and the `storybench` CLI manages installation and lifecycle. The browser is published only on loopback; there is no Storybench account or remote server.
 
-Storybench is built with [Subfloor](https://github.com/jedbjorn/subfloor), an open-source meta-harness for running coding agents against a repository.
+Storybench is built with [Subfloor](https://subfloor.designs-os.com), an open-source meta-harness for running coding agents against a repository.
 
 Storybench is released under the [MIT License](LICENSE).
 
