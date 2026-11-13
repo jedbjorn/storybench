@@ -37,3 +37,6 @@
 # <<< subfloor managed ignores <<<
 
 node_modules/
+
+# Local reference material (ad-hoc examples, nested repos) — never committed.
+/_References/
