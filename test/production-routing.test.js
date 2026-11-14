@@ -35,7 +35,7 @@ function fixture(t, { hold = false } = {}) {
     listGraphicRecipes: () => [],
   };
   const chat = createChatService({ store, renders, codexFactory: factory,
-    continuity: { persistence: createV9ConversationPersistence(store), catalog: async () => [] } });
+    continuity: { persistence: createV9ConversationPersistence(store), catalog: async () => ["codex", "claude"].map((harness) => ({ source: `${harness}-login`, harness, available: true, exactModelIds: true, models: [] })) } });
   t.after(async () => { await chat.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
   return { store, episode: current, calls, renders, chat };
 }

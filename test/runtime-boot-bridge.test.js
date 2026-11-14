@@ -46,12 +46,12 @@ test("boot renders one body into AGENTS.md and CLAUDE.md plus native skill dirs"
   assert.match(agents, /Episode ep-1 phrase BOOT-X/);
   assert.match(agents, /\.claude\/skills\/alpha\/SKILL\.md/);
   assert.match(agents, /\.agents\/skills\/beta\/SKILL\.md/);
-  for (const root of [".claude/skills", ".agents/skills"])
+  for (const root of [".claude/skills", ".agents/skills", ".opencode/skills"])
     assert.match(await readFile(path.join(episode, root, "alpha/SKILL.md"), "utf8"), /Phrase SKILL-Y in \/storybench/);
-  assert.equal(result.files.length, 6);
+  assert.equal(result.files.length, 8);
   assert.ok(result.bootSha256 && result.templateVersion);
   const manifest = JSON.parse(await readFile(path.join(episode, ".storybench/renders.json"), "utf8"));
-  assert.equal(manifest.files.length, 6);
+  assert.equal(manifest.files.length, 8);
 });
 
 test("re-render removes only obsolete app-owned skills and keeps user files", async (t) => {
@@ -64,7 +64,7 @@ test("re-render removes only obsolete app-owned skills and keeps user files", as
   await writeFile(path.join(episode, "work/clip.mp4"), "bytes");
   await renderEpisodeBoot({ episodeDir: episode, context, templates: await templates(path.join(dir, "t1"), ["alpha", "beta"]) });
   const second = await renderEpisodeBoot({ episodeDir: episode, context: { ...context, runtime: { ...context.runtime, bootPhrase: "BOOT-2" } }, templates: await templates(path.join(dir, "t2"), ["alpha"]) });
-  assert.deepEqual(second.removed.sort(), [".agents/skills/beta/SKILL.md", ".claude/skills/beta/SKILL.md"]);
+  assert.deepEqual(second.removed.sort(), [".agents/skills/beta/SKILL.md", ".claude/skills/beta/SKILL.md", ".opencode/skills/beta/SKILL.md"]);
   await assert.rejects(stat(path.join(episode, ".claude/skills/beta")));
   assert.equal(await readFile(path.join(episode, ".claude/skills/user-own/SKILL.md"), "utf8"), "user");
   assert.equal(await readFile(path.join(episode, "story.md"), "utf8"), "# story");
@@ -106,7 +106,7 @@ test("the shipped templates render with the app's boot context and cover the ski
   assert.doesNotMatch(renderedBoot, /not in this render|not reported in this render/);
   const roster = ["storybench-understand-project", "storybench-read-references", "storybench-edit-story-cards", "storybench-edit-broll",
     "storybench-create-graphics", "storybench-reuse-project-assets", "storybench-assemble-draft", "storybench-finish-video"];
-  for (const name of roster) for (const root of [".claude/skills", ".agents/skills"])
+  for (const name of roster) for (const root of [".claude/skills", ".agents/skills", ".opencode/skills"])
     assert.ok(result.files.some((file) => file.path === `${root}/${name}/SKILL.md`), `${root}/${name} rendered`);
   const loaded = await loadTemplates();
   assert.deepEqual(loaded.skills.map((skill) => skill.name).sort(), [...roster].sort());

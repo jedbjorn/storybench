@@ -84,7 +84,7 @@ test("reused candidate fails a broken media smoke before activation", async (t) 
     if (args[0] === "image") return { code: 0, stdout: `${args[2]}\n` };
     if (args.includes("smoke")) return { code: 1, stderr: "animated video encode: ffmpeg: exit 1" };
     const role = args.at(-1);
-    return { code: 0, stdout: JSON.stringify(Object.fromEntries(REQUIRED_TOOLS[role].map((name) => [name, name === "node" ? "v24.21.0" : name === "codex" ? "0.155.1" : name === "claude" ? "2.1.278" : "version 1"]))) };
+    return { code: 0, stdout: JSON.stringify(Object.fromEntries(REQUIRED_TOOLS[role].map((name) => [name, name === "node" ? "v24.21.0" : name === "codex" ? "0.155.1" : name === "claude" ? "2.1.278" : name === "opencode" ? "1.19.5" : "version 1"]))) };
   };
   await assert.rejects(stageRelease({ xdg: s.xdg }, { commit: s.commit }, { runCommand: run }), /app image smoke failed: animated video encode: ffmpeg: exit 1/);
   assert.equal(existsSync(s.xdg.current), false);
@@ -118,7 +118,7 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
         const operation = args.at(-2) === "probe" ? "probe" : args.at(-1);
         const evidence = operation === "smoke"
           ? { pillowPng: true, svgPng: true, pdfPng: true, aacAudio: true, h264AacAnimation: true, decodedPng: true }
-          : Object.fromEntries(REQUIRED_TOOLS[role].map((name) => [name, name === "node" ? "v24.21.0" : name === "codex" ? "0.155.1" : name === "claude" ? "2.1.278" : "available"]));
+          : Object.fromEntries(REQUIRED_TOOLS[role].map((name) => [name, name === "node" ? "v24.21.0" : name === "codex" ? "0.155.1" : name === "claude" ? "2.1.278" : name === "opencode" ? "1.19.5" : "available"]));
         return { code: 0, stdout: `${JSON.stringify(evidence)}\n`, stderr: "" };
       }
       if (args[0] === "ps") {

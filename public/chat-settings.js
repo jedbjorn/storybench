@@ -6,7 +6,9 @@ export const HARNESS_LABELS = { codex: "Codex", claude: "Claude Code", opencode:
 
 export function selectionLabel(settings) {
   if (!settings) return "Codex · default model";
-  const harness = HARNESS_LABELS[settings.harness] ?? settings.harness;
+  const source = settings.inferenceSource || settings.source;
+  const sourceName = source && !['default', 'migrated', 'explicit', 'explicit-inherited'].includes(source) && !source.endsWith('-login') ? source : null;
+  const harness = [sourceName, HARNESS_LABELS[settings.harness] ?? settings.harness].filter(Boolean).join(' · ');
   return [harness, settings.model || "default model", settings.effort ? `${settings.effort} effort` : null].filter(Boolean).join(" · ");
 }
 
@@ -54,6 +56,7 @@ export class ChatSettings {
   // Render the editor for `conversation` into the panel; resolves with the saved conversation or null.
   open(panel, conversation, { busy = false, onSaved = () => {}, defaultMode = false, kind = "video", onDirty = () => {}, onCancel = null } = {}) {
     const settings = conversation.settings ?? { harness: "codex", model: null, effort: null, revision: 1 };
+    const source = settings.inferenceSource || (this.catalog?.harnesses?.some((entry) => entry.source === settings.source) ? settings.source : this.catalog?.harnesses?.some((entry) => entry.source === `${settings.harness}-login`) ? `${settings.harness}-login` : settings.harness);
     let unavailable = !this.catalog?.available;
     panel.hidden = false;
     panel.innerHTML = `<form class="chat-settings" data-chat-settings-form>
@@ -73,14 +76,14 @@ export class ChatSettings {
       harness.innerHTML = (this.catalog?.harnesses || []).map((candidate) => candidate.source || candidate.harness).map((id) => {
         const entry = this.entry(id);
         const reason = !entry ? "not listed" : entry.available ? "" : entry.reason;
-        return `<option value="${id}" ${entry?.available ? "" : "disabled"} ${id === harness.value || (!harness.value && id === (settings.inferenceSource || settings.harness)) ? "selected" : ""}>${escapeHtml(HARNESS_LABELS[id] || id)}${reason ? ` — unavailable: ${escapeHtml(reason)}` : ""}</option>`;
+        return `<option value="${id}" ${entry?.available ? "" : "disabled"} ${id === harness.value || (!harness.value && id === source) ? "selected" : ""}>${escapeHtml(HARNESS_LABELS[id] || id)}${reason ? ` — unavailable: ${escapeHtml(reason)}` : ""}</option>`;
       }).join("");
     };
     const paintModels = () => {
       const entry = this.entry(harness.value);
       list.innerHTML = (entry?.models ?? []).filter((value) => value.eligible !== false || form.querySelector("[data-settings-show-all]").checked || value.id === model.value).map((value) => `<option value="${escapeHtml(value.id)}">${escapeHtml(value.displayName ?? value.id)}${value.isDefault ? " (default)" : ""}${value.eligible === false ? ` — ${escapeHtml(value.eligibilityReason)}; use at your own risk` : entry.advisory ? " — advisory" : ""}</option>`).join("");
       const choices = effortOptions(entry, model.value.trim() || null);
-      const current = effort.value || (harness.value === settings.harness ? settings.effort ?? "" : "");
+      const current = effort.value || (harness.value === source ? settings.effort ?? "" : "");
       effort.innerHTML = `<option value="">Native default</option>${choices.map((value) => `<option value="${escapeHtml(value)}" ${value === current ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}`;
       if (!choices.includes(current)) effort.value = "";
       const parts = [];
@@ -89,12 +92,12 @@ export class ChatSettings {
       if (entry?.advisory) parts.push(entry.note || "Claude model names are advisory; exact IDs are verified on first use.");
       if (entry?.stale) parts.push(`Model list may be stale${entry.discoveryError ? ` (${entry.discoveryError})` : ""}; use Refresh models.`);
       if (entry && !entry.available) parts.push(`${HARNESS_LABELS[entry.harness]} is unavailable: ${entry.reason}. Open Providers to reconnect.`);
-      if (!defaultMode && harness.value !== (settings.inferenceSource || settings.harness)) parts.push("Switching harness starts a new native session on the next message, seeded with a summary of this conversation.");
+      if (!defaultMode && harness.value !== source) parts.push("Switching harness starts a new native session on the next message, seeded with a summary of this conversation.");
       note.textContent = parts.join(" ");
     };
-    harness.value = settings.inferenceSource || settings.source && !["explicit", "default", "migrated"].includes(settings.source) && settings.source || settings.harness;
+    harness.value = source;
     paintHarnesses();
-    harness.value = settings.inferenceSource || settings.source && !["explicit", "default", "migrated"].includes(settings.source) && settings.source || settings.harness;
+    harness.value = source;
     model.value = settings.model ?? "";
     paintModels();
     form.querySelector("[data-settings-show-all]").onchange = paintModels;

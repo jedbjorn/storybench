@@ -2,7 +2,7 @@
 export const IMAGE_CHECK = "/opt/storybench/app/src/runtime/image-check.js";
 export const REQUIRED_TOOLS = Object.freeze({
   app: ["node", "ffmpeg", "ffprobe", "python", "pillow", "resvg", "pdftotext", "pdfinfo", "pdftoppm", "fontdejaVu", "fontnoto", "fontliberation", "pkgFfmpeg", "pkgPoppler", "pkgPillow", "pkgResvg", "pkgFontDejaVu", "pkgFontNoto", "pkgFontLiberation"],
-  worker: ["node", "ffmpeg", "ffprobe", "python", "pillow", "resvg", "pdftotext", "pdfinfo", "pdftoppm", "fontdejaVu", "fontnoto", "fontliberation", "pkgFfmpeg", "pkgPoppler", "pkgPillow", "pkgResvg", "pkgFontDejaVu", "pkgFontNoto", "pkgFontLiberation", "codex", "claude", "git", "rg", "bash"],
+  worker: ["node", "ffmpeg", "ffprobe", "python", "pillow", "resvg", "pdftotext", "pdfinfo", "pdftoppm", "fontdejaVu", "fontnoto", "fontliberation", "pkgFfmpeg", "pkgPoppler", "pkgPillow", "pkgResvg", "pkgFontDejaVu", "pkgFontNoto", "pkgFontLiberation", "codex", "claude", "opencode", "git", "rg", "bash"],
 });
 
 export async function checkImage(run, image, role, operation = "probe", options = {}) {
@@ -17,7 +17,7 @@ export async function checkImage(run, image, role, operation = "probe", options 
   for (const key of required) if (operation === "probe" ? typeof evidence[key] !== "string" || !evidence[key].trim() : evidence[key] !== true)
     throw new Error(`${role} image ${operation} is missing ${key} evidence`);
   if (operation === "probe" && !/^v(2[4-9]|[3-9]\d)\./.test(evidence.node)) throw new Error(`${role} image has an unsupported Node version`);
-  if (operation === "probe" && role === "worker") for (const name of ["codex", "claude"])
+  if (operation === "probe" && role === "worker") for (const name of ["codex", "claude", "opencode"])
     if (!/^\d+\.\d+\.\d+$/.test(evidence[name])) throw new Error(`${role} image has invalid ${name} version evidence`);
   return evidence;
 }
