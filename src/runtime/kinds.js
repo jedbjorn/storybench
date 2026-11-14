@@ -15,8 +15,7 @@ export const KIND_REGISTRY = Object.freeze({
     'create_graphic_recipe', 'update_graphic_recipe', 'render_graphic',
     'list_branding', 'promote_card', 'apply_branding',
   ]) }),
-  // Deck authoring registers its definitions/handlers in the final integration lane.
-  deck: Object.freeze({ templates: 'deck', tools: Object.freeze([]) }),
+  deck: Object.freeze({ templates: 'deck', tools: Object.freeze(['update_story', 'read_deck', 'save_deck', 'build_deck', 'get_job', 'await_job', 'cancel_job']) }),
 });
 
 export function resolveKind(production, registry = KIND_REGISTRY) {

@@ -7,7 +7,8 @@
   let index = Math.max(0, slides.findIndex((slide) => `#${slide.id}` === location.hash));
   let stage = 0, timer, manual = false, popup = null, channel = '', lastSeen = 0;
   const steps = () => [...slides[index].querySelectorAll('[data-step]')];
-  const video = () => slides[index].querySelector('video');
+  const video = () => [...slides[index].querySelectorAll('video')].find((target) => !target.closest('[hidden]'));
+  const pauseVideos = () => document.querySelectorAll('video').forEach((target) => target.pause());
   const cancel = () => { clearTimeout(timer); timer = undefined; };
   function state() {
     return { index, stage, titles: slides.map((slide) => slide.dataset.title),
@@ -40,10 +41,10 @@
     if (!target) return;
     const activeIndex = index;
     Promise.resolve().then(() => {
-      if (index !== activeIndex || document.hidden) return;
+      if (index !== activeIndex || target !== video() || document.hidden) return;
       return target.play();
     }).then(() => {
-      if (index !== activeIndex || document.hidden) target.pause();
+      if (index !== activeIndex || target !== video() || document.hidden) target.pause();
       publish();
     }).catch(() => { target.controls = true; status.textContent = 'Playback was blocked. Use the video controls to retry.'; publish(); });
   }
@@ -51,7 +52,7 @@
     if (!Number.isInteger(value)) return;
     const next = Math.max(0, Math.min(slides.length - 1, value));
     if (next !== index) {
-      cancel(); video()?.pause(); index = next; stage = 0; manual = false;
+      cancel(); pauseVideos(); index = next; stage = 0; manual = false;
       document.getElementById('presentation').focus({ preventScroll: true });
     }
     slides.forEach((slide, i) => { slide.hidden = i !== index; });
@@ -96,7 +97,7 @@
     else if (data.type === 'deck-command' && typeof data.command === 'string') command(data.command, data.index);
   });
   window.addEventListener('pagehide', () => {
-    cancel(); video()?.pause();
+    cancel(); pauseVideos();
     if (popup && !popup.closed) popup.postMessage({ type: 'deck-closed', channel }, '*');
   });
   setInterval(() => {
@@ -108,6 +109,15 @@
   links.forEach((button) => button.addEventListener('click', () => show(Number(button.dataset.go))));
   document.querySelectorAll('[data-stage]').forEach((button) => button.addEventListener('click', () => selectStage(Number(button.dataset.stage))));
   document.querySelectorAll('[data-command]').forEach((button) => button.addEventListener('click', () => command(button.dataset.command)));
+  // Gallery views are independent of cumulative diagram reveals.
+  document.querySelectorAll('[data-gallery]').forEach((button) => button.addEventListener('click', () => {
+    const slide = button.closest('.slide');
+    slide.querySelectorAll('[data-gallery-view]').forEach((view) => {
+      view.hidden = view.dataset.galleryView !== button.dataset.gallery;
+      if (view.hidden) view.querySelectorAll('video').forEach((target) => target.pause());
+    });
+    publish();
+  }));
   document.querySelectorAll('video').forEach((target) => {
     target.addEventListener('pointerdown', takeOver);
     target.addEventListener('keydown', takeOver);
@@ -129,7 +139,7 @@
     else if (event.key.toLowerCase() === 'n') { event.preventDefault(); openPresenter(); }
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { cancel(); video()?.pause(); } else schedule();
+    if (document.hidden) { cancel(); pauseVideos(); } else schedule();
   });
   reduced.addEventListener('change', () => { paintStage(); schedule(); });
   window.addEventListener('hashchange', () => {

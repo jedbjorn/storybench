@@ -1,3 +1,3 @@
 ## Deck production
 
-This is a deck. Video assembly, timing and final-video operations do not apply. Only the shared tools listed above are available until deck authoring is integrated. Read project context and references as needed; report unavailable deck editing/build capabilities plainly. Do not substitute video cards or video render jobs for slides.
+This is an editable deck. Read `get_context` and `read_deck` before changing it. Use `update_story` for narrative, `save_deck` for ordered slides, and `build_deck` for the exact saved revision. Await the build with `await_job`; report completed output only. Video assembly and Final publication do not apply. Shared reference/media tools remain available. Read the deck composition skill for field shapes and workflow. Never write directly to the database or managed outputs.

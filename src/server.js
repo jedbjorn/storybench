@@ -1,3 +1,4 @@
+import { createDeckService } from './deck-service.js';
 import { controlRequest } from './runtime/channel.js';
 import { FONTS, fontPath, fontCatalog } from './fonts.js';
 import { validateSelection } from './runtime/conversation-runtime.js';
@@ -151,6 +152,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
   const listeners = new Map();
   const notify = (episodeId) => listeners.get(episodeId)?.forEach((fn) => fn());
   const library = createLibraryService({ workspace, store });
+  const decks = createDeckService({store,onChange:notify});
   const renders = createRenderService({ workspace, store, renderGraphic, validateGraphicRecipe, ...renderOptions });
   // In the Docker app container the host lifecycle entry point provides a private control
   // socket; Codex turns then run in request-scoped workers instead of in-process.
@@ -161,7 +163,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
   const catalog = chatOptions.catalog ?? (runtimeControl ? createModelCatalog({ controlSocket: runtimeControl }) : null);
   const persistence = chatOptions.persistence ?? conversationPersistenceFor(store);
   const continuity = catalog && persistence ? { persistence, catalog: (options) => catalog.list(options) } : null;
-  const chat = createChatService({ store, renders, onChange: notify, ...runtimeChat, continuity, requestPersistence: persistence, ...chatOptions });
+  const chat = createChatService({ store, renders, decks, onChange: notify, ...runtimeChat, continuity, requestPersistence: persistence, ...chatOptions });
   const eventStreams = new Set();
   let closing = false;
   let closePromise;
@@ -271,6 +273,9 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           const value = store.getEpisode(episodeId);
           if (!value) throw new StoreError("Episode not found", 404);
           return send(res, 200, value);
+        }
+        if (parts[3] === 'deck-build' && parts.length === 4 && req.method === 'POST') {
+          return send(res,202,decks.enqueue({expectedRevision:(await jsonBody(req)).expectedRevision,episodeId,requestId:null}));
         }
         if (parts[3] === "slides" && parts.length === 4) {
           if (req.method === "GET") return send(res, 200, store.getDeck(episodeId));
@@ -452,7 +457,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           }
         }
         if (parts[3] === "jobs" && parts[4] && parts[5] === "cancel" && req.method === "POST") {
-          const value = renders.cancelJob(episodeId, parts[4]); notify(episodeId); return send(res, 200, value);
+          const value = (store.getEpisode(episodeId)?.kind === 'deck' ? decks : renders).cancelJob(episodeId, parts[4]); notify(episodeId); return send(res, 200, value);
         }
         if (parts[3] === "chats") {
           if (parts[4] && parts[5] === "settings" && parts.length === 6 && req.method === "PUT")
@@ -561,6 +566,22 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           parts[3] === "file" ? sourceType : undefined,
         );
       }
+      if (parts[0] === 'api' && parts[1] === 'jobs' && parts[2] && parts[3] === 'deck' && ['GET','HEAD'].includes(req.method)) {
+        const job = store.getJob(parts[2]);
+        if (!job || job.kind !== 'deck' || job.state !== 'completed') throw new StoreError('Completed deck not found',404);
+        if (requestedChannel) store.assertEpisodeChannel(job.episodeId,requestedChannel);
+        const name = decodeURIComponent(parts.slice(4).join('/')) || 'index.html';
+        if (name !== 'bundle.zip' && !job.snapshot.manifest.files.includes(name)) throw new StoreError('Bundle file not found',404);
+        const base = path.dirname(contained(workspace,job.outputPath)), file = contained(base,name);
+        const actual = await realpath(file);
+        if (actual !== file) throw new StoreError('Unsafe bundle path',403);
+        // A CSP sandbox forces an opaque origin even if opened directly. The app iframe
+        // adds the same boundary. No app storage, network or app-origin script authority.
+        res.setHeader('Content-Security-Policy', "sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'none'");
+        res.setHeader('X-Content-Type-Options','nosniff');
+        if (name === 'bundle.zip') res.setHeader('Content-Disposition','attachment; filename="deck-bundle.zip"');
+        return await streamFile(req,res,file);
+      }
       if (
         parts[0] === "api" &&
         parts[1] === "jobs" &&
@@ -604,10 +625,10 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
       const stopped = server.listening
         ? new Promise((resolve) => server.close(resolve))
         : Promise.resolve();
-      await Promise.allSettled([stopped, renders.close("Job cancelled during server shutdown"), chat.close()]);
+      await Promise.allSettled([stopped, decks.close(), renders.close("Job cancelled during server shutdown"), chat.close()]);
       store.close();
     })());
-  return { server, store, chat, renders, close, health };
+  return { server, store, chat, renders, decks, close, health };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
