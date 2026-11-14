@@ -7,11 +7,11 @@ import { connect } from 'node:net';
 import { KIND_REGISTRY, resolveKind, selectKindTools } from '../src/runtime/kinds.js';
 import { loadTemplates, renderEpisodeBoot } from '../src/runtime/boot.js';
 import { mergeTools, defaultBootContextFor } from '../src/runtime/app-runtime.js';
-import { TOOL_DEFINITIONS, createScopedTools } from '../src/runtime/tools.js';
+import { TOOL_DEFINITIONS } from '../src/runtime/tools.js';
 import { STORYBENCH_TOOLS } from '../src/codex.js';
 import { WorkerCodexConnection } from '../src/runtime/harnesses.js';
 import { startBridge } from '../src/runtime/bridge.js';
-import { claimEpisodeRenders, activeRenderHolder } from '../src/runtime/request.js';
+import { claimEpisodeRenders, activeRenderHolder, openWorkerRequest } from '../src/runtime/request.js';
 import { bindInstructionContext, contextFingerprint } from '../src/runtime/instruction-context.js';
 
 async function temp(t) {
@@ -75,7 +75,7 @@ test('Codex dynamic definitions, Claude and OpenCode MCP lists share schemas and
 
 test('kind templates isolate guidance, clean owned files in every native root, and retain unrelated files', async (t) => {
   const episodeDir = await temp(t);
-  const store = { workspace: episodeDir, episodeLocation: () => ({ directory: episodeDir, legacy: true }),
+  const store = { workspace: episodeDir, episodeLocation: () => ({ directory: episodeDir, channelId: 'channel-one', legacy: true }),
     getEpisode: () => ({ title: 'Demo', revision: 1 }), episodeOutputDirectory: () => path.join(episodeDir, 'outputs/drafts') };
   const context = defaultBootContextFor(store, { episodeId: 'e', harness: 'opencode' })({ served: ['get_context'] });
   context.paths.episode = episodeDir; context.paths.work = path.join(episodeDir, 'work');
@@ -144,4 +144,17 @@ test('model selectors cannot change saved production kind', () => {
     assert.ok(!tools.definitions.some(({ name }) => name === 'create_draft'));
     assert.equal(saved.kind, 'deck');
   }
+});
+
+
+test('request resolves saved kind before touching files, ignores selector kind, and releases a failed render claim', async (t) => {
+  const dir = await temp(t);
+  let mutations = 0;
+  const store = { workspace: dir, episodeLocation: () => ({ directory: dir }),
+    getEpisode: () => ({ kind: 'unsupported' }), ensureEpisodeDirectories() { mutations++; } };
+  await writeFile(path.join(dir, 'AGENTS.md'), 'active instructions');
+  await assert.rejects(openWorkerRequest({ store, episodeId: 'one', requestId: 'r1', kind: 'video', harness: 'codex' }), { code: 'UNSUPPORTED_KIND' });
+  assert.equal(mutations, 0);
+  assert.equal(await readFile(path.join(dir, 'AGENTS.md'), 'utf8'), 'active instructions');
+  assert.equal(activeRenderHolder(dir), null);
 });

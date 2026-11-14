@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { Store } from "../src/store.js";
 import { createChatService } from "../src/chat.js";
+import { bindInstructionContext } from "../src/runtime/instruction-context.js";
 import { ClaudeChatConnection } from "../src/runtime/harnesses.js";
 import { createMemoryConversationPersistence, validateSelection, SelectionError } from "../src/runtime/conversation-runtime.js";
 import { createV9ConversationPersistence } from "../src/runtime/conversation-persistence.js";
@@ -56,7 +57,9 @@ function setup(t, options = {}) {
   const store = new Store(root);
   const persistence = options.persistence ?? (options.v9 ? createV9ConversationPersistence(store) : createMemoryConversationPersistence());
   const fake = harnessFactory(options);
-  const chat = createChatService({ store, codexFactory: fake.factory, continuity: { persistence, catalog: async () => catalog } });
+  const chat = createChatService({ store, codexFactory: options.instructionVersion ? async (args) => bindInstructionContext(await fake.factory(args), {
+    episodeDir: store.episodeDirectory(args.episodeId), segmentId: args.segmentId, version: options.instructionVersion(),
+  }) : fake.factory, continuity: { persistence, catalog: async () => options.catalog ?? catalog } });
   t.after(async () => { await chat.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
   const episode = store.createEpisode();
   return { store, chat, persistence, fake, episode, root };
@@ -400,4 +403,41 @@ test("one active request per conversation and a request never opens another harn
   await assert.rejects(chat.send(episode.id, c.id, "second request"), { statusCode: 409, message: /already running in this conversation/ });
   assert.throws(() => store.createSegment({ conversationId: c.id, harness: "claude", reason: "resume-unavailable", exceptRunId: run.id }), { statusCode: 409, message: /codex request cannot open a claude segment/ });
   assert.equal(store.createSegment({ conversationId: c.id, harness: "codex", reason: "resume-unavailable", exceptRunId: run.id }).harness, "codex");
+});
+
+
+for (const harness of ['codex', 'claude', 'opencode']) test(`${harness} context changes replace the native segment and seed the visible transcript exactly once`, async (t) => {
+  let version = 'context-one';
+  const { chat, persistence, fake, episode } = setup(t, { v9: true, instructionVersion: () => version,
+    catalog: [...catalog, { harness: 'opencode', source: 'custom-source', available: true, models: [{ id: 'remote', efforts: [] }] }] });
+  const c = chat.create(episode.id, { name: 'Context switch' });
+  if (harness !== 'codex') await chat.updateSettings(episode.id, c.id, {
+    harness, ...(harness === 'opencode' ? { source: 'custom-source', model: 'remote' } : { model: 'sonnet' }), expectedRevision: 1,
+  });
+  await chat.send(episode.id, c.id, 'First request');
+  assert.equal((await idle(chat, episode.id, c.id)).state, 'idle');
+  const original = persistence.activeSegment(c.id);
+  await chat.send(episode.id, c.id, 'Compatible follow-up');
+  assert.equal((await idle(chat, episode.id, c.id)).state, 'idle');
+  assert.equal(fake.log[1].resumed, original.nativeSessionId);
+  assert.equal(persistence.listSegments(c.id).length, 1);
+  version = 'context-two';
+  await chat.send(episode.id, c.id, 'Changed context follow-up');
+  const result = await idle(chat, episode.id, c.id);
+  assert.equal(result.state, 'idle');
+  const segments = persistence.listSegments(c.id);
+  assert.equal(segments.length, 2);
+  assert.equal(segments[1].previousSegmentId, original.id);
+  assert.notEqual(segments[1].nativeSessionId, original.nativeSessionId);
+  assert.equal(fake.log[2].resumed, null);
+  assert.equal(fake.log[2].prompts.length, 0, 'incompatible worker receives no user input');
+  const replacement = fake.log[3];
+  assert.equal(replacement.segmentId, segments[1].id);
+  assert.equal(replacement.prompts.length, 1);
+  assert.match(replacement.prompts[0], /Earlier visible conversation[\s\S]*do not re-execute[\s\S]*First request[\s\S]*User request:\nChanged context follow-up/);
+  assert.ok(result.events.some((event) => event.type === 'segment.started' && event.payload.reason === 'instruction-context-changed'));
+  await chat.send(episode.id, c.id, 'Continue new context');
+  assert.equal((await idle(chat, episode.id, c.id)).state, 'idle');
+  assert.equal(fake.log[4].resumed, segments[1].nativeSessionId);
+  assert.equal(persistence.listSegments(c.id).length, 2);
 });

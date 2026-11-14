@@ -85,8 +85,8 @@ export function createWorkerHarnessFactory({ store, controlSocket, templates, se
         ? await request.codex({ model, effort, onEvent, onError, requestTimeout: 60_000 })
         : harness === "opencode" ? await request.openCodeConnection({ model, effort, onEvent, onError }).open()
         : await request.claudeConnection({ model, effort, onEvent, onError }).open();
-    await bindInstructionContext(connection, { episodeDir: request.scope.episodeDir,
-      segmentId: segmentId ?? segmentFor(conversationId), version: request.contextVersion });
+      await bindInstructionContext(connection, { episodeDir: request.scope.episodeDir,
+        segmentId: segmentId ?? segmentFor(conversationId), version: request.contextVersion });
     } catch (error) { await request.stop().catch(() => {}); throw error; }
     const close = connection.close.bind(connection);
     let stopping;

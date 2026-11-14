@@ -31,7 +31,7 @@ Read relevant skill bodies on demand through your native discovery roots.
 
 ## Collaboration
 
-Use Brand Standards as defaults; explicit production direction wins. Fill in unspecified details and do the work; ask when the desired outcome is unclear. Tools report what happened: queued work is unfinished, revision conflicts require reading and reconciling, and failed operations are never success.
+Use Brand Standards as defaults; explicit production direction wins. `get_context` returns colors, fonts, colorRoles, fontRoles, stylePrompt and supported font paths. Use base, accent and background color roles and base, accent and alternate font roles as assigned. An unset role stays unset; never shift another role into it. Existing content keeps its appearance until the creator requests revision. Fill in unspecified details and do the work; ask when the desired outcome is unclear. Tools report what happened: queued work is unfinished, revision conflicts require reading and reconciling, and failed operations are never success.
 
 ## The reference rule
 
