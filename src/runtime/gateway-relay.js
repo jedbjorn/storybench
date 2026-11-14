@@ -12,7 +12,11 @@ const same = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.
 const inputs = ['content-type', 'accept', 'anthropic-version', 'anthropic-beta', 'openai-beta'];
 const outputs = ['content-type', 'content-encoding', 'cache-control'];
 const headersOf = (headers, names) => Object.fromEntries(names.filter((name) => typeof headers[name] === 'string').map((name) => [name, headers[name]]));
-const fail = (response, status, message) => { if (!response.headersSent) response.writeHead(status, { 'content-type': 'application/json' }); response.end(JSON.stringify({ error: message })); };
+const fail = (response, status, message) => {
+  if (response.headersSent) { response.destroy(); return; }
+  response.writeHead(status, { 'content-type': 'application/json' });
+  response.end(JSON.stringify({ error: message }));
+};
 
 export function isHostLocalGateway(route) {
   if (!route.custom) return false;

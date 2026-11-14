@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { startGatewayRelay, startWorkerGatewayAdapter, gatewayRequestPath, isHostLocalGateway } from '../src/runtime/gateway-relay.js';
 import { createProviderService } from '../src/runtime/providers.js';
 
-async function fixture(t, { protocol = 'openai', key = 'selected-secret', handler, timeoutMs = 500, tls = false } = {}) {
+async function fixture(t, { protocol = 'openai', key = 'selected-secret', handler, timeoutMs = 500, adapterTimeoutMs = timeoutMs + 100, tls = false } = {}) {
  const root = await mkdtemp(path.join(os.tmpdir(), 'sb-relay-')); t.after(() => rm(root, { recursive: true, force: true }));
  const seen = [];
  const onRequest = (req, res) => { seen.push({ url: req.url, headers: req.headers }); if (handler) return handler(req, res); res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ ok: true })); };
@@ -24,7 +24,7 @@ async function fixture(t, { protocol = 'openai', key = 'selected-secret', handle
  const route = { id: 'gateway-test', custom: true, protocol, baseUrl, key };
  const socketPath = path.join(root, 'private', 'relay.sock');
  const relay = await startGatewayRelay({ socketPath, route, requestId: 'req-one', timeoutMs }); t.after(() => relay.close());
- const adapter = await startWorkerGatewayAdapter({ socketPath, binding: relay.binding, timeoutMs: timeoutMs + 100 }); t.after(() => adapter.close());
+ const adapter = await startWorkerGatewayAdapter({ socketPath, binding: relay.binding, timeoutMs: adapterTimeoutMs }); t.after(() => adapter.close());
  const headers = protocol === 'anthropic' ? { 'x-api-key': relay.binding.token } : { Authorization: `Bearer ${relay.binding.token}` };
  return { root, server, baseUrl, route, socketPath, relay, adapter, headers, seen };
 }
@@ -103,6 +103,19 @@ test('streaming forwards before upstream completion; cancellation aborts upstrea
  controller.abort(); await Promise.race([closed, new Promise((_, reject) => setTimeout(() => reject(new Error('upstream not aborted')), 1000).unref())]);
  const stalled = await fixture(t, { timeoutMs: 50, handler: () => {} });
  const result = await privateRequest(stalled); assert.equal(result.status, 504); assert.match(result.body, /timed out/);
+});
+for (const stage of ['relay', 'adapter']) test(`${stage} timeout after the first streamed chunk aborts the downstream response`, async (t) => {
+ let closeResolve; const upstreamClosed = new Promise((resolve) => { closeResolve = resolve; });
+ const f = await fixture(t, {
+  timeoutMs: stage === 'relay' ? 100 : 1000, adapterTimeoutMs: stage === 'adapter' ? 100 : 1000,
+  handler: (req, res) => { req.socket.once('close', closeResolve); res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write('data: first\n\n'); },
+ });
+ const response = await fetch(`${f.adapter.baseUrl}/messages`, { headers: f.headers });
+ assert.equal(response.status, 200);
+ const reader = response.body.getReader();
+ assert.equal(Buffer.from((await reader.read()).value).toString(), 'data: first\n\n');
+ await assert.rejects(reader.read());
+ await Promise.race([upstreamClosed, new Promise((_, reject) => setTimeout(() => reject(new Error('upstream not aborted')), 1000).unref())]);
 });
 test('close aborts inflight requests, removes socket, is idempotent and rejects cross-request reuse', async (t) => {
  let closeResolve; const upstreamClosed = new Promise((resolve) => { closeResolve = resolve; });
