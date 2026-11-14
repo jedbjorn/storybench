@@ -1,3 +1,4 @@
+import { startGatewayRelay, isHostLocalGateway } from './gateway-relay.js';
 import { createProviderService } from './providers.js';
 // Storybench host lifecycle entry point (spec #11 Runtime Contract; spec #10 Health and
 // Lifecycle). Runs on the host under the user's service manager and is the only
@@ -77,6 +78,12 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
       await removeContainer(id);
       removed.push(entry);
     }
+    for (const worker of workers.values()) {
+      worker.logs?.stop();
+      await worker.relay?.close();
+      await worker.credential.dispose();
+    }
+    workers.clear();
     await rm(paths.requestsDir, { recursive: true, force: true });
     await rm(path.join(config.runtimeRoot, "credentials"), { recursive: true, force: true });
     const orphanRequests = removed.filter((entry) => entry.role === "worker").map((entry) => entry.requestId);
@@ -97,7 +104,7 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
   async function startWorker(request) {
     const existing = workers.get(request.requestId);
     if (existing) {
-      if (existing.harness !== request.harness || existing.segmentId !== request.segmentId || existing.episode.relative !== request.episode.relative || existing.episode.work !== request.episode.work)
+      if (existing.source !== request.source || existing.model !== request.model || existing.harness !== request.harness || existing.segmentId !== request.segmentId || existing.episode.relative !== request.episode.relative || existing.episode.work !== request.episode.work)
         throw new RuntimeError("DUPLICATE_REQUEST", "requestId already owns a worker with different settings", { status: 409 });
       return { ...statusOf(request.requestId, existing, await inspectContainer(existing.containerId)), reused: true };
     }
@@ -122,25 +129,32 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     await rm(requestDir, { recursive: true, force: true });
     await mkdir(path.join(requestDir, "app"), { recursive: true, mode: 0o700 });
     await mkdir(path.join(requestDir, "worker"), { recursive: true, mode: 0o700 });
-    let credential;
+    let credential, relay;
     try {
       // Resolve the host's current login fresh for this worker (decision #43).
       if (login) credential = await CredentialLink.stage({ harness: request.harness, hostPath: config.credentials[request.harness], stageDir: paths.credentialDir(request.requestId) });
-      let route = null, envFile = null;
+      let route = null, envFile = null, gatewayDirectory = null;
       if (!login) {
         const selected = await providers.route(request.source);
         if (selected.harness !== request.harness) throw new RuntimeError('INVALID_SOURCE', 'Provider does not use the requested harness');
         const { key, ...metadata } = selected; route = { ...metadata, source: request.source, id: request.source, keyEnv: key ? selected.env : null };
         await mkdir(paths.credentialDir(request.requestId), { recursive: true, mode: 0o700 });
         envFile = path.join(paths.credentialDir(request.requestId), 'selected.env');
-        await writeFile(envFile, key ? `${selected.env}=${key}\n` : '', { mode: 0o600, flag: 'wx' });
+        if (isHostLocalGateway(selected)) {
+          gatewayDirectory = path.join(paths.credentialDir(request.requestId), 'gateway');
+          relay = await startGatewayRelay({ socketPath: path.join(gatewayDirectory, 'relay.sock'), route: { ...selected, id: request.source }, requestId: request.requestId });
+          await writeFile(path.join(gatewayDirectory, 'binding.json'), JSON.stringify(relay.binding), { mode: 0o600, flag: 'wx' });
+          route.localRelay = true; route.keyEnv = null;
+        }
+        // Relayed requests keep the provider credential exclusively on the host.
+        await writeFile(envFile, key && !relay ? `${selected.env}=${key}\n` : '', { mode: 0o600, flag: 'wx' });
         credential = { lastAction: 'snapshot', conflict: false, sync: async () => 'unchanged', dispose: () => rm(paths.credentialDir(request.requestId), { recursive: true, force: true }) };
       }
-      const args = workerRunArgs(config, request, { presentRoots: await presentRoots(), credentialFile: credential.stagePath, envFile, route });
+      const args = workerRunArgs(config, request, { presentRoots: await presentRoots(), credentialFile: credential.stagePath, envFile, route, gatewayDirectory });
       const containerId = await docker(args);
       // Only the worker launcher's structured diagnostics reach the journal (no prompt/model text).
       const logs = followLogs({ containerId, event: "worker.output", fields: { requestId: request.requestId }, log, filter: workerDiagnostic });
-      const worker = { ...request, containerId, credential, logs, startedAt: new Date().toISOString() };
+      const worker = { ...request, containerId, credential, relay, logs, startedAt: new Date().toISOString() };
       workers.set(request.requestId, worker);
       log({ event: "worker.started", requestId: request.requestId, harness: request.harness, container: containerId.slice(0, 12) });
       const requestMount = `${APP_REQUESTS_MOUNT}/${request.requestId}`;
@@ -153,7 +167,9 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
         appRequestDir: `${requestMount}/app`,
       };
     } catch (error) {
+      await relay?.close();
       await credential?.dispose();
+      await rm(paths.credentialDir(request.requestId), { recursive: true, force: true });
       await rm(requestDir, { recursive: true, force: true });
       throw error;
     }
@@ -169,6 +185,7 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
   async function stopWorkerOnce(requestId) {
     const worker = workers.get(requestId);
     worker?.logs?.stop();
+    await worker?.relay?.close();
     const ids = worker ? [worker.containerId] : await listByLabels({ [LABEL.install]: config.installId, [LABEL.request]: requestId });
     for (const id of ids) await removeContainer(id);
     let credentialSync = null;

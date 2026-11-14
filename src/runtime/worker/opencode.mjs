@@ -1,3 +1,4 @@
+import { startWorkerGatewayAdapter, GATEWAY_MOUNT } from '../gateway-relay.js';
 // A per-turn CLI wrapper. Stable Storybench session ids map to OpenCode native ids;
 // provider errors and stderr never cross the worker boundary with credential content.
 import { spawn } from 'node:child_process';
@@ -9,7 +10,14 @@ const route = JSON.parse(process.env.STORYBENCH_ROUTE);
 const lines = createInterface({ input: process.stdin });
 const payload = await new Promise((resolve) => lines.once('line', (line) => resolve(JSON.parse(line)))); lines.close();
 const mcp = JSON.parse(await readFile('/run/storybench/request/app/mcp.json', 'utf8')).mcpServers.storybench;
-const config = openCodeConfig(route, { model: header.model, mcp });
+let adapter, transportKey;
+if (route.localRelay) {
+  const binding = JSON.parse(await readFile(`${GATEWAY_MOUNT}/binding.json`, 'utf8'));
+  if (binding.requestId !== process.env.STORYBENCH_REQUEST_ID || binding.source !== route.id || binding.protocol !== route.protocol) throw new Error('Gateway request binding mismatch');
+  adapter = await startWorkerGatewayAdapter({ socketPath: `${GATEWAY_MOUNT}/relay.sock`, binding });
+  route.baseUrl = adapter.baseUrl; transportKey = binding.token;
+}
+const config = openCodeConfig(route, { model: header.model, mcp, transportKey });
 const home = '/storybench/home';
 await mkdir(`${home}/config`, { recursive: true });
 await writeFile(`${home}/config/opencode.json`, JSON.stringify(config));
@@ -19,7 +27,7 @@ await writeFile(`${home}/config/opencode.json`, JSON.stringify(config));
 const stateFile = `/storybench/session/opencode/${header.sessionId}.json`;
 let native = null;
 try { native = JSON.parse(await readFile(stateFile, 'utf8')).session; } catch (error) { if (error.code !== 'ENOENT') throw error; }
-if (header.resume && !native) { console.log(JSON.stringify({ type: 'storybench.complete', ok: false })); process.exit(1); }
+if (header.resume && !native) { console.log(JSON.stringify({ type: 'storybench.complete', ok: false })); await adapter?.close(); process.exit(1); }
 const files = [];
 for (const [index, image] of (payload.images || []).entries()) {
   const file = `/tmp/storybench-image-${index}.png`; await writeFile(file, Buffer.from(image.data, 'base64')); files.push(file);
@@ -39,4 +47,4 @@ createInterface({ input: child.stdout }).on('line', (line) => {
   });
 });
 child.once('error', () => { failed = true; });
-child.once('close', async (code) => { await pending; console.log(JSON.stringify({ type: 'storybench.complete', ok: code === 0 && !failed })); process.exitCode = code === 0 && !failed ? 0 : 1; });
+child.once('close', async (code) => { await pending; await adapter?.close(); console.log(JSON.stringify({ type: 'storybench.complete', ok: code === 0 && !failed })); process.exitCode = code === 0 && !failed ? 0 : 1; });

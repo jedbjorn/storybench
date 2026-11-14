@@ -37,7 +37,7 @@ test('named routes, optional gateway key and explicit unchecked saves', async (t
     assert.equal((await service.status(source)).status, 'Not checked');
   }
   const gateway = { id: 'gateway-local', name: 'Local', baseUrl: 'http://localhost:9000/v1', protocol: 'anthropic', models: ['local'] };
-  assert.equal(gatewayDefinition(gateway).baseUrl, 'http://host.docker.internal:9000/v1');
+  assert.equal(gatewayDefinition(gateway).baseUrl, 'http://localhost:9000/v1');
   await service.saveGateway(gateway); assert.equal((await service.route(gateway.id)).key, null);
   assert.equal((await service.models(gateway.id)).models[0].eligibilityReason, 'Unverified capabilities');
   assert.throws(() => gatewayDefinition({ ...gateway, baseUrl: 'http://secret@localhost' }), /without credentials/);

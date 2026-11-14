@@ -21,7 +21,6 @@ export function gatewayDefinition(input) {
   if (!ID.test(input.id || '') || typeof input.name !== 'string' || !input.name.trim() || input.name.length > 100) throw fail('Give the gateway an id and display name');
   let url; try { url = new URL(input.baseUrl); } catch { throw fail('Give a valid gateway URL'); }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw fail('Gateway URL must be HTTP(S), without credentials or query');
-  if (['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) url.hostname = 'host.docker.internal';
   if (!['openai', 'anthropic'].includes(input.protocol)) throw fail('Choose OpenAI-compatible or Anthropic protocol');
   if (!Array.isArray(input.models) || input.models.length > 200 || input.models.some((id) => typeof id !== 'string' || !/^[\w][\w.:[\]/-]{0,159}$/.test(id))) throw fail('Models must be plain identifiers');
   return { id: input.id, name: input.name.trim(), baseUrl: url.href.replace(/\/$/, ''), protocol: input.protocol, models: [...new Set(input.models)], harness: 'opencode', env: `STORYBENCH_GATEWAY_${input.id.slice(8).replace(/-/g, '_').toUpperCase()}_KEY`, custom: true };
@@ -72,8 +71,6 @@ export function createProviderService({ directory = providerDirectory(), fetchIm
   async function keyFor(def) { return parseProviderEnv(await optional(envFile))[def.env] || null; }
   async function probe(def, key) {
     const url = new URL(`${def.baseUrl}/models`);
-    // The host process probes the host address; containers use the gateway alias.
-    if (url.hostname === 'host.docker.internal') url.hostname = '127.0.0.1';
     try {
       const response = await fetchImpl(url, { headers: def.protocol === 'anthropic' ? { ...(key ? { 'x-api-key': key } : {}), 'anthropic-version': '2023-06-01' } : key ? { Authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(10000), redirect: 'error' });
       if ([404, 405].includes(response.status)) return { status: 'Not checked', models: null };

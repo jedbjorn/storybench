@@ -2,11 +2,11 @@
 import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 export const TOOL_DISCIPLINE = 'Use the actual tool interface. Never emit tool calls as text. Never call invalid tools. Read the available schemas and use the storybench MCP tools for scoped app operations.';
-export function openCodeConfig(route, { model, mcp, boot = 'AGENTS.md' }) {
+export function openCodeConfig(route, { model, mcp, boot = 'AGENTS.md', transportKey = null }) {
   const native = `${route.id || route.source}/${model}`;
   return { model: native, enabled_providers: [route.id || route.source], provider: { [route.id || route.source]: {
     npm: route.protocol === 'anthropic' ? '@ai-sdk/anthropic' : '@ai-sdk/openai-compatible', name: route.name,
-    options: { baseURL: route.baseUrl, ...(route.keyEnv ? { apiKey: `{env:${route.keyEnv}}` } : {}) },
+    options: { baseURL: route.baseUrl, ...(transportKey ? { apiKey: transportKey } : route.keyEnv ? { apiKey: `{env:${route.keyEnv}}` } : {}) },
     models: { [model]: { name: model, attachment: true, tool_call: true, modalities: { input: ['text', 'image'], output: ['text'] } } },
   } }, mcp: { storybench: { type: 'local', command: [mcp.command, ...mcp.args], environment: mcp.env, enabled: true } }, instructions: [boot], permission: 'allow' };
 }
