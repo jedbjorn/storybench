@@ -7,7 +7,7 @@ export function openCodeConfig(route, { model, mcp, boot = 'AGENTS.md' }) {
   return { model: native, enabled_providers: [route.id || route.source], provider: { [route.id || route.source]: {
     npm: route.protocol === 'anthropic' ? '@ai-sdk/anthropic' : '@ai-sdk/openai-compatible', name: route.name,
     options: { baseURL: route.baseUrl, ...(route.keyEnv ? { apiKey: `{env:${route.keyEnv}}` } : {}) },
-    models: { [model]: { name: model, attachment: true, tool_call: true } },
+    models: { [model]: { name: model, attachment: true, tool_call: true, modalities: { input: ['text', 'image'], output: ['text'] } } },
   } }, mcp: { storybench: { type: 'local', command: [mcp.command, ...mcp.args], environment: mcp.env, enabled: true } }, instructions: [boot], permission: 'allow' };
 }
 export class OpenCodeConnection {

@@ -35,6 +35,7 @@ test('protocol configs contain only selected provider and MCP, and API workers m
    const config = openCodeConfig({ id: 'gateway-test', name: 'Test', baseUrl: 'http://host.docker.internal:9000/v1', protocol, keyEnv: 'SELECTED_KEY' }, { model: 'fake', mcp: { command: 'node', args: ['bridge'], env: { TOKEN: 'bridge-token' } } });
    assert.deepEqual(Object.keys(config.provider), ['gateway-test']); assert.match(config.provider['gateway-test'].npm, protocol === 'anthropic' ? /anthropic/ : /openai-compatible/);
    assert.equal(config.provider['gateway-test'].options.apiKey, '{env:SELECTED_KEY}');
+   assert.deepEqual(config.provider['gateway-test'].models.fake.modalities, { input: ['text', 'image'], output: ['text'] });
  }
  const config = validateHostConfig({ installId: 'test', dataRoot: '/data', stateRoot: '/state', runtimeRoot: '/runtime', port: 4000, credentials: { codex: '/auth/codex', claude: '/auth/claude' }, images: { app: 'sha256:'+'a'.repeat(64), worker: 'sha256:'+'b'.repeat(64) } });
  const args = workerRunArgs(config, { requestId: 'req', harness: 'codex', segmentId: 'seg', episode: { relative: 'episodes/ep', work: 'episodes/ep/work' } }, { presentRoots: ['episodes'], envFile: '/private/selected.env', route: { source: 'openai' } });
