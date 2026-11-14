@@ -6,8 +6,8 @@ export function installWorkspaceChrome(doc = document) {
   const paint = () => {
     page.classList.toggle('episodes-collapsed', collapsed);
     toggle.setAttribute('aria-expanded', String(!collapsed));
-    toggle.setAttribute('aria-label', collapsed ? 'Expand Episodes' : 'Collapse Episodes');
-    toggle.title = collapsed ? 'Expand Episodes' : 'Collapse Episodes';
+    toggle.setAttribute('aria-label', collapsed ? 'Expand Productions' : 'Collapse Productions');
+    toggle.title = collapsed ? 'Expand Productions' : 'Collapse Productions';
     toggle.textContent = collapsed ? '›' : '‹';
   };
   toggle.addEventListener('click', () => {

@@ -246,12 +246,12 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           return send(res, 200, store.listEpisodes({ channelId: store.requireChannel(parts[2]).id }));
         if (parts[2] && parts[3] === "episodes" && parts.length === 4 && req.method === "POST") {
           const body = await jsonBody(req);
-          return send(res, 201, store.createEpisode({ title: body.title, notes: body.notes, channelId: store.requireChannel(parts[2]).id }));
+          return send(res, 201, store.createEpisode({ title: body.title, notes: body.notes, kind: body.kind, channelId: store.requireChannel(parts[2]).id }));
         }
       }
       if (req.method === "POST" && url.pathname === "/api/episodes") {
         const body = await jsonBody(req);
-        return send(res, 201, store.createEpisode({ title: body.title, notes: body.notes, channelId: body.channelId ?? requestedChannel }));
+        return send(res, 201, store.createEpisode({ title: body.title, notes: body.notes, kind: body.kind, channelId: body.channelId ?? requestedChannel }));
       }
       if (req.method === "GET" && url.pathname === "/api/branding") {
         const channel = viewChannel();
@@ -271,6 +271,14 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           const value = store.getEpisode(episodeId);
           if (!value) throw new StoreError("Episode not found", 404);
           return send(res, 200, value);
+        }
+        if (parts[3] === "slides" && parts.length === 4) {
+          if (req.method === "GET") return send(res, 200, store.getDeck(episodeId));
+          if (req.method === "PUT") {
+            const body = await jsonBody(req);
+            const value = store.saveDeck(episodeId, body.expectedRevision, body.slides);
+            notify(episodeId); return send(res, 200, value);
+          }
         }
         if (parts[3] === "story" && parts.length === 4 && req.method === "GET")
           return send(res, 200, store.getStory(episodeId));

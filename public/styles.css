@@ -810,3 +810,11 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
   .card-primary > * { width: 100%; min-width: 0; }
   .timing { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Manual deck composition uses the same board and chat workspace. */
+.deck-slide { border: 1px solid var(--border, #9995); border-radius: 12px; padding: 20px; margin: 0 0 24px; display: grid; gap: 12px; }
+.deck-slide header { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.deck-slide label { display: grid; gap: 4px; min-width: 0; }
+.deck-slide textarea { min-height: 90px; resize: vertical; width: 100%; }
+.deck-slide input, .deck-slide select { width: 100%; }
+.deck-parts > div { padding: 12px; margin-block: 8px; border: 1px solid #9995; border-radius: 8px; display: grid; gap: 8px; }

@@ -1,3 +1,4 @@
+import { validateSlides } from './deck-data.js';
 import { fontForFamily } from './fonts.js';
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -25,7 +26,7 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 export const DEFAULT_CHANNEL_NAME = "Main";
 // IDs become directory names, so they must be single safe path segments.
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
@@ -214,6 +215,7 @@ function episodeRow(row) {
     row && {
       id: row.id,
       channelId: row.channel_id,
+      kind: row.kind || "video",
       title: row.title,
       notes: row.notes,
       state: row.state || "Scaffold",
@@ -397,12 +399,44 @@ export class Store {
     if (version < 11) this.migrateV11();
     if (version < 12) this.migrateV12();
     if (version < 13) this.migrateV13();
+    if (version < 14) this.migrateV14();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
       this.db.close();
       throw error;
     }
+  }
+  migrateV14() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (!this.columns("episodes").has("kind"))
+        this.db.exec("ALTER TABLE episodes ADD COLUMN kind TEXT NOT NULL DEFAULT 'video' CHECK(kind IN ('video','deck'))");
+      this.db.exec(`CREATE TRIGGER IF NOT EXISTS episodes_kind_immutable BEFORE UPDATE OF kind ON episodes
+        WHEN NEW.kind IS NOT OLD.kind BEGIN SELECT RAISE(ABORT,'production kind is immutable'); END;
+        PRAGMA user_version=14;`);
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(14,?)").run(now());
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+  requireProductionKind(episodeId, kind) {
+    const production = this.getEpisode(episodeId);
+    if (!production) throw new StoreError("Production not found", 404);
+    if (production.kind !== kind) throw new StoreError(`This operation requires a ${kind} production`, 409);
+    return production;
+  }
+  getDeck(episodeId) {
+    const production = this.requireProductionKind(episodeId, "deck");
+    return { ...production, slides: production.cards, story: this.getStory(episodeId) };
+  }
+  saveDeck(episodeId, expectedRevision, slides, actor = "human") {
+    this.requireProductionKind(episodeId, "deck");
+    this.updateEpisode(episodeId, expectedRevision, { cards: slides }, actor);
+    return this.getDeck(episodeId);
+  }
+  validateDeckSlides(episodeId, slides) {
+    try { return validateSlides(slides, { libraryItems: this.listEpisodeLibrary(episodeId), sections: this.getStory(episodeId).sections }); }
+    catch (error) { throw new StoreError(error.message); }
   }
   migrateV5(backupLegacy) {
     if (backupLegacy) {
@@ -979,7 +1013,7 @@ export class Store {
     const row = this.db.prepare('SELECT selection,revision FROM model_defaults WHERE mode=?').get(mode);
     return { selection: parse(row?.selection, null), revision: row?.revision ?? 0 };
   }
-  listModelDefaults() { return this.db.prepare('SELECT mode FROM model_defaults ORDER BY mode').all().map(({ mode }) => ({ mode, ...this.getModelDefault(mode) })); }
+  listModelDefaults() { return this.db.prepare("SELECT mode FROM model_defaults UNION SELECT 'video' UNION SELECT 'deck' ORDER BY mode").all().map(({ mode }) => ({ mode, ...this.getModelDefault(mode) })); }
   saveModelDefault(expectedRevision, selection, mode = 'video') {
     if (typeof mode !== 'string' || !/^[a-z][a-z0-9_-]{0,40}$/.test(mode)) throw new StoreError('Invalid production kind');
     const current = this.getModelDefault(mode);
@@ -1152,7 +1186,8 @@ export class Store {
       this.db.prepare("SELECT * FROM episodes WHERE id=?").get(episodeId),
     );
   }
-  createEpisode({ title = "Untitled episode", notes = "", channelId = null } = {}) {
+  createEpisode({ title = "Untitled episode", notes = "", channelId = null, kind = "video" } = {}) {
+    if (!["video", "deck"].includes(kind)) throw new StoreError("kind must be video or deck");
     const ownerId = this.resolveChannelId(channelId);
     const initialStory = normalizeStory(STARTER_STORY);
     const episode = {
@@ -1169,7 +1204,7 @@ export class Store {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db
-        .prepare("INSERT INTO episodes(id,channel_id,directory,title,notes,revision,cards,created_at,updated_at,state) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .prepare("INSERT INTO episodes(id,channel_id,directory,title,notes,revision,cards,created_at,updated_at,state,kind) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
         .run(
           episode.id,
           ownerId,
@@ -1181,6 +1216,7 @@ export class Store {
           episode.createdAt,
           episode.updatedAt,
           episode.state,
+          kind,
         );
       this.insertHistory({ ...episode, referencePrompt: "", referenceItemIds: [] }, "human", episode.createdAt, null);
       this.db
@@ -1200,7 +1236,7 @@ export class Store {
     this.ensureEpisodeDirectories(episode.id);
     this.publishStory(episode.id);
     const standards = this.listBrandingTemplates({ channelId: ownerId }).filter((value) => value.role);
-    for (const template of standards)
+    for (const template of kind === "video" ? standards : [])
       this.applyBrandingTemplate(episode.id, template.id, { automatic: true });
     return this.getEpisode(episode.id);
   }
@@ -1218,12 +1254,14 @@ export class Store {
       expectedRevision !== current.revision
     )
       throw new StoreError(`Stale revision: expected ${current.revision}`, 409);
-    const cards =
-      changes.cards == null ? current.cards : validateCards(changes.cards);
+    if (changes.kind != null && changes.kind !== current.kind) throw new StoreError("production kind is immutable", 409);
+    const cards = changes.cards == null ? current.cards : current.kind === "deck"
+      ? this.validateDeckSlides(episodeId, changes.cards) : validateCards(changes.cards);
+    const videoCards = current.kind === "video" ? cards : [];
     const state = changes.state == null ? current.state : String(changes.state);
     if (!["Scaffold", "Draft", "Final", "Published"].includes(state))
       throw new StoreError("state must be Scaffold, Draft, Final, or Published");
-    for (const card of cards)
+    for (const card of videoCards)
       for (const [field, value] of [
         ["visual", card.visual],
         ["narration", card.narration],
@@ -1241,7 +1279,7 @@ export class Store {
           if (asset.duration != null && value.out > asset.duration + 0.001)
             throw new StoreError(`${field} range exceeds source duration`);
         }
-    for (const card of cards)
+    for (const card of videoCards)
       if (card.sectionId && !this.db.prepare("SELECT 1 FROM story_sections WHERE id=? AND episode_id=? AND retired_at IS NULL").get(card.sectionId, episodeId))
         throw new StoreError(`Story section not found for this episode: ${card.sectionId}`);
     const libraryById = new Map(this.listEpisodeLibrary(episodeId).map((item) => [item.id, item]));
@@ -1254,7 +1292,7 @@ export class Store {
     const referencePrompt = changes.referencePrompt == null ? current.referencePrompt : String(changes.referencePrompt);
     const cardIds = new Set(cards.map((card) => card.id));
     const currentCards = new Map(current.cards.map((card) => [card.id, card]));
-    for (const card of cards) {
+    for (const card of videoCards) {
       if (card.itemId && !libraryById.has(card.itemId)) throw new StoreError(`Library item not found for this episode: ${card.itemId}`);
       // Like episode references, a link already on this card is kept even if unresolvable; only new links are checked.
       const existingReferences = new Set(currentCards.get(card.id)?.referenceItemIds || []);
@@ -1339,7 +1377,7 @@ export class Store {
     return this.updateEpisode(
       episodeId,
       expectedRevision,
-      { title: prior.title, notes: prior.notes, cards: this.normalizeLegacyCards(episodeId, parse(prior.cards, [])),
+      { title: prior.title, notes: prior.notes, cards: current.kind === "deck" ? parse(prior.cards, []) : this.normalizeLegacyCards(episodeId, parse(prior.cards, [])),
         ...(prior.reference_item_ids == null ? {} : { referencePrompt: prior.reference_prompt ?? "", referenceItemIds: parse(prior.reference_item_ids, []) }) },
       "undo",
       prior.parent_revision,
@@ -1505,6 +1543,8 @@ export class Store {
     if (!Number.isInteger(expectedEpisodeRevision) || expectedEpisodeRevision !== episode.revision)
       throw new StoreError(`Stale episode revision: expected ${episode.revision}`, 409);
     const cards = episode.cards.map((card) => ({ ...card,
+      ...(episode.kind === "deck" ? { media: card.media?.itemId === itemId ? null : card.media,
+        subnav: (card.subnav || []).map(entry => entry.itemId === itemId ? { ...entry, itemId: null } : entry) } : {}),
       itemId: card.itemId === itemId ? null : card.itemId,
       referenceItemIds: (card.referenceItemIds || []).filter((id) => id !== itemId),
     }));
@@ -1541,6 +1581,7 @@ export class Store {
     return this.listBrandingTemplates().find((template) => template.id === templateId) || null;
   }
   promoteCard(episodeId, cardId, { name, role = null } = {}) {
+    this.requireProductionKind(episodeId, "video");
     const episode = this.getEpisode(episodeId);
     if (!episode) throw new StoreError("Episode not found", 404);
     const card = episode.cards.find((value) => value.id === cardId);
@@ -1589,6 +1630,7 @@ export class Store {
     return this.getBrandingTemplate(templateId);
   }
   applyBrandingTemplate(episodeId, templateId, { automatic = false } = {}) {
+    this.requireProductionKind(episodeId, "video");
     const template = this.getBrandingTemplate(templateId);
     if (!template) throw new StoreError("Branding template not found", 404);
     let episode = this.getEpisode(episodeId);

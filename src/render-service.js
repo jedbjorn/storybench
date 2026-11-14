@@ -38,7 +38,7 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
   const worker = new HeavyJobQueue();
 
   function getRenderSnapshot(episodeId) {
-    const episode = store.getEpisode(episodeId);
+    const episode = store.requireProductionKind(episodeId, "video");
     if (!episode) throw new StoreError("Episode not found", 404);
     const story = store.getStory(episodeId);
     const libraryItems = store.listEpisodeLibrary(episodeId);

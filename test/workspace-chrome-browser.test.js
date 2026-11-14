@@ -37,10 +37,10 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
   await page.keyboard.press('Home'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
   assert.equal(await page.inputValue('#episodeFilter'), 'Scaffold');
   assert.equal(await page.locator('[role=listbox]').count(), 0);
-  await page.getByRole('button', { name: 'Collapse Episodes', exact: true }).click();
+  await page.getByRole('button', { name: 'Collapse Productions', exact: true }).click();
   assert.ok((await page.locator('.episode-rail').boundingBox()).width < 45);
   await page.reload(); await page.locator('[data-chat-title]').waitFor();
-  assert.equal(await page.getByRole('button', { name: 'Expand Episodes', exact: true }).isVisible(), true);
+  assert.equal(await page.getByRole('button', { name: 'Expand Productions', exact: true }).isVisible(), true);
   await page.getByRole('button', { name: 'Open chat history', exact: true }).click();
   const chat = await page.locator('.chat').boundingBox(), drawer = await page.locator('[data-chat-history-drawer]').boundingBox();
   assert.ok(chat.width <= 440); assert.ok(drawer.x + drawer.width <= chat.x + 1);
@@ -85,7 +85,7 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
     await page.keyboard.press('Escape');
   }
   await page.setViewportSize({ width: 1600, height: 1000 });
-  await page.getByRole('button', { name: 'Expand Episodes', exact: true }).click();
+  await page.getByRole('button', { name: 'Expand Productions', exact: true }).click();
   if (process.env.STORYBENCH_CHROME_EVIDENCE) {
     mkdirSync(process.env.STORYBENCH_CHROME_EVIDENCE, { recursive: true });
     await page.getByRole('combobox', { name: 'Show', exact: true }).click();

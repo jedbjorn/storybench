@@ -222,3 +222,22 @@ test('late image uploads persist only to the captured conversation and failures 
   assert.match(root.querySelector('[data-chat-upload-status]').textContent, /PNG/);
   workspace.close();
 });
+
+test('unsaved production conflicts block chat and production requests without discarding the message', async t => {
+  const {dom,root}=page(); t.after(()=>dom.window.close());
+  const writes=[], notices=[];
+  const api=async (url,options={})=>{
+    if (options.method==='POST') writes.push(url);
+    if (url.endsWith('/chats')) return [{id:'chat',name:'Work',state:'idle',draft:''}];
+    if (url.endsWith('/chat') && !options.method) return {id:'chat',name:'Work',state:'idle',draft:'',messages:[]};
+    return {};
+  };
+  const workspace=new ChatWorkspace({root,api,getEpisode:()=>({id:'episode'}),toast:message=>notices.push(message),beforeSend:async()=>{throw new Error('Resolve unsaved slides');}});
+  t.after(()=>workspace.close()); await workspace.open();
+  const draft=root.querySelector('[data-chat-draft]'); draft.value='Build from this';
+  root.querySelector('[data-chat-send]').click(); await tick();
+  assert.equal(writes.some(url=>url.endsWith('/messages')),false);
+  assert.equal(draft.value,'Build from this'); assert.ok(notices.includes('Resolve unsaved slides'));
+  await assert.rejects(workspace.sendProduction({kind:'draft'}),/unsaved slides/);
+  assert.equal(writes.some(url=>url.endsWith('/production-requests')),false);
+});
