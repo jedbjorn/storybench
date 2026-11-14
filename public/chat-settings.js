@@ -81,6 +81,8 @@ export class ChatSettings {
     };
     const paintModels = () => {
       const entry = this.entry(harness.value);
+      model.placeholder = entry?.harness === "opencode" ? "Choose a model (required)" : "Harness default";
+      model.required = entry?.harness === "opencode";
       list.innerHTML = (entry?.models ?? []).filter((value) => value.eligible !== false || form.querySelector("[data-settings-show-all]").checked || value.id === model.value).map((value) => `<option value="${escapeHtml(value.id)}">${escapeHtml(value.displayName ?? value.id)}${value.isDefault ? " (default)" : ""}${value.eligible === false ? ` — ${escapeHtml(value.eligibilityReason)}; use at your own risk` : entry.advisory ? " — advisory" : ""}</option>`).join("");
       const choices = effortOptions(entry, model.value.trim() || null);
       const current = effort.value || (harness.value === source ? settings.effort ?? "" : "");

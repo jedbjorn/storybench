@@ -44,6 +44,30 @@ export function parseProviderEnv(text) {
   }
   return values;
 }
+// CLI aliases describe a family, not a pinned version. Verify the entire known
+// family rather than guessing which release a particular login will resolve.
+function capabilityInfo(metadata, id) {
+  if (metadata[id]) return metadata[id];
+  if (!['sonnet', 'opus', 'haiku'].includes(id)) return null;
+  const family = Object.entries(metadata).filter(([key]) => key.startsWith(`claude-${id}-`)).map(([, info]) => info);
+  if (!family.length) return null;
+  return { tool_call: family.every((info) => info.tool_call === true),
+    modalities: { input: ['text', 'image'].filter((kind) => family.every((info) => info.modalities?.input?.includes(kind))) } };
+}
+function capabilityLabels(info, nativeInput = null) {
+  const inputModalities = info?.modalities?.input || null;
+  const missing = !info || !inputModalities || typeof info.tool_call !== 'boolean';
+  const inputs = inputModalities?.filter((kind) => !nativeInput || nativeInput.includes(kind)) || null;
+  const eligibilityReason = missing ? 'Unverified capabilities' : !inputs.includes('image') ? 'No image input'
+    : !info.tool_call ? 'No tool calling' : !inputs.includes('text') ? 'No text input' : null;
+  return { inputModalities: inputs, eligible: eligibilityReason === null, eligibilityReason };
+}
+function modelVariants(info) {
+  const variants = info?.variants;
+  const entries = Array.isArray(variants) ? variants.map((value) => typeof value === 'string' ? [value, {}] : [value.id, value.options || {}])
+    : Object.entries(variants || {});
+  return Object.fromEntries(entries.filter(([id, options]) => /^[a-z]{2,12}$/.test(id) && options && typeof options === 'object' && !options.disabled));
+}
 export function createProviderService({ directory = providerDirectory(), fetchImpl = fetch, now = Date.now } = {}) {
   const envFile = path.join(directory, 'providers.env'), metadataFile = path.join(directory, 'providers.json');
   const cache = new Map(), statuses = new Map();
@@ -77,8 +101,9 @@ export function createProviderService({ directory = providerDirectory(), fetchIm
       if ([401, 403].includes(response.status)) return { status: 'Key rejected', models: null };
       if (!response.ok) return { status: 'Unreachable', models: null };
       const body = await response.json();
-      const models = (body.data || body.models || []).map((model) => model.id || model.name).filter((id) => typeof id === 'string');
-      return { status: 'Connected', models };
+      const modelDetails = body.data || body.models || [];
+      const models = modelDetails.map((model) => model.id || model.name).filter((id) => typeof id === 'string');
+      return { status: 'Connected', models, modelDetails };
     } catch { return { status: 'Unreachable', models: null }; }
   }
   async function status(source) {
@@ -116,7 +141,8 @@ export function createProviderService({ directory = providerDirectory(), fetchIm
   async function route(source) {
     const def = await definition(source), key = await keyFor(def);
     if (!key && !def.custom) throw fail('No key; open Providers to configure this source');
-    return { ...def, key };
+    const catalogue = def.harness === 'opencode' ? await models(source) : null;
+    return { ...def, key, ...(catalogue ? { modelVariants: Object.fromEntries(catalogue.models.map((model) => [model.id, model.variants])) } : {}) };
   }
   async function models(source, { refresh = false } = {}) {
     const def = await definition(source), key = await keyFor(def), cached = cache.get(source);
@@ -131,11 +157,17 @@ export function createProviderService({ directory = providerDirectory(), fetchIm
     const ids = result.models?.length ? result.models : def.models?.length ? def.models : floor[source] || [];
     const metadata = def.custom ? {} : (await modelCapabilities())[source]?.models || {};
     const value = { source, harness: def.harness, available: true, reason: null, exactModelIds: result.models === null, models: ids.map((id) => {
-      const info = metadata[id], inputModalities = info?.modalities?.input || null;
-      const eligible = Boolean(info?.tool_call && inputModalities?.includes('image') && inputModalities?.includes('text'));
-      return { id, displayName: info?.name || id, efforts: [], eligible, eligibilityReason: !info ? 'Unverified capabilities' : !inputModalities?.includes('image') ? 'No image input' : !info.tool_call ? 'No tool calling' : !inputModalities?.includes('text') ? 'No text input' : null, inputModalities };
+      const info = metadata[id], live = result.modelDetails?.find((model) => (model.id || model.name) === id);
+      const variants = modelVariants(live?.variants ? live : info);
+      return { id, displayName: info?.name || id, efforts: Object.keys(variants), variants, ...capabilityLabels(info) };
     }), stale: false };
     cache.set(source, { key, at: now(), value }); return value;
   }
-  return { definitions, status, test, replace, remove, saveGateway, route, models, list: async () => Promise.all(Object.keys(await definitions()).map(status)) };
+  async function loginModels(entry) {
+    if (!entry.available || !entry.models.length) return entry;
+    const source = entry.harness === 'claude' ? 'anthropic' : 'openai';
+    const metadata = (await modelCapabilities())[source]?.models || {};
+    return { ...entry, models: entry.models.map((model) => ({ ...model, ...capabilityLabels(capabilityInfo(metadata, model.id), model.inputModalities) })) };
+  }
+  return { loginModels, definitions, status, test, replace, remove, saveGateway, route, models, list: async () => Promise.all(Object.keys(await definitions()).map(status)) };
 }

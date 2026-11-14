@@ -34,6 +34,7 @@ export function validateSelection(catalog, { harness, source = `${harness}-login
   const entry = catalog.find((candidate) => candidate.harness === harness && (candidate.source === source || !candidate.source && source === `${harness}-login`));
   if (!entry) throw new SelectionError("UNKNOWN_HARNESS", `Unsupported harness: ${String(harness)}`);
   if (!entry.available) throw new SelectionError("HARNESS_UNAVAILABLE", `${HARNESS_LABELS[harness]} is unavailable: ${entry.reason}`, 409);
+  if (harness === "opencode" && model == null) throw new SelectionError("INVALID_MODEL", "Choose an explicit model for OpenCode");
   const notes = [];
   let listed = null;
   if (model != null) {

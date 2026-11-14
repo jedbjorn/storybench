@@ -114,3 +114,24 @@ test('each turn receives current channel standards and font paths; in-flight con
   assert.equal(contexts[1].fonts.length, 6);
   assert.ok(contexts[1].fonts.every((font) => font.files.regular && font.files.bold));
 });
+
+test('API refuses blank OpenCode chat settings and kind defaults before persisting', async (t) => {
+  const entry = { source: 'deepseek', harness: 'opencode', available: true, models: [{ id: 'deepseek-chat', efforts: ['high'] }] };
+  const app = await createApp({ workspace: temp(t), chatOptions: { catalog: { list: async () => [...catalog, entry] } } });
+  t.after(() => app.close());
+  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const put = (url, body) => fetch(base + url, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const episode = app.store.createEpisode(), chat = app.chat.create(episode.id);
+  const selection = { source: 'deepseek', harness: 'opencode', model: null, effort: null };
+  for (const model of [null, '', 'unknown']) {
+    const response = await put('/api/model-default', { expectedRevision: 1, selection: { ...selection, model } });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /model/i);
+    const changed = await put(`/api/episodes/${episode.id}/chats/${chat.id}/settings`, { ...selection, model, expectedRevision: chat.settings.revision });
+    assert.equal(changed.status, 400);
+  }
+  assert.equal(app.store.getModelDefault().selection, null);
+  assert.equal(app.store.getConversation(chat.id).harness, 'codex');
+  assert.equal(app.store.getConversation(chat.id).model, null);
+});

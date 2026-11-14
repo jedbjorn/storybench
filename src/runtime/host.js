@@ -210,7 +210,7 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     // While draining, the app may still stop and inspect its workers, but nothing new starts.
     if (stopping && ["worker.start", "harness.models"].includes(request.op)) throw new RuntimeError("STOPPING", "Storybench is shutting down", { status: 503 });
     if (request.op === "harness.availability") return harnessAvailability(config.credentials);
-    if (request.op === "harness.models") return discovery.discover(request.harness, { refresh: request.refresh });
+    if (request.op === "harness.models") return providers.loginModels(await discovery.discover(request.harness, { refresh: request.refresh }));
     if (request.op === "worker.start") return startWorker(request);
     if (request.op === "worker.stop") return stopWorker(request.requestId);
     const worker = workers.get(request.requestId);

@@ -103,7 +103,7 @@ export function createModelCatalog({ controlSocket, request = controlRequest }) 
   return {
     async list({ refresh = false } = {}) {
       const login = await Promise.all(['codex', 'claude'].map(async (harness) => {
-        try { const entry = await request(controlSocket, { op: 'harness.models', harness, refresh }); return { ...entry, discoverySource: entry.source, source: `${harness}-login`, models: entry.models.map((model) => ({ ...model, eligible: Boolean(model.inputModalities?.includes('image')), eligibilityReason: model.inputModalities ? 'No image input' : 'Unverified capabilities' })) }; }
+        try { const entry = await request(controlSocket, { op: 'harness.models', harness, refresh }); return { ...entry, discoverySource: entry.source, source: `${harness}-login`, models: entry.models }; }
         catch (error) { return { source: `${harness}-login`, harness, available: false, reason: error.message, models: [] }; }
       }));
       const providers = await request(controlSocket, { op: 'providers.list' });
