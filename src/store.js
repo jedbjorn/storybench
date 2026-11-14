@@ -1862,6 +1862,7 @@ export class Store {
   publishGraphicOutput(episodeId, candidate, { recipeId, recipeRevision, jobId, label, targetCard = null, expectedEpisodeRevision }) {
     const episode = this.getEpisode(episodeId);
     if (!episode) throw new StoreError("Episode not found", 404);
+    if (targetCard) this.requireProductionKind(episodeId, "video");
     const stamp = now();
     let assetId, itemId, appliedToCard = false, applyNote = null;
     this.db.exec("BEGIN IMMEDIATE");
@@ -1918,6 +1919,7 @@ export class Store {
   }
   createGraphicRecipe(episodeId, { name, kind, cardId = null, recipe }, actor = "user") {
     if (!this.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
+    if (cardId) this.requireProductionKind(episodeId, "video");
     if (!name || !String(name).trim()) throw new StoreError("Graphic name is required");
     if (!['still', 'motion'].includes(kind)) throw new StoreError("Graphic kind must be still or motion");
     if (cardId && !this.getEpisode(episodeId).cards.some((card) => card.id === cardId))
@@ -1942,6 +1944,7 @@ export class Store {
     const nextRevision = current.revision + 1;
     const nextName = name == null ? current.name : String(name).trim();
     const nextCardId = cardId === undefined ? current.cardId : cardId || null;
+    if (nextCardId) this.requireProductionKind(episodeId, "video");
     if (!nextName) throw new StoreError("Graphic name is required");
     if (nextCardId && !this.getEpisode(episodeId).cards.some((card) => card.id === nextCardId))
       throw new StoreError("Graphic card not found");

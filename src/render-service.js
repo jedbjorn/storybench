@@ -183,6 +183,7 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
     const destination = captureDestination(episodeId, channelId, "graphics");
     const recipe = store.getGraphicRecipe(episodeId, recipeId);
     if (!recipe) throw new StoreError("Graphic recipe not found", 404);
+    if (recipe.cardId) store.requireProductionKind(episodeId, "video");
     if (recipe.revision !== expectedRecipeRevision) throw new StoreError(`Stale graphic revision: expected ${recipe.revision}`, 409, { current: recipe });
     const episode = store.getEpisode(episodeId);
     const targetCard = recipe.cardId ? episode.cards.find((card) => card.id === recipe.cardId) : null;

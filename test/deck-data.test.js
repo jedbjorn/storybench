@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Store } from '../src/store.js';
@@ -135,4 +135,69 @@ test('HTTP creation and shared slide editing enforce kind, revision and channel;
   assert.equal((await request(`/api/episodes/${deck.id}/render-plan`,null,'GET')).status,409);
   const renders=createRenderService({workspace:root,store:app.store}); t.after(()=>renders.close());
   assert.throws(()=>renders.validateRender(deck.id),/requires a video/);
+});
+
+test('graphics reject deck card targets at HTTP, service and publication boundaries without changing slides', async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'storybench-deck-graphics-'));
+  let renderCalls = 0;
+  const app = await createApp({ workspace: root, renderOptions: {
+    renderGraphic: async ({ outputPath }) => {
+      renderCalls++;
+      writeFileSync(outputPath, 'synthetic graphic');
+      return { path: outputPath, kind: 'image', width: 320, height: 180 };
+    },
+  } });
+  await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await app.close(); rmSync(root, { recursive: true, force: true }); });
+  const s = app.store, deck = s.createEpisode({ kind: 'deck' });
+  const asset = s.saveAsset({ name: 'image.png', hash: 'slide-media', kind: 'image', path: 'media/image.png' });
+  const item = s.attachLibraryItem(deck.id, asset.id, { category: 'B-roll' });
+  s.saveDeck(deck.id, 1, [{ ...slide(), eyebrow: 'Context', caption: 'Caption',
+    columns: [{ title: 'Column', body: 'Detail' }], media: { itemId: item.id, alt: 'Visual' },
+    subnav: [{ id: 'view', label: 'Detail', itemId: item.id }] }]);
+  const before = s.db.prepare('SELECT * FROM episodes WHERE id=?').get(deck.id);
+  const history = s.listEpisodeHistory(deck.id);
+  const origin = `http://127.0.0.1:${app.server.address().port}`;
+  const base = `/api/episodes/${deck.id}/graphics`;
+  const request = (url, body, method = 'POST') => fetch(origin + url, { method,
+    headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const input = { name: 'Graphic', recipe: { kind: 'still', width: 320, height: 180, layers: [] } };
+  const targeted = { ...input, cardId: 'slide_one' };
+  assert.equal((await request(base, targeted)).status, 409);
+  assert.throws(() => app.renders.createGraphicRecipe(deck.id, targeted), /requires a video/);
+  assert.throws(() => s.createGraphicRecipe(deck.id, { ...targeted, kind: 'still' }), /requires a video/);
+  assert.deepEqual(s.listGraphicRecipes(deck.id), []);
+
+  const created = await request(base, input);
+  assert.equal(created.status, 201);
+  const recipe = await created.json();
+  assert.equal((await request(`${base}/${recipe.id}`, { ...targeted, expectedRecipeRevision: 1 }, 'PUT')).status, 409);
+  assert.throws(() => app.renders.updateGraphicRecipe(deck.id, recipe.id, 1, targeted), /requires a video/);
+  assert.equal(s.getGraphicRecipe(deck.id, recipe.id).revision, 1);
+
+  // Simulate a previously accepted target, so dispatch cannot rely on creation validation.
+  s.db.prepare('UPDATE graphic_recipes SET card_id=? WHERE id=?').run('slide_one', recipe.id);
+  assert.equal((await request(`${base}/${recipe.id}/render`, { expectedRecipeRevision: 1 })).status, 409);
+  assert.throws(() => app.renders.enqueueGraphic({ episodeId: deck.id, recipeId: recipe.id, expectedRecipeRevision: 1 }), /requires a video/);
+  assert.deepEqual(s.listJobs(deck.id), []);
+  assert.equal(renderCalls, 0);
+  const candidate = { name: 'result.png', hash: 'result', kind: 'image', path: 'media/result.png' };
+  assert.throws(() => s.publishGraphicOutput(deck.id, candidate, { recipeId: recipe.id, recipeRevision: 1,
+    jobId: 'blocked', targetCard: { id: 'slide_one' }, expectedEpisodeRevision: 2 }), /requires a video/);
+  assert.equal(s.getAssetByHash(candidate.hash, deck.channelId), undefined);
+  assert.equal(s.listEpisodeLibrary(deck.id).length, 1);
+
+  // Untargeted graphics remain reusable deck media, with no video-card mapping.
+  s.db.prepare('UPDATE graphic_recipes SET card_id=NULL WHERE id=?').run(recipe.id);
+  const accepted = await request(`${base}/${recipe.id}/render`, { expectedRecipeRevision: 1 });
+  assert.equal(accepted.status, 202);
+  const job = await accepted.json();
+  for (let attempt = 0; attempt < 100 && ['queued', 'running'].includes(s.getJob(job.id).state); attempt++)
+    await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(s.getJob(job.id).state, 'completed');
+  assert.equal(s.getJob(job.id).snapshot.appliedToCard, false);
+  assert.equal(s.listEpisodeLibrary(deck.id).length, 2);
+  assert.deepEqual(s.db.prepare('SELECT * FROM episodes WHERE id=?').get(deck.id), before);
+  assert.deepEqual(s.listEpisodeHistory(deck.id), history);
+  assert.deepEqual(s.getDeck(deck.id).slides, JSON.parse(before.cards));
 });
