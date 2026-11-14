@@ -1,5 +1,5 @@
 ---
-name: storybench-understand-project
+name: storybench-video-context
 description: Orient in the current Storybench channel and episode - read direction, story, cards, library, references and existing versions, and pull fuller context only when it helps.
 ---
 

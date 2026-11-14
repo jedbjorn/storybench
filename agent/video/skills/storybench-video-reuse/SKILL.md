@@ -1,5 +1,5 @@
 ---
-name: storybench-reuse-project-assets
+name: storybench-video-reuse
 description: Browse or search other Storybench episodes and channels, identify an asset's origin, and register it in the current episode with provenance when the creator asks; reference items need the creator's explicit direction.
 ---
 

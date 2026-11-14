@@ -1,5 +1,5 @@
 ---
-name: storybench-read-references
+name: storybench-video-references
 description: Find episode and card references and their reference prompts, read text or view stills and frames as feel context, and apply the one reference rule when the creator directs use or edit.
 ---
 

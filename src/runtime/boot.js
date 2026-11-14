@@ -8,6 +8,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, rename, rmdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { KIND_REGISTRY, resolveKind } from "./kinds.js";
 
 export const DEFAULT_TEMPLATES = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../agent");
 export const MANIFEST = ".storybench/renders.json";
@@ -57,23 +58,33 @@ async function atomicWrite(file, content) {
   catch (error) { await unlink(temp).catch(() => {}); throw error; }
 }
 
-export async function loadTemplates(templatesDir = DEFAULT_TEMPLATES) {
-  const boot = await readFile(path.join(templatesDir, "BOOT.md"), "utf8");
-  const skills = [];
-  const entries = await readdir(path.join(templatesDir, "skills"), { withFileTypes: true }).catch(() => []);
-  for (const entry of entries.filter((item) => item.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
-    const source = await readFile(path.join(templatesDir, "skills", entry.name, "SKILL.md"), "utf8");
-    const meta = frontmatter(source);
-    if (!SKILL_NAME.test(meta.name ?? "")) throw new Error(`Skill template ${entry.name} needs a lowercase frontmatter name`);
-    skills.push({ name: meta.name, description: meta.description ?? "", source });
+export async function loadTemplates(templatesDir = DEFAULT_TEMPLATES, kind = 'video', registry = KIND_REGISTRY) {
+  const selected = registry[resolveKind({ kind }, registry)];
+  const boots = [], skills = [], names = new Set();
+  for (const branch of ['shared', selected.templates]) {
+    const directory = path.join(templatesDir, branch);
+    boots.push(await readFile(path.join(directory, 'BOOT.md'), 'utf8'));
+    const entries = await readdir(path.join(directory, 'skills'), { withFileTypes: true }).catch((error) => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    for (const entry of entries.filter((item) => item.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
+      const source = await readFile(path.join(directory, 'skills', entry.name, 'SKILL.md'), 'utf8');
+      const meta = frontmatter(source);
+      if (!SKILL_NAME.test(meta.name ?? '')) throw new Error(`Skill template ${entry.name} needs a lowercase frontmatter name`);
+      if (names.has(meta.name)) throw new Error(`Duplicate skill name: ${meta.name}`);
+      names.add(meta.name);
+      skills.push({ name: meta.name, description: meta.description ?? '', source });
+    }
   }
-  const version = sha256(JSON.stringify({ boot, skills: skills.map((skill) => [skill.name, skill.source]) }));
-  return { boot, skills, version };
+  const boot = boots.join('\n\n');
+  const version = sha256(JSON.stringify({ kind, boot, skills: skills.map((skill) => [skill.name, skill.source]) }));
+  return { kind, boot, skills, version };
 }
 
 // context: values for {{...}} placeholders (channel, episode, paths, runtime, ...).
-export async function renderEpisodeBoot({ episodeDir, context, templates }) {
-  const loaded = templates ?? await loadTemplates();
+export async function renderEpisodeBoot({ episodeDir, context, templates, kind = "video" }) {
+  const loaded = templates ?? await loadTemplates(DEFAULT_TEMPLATES, kind);
   const skillIndex = loaded.skills.map((skill) =>
     `- **${skill.name}**: ${skill.description} (Claude: \`${SKILL_ROOTS.claude}/${skill.name}/SKILL.md\`, Codex: \`${SKILL_ROOTS.codex}/${skill.name}/SKILL.md\`, OpenCode: \`${SKILL_ROOTS.opencode}/${skill.name}/SKILL.md\`)`).join("\n") || "- (no skills shipped)";
   const fullContext = { ...context, skills: { index: skillIndex } };
@@ -106,7 +117,7 @@ export async function renderEpisodeBoot({ episodeDir, context, templates }) {
     await rmdir(path.dirname(target)).catch(() => {});
     removed.push(old.path);
   }
-  const manifest = { renderedAt: new Date().toISOString(), templateVersion: loaded.version, bootSha256: sha256(body), files };
+  const manifest = { kind: loaded.kind ?? kind, renderedAt: new Date().toISOString(), templateVersion: loaded.version, bootSha256: sha256(body), files };
   await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
   return { ...manifest, removed, manifestPath };
 }

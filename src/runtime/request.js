@@ -8,12 +8,14 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { createLibraryService } from "../library.js";
 import { releaseFromEnv } from "./health.js";
 import path from "node:path";
-import { renderEpisodeBoot } from "./boot.js";
+import { renderEpisodeBoot, loadTemplates, DEFAULT_TEMPLATES } from "./boot.js";
 import { startBridge } from "./bridge.js";
 import { connectHarness, controlRequest } from "./channel.js";
 import { ClaudeChatConnection, ClaudeStreamSession, WorkerCodexConnection } from "./harnesses.js";
 import { BRIDGE_SOCKET_NAME, DATA_MOUNT, WORKER_REQUEST_MOUNT } from "./layout.js";
 import { createScopedTools, defaultIsShortcutMessage } from "./tools.js";
+import { resolveKind, selectKindTools } from "./kinds.js";
+import { contextFingerprint } from "./instruction-context.js";
 import { RuntimeError, assertModel, assertSessionId, parseEpisodeDir } from "./validate.js";
 
 export const MCP_BRIDGE_SCRIPT = "/opt/storybench/app/src/runtime/worker/mcp-bridge.mjs";
@@ -52,6 +54,9 @@ async function openHeldRequest({
   bootContext = {}, templates, onToolCall = () => {}, wrapTools = (tools) => tools,
   model = null, supportsImages = true, library = null, release = null, isShortcutMessage = defaultIsShortcutMessage,
 }) {
+  const kind = resolveKind(store.getEpisode(episodeId));
+  const loaded = templates ?? await loadTemplates(DEFAULT_TEMPLATES, kind);
+  if (loaded.kind && loaded.kind !== kind) throw new Error("Templates do not match the saved production kind");
   const dataRoot = store.workspace;
   // App and worker must see project files at identical paths so worker-reported paths
   // validate against store paths; the app container mounts its data root at DATA_MOUNT.
@@ -69,8 +74,7 @@ async function openHeldRequest({
   };
   const effectiveRelease = release ?? releaseFromEnv();
   const scoped = createScopedTools(scope, { store, library: library ?? createLibraryService({ workspace: dataRoot, store }), release: effectiveRelease, isShortcutMessage });
-  const tools = wrapTools(scoped);
-  if (!supportsImages) tools.definitions = tools.definitions.filter(({ name }) => !['inspect_image', 'inspect_contact_sheet'].includes(name));
+  const tools = selectKindTools(wrapTools(scoped), kind, { supportsImages });
   scoped.setServedDefinitions(tools.definitions);
   // Render before the worker starts so the harness never sees a half-written boot. The boot
   // context may be a function of what this request actually serves and where it works.
@@ -78,8 +82,8 @@ async function openHeldRequest({
     ? bootContext({ requestWorkDir, served: tools.definitions.map((definition) => definition.name), release: effectiveRelease })
     : bootContext;
   const render = await renderEpisodeBoot({
-    episodeDir: location.directory, templates,
-    context: { ...context, paths: { ...context.paths, episode: location.directory, work: store.episodeWorkDirectory(episodeId), requestWork: requestWorkDir } },
+    episodeDir: location.directory, templates: loaded, kind,
+    context: { ...context, tools: { served: tools.definitions.map(({ name }) => name).join(", ") }, paths: { ...context.paths, episode: location.directory, work: store.episodeWorkDirectory(episodeId), requestWork: requestWorkDir } },
   });
   const started = await controlRequest(controlSocket, { op: "worker.start", requestId, harness, source, model, segmentId, episodeDir: episodeDir.relative, workDir: workRelative });
   const token = randomBytes(32).toString("hex");
@@ -98,6 +102,7 @@ async function openHeldRequest({
 
   return {
     started, render, scope, tools,
+    contextVersion: contextFingerprint(kind, loaded, tools.definitions),
     async codex({ model, effort = null, onEvent, onError, requestTimeout } = {}) {
       const child = await connectHarness(started.harnessSocket, { harness: "codex" });
       const connection = new WorkerCodexConnection({ child, tools, cwd: started.episodeDir, model: model ? assertModel(model) : undefined, effort, onEvent, onError, requestTimeout });
