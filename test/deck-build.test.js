@@ -122,3 +122,85 @@ test('editable eight-slide demo: manual DOM edit, fake-agent bridge save/build, 
   const rebuilt=await terminal(decks,deck.id,decks.enqueue({episodeId:deck.id,expectedRevision:saved.revision}));assert.equal(rebuilt.state,'completed',rebuilt.error);assert.notEqual(rebuilt.id,job.id);
  } finally {await decks.close();reopened.close();}
 });
+
+test('built demo presenter targets the selected gallery view and pauses hidden or background playback', async t => {
+ const { createDemo } = await import('../scripts/create-deck-demo.mjs');
+ const { JSDOM } = await import('jsdom');
+ const { root, store, decks } = await fixture(t);
+ const deck = await createDemo(store);
+ // A second video view catches implementations that always target the first video.
+ deck.slides[6].subnav.push({ id: 'motion-two', label: 'Second motion', itemId: deck.slides[6].subnav[1].itemId });
+ const saved = store.saveDeck(deck.id, deck.revision, deck.slides);
+ const job = await terminal(decks, deck.id, decks.enqueue({ episodeId: deck.id, expectedRevision: saved.revision }));
+ assert.equal(job.state, 'completed', job.error);
+ const base = path.dirname(path.join(root, job.outputPath));
+ const dom = new JSDOM(await readFile(path.join(base, 'index.html'), 'utf8'), {
+  url: 'file:///export/index.html#demo', runScripts: 'outside-only', pretendToBeVisual: true,
+ });
+ t.after(() => dom.window.close());
+ const w = dom.window, d = w.document, sent = [];
+ let hidden = false, channel;
+ Object.defineProperty(d, 'hidden', { get: () => hidden });
+ w.matchMedia = () => ({ matches: false, addEventListener() {} });
+ w.HTMLMediaElement.prototype.pause = function () { this.playing = false; };
+ w.HTMLMediaElement.prototype.play = function () { this.playing = true; this.plays++; return Promise.resolve(); };
+ const videos = [...d.querySelectorAll('#demo video')];
+ assert.equal(videos.length, 2);
+ videos.forEach(video => {
+  video.plays = 0;
+  Object.defineProperty(video, 'paused', { get: () => !video.playing });
+ });
+ const popup = { closed: false, postMessage: data => sent.push(data) };
+ w.open = url => { channel = new URL(url).hash.slice(1); return popup; };
+ w.eval(await readFile(path.join(base, 'audience.js'), 'utf8'));
+ d.getElementById('presenter-open').click();
+ const command = name => w.dispatchEvent(new w.MessageEvent('message', {
+  source: popup, data: { type: 'deck-command', channel, command: name },
+ }));
+ const select = n => d.querySelector(`#demo [data-gallery="${n}"]`).click();
+ const flush = () => new Promise(setImmediate);
+ const state = () => sent.at(-1).state.video;
+
+ select(0);
+ for (const name of ['video-toggle', 'video-restart']) command(name);
+ await flush();
+ assert.equal(state(), null);
+ assert.deepEqual(videos.map(video => video.plays), [0, 0]);
+
+ select(1); assert.equal(state().paused, true);
+ command('video-toggle'); await flush();
+ assert.equal(videos[0].playing, true); assert.equal(state().paused, false);
+ command('video-toggle'); assert.equal(videos[0].playing, false);
+ videos[0].currentTime = 12;
+ command('video-restart'); await flush();
+ assert.equal(videos[0].currentTime, 0); assert.equal(videos[0].playing, true);
+ select(2);
+ assert.equal(videos[0].playing, false); assert.equal(state().paused, true);
+ command('video-toggle'); await flush();
+ assert.equal(videos[1].playing, true); assert.equal(videos[0].playing, false);
+ assert.equal(state().paused, false);
+ select(0); assert.equal(videos[1].playing, false); assert.equal(state(), null);
+
+ // Switching views before the deferred play starts must not start hidden media.
+ select(1); const plays = videos[0].plays;
+ command('video-toggle'); select(0); await flush();
+ assert.equal(videos[0].plays, plays);
+ // A browser play promise can also resolve after the view has changed.
+ let resolvePlay;
+ videos[0].play = () => new Promise(resolve => { resolvePlay = () => { videos[0].playing = true; resolve(); }; });
+ select(1); command('video-toggle'); await Promise.resolve();
+ select(0); resolvePlay(); await flush();
+ assert.equal(videos[0].playing, false); assert.equal(state(), null);
+
+ select(2); command('video-toggle'); await flush();
+ command('next'); assert.equal(videos[1].playing, false);
+ command('video-toggle'); await flush(); assert.equal(state(), null);
+ command('previous'); assert.equal(state().paused, true);
+ command('video-toggle'); await flush();
+ hidden = true; d.dispatchEvent(new w.Event('visibilitychange'));
+ assert.equal(videos[1].playing, false);
+ command('video-toggle'); await flush(); assert.equal(videos[1].playing, false);
+ hidden = false; d.dispatchEvent(new w.Event('visibilitychange'));
+ command('video-toggle'); await flush();
+ w.dispatchEvent(new w.Event('pagehide')); assert.equal(videos[1].playing, false);
+});
