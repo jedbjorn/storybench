@@ -40,8 +40,9 @@ RUN apt-get -o Acquire::Check-Valid-Until=false update \
 COPY docker/harness/package.json docker/harness/package-lock.json /opt/storybench/harness/
 ENV PATH=/opt/storybench/harness/node_modules/.bin:$PATH
 RUN cd /opt/storybench/harness && npm ci --omit=dev --ignore-scripts \
- && node node_modules/@anthropic-ai/claude-code/install.cjs && npm cache clean --force \
- && codex --version && claude --version
+ && node node_modules/@anthropic-ai/claude-code/install.cjs \
+ && cd node_modules/opencode-ai && node postinstall.mjs && cd ../.. && npm cache clean --force \
+ && codex --version && claude --version && opencode --version
 # Harness state and auth are mounted at runtime, never baked in.
 ENV CODEX_HOME=/storybench/session/codex \
     CLAUDE_CONFIG_DIR=/storybench/session/claude \

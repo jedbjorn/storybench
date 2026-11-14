@@ -18,10 +18,10 @@ async function launch() {
   catch { return existsSync("/usr/bin/chromium") ? chromium.launch({ executablePath: "/usr/bin/chromium" }).catch(() => null) : null; }
 }
 const catalog = [
-  { harness: "codex", available: true, source: "native", exactModelIds: true, models: [
+  { harness: "codex", available: true, source: "codex-login", exactModelIds: true, models: [
     { id: "gpt-6-astra", displayName: "GPT-6-Astra", isDefault: true, efforts: ["low", "medium", "high"], defaultEffort: "medium" },
     { id: "gpt-5.6-luna", displayName: "GPT-5.6-Luna", isDefault: false, efforts: ["low", "medium"], defaultEffort: "medium" } ] },
-  { harness: "claude", available: false, reason: "No claude login found. Run `claude` on the host and sign in, then retry.", models: [] },
+  { source: "claude-login", harness: "claude", available: false, reason: "No claude login found. Run `claude` on the host and sign in, then retry.", models: [] },
 ];
 
 test("the chat selector shows availability, per-model efforts, applies a change and marks the boundary", { timeout: 120_000 }, async (t) => {
@@ -61,8 +61,8 @@ test("the chat selector shows availability, per-model efforts, applies a change 
   await page.click("[data-chat-selection]");
   await page.waitForSelector("[data-settings-harness]");
   const options = await page.$$eval("[data-settings-harness] option", (items) => items.map((item) => ({ value: item.value, disabled: item.disabled, text: item.textContent })));
-  assert.equal(options.find((option) => option.value === "claude").disabled, true);
-  assert.match(options.find((option) => option.value === "claude").text, /unavailable: No claude login found/);
+  assert.equal(options.find((option) => option.value === "claude-login").disabled, true);
+  assert.match(options.find((option) => option.value === "claude-login").text, /unavailable: No claude login found/);
   // Effort options follow the chosen model's own contract.
   await page.fill("[data-settings-model]", "gpt-5.6-luna");
   const efforts = await page.$$eval("[data-settings-effort] option", (items) => items.map((item) => item.value));

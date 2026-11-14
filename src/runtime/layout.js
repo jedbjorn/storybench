@@ -1,3 +1,4 @@
+import { GATEWAY_MOUNT } from './gateway-relay.js';
 // Container layout: the fixed, installation-owned templates for the app and worker
 // containers. Pure functions from validated config + request to `docker` argv, so the
 // mount contract is reviewable and unit-tested without Docker.
@@ -124,7 +125,7 @@ export function appRunArgs(config) {
 }
 
 // `presentRoots` lists the PROJECT_ROOTS that exist in the data root (checked by the host).
-export function workerRunArgs(config, request, { presentRoots, credentialFile }) {
+export function workerRunArgs(config, request, { presentRoots, credentialFile, envFile = null, route = null, gatewayDirectory = null }) {
   const n = names(config.installId);
   const p = hostPaths(config);
   const harness = assertHarness(request.harness);
@@ -139,6 +140,8 @@ export function workerRunArgs(config, request, { presentRoots, credentialFile })
     "--read-only", "--tmpfs", "/tmp:exec,mode=1777", "--tmpfs", "/storybench/home:exec,mode=0700",
     "--pids-limit", "1024",
     "--network", n.workerNetwork,
+    ...(envFile ? ["--env-file", envFile] : []),
+    ...(route ? ["--env", `STORYBENCH_ROUTE=${JSON.stringify(route)}`, "--env", "OPENCODE_DISABLE_CLAUDE_CODE=1"] : []),
     "--workdir", episodeTarget,
     "--env", `STORYBENCH_REQUEST_ID=${request.requestId}`,
     "--env", `STORYBENCH_HARNESS=${harness}`,
@@ -149,7 +152,8 @@ export function workerRunArgs(config, request, { presentRoots, credentialFile })
     // App-owned native session state for this harness and conversation segment.
     ...bind(p.sessionDir(harness, request.segmentId), `${SESSION_MOUNT}/${harness}`),
     // Exactly one per-request credential copy, freshly staged from the host login.
-    ...bind(credentialFile, CREDENTIAL_TARGETS[harness]),
+    ...(credentialFile ? bind(credentialFile, CREDENTIAL_TARGETS[harness]) : []),
+    ...(gatewayDirectory ? bind(gatewayDirectory, GATEWAY_MOUNT, { readonly: true }) : []),
     // Request channel: the app's bridge socket (read-only) and the worker's harness socket.
     ...bind(path.join(p.requestDir(request.requestId), "app"), `${WORKER_REQUEST_MOUNT}/app`, { readonly: true }),
     ...bind(path.join(p.requestDir(request.requestId), "worker"), `${WORKER_REQUEST_MOUNT}/worker`),

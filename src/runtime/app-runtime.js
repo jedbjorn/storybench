@@ -69,12 +69,12 @@ export function mergeTools(runtimeTools, chatHandlers = {}) {
 // request-scoped worker whose session directory is that segment's. Without a segment
 // the conversation ID is the segment.
 export function createWorkerHarnessFactory({ store, controlSocket, templates, segmentFor = defaultSegmentFor, bootContextFor = defaultBootContextFor, onRequest = () => {} }) {
-  return async function workerHarnessFactory({ episodeId, conversationId, requestId, harness = "codex", model, effort = null, segmentId = null, request: turnRequest = {}, tools, onEvent, onError, onToolCall = () => {} }) {
+  return async function workerHarnessFactory({ episodeId, conversationId, requestId, harness = "codex", source = `${harness}-login`, model, supportsImages = true, effort = null, segmentId = null, request: turnRequest = {}, tools, onEvent, onError, onToolCall = () => {} }) {
     if (!episodeId || !conversationId || !requestId) throw new Error("Worker-backed turns need episode, conversation and request identity");
-    if (!["codex", "claude"].includes(harness)) throw new Error(`Unsupported harness: ${harness}`);
+    if (!["codex", "claude", "opencode"].includes(harness)) throw new Error(`Unsupported harness: ${harness}`);
     const request = await openWorkerRequest({
-      controlSocket, store, requestId, conversationId, harness, segmentId: segmentId ?? segmentFor(conversationId), episodeId, templates,
-      bootContext: bootContextFor(store, { episodeId, conversationId, model, effort, harness, request: turnRequest }), model,
+      controlSocket, store, requestId, conversationId, harness, source, segmentId: segmentId ?? segmentFor(conversationId), episodeId, templates,
+      bootContext: bootContextFor(store, { episodeId, conversationId, model, effort, harness, request: turnRequest }), model, supportsImages,
       wrapTools: (runtimeTools) => mergeTools(runtimeTools, tools), onToolCall,
     });
     onRequest({ requestId, episodeId, conversationId, harness, containerId: request.started.containerId, render: request.render });
@@ -82,6 +82,7 @@ export function createWorkerHarnessFactory({ store, controlSocket, templates, se
     try {
       connection = harness === "codex"
         ? await request.codex({ model, effort, onEvent, onError, requestTimeout: 60_000 })
+        : harness === "opencode" ? await request.openCodeConnection({ model, effort, onEvent, onError }).open()
         : await request.claudeConnection({ model, effort, onEvent, onError }).open();
     } catch (error) { await request.stop().catch(() => {}); throw error; }
     const close = connection.close.bind(connection);
@@ -101,8 +102,12 @@ export function createWorkerHarnessFactory({ store, controlSocket, templates, se
 export function createModelCatalog({ controlSocket, request = controlRequest }) {
   return {
     async list({ refresh = false } = {}) {
-      return Promise.all(["codex", "claude"].map((harness) => request(controlSocket, { op: "harness.models", harness, refresh })
-        .catch((error) => ({ harness, available: false, reason: `Model discovery is unavailable: ${error.message}`, models: [] }))));
+      const login = await Promise.all(['codex', 'claude'].map(async (harness) => {
+        try { const entry = await request(controlSocket, { op: 'harness.models', harness, refresh }); return { ...entry, discoverySource: entry.source, source: `${harness}-login`, models: entry.models }; }
+        catch (error) { return { source: `${harness}-login`, harness, available: false, reason: error.message, models: [] }; }
+      }));
+      const providers = await request(controlSocket, { op: 'providers.list' });
+      return [...login, ...await Promise.all(providers.map(({ id }) => request(controlSocket, { op: 'providers.models', source: id, refresh })))];
     },
   };
 }

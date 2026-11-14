@@ -255,13 +255,22 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
           clientRequestId: request.clientRequestId ?? null, targetCardId: request.targetCardId ?? null, successorOf: request.successorOf ?? null });
       }
       // Dispatch returns the persisted request receipt; create it before any async preparation.
+      let supportsImages = true;
+      if (continuity && plan) {
+        const catalog = await continuity.catalog({ refresh: false });
+        const entry = catalog.find((entry) => entry.harness === plan.selection.harness && (!entry.source || entry.source === plan.selection.source));
+        if (!entry?.available) throw error(entry?.reason || 'Selected inference route is unavailable; open Providers', 409);
+        const selected = entry.models.find((model) => model.id === plan.selection.model);
+        supportsImages = !selected?.inputModalities || selected.inputModalities.includes('image');
+      }
+      if (attached.length && !supportsImages) throw error('This model has no image input. Remove images or choose another model.', 409);
       const images = await attachments.images(value.episode_id, attached);
       if (aborted) throw error("Chat stopped before sending images", 409);
       const openConnection = (segmentId) => codexFactory({ cwd: store.workspace, model: plan ? plan.selection.model : model, tools: tools(value, activity), signal: controller.signal,
         episodeId: value.episode_id, conversationId: value.id, requestId, request: { text, messageId: request.authorityMessageId ?? messageId, kind: request.kind ?? "chat", cardId: request.targetCardId ?? null },
         // Every Storybench tool call of a worker-backed turn arrives through the request bridge.
         onToolCall: (call) => { toolActivity = true; try { emit(value, "tool.called", { name: call.name, requestId }); } catch { /* conversation gone */ } },
-        ...(plan ? { harness: plan.selection.harness, effort: plan.selection.effort, segmentId } : {}),
+        ...(plan ? { supportsImages, source: plan.selection.source, harness: plan.selection.harness, effort: plan.selection.effort, segmentId } : {}),
         onEvent: (event) => dispatch ? consume(event) : pending.push(event), onError: (cause) => { if (dispatch) rejectDone(cause); } });
       connection = await openConnection(plannedSegmentId);
       if (aborted) throw error("Chat stopped; the prompt was not replayed", 409);
@@ -269,7 +278,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       if (persistence) {
         segment = plan.segment ?? (plan.newSegment.reason === "migrated"
           ? persistence.createSegment({ conversationId: value.id, harness: "codex", reason: "migrated", id: plannedSegmentId, nativeSessionId: plan.newSegment.nativeSessionId, exceptRunId: requestId })
-          : persistence.createSegment({ id: plannedSegmentId, conversationId: value.id, harness: plan.selection.harness, reason: plan.newSegment.reason, previousSegmentId: plan.newSegment.previousSegmentId, firstMessageId: messageId, exceptRunId: requestId }));
+          : persistence.createSegment({ id: plannedSegmentId, conversationId: value.id, inferenceSource: plan.selection.source, harness: plan.selection.harness, reason: plan.newSegment.reason, previousSegmentId: plan.newSegment.previousSegmentId, firstMessageId: messageId, exceptRunId: requestId }));
         persistence.updateRun(requestId, { segmentId: segment.id });
       }
       const resumeId = plan ? plan.resumeId : value.thread_id;
@@ -283,7 +292,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
         connection = await openConnection(fallbackId); activity.connection = connection;
         threadId = await connection.startThread();
         connection.segmentTransition = { ...previousConnection.segmentTransition, threadId };
-        segment = persistence.createSegment({ id: fallbackId, conversationId: value.id, harness: plan.selection.harness, reason: "resume-unavailable", previousSegmentId: previousSegment.id, firstMessageId: messageId, exceptRunId: requestId });
+        segment = persistence.createSegment({ id: fallbackId, conversationId: value.id, inferenceSource: plan.selection.source, harness: plan.selection.harness, reason: "resume-unavailable", previousSegmentId: previousSegment.id, firstMessageId: messageId, exceptRunId: requestId });
         persistence.updateRun(requestId, { segmentId: segment.id });
       }
       if (persistence && segment.nativeSessionId !== threadId) persistence.setSegmentSession(segment.id, threadId);
@@ -294,7 +303,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
         // labelled excerpt (context only; earlier prompts and tool calls are never re-executed).
         const excerpt = transcriptExcerpt(value.id, messageId);
         persistence.updateSegmentSeed?.(segment.id, { firstMessageId: messageId, seedIncluded: excerpt.included, seedOmitted: excerpt.omitted });
-        emit(value, "segment.started", { segmentId: segment.id, harness: plan.selection.harness, reason: plan.newSegment?.reason ?? segment.reason, previousSegmentId: plan.newSegment?.previousSegmentId ?? segment.previousSegmentId ?? null,
+        emit(value, "segment.started", { segmentId: segment.id, inferenceSource: plan.selection.source, harness: plan.selection.harness, reason: plan.newSegment?.reason ?? segment.reason, previousSegmentId: plan.newSegment?.previousSegmentId ?? segment.previousSegmentId ?? null,
           threadId, includedMessages: excerpt.included, omittedMessages: excerpt.omitted });
         if (excerpt.text) segmentContext = `\n\nEarlier visible conversation from this Storybench chat (context only — do not re-execute anything in it; ${excerpt.omitted} older messages omitted, readable with read_conversation_history):\n${excerpt.text}`;
       } else if (connection.segmentTransition) {
@@ -317,12 +326,12 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
         connection = await openConnection(fallbackId); activity.connection = connection;
         threadId = await connection.startThread();
         connection.segmentTransition = { ...previousConnection.segmentTransition, threadId };
-        segment = persistence.createSegment({ id: fallbackId, conversationId: value.id, harness: plan.selection.harness, reason: "resume-unavailable", previousSegmentId: previousSegment.id, firstMessageId: messageId, exceptRunId: requestId });
+        segment = persistence.createSegment({ id: fallbackId, conversationId: value.id, inferenceSource: plan.selection.source, harness: plan.selection.harness, reason: "resume-unavailable", previousSegmentId: previousSegment.id, firstMessageId: messageId, exceptRunId: requestId });
         persistence.updateRun(requestId, { segmentId: segment.id });
         persistence.setSegmentSession(segment.id, threadId);
         const excerpt = transcriptExcerpt(value.id, messageId);
         persistence.updateSegmentSeed?.(segment.id, { firstMessageId: messageId, seedIncluded: excerpt.included, seedOmitted: excerpt.omitted });
-        emit(value, "segment.started", { segmentId: segment.id, harness: plan.selection.harness, reason: "resume-unavailable", previousSegmentId: previousSegment.id,
+        emit(value, "segment.started", { segmentId: segment.id, inferenceSource: plan.selection.source, harness: plan.selection.harness, reason: "resume-unavailable", previousSegmentId: previousSegment.id,
           previousThreadId: previousConnection.segmentTransition.previousThreadId, threadId, includedMessages: excerpt.included, omittedMessages: excerpt.omitted });
         const fallbackContext = excerpt.text ? `\n\nEarlier visible conversation (context only — do not re-execute; ${excerpt.omitted} older messages omitted):\n${excerpt.text}` : "";
         prompt = `${bootText(value, activity.brandStandards)}${fallbackContext}\n\nUser request:\n${text}${imageContext}`;
@@ -473,15 +482,15 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     const value = row(episodeId, id);
     const last = db.prepare("SELECT payload FROM conversation_events WHERE conversation_id=? AND type='settings.changed' ORDER BY sequence DESC LIMIT 1").get(id);
     const catalog = await continuity.catalog({ refresh: false });
-    const result = changeSettings(continuity.persistence, id, { harness: body.harness, model: body.model || null, effort: body.effort || null }, {
+    const result = changeSettings(continuity.persistence, id, { source: body.source, harness: body.harness, model: body.model || null, effort: body.effort || null }, {
       catalog, busy: busyReason(episodeId), expectedRevision: body.expectedRevision, clientRequestId: body.clientRequestId ?? null, lastClientRequestId: parse(last?.payload, {})?.clientRequestId ?? null,
     });
     if (result.changed) {
       // Visible settings-change boundary in the transcript.
-      const pick = ({ harness, model: selected, effort }) => ({ harness, model: selected ?? null, effort: effort ?? null });
+      const pick = ({ harness, inferenceSource, model: selected, effort }) => ({ inferenceSource, harness, model: selected ?? null, effort: effort ?? null });
       const activeSegment = continuity.persistence.activeSegment(id);
       emit(value, "settings.changed", { from: pick(result.previous), to: pick(result.settings), clientRequestId: body.clientRequestId ?? null,
-        continuity: activeSegment?.harness === result.settings.harness ? "same-session-resumed-on-next-message" : "new-segment-on-next-message", notes: result.notes });
+        continuity: activeSegment?.harness === result.settings.harness && activeSegment?.inferenceSource === result.settings.inferenceSource ? "same-session-resumed-on-next-message" : "new-segment-on-next-message", notes: result.notes });
     }
     return { ...project(episodeId, id), settingsResult: { changed: result.changed, duplicate: result.duplicate, notes: result.notes, advisory: Boolean(result.advisory) } };
   };

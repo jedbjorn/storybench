@@ -34,6 +34,10 @@ export function launchArgv(header) {
       "-c", "mcp_servers.storybench.startup_timeout_sec=20", "-c", "mcp_servers.storybench.tool_timeout_sec=120",
       ...CODEX_DISABLED.flatMap((feature) => ["--disable", feature])]];
   }
+  if (header.harness === 'opencode') {
+    if (typeof header.model !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/.test(header.model) || !SESSION.test(header.sessionId || '') || header.resume && header.resume !== header.sessionId) throw new Error('Invalid OpenCode selection/session');
+    return ['node', ['/opt/storybench/app/src/runtime/worker/opencode.mjs', JSON.stringify(header)]];
+  }
   if (header.harness === "claude") {
     if (!MODEL.test(header.model ?? "")) throw new Error("Claude launch needs a plain model identifier");
     if (header.resume !== undefined && header.resume !== null && !SESSION.test(header.resume)) throw new Error("Claude resume must be a session UUID");

@@ -1,3 +1,4 @@
+import { controlRequest } from './runtime/channel.js';
 import { FONTS, fontPath, fontCatalog } from './fonts.js';
 import { validateSelection } from './runtime/conversation-runtime.js';
 import http from "node:http";
@@ -177,17 +178,28 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
       const requestedChannel = url.searchParams.get("channel") || String(req.headers["x-storybench-channel"] || "") || null;
       const viewChannel = () => requestedChannel ? store.requireChannel(requestedChannel) : store.getDefaultChannel();
       if (req.method === "GET" && url.pathname === "/api/health") return send(res, closing ? 503 : 200, health.snapshot());
+      if (parts[0] === 'api' && parts[1] === 'providers') {
+        if (!runtimeControl) throw new StoreError('Providers need the Storybench host runtime', 409);
+        res.setHeader('Cache-Control', 'no-store');
+        if (req.method === 'GET' && parts.length === 2) return send(res, 200, await controlRequest(runtimeControl, { op: 'providers.list' }));
+        if (req.method === 'PUT' && parts.length === 2) return send(res, 200, await controlRequest(runtimeControl, { op: 'providers.gateway', gateway: await jsonBody(req) }));
+        const source = parts[2];
+        if (req.method === 'PUT' && parts.length === 3) { const body = await jsonBody(req); return send(res, 200, await controlRequest(runtimeControl, { op: 'providers.key', source, key: body.key, saveUnchecked: body.saveUnchecked === true })); }
+        if (req.method === 'DELETE' && parts.length === 3) return send(res, 200, await controlRequest(runtimeControl, { op: 'providers.remove', source }));
+        if (req.method === 'POST' && parts[3] === 'test') return send(res, 200, await controlRequest(runtimeControl, { op: 'providers.test', source }));
+      }
       if (req.method === "GET" && url.pathname === "/api/harnesses") {
         if (!catalog) return send(res, 200, { available: false, reason: "Harness selection needs the Storybench runtime (Docker lifecycle)", harnesses: [] });
         return send(res, 200, { available: Boolean(continuity), reason: continuity ? null : "Conversation settings storage is not available in this data root yet", harnesses: await catalog.list({ refresh: url.searchParams.get("refresh") === "1" }) });
       }
+      if (req.method === "GET" && url.pathname === "/api/model-defaults") return send(res, 200, store.listModelDefaults());
       if (url.pathname === "/api/model-default") {
-        if (req.method === "GET") return send(res, 200, store.getModelDefault());
+        if (req.method === "GET") return send(res, 200, store.getModelDefault(url.searchParams.get("mode") || "video"));
         if (req.method === "PUT") {
           if (!continuity) throw new StoreError("Model selection needs the Storybench runtime", 409);
           const body = await jsonBody(req);
-          const { harness, model, effort, notes } = validateSelection(await catalog.list({}), body.selection ?? {});
-          return send(res, 200, { ...store.saveModelDefault(body.expectedRevision, { harness, model, effort }), notes });
+          const { source, harness, model, effort, notes } = validateSelection(await catalog.list({}), body.selection ?? {});
+          return send(res, 200, { ...store.saveModelDefault(body.expectedRevision, { source, harness, model, effort }, body.mode || "video"), notes });
         }
       }
       if (req.method === "GET" && url.pathname === "/api/fonts") return send(res, 200, fontCatalog());
@@ -560,7 +572,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
       if (!["GET", "HEAD"].includes(req.method))
         throw new StoreError("Route not found", 404);
       const relative =
-        ["/", "/episodes", "/branding", "/models"].includes(url.pathname)
+        ["/", "/episodes", "/branding", "/models", "/providers"].includes(url.pathname)
           ? "index.html"
           : decodeURIComponent(url.pathname.slice(1));
       return await streamFile(req, res, contained(publicDir, relative));

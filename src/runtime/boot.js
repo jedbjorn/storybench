@@ -14,7 +14,7 @@ export const MANIFEST = ".storybench/renders.json";
 // Native skill discovery roots, verified against the installed harnesses:
 // Claude Code 2.1.278 reads <cwd>/.claude/skills; Codex 0.155.1 lists <cwd>/.agents/skills
 // (and .codex/skills) as repo-scope skills via skills/list.
-export const SKILL_ROOTS = Object.freeze({ claude: ".claude/skills", codex: ".agents/skills" });
+export const SKILL_ROOTS = Object.freeze({ claude: ".claude/skills", codex: ".agents/skills", opencode: ".opencode/skills" });
 const BOOT_FILES = ["AGENTS.md", "CLAUDE.md"];
 const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
@@ -75,7 +75,7 @@ export async function loadTemplates(templatesDir = DEFAULT_TEMPLATES) {
 export async function renderEpisodeBoot({ episodeDir, context, templates }) {
   const loaded = templates ?? await loadTemplates();
   const skillIndex = loaded.skills.map((skill) =>
-    `- **${skill.name}**: ${skill.description} (Claude: \`${SKILL_ROOTS.claude}/${skill.name}/SKILL.md\`, Codex: \`${SKILL_ROOTS.codex}/${skill.name}/SKILL.md\`)`).join("\n") || "- (no skills shipped)";
+    `- **${skill.name}**: ${skill.description} (Claude: \`${SKILL_ROOTS.claude}/${skill.name}/SKILL.md\`, Codex: \`${SKILL_ROOTS.codex}/${skill.name}/SKILL.md\`, OpenCode: \`${SKILL_ROOTS.opencode}/${skill.name}/SKILL.md\`)`).join("\n") || "- (no skills shipped)";
   const fullContext = { ...context, skills: { index: skillIndex } };
   const header = `<!-- storybench:rendered template=${loaded.version.slice(0, 16)} — regenerated before each agent start/resume; edits are overwritten. -->\n`;
   const body = header + fillTemplate(loaded.boot, fullContext, "BOOT.md");

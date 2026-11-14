@@ -37,9 +37,9 @@ export function probeTools(role, runner = spawnSync) {
   for (const [label, pkg] of Object.entries({ ffmpeg: "ffmpeg", poppler: "poppler-utils", pillow: "python3-pil", resvg: "resvg", fontDejaVu: "fonts-dejavu-core", fontNoto: "fonts-noto-core", fontLiberation: "fonts-liberation2" }))
     tools[`pkg${label[0].toUpperCase()}${label.slice(1)}`] = check("dpkg-query", ["-W", "-f=${Version}", pkg]);
   if (role === "worker") {
-    for (const [name, args] of Object.entries({ codex: ["--version"], claude: ["--version"], git: ["--version"], rg: ["--version"], bash: ["--version"] }))
+    for (const [name, args] of Object.entries({ codex: ["--version"], claude: ["--version"], opencode: ["--version"], git: ["--version"], rg: ["--version"], bash: ["--version"] }))
       tools[name] = check(name, args);
-    for (const name of ["codex", "claude"]) {
+    for (const name of ["codex", "claude", "opencode"]) {
       const version = /\b\d+\.\d+\.\d+\b/.exec(tools[name])?.[0];
       if (!version) throw new Error(`${name}: invalid version output ${tools[name]}`);
       tools[name] = version;

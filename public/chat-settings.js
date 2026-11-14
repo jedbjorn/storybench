@@ -2,11 +2,13 @@
 // and availability"). Options come from GET /api/harnesses (installed-harness discovery and the
 // live login); a change is PUT to the conversation and shows as a boundary in the transcript.
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
-export const HARNESS_LABELS = { codex: "Codex", claude: "Claude Code" };
+export const HARNESS_LABELS = { codex: "Codex", claude: "Claude Code", opencode: "OpenCode" };
 
 export function selectionLabel(settings) {
   if (!settings) return "Codex · default model";
-  const harness = HARNESS_LABELS[settings.harness] ?? settings.harness;
+  const source = settings.inferenceSource || settings.source;
+  const sourceName = source && !['default', 'migrated', 'explicit', 'explicit-inherited'].includes(source) && !source.endsWith('-login') ? source : null;
+  const harness = [sourceName, HARNESS_LABELS[settings.harness] ?? settings.harness].filter(Boolean).join(' · ');
   return [harness, settings.model || "default model", settings.effort ? `${settings.effort} effort` : null].filter(Boolean).join(" · ");
 }
 
@@ -49,36 +51,41 @@ export class ChatSettings {
     return this.catalog;
   }
 
-  entry(harness) { return this.catalog?.harnesses?.find((value) => value.harness === harness) ?? null; }
+  entry(source) { return this.catalog?.harnesses?.find((value) => (value.source || value.harness) === source) ?? null; }
 
   // Render the editor for `conversation` into the panel; resolves with the saved conversation or null.
-  open(panel, conversation, { busy = false, onSaved = () => {}, defaultMode = false, onDirty = () => {}, onCancel = null } = {}) {
+  open(panel, conversation, { busy = false, onSaved = () => {}, defaultMode = false, kind = "video", onDirty = () => {}, onCancel = null } = {}) {
     const settings = conversation.settings ?? { harness: "codex", model: null, effort: null, revision: 1 };
+    const source = settings.inferenceSource || (settings.source && this.catalog?.harnesses?.some((entry) => entry.source === settings.source) ? settings.source : this.catalog?.harnesses?.some((entry) => entry.source === `${settings.harness}-login`) ? `${settings.harness}-login` : settings.harness);
     let unavailable = !this.catalog?.available;
     panel.hidden = false;
     panel.innerHTML = `<form class="chat-settings" data-chat-settings-form>
       <fieldset ${unavailable || busy ? "disabled" : ""}>
-        <label>Harness <select name="harness" data-settings-harness></select></label>
+        <label>Source <select name="harness" data-settings-harness></select></label>
         <label>Model <input name="model" data-settings-model list="${defaultMode ? "defaultModelOptions" : "chatModelOptions"}" autocomplete="off" placeholder="Harness default"><datalist id="${defaultMode ? "defaultModelOptions" : "chatModelOptions"}" data-settings-models></datalist></label>
+        <label><input type="checkbox" data-settings-show-all>Show all models (use at your own risk)</label>
         <label>Thinking <select name="effort" data-settings-effort></select></label>
       </fieldset>
+      <a href="/providers">Provider settings</a>
       <p class="chat-settings-note" data-settings-note role="status"></p>
       <div class="chat-settings-actions"><button type="button" data-settings-refresh>Refresh models</button><button type="button" data-settings-cancel>${defaultMode ? "Reload saved" : "Cancel"}</button><button type="submit" data-settings-apply ${unavailable || busy ? "disabled" : ""}>${defaultMode ? "Save default" : "Apply"}</button></div>
     </form>`;
     const form = panel.querySelector("form"), harness = form.querySelector("[data-settings-harness]"), model = form.querySelector("[data-settings-model]"),
       effort = form.querySelector("[data-settings-effort]"), note = form.querySelector("[data-settings-note]"), list = form.querySelector("[data-settings-models]");
     const paintHarnesses = () => {
-      harness.innerHTML = ["codex", "claude"].map((id) => {
+      harness.innerHTML = (this.catalog?.harnesses || []).map((candidate) => candidate.source || candidate.harness).map((id) => {
         const entry = this.entry(id);
         const reason = !entry ? "not listed" : entry.available ? "" : entry.reason;
-        return `<option value="${id}" ${entry?.available ? "" : "disabled"} ${id === harness.value || (!harness.value && id === settings.harness) ? "selected" : ""}>${escapeHtml(HARNESS_LABELS[id])}${reason ? ` — unavailable: ${escapeHtml(reason)}` : ""}</option>`;
+        return `<option value="${id}" ${entry?.available ? "" : "disabled"} ${id === harness.value || (!harness.value && id === source) ? "selected" : ""}>${escapeHtml(HARNESS_LABELS[id] || id)}${reason ? ` — unavailable: ${escapeHtml(reason)}` : ""}</option>`;
       }).join("");
     };
     const paintModels = () => {
       const entry = this.entry(harness.value);
-      list.innerHTML = (entry?.models ?? []).map((value) => `<option value="${escapeHtml(value.id)}">${escapeHtml(value.displayName ?? value.id)}${value.isDefault ? " (default)" : ""}${entry.advisory ? " — advisory" : ""}</option>`).join("");
+      model.placeholder = entry?.harness === "opencode" ? "Choose a model (required)" : "Harness default";
+      model.required = entry?.harness === "opencode";
+      list.innerHTML = (entry?.models ?? []).filter((value) => value.eligible !== false || form.querySelector("[data-settings-show-all]").checked || value.id === model.value).map((value) => `<option value="${escapeHtml(value.id)}">${escapeHtml(value.displayName ?? value.id)}${value.isDefault ? " (default)" : ""}${value.eligible === false ? ` — ${escapeHtml(value.eligibilityReason)}; use at your own risk` : entry.advisory ? " — advisory" : ""}</option>`).join("");
       const choices = effortOptions(entry, model.value.trim() || null);
-      const current = effort.value || (harness.value === settings.harness ? settings.effort ?? "" : "");
+      const current = effort.value || (harness.value === source ? settings.effort ?? "" : "");
       effort.innerHTML = `<option value="">Native default</option>${choices.map((value) => `<option value="${escapeHtml(value)}" ${value === current ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}`;
       if (!choices.includes(current)) effort.value = "";
       const parts = [];
@@ -86,15 +93,16 @@ export class ChatSettings {
       if (unavailable) parts.push(this.catalog?.reason || this.catalogError || "Harness selection is unavailable.");
       if (entry?.advisory) parts.push(entry.note || "Claude model names are advisory; exact IDs are verified on first use.");
       if (entry?.stale) parts.push(`Model list may be stale${entry.discoveryError ? ` (${entry.discoveryError})` : ""}; use Refresh models.`);
-      if (entry && !entry.available) parts.push(`${HARNESS_LABELS[entry.harness]} is unavailable: ${entry.reason}`);
-      if (!defaultMode && harness.value !== settings.harness) parts.push("Switching harness starts a new native session on the next message, seeded with a summary of this conversation.");
+      if (entry && !entry.available) parts.push(`${HARNESS_LABELS[entry.harness]} is unavailable: ${entry.reason}. Open Providers to reconnect.`);
+      if (!defaultMode && harness.value !== source) parts.push("Switching harness starts a new native session on the next message, seeded with a summary of this conversation.");
       note.textContent = parts.join(" ");
     };
-    harness.value = settings.harness;
+    harness.value = source;
     paintHarnesses();
-    harness.value = settings.harness;
+    harness.value = source;
     model.value = settings.model ?? "";
     paintModels();
+    form.querySelector("[data-settings-show-all]").onchange = paintModels;
     harness.onchange = () => { model.value = ""; effort.value = ""; paintModels(); };
     model.oninput = () => paintModels();
     form.addEventListener("input", onDirty);
@@ -116,9 +124,10 @@ export class ChatSettings {
       apply.disabled = true;
       if (defaultMode) form.querySelector("fieldset").disabled = true;
       try {
-        const selection = { harness: harness.value, model: model.value.trim() || null, effort: effort.value || null };
+        const entry = this.entry(harness.value);
+        const selection = { source: entry.source || `${entry.harness}-login`, harness: entry.harness, model: model.value.trim() || null, effort: effort.value || null };
         const saved = await this.api(defaultMode ? "/api/model-default" : `/api/episodes/${conversation.episodeId}/chats/${conversation.id}/settings`, { method: "PUT",
-          body: JSON.stringify(defaultMode ? { selection, expectedRevision: settings.revision } : { ...selection, expectedRevision: settings.revision, clientRequestId }) });
+          body: JSON.stringify(defaultMode ? { mode: kind, selection, expectedRevision: settings.revision } : { ...selection, expectedRevision: settings.revision, clientRequestId }) });
         panel.hidden = true; panel.innerHTML = "";
         await onSaved(saved);
       } catch (cause) {
