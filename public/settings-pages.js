@@ -125,6 +125,7 @@ export class SettingsPages {
       document.querySelector('#defaultModelSummary').textContent = 'Defaults for new conversations by production kind';
       for (const value of rows) {
         const section = document.createElement('section');
+        section.setAttribute('aria-label', `${value.mode} model default`);
         const title = document.createElement('h2'); title.textContent = value.mode; root.append(title, section);
         this.models.open(section, { settings: { ...(value.selection || { harness: 'codex', model: null, effort: null }), revision: value.revision } }, {
           defaultMode: true, kind: value.mode, onDirty: () => this.changed(),

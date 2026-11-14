@@ -98,7 +98,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
     db.prepare("INSERT INTO conversations(id,episode_id,name,created_at,updated_at) VALUES(?,?,?,?,?)").run(id, episodeId, name, stamp, stamp);
     // A saved app default seeds new conversations; existing selections are untouched.
     const persistence = continuity?.persistence ?? requestPersistence;
-    if (persistence) persistence.initSettings(id, initialSettings(persistence, store.getModelDefault().selection));
+    if (persistence) persistence.initSettings(id, initialSettings(persistence, store.getModelDefault(store.getEpisode(episodeId).kind).selection));
     return project(episodeId, id);
   };
   const first = (episodeId) => {

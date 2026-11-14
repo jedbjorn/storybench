@@ -241,7 +241,7 @@ export async function runImportBatch({ rows, episodeId, upload, signal, onChange
 export function episodeNavigatorHTML(episodes, filter, selectedId) {
   const states = ["Scaffold", "Draft", "Final", "Published"];
   const options = (selected) => [...states, "Archived"].map((value) => `<option ${selected === value ? "selected" : ""}>${value}</option>`).join("");
-  const rowsHTML = (rows, selected) => rows.map((episode) => `<div class="episode-row" draggable="true" data-id="${episode.id}"><button data-episode-select class="${selectedId === episode.id ? "active" : ""}">${esc(episode.title)}</button><select data-episode-state-select aria-label="Move ${esc(episode.title)}">${options(selected)}</select></div>`).join("");
+  const rowsHTML = (rows, selected) => rows.map((episode) => `<div class="episode-row" draggable="true" data-id="${episode.id}"><button data-episode-select class="${selectedId === episode.id ? "active" : ""}"><span>${esc(episode.title)}</span> <small>${episode.kind === "deck" ? "Deck" : "Episode"}</small></button><select data-episode-state-select aria-label="Move ${esc(episode.title)}">${options(selected)}</select></div>`).join("");
   const active = states.map((state) => {
     if (filter !== "All" && filter !== state) return "";
     const rows = episodes.filter((episode) => !episode.archivedAt && episode.state === state);

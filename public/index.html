@@ -14,7 +14,7 @@
       </div>
       <div id="channelName" class="pill channel-pill" aria-label="Current channel">…</div>
       <nav class="page-nav" aria-label="Main navigation">
-        <a href="/episodes" data-page="episodes">Episodes</a>
+        <a href="/episodes" data-page="episodes">Productions</a>
         <a href="/branding" data-page="branding">Branding</a>
         <a href="/providers" data-page="providers">Providers</a>
         <a href="/models" data-page="models">Models</a>
@@ -23,10 +23,10 @@
     </header>
     <main id="episodesPage">
       <aside class="episode-rail">
-        <button id="episodeRailToggle" type="button" aria-controls="episodeRailContent" aria-expanded="true" aria-label="Collapse Episodes">‹</button>
+        <button id="episodeRailToggle" type="button" aria-controls="episodeRailContent" aria-expanded="true" aria-label="Collapse Productions">‹</button>
         <div id="episodeRailContent">
         <div class="aside-head">
-          <span>Episodes</span><button id="newEpisode" class="icon">＋</button>
+          <span>Productions</span><label>Kind<select id="productionKind"><option value="video">Episode / video</option><option value="deck">Deck</option></select></label><button id="newEpisode" class="icon">＋</button>
         </div>
         <label class="episode-filter">Show <select id="episodeFilter"><option>All</option><option>Scaffold</option><option>Draft</option><option>Final</option><option>Published</option><option>Archived</option></select></label>
         <div id="filteredEpisodeNotice" class="filter-notice" hidden></div>
@@ -42,10 +42,10 @@
           <div class="empty-art">◫</div>
           <h1>Shape footage into a story</h1>
           <p>
-            Create an episode, import completed media, and assemble a clean
+            Create a production, import completed media, and assemble a clean
             first cut.
           </p>
-          <button id="firstEpisode" class="primary">Create an episode</button>
+          <button id="firstEpisode" class="primary">Create a production</button>
         </div>
         <div id="editor" hidden>
           <div class="title-row">
@@ -104,7 +104,7 @@
               </div>
               <button id="addCard">＋ Add card</button>
             </div>
-            <div id="cards"></div>
+            <div id="cards"></div><div id="deckSlides" hidden></div>
           </div>
           <div id="mediaPanel" hidden>
             <div class="panel-heading"><div><h2>Episode library</h2><p>References and media stay grouped here until you explicitly add them to cards.</p></div><button id="openLibraryImport" class="primary">＋ Import</button></div>

@@ -38,11 +38,11 @@ test('editable model combobox filters suggestions and preserves exact unlisted I
   assert.equal(input.value, 'exact-custom-model'); assert.equal(input.hasAttribute('list'), false);
 });
 
-test('Episodes collapse preference survives reload and exposes a labelled reopen control', () => {
+test('Productions collapse preference survives reload and exposes a labelled reopen control', () => {
   const dom = new JSDOM('<main id="episodesPage"><button id="episodeRailToggle"></button></main>', { url: 'http://localhost' });
   installWorkspaceChrome(dom.window.document);
   const toggle = dom.window.document.querySelector('button'); toggle.click();
   assert.equal(dom.window.localStorage.getItem('storybench.episodesCollapsed'), 'true');
-  assert.equal(toggle.getAttribute('aria-label'), 'Expand Episodes');
+  assert.equal(toggle.getAttribute('aria-label'), 'Expand Productions');
   assert.equal(toggle.getAttribute('aria-expanded'), 'false'); dom.window.close();
 });

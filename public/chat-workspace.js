@@ -5,8 +5,8 @@ const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character
 const working = (state) => ["queued", "running", "interrupting"].includes(state);
 
 export class ChatWorkspace {
-  constructor({ root, api, getEpisode, toast = () => {}, onBusyChange = () => {}, uploadImage = uploadLibraryFile }) {
-    Object.assign(this, { root, api, getEpisode, toast, onBusyChange, uploadImage });
+  constructor({ root, api, getEpisode, toast = () => {}, onBusyChange = () => {}, uploadImage = uploadLibraryFile, beforeSend = async () => {} }) {
+    Object.assign(this, { root, api, getEpisode, toast, onBusyChange, uploadImage, beforeSend });
     this.imageDrafts = new Map();
     this.sending = false;
     this.conversations = [];
@@ -68,6 +68,7 @@ export class ChatWorkspace {
     if (this.isBusy()) throw new Error("A request is already active for this episode. Let it finish or press Stop; this request was not queued.");
     const episodeId = this.episodeId, conversationId = this.currentId;
     await this.flushDraft();
+    await this.beforeSend();
     const value = await this.api(`${this.itemUrl(episodeId, conversationId)}/production-requests`, { method: "POST",
       body: JSON.stringify({ kind, targetCardId, prompt, clientRequestId }) });
     if (this.isCurrent(this.generation, episodeId, conversationId)) await this.refreshList(this.generation, episodeId, { preserveSelection: true });
@@ -252,6 +253,7 @@ export class ChatWorkspace {
       this.sending = true; send.disabled = true;
       try {
         await this.flushDraft();
+        await this.beforeSend();
         await this.api(`${this.itemUrl(episodeId, conversationId)}/messages`, { method: "POST", body: JSON.stringify({ text, ...(imageDraft.attachments.length ? { attachmentIds: imageDraft.attachments.map((item) => item.itemId) } : {}) }) });
         imageDraft.attachments = []; imageDraft.dirty = false; imageDraft.error = "";
         if (!this.isCurrent(generation, episodeId, conversationId)) return;
@@ -276,6 +278,7 @@ export class ChatWorkspace {
       const conversationId = this.currentId;
       try {
         await this.flushDraft();
+        await this.beforeSend();
         await this.api(`${this.itemUrl(episodeId, conversationId)}/production-requests/${button.dataset.chatRetry}/retry`, { method: "POST", body: JSON.stringify({ clientRequestId: crypto.randomUUID() }) });
         if (this.isCurrent(generation, episodeId, conversationId)) await this.refreshList(generation, episodeId, { preserveSelection: true });
       } catch (cause) { this.toast(cause.message); }

@@ -1,3 +1,4 @@
+import { newSlide, deckBoardHTML, bindDeckBoard } from "/deck-workspace.js";
 import { installSelectControls } from "/select-control.js";
 import { installWorkspaceChrome } from "/workspace-chrome.js";
 import { SettingsPages } from "/settings-pages.js";
@@ -93,6 +94,21 @@ function render() {
   $("#empty").hidden = !!episode;
   $("#editor").hidden = !episode;
   if (!episode) return;
+  const deck = episode.kind === "deck";
+  for (const selector of ['#preview', '#export', '#openGraphic', '[data-tab="drafts"]', '[data-tab="final"]']) {
+    const control = $(selector); if (control) control.hidden = deck;
+  }
+  if (deck && (!$("#draftsPanel").hidden || !$("#finalPanel").hidden)) {
+    for (const name of ['story','board','media','drafts','final']) $(`#${name}Panel`).hidden = name !== 'board';
+    document.querySelectorAll('.tabs > button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'board'));
+  }
+  $("#boardPanel h2").textContent = deck ? "Slides" : "Story cards";
+  $("#boardPanel .panel-heading p").textContent = deck ? "Compose slides, notes and reveals. Deck export is not available yet." : "Each card becomes one scene in the finished video.";
+  $('[data-tab="board"]').textContent = deck ? "Slides" : "Storyboard";
+  $("#episodeTitle").setAttribute('aria-label', deck ? 'Deck title' : 'Episode title');
+  $("#mediaPanel h2").textContent = deck ? 'Deck library' : 'Episode library';
+  $("#mediaPanel .panel-heading p").textContent = deck ? 'Import media here, then choose it in a slide.' : 'References and media stay grouped here until you explicitly add them to cards.';
+  $("#addCard").textContent = deck ? "＋ Add slide" : "＋ Add card";
   $("#episodeTitle").value = episode.title;
   $("#episodeNotes").value = episode.notes;
   renderEpisodeReferences();
@@ -103,6 +119,7 @@ function render() {
 }
 function renderJobs() {
   if (!episode) return;
+  if (episode.kind === "deck") { $("#draftJobs").innerHTML = ""; $("#finalJobs").innerHTML = ""; return; }
   const episodeJobs = state.jobs.filter((job) => job.episodeId === episode.id);
   const drafts = jobsForOutputView(episodeJobs, "draft");
   const finals = jobsForOutputView(episodeJobs, "final");
@@ -131,7 +148,7 @@ const storyEditor = new StoryEditor({
   onSaved: () => refreshJobs().catch((error) => toast(error.message)),
 });
 const libraryWorkspace = new LibraryWorkspace({ api, toast, getEpisode: () => episode, refreshState: () => load(episode?.id), beforeDelete: flushDraft, onMutation: () => refreshJobs().catch((error) => toast(error.message)) });
-const chatWorkspace = new ChatWorkspace({ root: $("#chatWorkspace"), api, toast, getEpisode: () => episode, onBusyChange: setProductionBusy });
+const chatWorkspace = new ChatWorkspace({ root: $("#chatWorkspace"), api, toast, getEpisode: () => episode, onBusyChange: setProductionBusy, beforeSend: async () => { if (!(await leaveStory())) throw new Error("Save or discard story edits before sending"); await flushDraft(); } });
 async function syncChat() {
   if (episode?.id === chatWorkspace.episodeId) return;
   if (episode) await chatWorkspace.open();
@@ -160,6 +177,9 @@ async function askAssistant(kind, { targetCardId = null, prompt = "" } = {}) {
 const cardTypes = ["Video/Audio", "Video", "Audio", "Static Graphic", "Video Graphic"];
 function renderCards() {
   if (!episode) return;
+  const deck = episode.kind === "deck";
+  $("#deckSlides").hidden = !deck; $("#cards").hidden = deck;
+  if (deck) { $("#deckSlides").innerHTML = deckBoardHTML(episode.cards, boardItemsEpisode === episode.id ? boardItems : [], boardItemsEpisode === episode.id ? boardSections : []); return; }
   if (cardCollapseEpisode !== episode.id) {
     collapsedCardIds.clear();
     cardCollapseEpisode = episode.id;
@@ -439,7 +459,7 @@ async function create() {
   }
   const e = await api("/api/episodes", {
     method: "POST",
-    body: JSON.stringify({ title: "Untitled episode", channelId }),
+    body: JSON.stringify({ title: $("#productionKind").value === "deck" ? "Untitled deck" : "Untitled episode", kind: $("#productionKind").value, channelId }),
   });
   await load(e.id);
 }
@@ -493,7 +513,9 @@ $("#episodeTitle").oninput = $("#episodeNotes").oninput = () => {
   clearTimeout(fieldTimer);
   fieldTimer = setTimeout(() => save(), 500);
 };
+bindDeckBoard($("#deckSlides"), { getSlides: () => episode.cards, onDirty: () => { dirty = true; $("#saveState").textContent = "Unsaved changes"; }, onSave: () => save(), render: renderCards });
 $("#addCard").onclick = () => {
+  if (episode.kind === "deck") { episode.cards.push(newSlide()); dirty = true; renderCards(); save(); return; }
   episode.cards.push({
     id: crypto.randomUUID(),
     title: "New scene",
