@@ -2,6 +2,7 @@
 // Each turn runs in a request-scoped worker with Storybench and runtime tools.
 // Closing the connection stops the worker and its descendant commands.
 import path from "node:path";
+import { bindInstructionContext } from "./instruction-context.js";
 import { STORYBENCH_TOOLS } from "../codex.js";
 import { controlRequest } from "./channel.js";
 import { openWorkerRequest } from "./request.js";
@@ -84,6 +85,8 @@ export function createWorkerHarnessFactory({ store, controlSocket, templates, se
         ? await request.codex({ model, effort, onEvent, onError, requestTimeout: 60_000 })
         : harness === "opencode" ? await request.openCodeConnection({ model, effort, onEvent, onError }).open()
         : await request.claudeConnection({ model, effort, onEvent, onError }).open();
+    await bindInstructionContext(connection, { episodeDir: request.scope.episodeDir,
+      segmentId: segmentId ?? segmentFor(conversationId), version: request.contextVersion });
     } catch (error) { await request.stop().catch(() => {}); throw error; }
     const close = connection.close.bind(connection);
     let stopping;

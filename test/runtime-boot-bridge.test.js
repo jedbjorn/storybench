@@ -26,12 +26,14 @@ const context = {
 };
 
 async function templates(dir, skills) {
-  await mkdir(path.join(dir, "skills"), { recursive: true });
-  await writeFile(path.join(dir, "BOOT.md"), "Episode {{episode.id}} phrase {{runtime.bootPhrase}}\n{{skills.index}}\n");
+  await mkdir(path.join(dir, "shared/skills"), { recursive: true });
+  await writeFile(path.join(dir, "shared/BOOT.md"), "Episode {{episode.id}} phrase {{runtime.bootPhrase}}\n{{skills.index}}\n");
   for (const name of skills) {
-    await mkdir(path.join(dir, "skills", name), { recursive: true });
-    await writeFile(path.join(dir, "skills", name, "SKILL.md"), `---\nname: ${name}\ndescription: ${name} skill\n---\n\nPhrase {{runtime.skillPhrase}} in {{paths.work}}\n`);
+    await mkdir(path.join(dir, "shared/skills", name), { recursive: true });
+    await writeFile(path.join(dir, "shared/skills", name, "SKILL.md"), `---\nname: ${name}\ndescription: ${name} skill\n---\n\nPhrase {{runtime.skillPhrase}} in {{paths.work}}\n`);
   }
+  await mkdir(path.join(dir, "video"), { recursive: true });
+  await writeFile(path.join(dir, "video/BOOT.md"), "");
   return loadTemplates(dir);
 }
 
@@ -105,7 +107,8 @@ test("the shipped templates render with the app's boot context and cover the ski
     assert.ok(renderedBoot.includes(expected), `boot shows ${expected}`);
   assert.doesNotMatch(renderedBoot, /not in this render|not reported in this render/);
   const roster = ["storybench-understand-project", "storybench-read-references", "storybench-edit-story-cards", "storybench-edit-broll",
-    "storybench-create-graphics", "storybench-reuse-project-assets", "storybench-assemble-draft", "storybench-finish-video"];
+    "storybench-create-graphics", "storybench-reuse-project-assets", "storybench-assemble-draft", "storybench-finish-video",
+    "storybench-video-context", "storybench-video-reuse", "storybench-video-references"];
   for (const name of roster) for (const root of [".claude/skills", ".agents/skills", ".opencode/skills"])
     assert.ok(result.files.some((file) => file.path === `${root}/${name}/SKILL.md`), `${root}/${name} rendered`);
   const loaded = await loadTemplates();
