@@ -112,7 +112,7 @@ export class LibraryWorkspace {
   render() {
     this.groups.innerHTML = categories.map((category) => {
       const items = this.items.filter((item) => item.category === category);
-      return `<section class="library-group" data-library-category="${category}"><div class="library-group-heading"><h3>${category}</h3><span>${items.length}</span></div><div class="asset-grid">${items.map((item) => this.card(item)).join("") || '<p class="library-empty">Import media above, or move existing items into this category.</p>'}</div></section>`;
+      return `<section class="library-group" data-library-category="${category}"><div class="library-group-heading"><h3>${category}</h3><span>${items.length}</span></div><div class="asset-grid">${items.map((item) => this.card(item)).join("") || '<p class="library-empty">Drop library items here, or import above.</p>'}</div></section>`;
     }).join("");
   }
   card(item) {

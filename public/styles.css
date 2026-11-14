@@ -380,6 +380,11 @@ h2 {
 .library-group-heading h3 { margin: 0; font: 600 18px Georgia; }
 .library-group-heading span { color: var(--muted); }
 .library-empty { color: var(--muted); font-size: 13px; grid-column: 1 / -1; margin: 8px 0; }
+.library-group:has(.asset-grid > .library-empty) { display: grid; grid-template-columns: minmax(100px, 150px) minmax(0, 1fr); align-items: center; gap: 16px; min-height: 0; padding: 10px 13px; margin-bottom: 8px; }
+.library-group:has(.library-empty) .library-group-heading { margin: 0; gap: 8px; }
+.library-group:has(.library-empty) h3 { font: 600 14px/1.45 system-ui; }
+.library-group:has(.library-empty) .asset-grid { display: block; margin: 0; }
+.library-group .library-empty { margin: 0; font-size: 12px; }
 .workspace-empty, [data-empty-jobs] { padding: 28px; margin: 16px 0; border: 1px dashed #b8c4be; border-radius: 12px; background: #ffffff80; color: var(--muted); text-align: center; }
 .workspace-empty h3 { margin: 0 0 8px; color: var(--ink); font-size: 17px; }
 .workspace-empty p { margin: 0; }
@@ -824,12 +829,22 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
   .chat-history-backdrop { inset: 0; width: auto; }
 }
 @media (max-width: 700px) {
-  #episodesPage { grid-template-columns: var(--episode-rail-width, 150px) minmax(0, 1fr); }
-  #episodesPage > .episode-rail { display: block; }
+  #episodesPage { display: block; }
+  #episodesPage > .episode-rail { display: block; padding: 8px; border-right: 0; border-bottom: 1px solid var(--line); }
+  #episodeRailToggle { position: static; width: auto; height: 36px; padding: 0 8px; display: flex; align-items: center; gap: 8px; }
+  #episodeRailToggle::after { content: attr(aria-label); font-size: 13px; }
+  #episodesPage:not(.episodes-collapsed) #episodeRailContent { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .episode-rail .aside-head { grid-column: 1 / -1; padding: 8px 12px; }
+  .episode-rail .episode-filter { display: grid; gap: 6px; padding: 0 12px 16px; }
+  .episode-rail .filter-notice, #episodes { grid-column: 1 / -1; }
+  #episodes { max-height: 240px; overflow: auto; }
+  #episodesPage > .chat { border-left: 0; }
   .episode-rail .privacy { display: none; }
   .workspace { padding: 12px; }
-  .tabs { display: flex; overflow-x: auto; }
+  .tabs { display: flex; flex-wrap: wrap; }
   .tabs button { flex: none; padding: 10px; }
+  .story-card { grid-template-columns: minmax(0, 1fr); }
+  .card-move-tools { flex-direction: row; }
   .card-primary > * { min-width: 0; }
 }
 .chat-attachments, .chat-upload-status { grid-column: 1 / -1; }
@@ -849,6 +864,10 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
   .card-primary { grid-template-columns: minmax(0, 1fr); }
   .card-primary > * { width: 100%; min-width: 0; }
   .timing { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (max-width: 360px) {
+  .card-reference-panel .reference-list { grid-template-columns: minmax(0, 1fr); }
+  .reference-add-tile { min-height: 100px; }
 }
 
 /* Manual deck composition uses the same board and chat workspace. */
