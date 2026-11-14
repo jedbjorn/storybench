@@ -1,7 +1,7 @@
 // Exact pinned worker against fake protocols on the Docker host. No provider account.
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -66,12 +66,22 @@ try {
   const connection = new OpenCodeConnection({ model: 'fixture-model', spawnSession: (header) => connectHarness(path.join(paths.requestDir(requestId), 'worker', 'harness.sock'), header), onEvent: (event) => { events.push(event); if (event.method === 'turn/completed') finish(event); } });
   try {
    const thread = await connection.startThread();
-   await connection.startTurn(thread, 'Call storybench probe, then say fake-protocol-complete.', [{ mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j4ZkAAAAASUVORK5CYII=' }]);
+   await connection.startTurn(thread, 'Call storybench probe, then say fake-protocol-complete.', [{ mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAACXBIWXMAAAABAAAAAQBPJcTWAAAANklEQVR4nO3QwQkAMAwDsRS6/8aFjnCv/KQBbLjzZtdd3h8HSaIkUZIoSZQkShIliZJESaIpHwOEAXtEFT2UAAAAAElFTkSuQmCC' }]);
    const terminal = await Promise.race([done, new Promise((_, reject) => setTimeout(() => reject(new Error(`${protocol} timed out`)), 90000).unref())]);
    assert.equal(terminal.params.turn.status, 'completed', JSON.stringify(events));
    assert.ok(tools > 0 && calls > 1 && sawImage && sawCredential, JSON.stringify({ tools, calls, sawImage, sawCredential }));
    assert.ok(events.some((event) => event.params.delta?.includes('fake-protocol-complete')));
    console.log(`${protocol}: pinned image tool, image, selected credential, host gateway and stream passed`);
+  } catch (error) {
+   // These are isolated fake-provider workers: retain bounded diagnostics with fixture
+   // credential values removed, without exposing a real user's worker logs.
+   const session = paths.sessionDir('opencode', segmentId);
+   for (const file of await readdir(session, { recursive: true })) {
+    if (!file.endsWith('.log')) continue;
+    const log = await readFile(path.join(session, file), 'utf8');
+    console.error(log.slice(-12000).replaceAll('fake-fixture-key', '[fixture-key]').replaceAll('fixture-token-01234567890123456789', '[bridge-token]'));
+   }
+   throw error;
   } finally { connection.close(); await host.handle({ op: 'worker.stop', requestId }); await bridge.close(); }
  }
 } finally { await docker(['network', 'rm', network]); await new Promise((resolve) => server.close(resolve)); await rm(root, { recursive: true, force: true }); }
