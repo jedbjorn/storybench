@@ -62,13 +62,13 @@ export class ChatSettings {
     panel.innerHTML = `<form class="chat-settings" data-chat-settings-form>
       <fieldset ${unavailable || busy ? "disabled" : ""}>
         <label>Source <select name="harness" data-settings-harness></select></label>
-        <label>Model <input name="model" data-settings-model list="${defaultMode ? "defaultModelOptions" : "chatModelOptions"}" autocomplete="off" placeholder="Harness default"><datalist id="${defaultMode ? "defaultModelOptions" : "chatModelOptions"}" data-settings-models></datalist></label>
-        <label><input type="checkbox" data-settings-show-all>Show all models (use at your own risk)</label>
+        <label>Model <input name="model" data-settings-model list="${defaultMode ? `defaultModelOptions-${kind}` : "chatModelOptions"}" autocomplete="off" placeholder="Harness default"><datalist id="${defaultMode ? `defaultModelOptions-${kind}` : "chatModelOptions"}" data-settings-models></datalist></label>
+        <label class="checkbox-row"><input type="checkbox" data-settings-show-all><span>Show all models (use at your own risk)</span></label>
         <label>Thinking <select name="effort" data-settings-effort></select></label>
       </fieldset>
       <a href="/providers">Provider settings</a>
       <p class="chat-settings-note" data-settings-note role="status"></p>
-      <div class="chat-settings-actions"><button type="button" data-settings-refresh>Refresh models</button><button type="button" data-settings-cancel>${defaultMode ? "Reload saved" : "Cancel"}</button><button type="submit" data-settings-apply ${unavailable || busy ? "disabled" : ""}>${defaultMode ? "Save default" : "Apply"}</button></div>
+      <div class="chat-settings-actions"><button type="button" data-settings-refresh>Refresh models</button><button type="button" data-settings-cancel>${defaultMode ? "Reload saved" : "Cancel"}</button><button type="submit" class="primary" data-settings-apply ${unavailable || busy ? "disabled" : ""}>${defaultMode ? "Save default" : "Apply"}</button></div>
     </form>`;
     const form = panel.querySelector("form"), harness = form.querySelector("[data-settings-harness]"), model = form.querySelector("[data-settings-model]"),
       effort = form.querySelector("[data-settings-effort]"), note = form.querySelector("[data-settings-note]"), list = form.querySelector("[data-settings-models]");
@@ -89,7 +89,7 @@ export class ChatSettings {
       effort.innerHTML = `<option value="">Native default</option>${choices.map((value) => `<option value="${escapeHtml(value)}" ${value === current ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}`;
       if (!choices.includes(current)) effort.value = "";
       const parts = [];
-      if (busy) parts.push("A turn is running for this episode. Let it finish or press Stop before changing settings.");
+      if (busy) parts.push("A turn is running for this production. Let it finish or press Stop before changing settings.");
       if (unavailable) parts.push(this.catalog?.reason || this.catalogError || "Harness selection is unavailable.");
       if (entry?.advisory) parts.push(entry.note || "Claude model names are advisory; exact IDs are verified on first use.");
       if (entry?.stale) parts.push(`Model list may be stale${entry.discoveryError ? ` (${entry.discoveryError})` : ""}; use Refresh models.`);

@@ -28,6 +28,15 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
   await listenInRange(app.server);
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(`http://127.0.0.1:${app.server.address().port}/episodes?channel=${episode.channelId}`);
+  await page.locator('#episodes [data-episode-select]').waitFor();
+  const workspace = await page.locator('.workspace').boundingBox(), empty = await page.locator('#empty').boundingBox();
+  assert.ok(Math.abs(workspace.x + workspace.width - 1600) < 1, 'Landing workspace uses the hidden chat column');
+  assert.ok(Math.abs(empty.x + empty.width / 2 - workspace.x - workspace.width / 2) < 1, 'Landing message is centered in the available workspace');
+  const kind = page.getByRole('combobox', { name: 'Create as', exact: true });
+  const kindBox = await kind.boundingBox(), rail = await page.locator('.episode-rail').boundingBox();
+  assert.ok(kindBox.width >= 170 && kindBox.x + kindBox.width <= rail.x + rail.width, 'Creation kind is readable within the rail');
+  assert.equal(await page.getByRole('button', { name: 'Create a production', exact: true }).count(), 2);
   await page.goto(`http://127.0.0.1:${app.server.address().port}/episodes?channel=${episode.channelId}&episode=${episode.id}`);
   await page.locator('[data-chat-title]').waitFor();
   await page.getByRole('combobox', { name: 'Show', exact: true }).click();
@@ -77,8 +86,9 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
     }
     assert.equal(await page.locator('.chat').isVisible(), true);
     const card = await page.locator('.story-card').boundingBox();
-    const section = await page.locator('.card-primary > .sb-select').last().boundingBox();
+    const section = await page.getByRole('combobox', { name: 'Story section', exact: true }).boundingBox();
     assert.ok(section.x + section.width <= card.x + card.width + 1, `Card controls fit at ${width}px`);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `No page overflow at ${width}px`);
     await page.getByRole('button', { name: 'Open chat history', exact: true }).click();
     const box = await page.locator('[data-chat-history-drawer]').boundingBox();
     assert.ok(box.x >= 0 && box.x + box.width <= width + 1);

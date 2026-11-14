@@ -26,8 +26,9 @@
         <button id="episodeRailToggle" type="button" aria-controls="episodeRailContent" aria-expanded="true" aria-label="Collapse Productions">‹</button>
         <div id="episodeRailContent">
         <div class="aside-head">
-          <span>Productions</span><label>Kind<select id="productionKind"><option value="video">Episode / video</option><option value="deck">Deck</option></select></label><button id="newEpisode" class="icon">＋</button>
+          <span>Productions</span><button id="newEpisode" class="icon" aria-label="Create a production" title="Create a production">＋</button>
         </div>
+        <label class="production-kind">Create as<select id="productionKind"><option value="video">Episode / video</option><option value="deck">Deck</option></select></label>
         <label class="episode-filter">Show <select id="episodeFilter"><option>All</option><option>Scaffold</option><option>Draft</option><option>Final</option><option>Published</option><option>Archived</option></select></label>
         <div id="filteredEpisodeNotice" class="filter-notice" hidden></div>
         <nav id="episodes"></nav>
@@ -66,7 +67,7 @@
               ><button id="export" class="primary" aria-label="Ask the assistant to build the final output">Create final</button>
             </div>
           </div>
-          <details id="episodeReferencesBox" class="episode-references"><summary>Episode references <span id="episodeReferenceCount"></span></summary><div id="episodeReferences"></div></details>
+          <details id="episodeReferencesBox" class="episode-references"><summary><span id="productionReferencesLabel">Episode references</span> <span id="episodeReferenceCount"></span></summary><div id="episodeReferences"></div></details>
           <div class="tabs">
             <button data-tab="board" class="active">Storyboard</button
             ><button data-tab="story">Story.md</button
@@ -80,7 +81,7 @@
           </div>
           <div id="storyPanel" class="story-surface" hidden>
             <div data-story-reading>
-              <div class="panel-heading"><div><h2>Story</h2><p>The saved Markdown used by Storybench and episode chats.</p></div><div><button data-story-start>Start with outline</button> <button data-story-edit>Edit story</button></div></div>
+              <div class="panel-heading"><div><h2>Story</h2><p>The saved Markdown used by Storybench and this production’s chats.</p></div><div><button data-story-start>Start with outline</button> <button data-story-edit>Edit story</button></div></div>
               <div class="story-mapping-changes" data-story-mapping-changes role="status" hidden></div>
               <article class="story-rendered" data-story-read></article>
             </div>
@@ -104,7 +105,7 @@
               </div>
               <button id="addCard">＋ Add card</button>
             </div>
-            <section id="deckOutputs" hidden><button id="buildDeck">Build saved deck</button><p id="deckBuildError" role="alert"></p><div id="deckJobs"></div><iframe id="deckPreview" title="Deck preview" sandbox="allow-scripts" hidden style="width:100%;height:65vh;border:0"></iframe></section><div id="cards"></div><div id="deckSlides" hidden></div>
+            <section id="deckOutputs" hidden><div class="panel-heading"><div><h3>Preview and export</h3><p>Build the saved slides into a portable deck.</p></div><button id="buildDeck" class="primary">Build saved deck</button></div><p id="deckBuildError" role="alert"></p><div id="deckJobs"></div><iframe id="deckPreview" title="Deck preview" sandbox="allow-scripts" hidden style="width:100%;height:65vh;border:0"></iframe></section><div id="cards"></div><div id="deckSlides" hidden></div>
           </div>
           <div id="mediaPanel" hidden>
             <div class="panel-heading"><div><h2>Episode library</h2><p>References and media stay grouped here until you explicitly add them to cards.</p></div><button id="openLibraryImport" class="primary">＋ Import</button></div>

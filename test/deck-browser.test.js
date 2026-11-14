@@ -26,6 +26,13 @@ test('deck workspace creates, edits, reopens and keeps video controls separate',
   await page.waitForFunction(()=>document.querySelector('#addCard').textContent.includes('Add slide'));
   assert.equal(await page.locator('#preview').isVisible(),false);
   assert.equal(await page.locator('[data-tab="final"]').isVisible(),false);
+  assert.equal(await page.locator('#productionReferencesLabel').textContent(), 'Deck references');
+  await page.locator('[data-chat-draft]').waitFor();
+  assert.match(await page.locator('[data-chat-draft]').getAttribute('placeholder'), /deck assistant/);
+  await page.waitForFunction(() => document.querySelector('[data-chat-messages]').textContent.includes('this deck'));
+  await page.click('[data-tab="media"]');
+  assert.equal(await page.locator('#mediaPanel h2').textContent(), 'Deck library');
+  await page.click('[data-tab="board"]');
   await page.click('#addCard');
   await page.locator('[data-slide-field="title"]').waitFor();
   await page.fill('[data-slide-field="title"]','A clear opening');
@@ -45,5 +52,6 @@ test('deck workspace creates, edits, reopens and keeps video controls separate',
   await page.click(`#episodes [data-id="${video.id}"] [data-episode-select]`);
   assert.equal(await page.locator('#preview').isVisible(),true);
   assert.equal(await page.locator('#deckSlides').isVisible(),false);
+  assert.equal(await page.locator('#productionReferencesLabel').textContent(), 'Episode references');
   assert.deepEqual(errors,[]);
 });
