@@ -32,11 +32,11 @@ const rpc = (socketPath, token, message) => new Promise((resolve, reject) => {
 test('saved kind selects the explicit registry; legacy videos retain every existing operation', async () => {
   assert.equal(resolveKind({}), 'video');
   for (const kind of ['unknown', '', null, '__proto__']) assert.throws(() => resolveKind({ kind }), { code: 'UNSUPPORTED_KIND' });
-  assert.deepEqual(selectKindTools(all(), 'video').definitions, all().definitions);
+  assert.deepEqual(selectKindTools(all(), 'video').definitions, all().definitions.filter(({name}) => !['read_deck','save_deck','build_deck'].includes(name)));
   const deck = selectKindTools(all(), 'deck');
   assert.ok(deck.definitions.some(({ name }) => name === 'get_context'));
   assert.ok(!deck.definitions.some(({ name }) => name === 'update_cards'));
-  for (const name of KIND_REGISTRY.video.tools) await assert.rejects(deck.call(name, {}), { code: 'UNKNOWN_TOOL' });
+  for (const name of KIND_REGISTRY.video.tools.filter(name => !KIND_REGISTRY.deck.tools.includes(name))) await assert.rejects(deck.call(name, {}), { code: 'UNKNOWN_TOOL' });
   await assert.rejects(deck.call('reuse_project_item', { cardId: 'video-card' }), { code: 'INVALID_ARGUMENT' });
   assert.equal((await deck.call('search_project')).text, 'search_project');
 });

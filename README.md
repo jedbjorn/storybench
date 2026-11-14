@@ -250,3 +250,5 @@ Storybench is part of [Designs/OS](https://designs-os.com). Other open-source pr
 - **[md-converter](https://md-converter.designs-os.com)** — a static web app that renders themed Markdown into styled, shareable HTML. ([source](https://github.com/jedbjorn/md-converter))
 - **[AnJ Cloud](https://jedbjorn.github.io/anj-cloud/)** — household file sync from a gateway you host yourself, with clients for Linux, macOS, Windows and Android. ([source](https://github.com/jedbjorn/anj-cloud))
 - **[Pick-It](https://jedbjorn.github.io/pick-it/)** — a Revit add-in that picks any colour on screen, shows its RGB values on the ribbon button and adds it to Revit's custom colours. ([source](https://github.com/jedbjorn/pick-it))
+
+Deck productions support editable slides, presenter notes, reveal diagrams, local media and portable offline HTML/ZIP builds. See [deck authoring and the editable eight-slide demo](docs/deck-authoring.md).

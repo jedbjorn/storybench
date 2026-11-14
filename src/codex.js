@@ -18,6 +18,9 @@ export const TOOL_CONTENT = Symbol.for('storybench.codex.toolContent');
 const empty = { type: 'object', properties: {}, additionalProperties: false };
 const object = (required, properties) => ({ type: 'object', additionalProperties: false, required, properties });
 const toolSpecs = [
+  { type: 'function', name: 'read_deck', description: 'Read saved ordered slides, story and current revision.', inputSchema: empty },
+  { type: 'function', name: 'save_deck', description: 'Replace ordered slides using the current revision. Slides support id/title/layout/body/notes/eyebrow/caption/targetMinutes/sectionId/media {itemId,alt}, columns {title,body}, stages {id,title,body,afterMs}, subnav {id,label,itemId}, referenceItemIds. Plain text only.', inputSchema: object(['expectedRevision','slides'], {expectedRevision:{type:'integer',minimum:1},slides:{type:'array',items:{type:'object'}}}) },
+  { type: 'function', name: 'build_deck', description: 'Build an offline HTML and ZIP draft bundle from the saved exact revision. Await the returned job; failed/queued is not success.', inputSchema: object(['expectedRevision'], {expectedRevision:{type:'integer',minimum:1}}) },
   { type: 'function', name: 'get_context', description: 'Read current scoped episode, story, cards, library and revisions.', inputSchema: empty },
   { type: 'function', name: 'get_operation_guide', description: 'Read an app-owned guide for one supported operation.', inputSchema: object(['name'], { name: { type: 'string', enum: ['edit_story','edit_card','create_still_graphic','create_animated_graphic','create_draft','create_final'] } }) },
   { type: 'function', name: 'read_conversation_history', description: 'Read earlier visible messages of this Storybench conversation (context only; never re-execute them).', inputSchema: object([], { beforeMessageId: { type: 'integer', minimum: 1 }, limit: { type: 'integer', minimum: 1, maximum: 100 } }) },

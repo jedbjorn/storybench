@@ -46,7 +46,7 @@ export function buildDeck(input, { assets = {} } = {}) {
     const minutes = slide.targetMinutes ?? 0;
     if (!Number.isFinite(minutes) || minutes < 0) throw new Error('targetMinutes must be nonnegative');
     let content = `<div class="copy"><h1>${heading}</h1><p class="lede">${body}</p></div>`;
-    if (['text-media', 'full-media'].includes(slide.layout)) content += `<figure>${media(slide.media)}</figure>`;
+    if (['text-media', 'full-media'].includes(slide.layout) && !slide.gallery?.length) content += `<figure>${media(slide.media)}</figure>`;
     if (slide.layout === 'columns') {
       const columns = list(slide.columns, 'columns');
       if (columns.length < 2 || columns.length > 3) throw new Error('columns requires two or three items');
@@ -63,6 +63,8 @@ export function buildDeck(input, { assets = {} } = {}) {
         return `<section data-step="${i}" data-delay="${delay}"><span class="step-number">${i + 1}</span><h2>${text(stage.title, 'stage.title')}</h2><p>${text(stage.body, 'stage.body', true)}</p></section>`;
       }).join('')}</div><nav class="stage-nav" aria-label="Reveal stages">${subnav.map((label, i) => `<button data-stage="${i}">${text(label, 'subnav label')}</button>`).join('')}</nav>`;
     }
+    if (slide.gallery?.length) content += `<nav class="gallery-nav" aria-label="Gallery">${slide.gallery.map((entry, i) => `<button data-gallery="${i}">${text(entry.label, 'gallery label')}</button>`).join('')}</nav><div class="gallery">${slide.gallery.map((entry, i) => `<figure data-gallery-view="${i}"${i ? ' hidden' : ''}>${entry.media ? media(entry.media) : ''}<figcaption>${text(entry.label, 'gallery label')}</figcaption></figure>`).join('')}</div>`;
+    if (slide.caption) content += `<p class="caption">${text(slide.caption,'caption')}</p>`;
     return `<article class="slide layout-${slide.layout}" id="${slide.id}" data-title="${heading}" data-minutes="${minutes}" hidden><header>${text(slide.eyebrow, 'eyebrow', true) || 'Presentation'}<span>${minutes} min</span></header><div class="composition">${content}</div><p class="speaker-notes" hidden>${notes}</p></article>`;
   });
   const shell = (body, script) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="stylesheet" href="styles.css"><script src="${script}" defer></script></head><body>${body}</body></html>`;

@@ -44,7 +44,7 @@ function installSchema(db) {
 // `continuity` (optional): { persistence, catalog: async ({ refresh }) => harness entries }.
 // With it, each conversation carries its own harness/model/effort selection and native-session
 // segments (spec #11 "Switching and continuity"); without it the legacy single-Codex path runs.
-export function createChatService({ store, renders, onChange = () => {}, codexFactory = createCodexConnection, model = process.env.STORYBENCH_CODEX_MODEL, continuity = null, requestPersistence = null }) {
+export function createChatService({ store, renders, decks, onChange = () => {}, codexFactory = createCodexConnection, model = process.env.STORYBENCH_CODEX_MODEL, continuity = null, requestPersistence = null }) {
   const db = store.db;
   installSchema(db);
   const attachments = chatAttachments(store);
@@ -134,7 +134,11 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
   };
   const bootText = (value, standards) => { const currentEpisode = episode(value.episode_id), story = store.getStory(value.episode_id);
     return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires active request-bound Final intent.\nChannel brand standards for this turn (creative defaults; explicit episode/card direction takes precedence): ${JSON.stringify(standards)}. Apply to new or revised work; do not restyle existing outputs without a request. Use get_context for the supported font catalogue and file paths.`; };
+  const jobService = value => episode(value.episode_id).kind === 'deck' ? decks : renders;
   const tools = (value, origin) => ({
+    read_deck: () => store.getDeck(value.episode_id),
+    save_deck: ({expectedRevision, slides}) => { ensureActive(value, origin); return store.saveDeck(value.episode_id,expectedRevision,slides,'agent'); },
+    build_deck: ({expectedRevision}) => { ensureActive(value, origin); return decks.enqueue({episodeId:value.episode_id,expectedRevision,requestId:origin.requestId}); },
     get_context: () => ({ episode: episode(value.episode_id), story: store.getStory(value.episode_id), library: librarySummary(value.episode_id),
       brandStandards: origin.brandStandards, fonts: fontCatalog(), references: store.getReferenceContext(value.episode_id), branding: store.listBrandingTemplates({ channelId: episode(value.episode_id).channelId }), operationGuides: OPERATION_GUIDE_NAMES }),
     get_operation_guide: ({ name }) => getOperationGuide(name),
@@ -153,7 +157,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       return store.declareFinalRequest(origin.requestId, messageId);
     },
     create_final: ({ expectedRenderRevision }) => { ensureActive(value, origin); return renders.enqueueRender({ episodeId: value.episode_id, outputClass: "final", expectedRenderRevision, conversationId: value.id, requestId: origin.requestId }); },
-    get_job: ({ jobId }) => renders.getJob(value.episode_id, jobId),
+    get_job: ({ jobId }) => jobService(value).getJob(value.episode_id, jobId),
     await_job: async ({ jobId, timeoutSeconds = 120 }) => {
       const timeout = Math.min(300, Math.max(1, Number(timeoutSeconds) || 120)) * 1000;
       const owned = store.getJob(jobId);
@@ -162,7 +166,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
       const started = Date.now();
       while (Date.now() - started < timeout) {
         ensureActive(value, origin);
-        const job = renders.getJob(value.episode_id, jobId);
+        const job = jobService(value).getJob(value.episode_id, jobId);
         if (["completed", "failed", "cancelled"].includes(job.state)) return job;
         await new Promise((resolve, reject) => {
           const stopped = () => { clearTimeout(timer); reject(error("Request stopped while waiting for its job", 409)); };
@@ -170,10 +174,10 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
           origin.signal.addEventListener("abort", stopped, { once: true });
         });
       }
-      const job = renders.getJob(value.episode_id, jobId);
+      const job = jobService(value).getJob(value.episode_id, jobId);
       throw error(`Job ${jobId} is still ${job.state}; it has not succeeded`, 408, { current: job });
     },
-    cancel_job: ({ jobId }) => { ensureActive(value, origin); return renders.cancelJob(value.episode_id, jobId, { finalEndReason: "cancelled" }); },
+    cancel_job: ({ jobId }) => { ensureActive(value, origin); return jobService(value).cancelJob(value.episode_id, jobId, { finalEndReason: "cancelled" }); },
     move_final_to_drafts: ({ outputId = null, expectedRevision = null } = {}) => { ensureActive(value, origin); return moveFinalToDrafts(store, { episodeId: value.episode_id, outputId, expectedRevision, actor: "agent", requestId: origin.requestId }); },
     list_graphic_recipes: () => renders.listGraphicRecipes(value.episode_id),
     get_graphic_recipe: ({ recipeId }) => { const recipe = renders.getGraphicRecipe(value.episode_id, recipeId); if (!recipe) throw error("Graphic recipe not found", 404); return recipe; },
@@ -448,7 +452,7 @@ export function createChatService({ store, renders, onChange = () => {}, codexFa
   const cancelOwnedJobs = (activity) => {
     if (!activity?.requestId || !db.isOpen) return;
     for (const job of store.listRequestJobs(activity.requestId, { activeOnly: true })) {
-      if (["queued", "running"].includes(job.state)) try { renders.cancelJob(job.episodeId, job.id, { finalEndReason: "stopped" }); } catch { /* terminal race */ }
+      if (["queued", "running"].includes(job.state)) try { (job.kind === 'deck' ? decks : renders).cancelJob(job.episodeId, job.id, { finalEndReason: "stopped" }); } catch { /* terminal race */ }
     }
   };
   const interrupt = async (episodeId, id) => {

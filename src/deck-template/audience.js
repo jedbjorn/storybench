@@ -138,3 +138,14 @@
   });
   show(index);
 })();
+
+// Gallery views are independent of cumulative diagram reveals.
+document.addEventListener('click', event => {
+  const button = event.target.closest('[data-gallery]');
+  if (!button) return;
+  const slide = button.closest('.slide');
+  slide.querySelectorAll('[data-gallery-view]').forEach(view => {
+    view.hidden = view.dataset.galleryView !== button.dataset.gallery;
+    if (view.hidden) view.querySelectorAll('video').forEach(video => video.pause());
+  });
+});

@@ -98,12 +98,13 @@ function render() {
   for (const selector of ['#preview', '#export', '#openGraphic', '[data-tab="drafts"]', '[data-tab="final"]']) {
     const control = $(selector); if (control) control.hidden = deck;
   }
+  $("#deckOutputs").hidden = !deck;
   if (deck && (!$("#draftsPanel").hidden || !$("#finalPanel").hidden)) {
     for (const name of ['story','board','media','drafts','final']) $(`#${name}Panel`).hidden = name !== 'board';
     document.querySelectorAll('.tabs > button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'board'));
   }
   $("#boardPanel h2").textContent = deck ? "Slides" : "Story cards";
-  $("#boardPanel .panel-heading p").textContent = deck ? "Compose slides, notes and reveals. Deck export is not available yet." : "Each card becomes one scene in the finished video.";
+  $("#boardPanel .panel-heading p").textContent = deck ? "Compose slides, notes and reveals. Build a portable deck, preview it here and download the ZIP." : "Each card becomes one scene in the finished video.";
   $('[data-tab="board"]').textContent = deck ? "Slides" : "Storyboard";
   $("#episodeTitle").setAttribute('aria-label', deck ? 'Deck title' : 'Episode title');
   $("#mediaPanel h2").textContent = deck ? 'Deck library' : 'Episode library';
@@ -119,7 +120,10 @@ function render() {
 }
 function renderJobs() {
   if (!episode) return;
-  if (episode.kind === "deck") { $("#draftJobs").innerHTML = ""; $("#finalJobs").innerHTML = ""; return; }
+  if (episode.kind === "deck") {
+    $('#deckJobs').innerHTML = state.jobs.filter(job => job.episodeId === episode.id && job.kind === 'deck').map(job => `<article><strong>${esc(job.state)}</strong> · revision ${esc(job.revision)} · ${Math.round(job.progress * 100)}% ${job.error ? `<p role="alert">${esc(job.error)}</p>` : ''}${job.state === 'completed' ? `<button data-deck-preview="${esc(job.id)}">Open preview</button> <a href="/api/jobs/${encodeURIComponent(job.id)}/deck/bundle.zip" download>Download bundle (ZIP)</a>` : ['queued','running'].includes(job.state) ? `<button data-deck-cancel="${esc(job.id)}">Cancel build</button>` : ''}</article>`).join('');
+    $("#draftJobs").innerHTML = ""; $("#finalJobs").innerHTML = ""; return;
+  }
   const episodeJobs = state.jobs.filter((job) => job.episodeId === episode.id);
   const drafts = jobsForOutputView(episodeJobs, "draft");
   const finals = jobsForOutputView(episodeJobs, "final");
@@ -844,3 +848,18 @@ load(new URL(location.href).searchParams.get('episode')).then(async () => {
   currentUrl = new URL(location.href);
   await showPage(page);
 }).catch((error) => toast(error.message));
+
+$('#buildDeck').onclick = async () => {
+  try {
+    $('#deckBuildError').textContent = '';
+    if (!(await leaveStory())) throw new Error("Save or discard story edits before building");
+    await flushDraft();
+    await api(`/api/episodes/${episode.id}/deck-build`,{method:'POST',body:JSON.stringify({expectedRevision:episode.revision})});
+    await refreshJobs();
+  } catch (error) { $('#deckBuildError').textContent = error.message; }
+};
+$('#deckJobs').onclick = async event => {
+  const preview = event.target.dataset.deckPreview, cancel = event.target.dataset.deckCancel;
+  if (preview) { const frame = $('#deckPreview'); frame.src = `/api/jobs/${encodeURIComponent(preview)}/deck/index.html`; frame.hidden = false; }
+  if (cancel) try { await api(`/api/episodes/${episode.id}/jobs/${cancel}/cancel`,{method:'POST',body:'{}'}); await refreshJobs(); } catch (error) { toast(error.message); }
+};
