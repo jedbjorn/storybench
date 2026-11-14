@@ -1,10 +1,14 @@
 // Exact pinned worker against fake protocols on the Docker host. No provider account.
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+const execFileAsync = promisify(execFile);
 import { mkdtemp, mkdir, writeFile, rm, readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import * as dockerApi from '../src/runtime/docker.js';
 import { docker, ensureNetwork } from '../src/runtime/docker.js';
 import { createHost } from '../src/runtime/host.js';
 import { createProviderService } from '../src/runtime/providers.js';
@@ -25,28 +29,42 @@ server.on('request', async (req, res) => {
   sawImage ||= /image_url|"type":"image"/.test(text);
   sawCredential ||= req.headers.authorization === 'Bearer fake-fixture-key' || req.headers['x-api-key'] === 'fake-fixture-key';
   const tool = body.tools?.find((tool) => (tool.function?.name || tool.name).includes('probe'));
-  assert.ok(tool, 'bridge tool schema reaches protocol');
-  const name = tool.function?.name || tool.name;
+  if (body.tools?.length) assert.ok(tool, 'bridge tool schema reaches protocol');
+  // OpenCode also asks for a session title without tools. Only the actual agent
+  // request should trigger a bridge call; background metadata gets ordinary text.
+  const completed = tools > 0 || !tool;
+  const name = tool?.function?.name || tool?.name;
   res.writeHead(200, { 'content-type': 'text/event-stream' });
   const send = (data, event = null) => res.write(`${event ? `event: ${event}\n` : ''}data: ${JSON.stringify(data)}\n\n`);
   if (protocol === 'openai') {
-    const delta = tools ? { content: 'fake-protocol-complete' } : { tool_calls: [{ index: 0, id: 'call_fixture', type: 'function', function: { name, arguments: '{}' } }] };
+    const delta = completed ? { content: 'fake-protocol-complete' } : { tool_calls: [{ index: 0, id: 'call_fixture', type: 'function', function: { name, arguments: '{}' } }] };
     send({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture-model', choices: [{ index: 0, delta, finish_reason: null }] });
-    send({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: tools ? 'stop' : 'tool_calls' }], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } });
+    send({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: completed ? 'stop' : 'tool_calls' }], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } });
     res.end('data: [DONE]\n\n'); return;
   }
   send({ type: 'message_start', message: { id: 'msg_fixture', type: 'message', role: 'assistant', model: 'fixture-model', content: [], stop_reason: null, usage: { input_tokens: 10, output_tokens: 0 } } }, 'message_start');
-  send({ type: 'content_block_start', index: 0, content_block: tools ? { type: 'text', text: '' } : { type: 'tool_use', id: 'tool_fixture', name, input: {} } }, 'content_block_start');
-  send({ type: 'content_block_delta', index: 0, delta: tools ? { type: 'text_delta', text: 'fake-protocol-complete' } : { type: 'input_json_delta', partial_json: '{}' } }, 'content_block_delta');
+  send({ type: 'content_block_start', index: 0, content_block: completed ? { type: 'text', text: '' } : { type: 'tool_use', id: 'tool_fixture', name, input: {} } }, 'content_block_start');
+  send({ type: 'content_block_delta', index: 0, delta: completed ? { type: 'text_delta', text: 'fake-protocol-complete' } : { type: 'input_json_delta', partial_json: '{}' } }, 'content_block_delta');
   send({ type: 'content_block_stop', index: 0 }, 'content_block_stop');
-  send({ type: 'message_delta', delta: { stop_reason: tools ? 'end_turn' : 'tool_use', stop_sequence: null }, usage: { output_tokens: 10 } }, 'message_delta');
+  send({ type: 'message_delta', delta: { stop_reason: completed ? 'end_turn' : 'tool_use', stop_sequence: null }, usage: { output_tokens: 10 } }, 'message_delta');
   send({ type: 'message_stop' }, 'message_stop'); res.end();
 });
 await new Promise((resolve) => server.listen(0, '0.0.0.0', resolve));
 const port = server.address().port;
 const config = { installId: `proof-${randomUUID().slice(0,8)}`, dataRoot: path.join(root, 'data'), stateRoot: path.join(root, 'state'), runtimeRoot: path.join(root, 'runtime'), port: 4000, credentials: { codex: path.join(root, 'absent-codex'), claude: path.join(root, 'absent-claude') }, images: { app: image, worker: image } };
 const providers = createProviderService({ directory: path.join(root, 'providers') });
-const host = createHost(config, { providerService: providers, log: () => {} });
+// Production uses rootless Docker: container root maps to the invoking host user.
+// Rootful CI needs that same file owner for private 0700 mounts. Match the runner
+// UID explicitly in this fixture rather than relaxing directory/socket permissions.
+const rootless = (await docker(['info', '--format', '{{json .SecurityOptions}}'])).includes('rootless');
+const runFixtureDocker = (args, options) => {
+ if (rootless || args[0] !== 'run') return docker(args, options);
+ const mapped = [...args], uid = process.getuid(), gid = process.getgid();
+ const user = mapped.indexOf('--user'); if (user >= 0) mapped[user + 1] = `${uid}:${gid}`;
+ for (let i = 0; i < mapped.length; i++) if (mapped[i] === '--tmpfs' && mapped[i + 1].startsWith('/storybench/home:')) mapped[i + 1] += `,uid=${uid},gid=${gid}`;
+ return docker(mapped, options);
+};
+const host = createHost(config, { providerService: providers, log: () => {}, dockerApi: { ...dockerApi, docker: runFixtureDocker } });
 const paths = hostPaths(config), network = names(config.installId).workerNetwork;
 await mkdir(path.join(config.dataRoot, 'episodes', 'fixture', 'work'), { recursive: true });
 await ensureNetwork(network, {});
@@ -75,6 +93,10 @@ try {
   } catch (error) {
    // These are isolated fake-provider workers: retain bounded diagnostics with fixture
    // credential values removed, without exposing a real user's worker logs.
+   try {
+    const output = await execFileAsync('docker', ['logs', host.workers.get(requestId).containerId], { timeout: 10000, maxBuffer: 1024 * 1024 });
+    console.error((output.stdout + output.stderr).slice(-4000).replaceAll('fake-fixture-key', '[fixture-key]').replaceAll('fixture-token-01234567890123456789', '[bridge-token]'));
+   } catch { /* Original failure is authoritative. */ }
    const session = paths.sessionDir('opencode', segmentId);
    for (const file of await readdir(session, { recursive: true })) {
     if (!file.endsWith('.log')) continue;

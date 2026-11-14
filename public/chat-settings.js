@@ -56,7 +56,7 @@ export class ChatSettings {
   // Render the editor for `conversation` into the panel; resolves with the saved conversation or null.
   open(panel, conversation, { busy = false, onSaved = () => {}, defaultMode = false, kind = "video", onDirty = () => {}, onCancel = null } = {}) {
     const settings = conversation.settings ?? { harness: "codex", model: null, effort: null, revision: 1 };
-    const source = settings.inferenceSource || (this.catalog?.harnesses?.some((entry) => entry.source === settings.source) ? settings.source : this.catalog?.harnesses?.some((entry) => entry.source === `${settings.harness}-login`) ? `${settings.harness}-login` : settings.harness);
+    const source = settings.inferenceSource || (settings.source && this.catalog?.harnesses?.some((entry) => entry.source === settings.source) ? settings.source : this.catalog?.harnesses?.some((entry) => entry.source === `${settings.harness}-login`) ? `${settings.harness}-login` : settings.harness);
     let unavailable = !this.catalog?.available;
     panel.hidden = false;
     panel.innerHTML = `<form class="chat-settings" data-chat-settings-form>
