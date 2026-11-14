@@ -66,6 +66,18 @@ for (const browserType of [chromium, firefox]) test(`${browserType.name()}: Bran
   page.once('dialog', (dialog) => dialog.accept());
   await page.click('[data-page="models"]');
   await page.locator('#defaultModelEditor [aria-label="video model default"] form').waitFor();
+  assert.deepEqual(await page.locator('#defaultModelEditor h2').allTextContents(), ['Deck', 'Episode / video']);
+  const modelLists = await page.locator('#defaultModelEditor datalist').evaluateAll(elements => elements.map(el => el.id));
+  assert.equal(new Set(modelLists).size, 2, 'Each default model picker has its own suggestions');
+  for (const width of [1440, 600, 390]) {
+    await page.setViewportSize({ width, height: 1050 });
+    for (const checkbox of await page.locator('#defaultModelEditor input[type="checkbox"]').all()) {
+      const input = await checkbox.boundingBox(), label = await checkbox.locator('..').locator('span').boundingBox();
+      assert.ok(input.width <= 20 && label.x - input.x - input.width <= 10 && Math.abs(label.y - input.y) < 3, 'Checkbox stays next to its label');
+    }
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Models fits at ${width}px`);
+  }
+  await page.setViewportSize({ width: 1440, height: 1050 });
   await page.fill('#defaultModelEditor [aria-label="video model default"] [name="model"]', 'model-a');
   await page.selectOption('#defaultModelEditor [aria-label="video model default"] [name="effort"]', 'high');
   await page.locator('[aria-label="video model default"]').getByRole('button', { name: 'Save default', exact: true }).click();
@@ -166,7 +178,7 @@ for (const browserType of [chromium, firefox]) test(`${browserType.name()}: Bran
   assert.equal(app.store.getEpisode(episode.id).state, 'Draft');
   assert.ok(app.store.getEpisode(episode.id).archivedAt);
   assert.doesNotMatch(await page.textContent('#episodes'), /Brand demo/);
-  assert.match(await page.textContent('[data-episode-state="Archived"]'), /Archived1[\s\S]*1 episode hidden/);
+  assert.match(await page.textContent('[data-episode-state="Archived"]'), /Archived1[\s\S]*1 production hidden/);
   await page.click('[data-reveal-episode]');
   assert.equal(await page.inputValue('#episodeFilter'), 'Archived');
   await moveEpisode('Draft');

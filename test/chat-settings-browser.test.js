@@ -60,6 +60,9 @@ test("the chat selector shows availability, per-model efforts, applies a change 
 
   await page.click("[data-chat-selection]");
   await page.waitForSelector("[data-settings-harness]");
+  const checkbox = await page.locator('[data-settings-show-all]').boundingBox();
+  const checkboxText = await page.locator('[data-settings-show-all]').locator('..').locator('span').boundingBox();
+  assert.ok(checkbox.width <= 20 && checkboxText.x - checkbox.x - checkbox.width <= 10 && Math.abs(checkboxText.y - checkbox.y) < 3, 'Chat checkbox stays beside its label');
   const options = await page.$$eval("[data-settings-harness] option", (items) => items.map((item) => ({ value: item.value, disabled: item.disabled, text: item.textContent })));
   assert.equal(options.find((option) => option.value === "claude-login").disabled, true);
   assert.match(options.find((option) => option.value === "claude-login").text, /unavailable: No claude login found/);
@@ -83,5 +86,22 @@ test("the chat selector shows availability, per-model efforts, applies a change 
   const deadline = Date.now() + 10_000;
   while (!launches.length && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual(launches[0], { harness: "codex", model: "gpt-5.6-luna", effort: "low" });
+  // Presentation-only provider fixtures: no host keys or account mutations.
+  await page.route('**/api/providers', route => route.fulfill({ json: [
+    { id: 'openai', name: 'OpenAI', status: 'No key' },
+    { id: 'deepseek', name: 'DeepSeek', status: 'Key rejected' },
+    { id: 'gateway-studio', name: 'Studio gateway', status: 'Not checked', custom: true },
+  ] }));
+  await page.click('[data-page="providers"]');
+  await page.locator('[data-provider="openai"]').waitFor();
+  assert.equal(await page.locator('[data-login]').count(), 2);
+  for (const width of [1400, 600, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    for (const field of await page.locator('[name="saveUnchecked"]').all()) {
+      const input = await field.boundingBox(), text = await field.locator('..').locator('span').boundingBox();
+      assert.ok(input.width <= 20 && text.x - input.x - input.width <= 10 && Math.abs(text.y - input.y) < 3, 'Provider checkbox stays beside its label');
+    }
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Providers fits at ${width}px`);
+  }
   assert.deepEqual(errors, []);
 });

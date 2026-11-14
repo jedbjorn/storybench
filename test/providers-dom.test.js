@@ -60,3 +60,51 @@ test('picker requires an OpenCode model, offers variants and keeps native login 
  }
  dom.window.close();
 });
+
+test('Providers separates explicit CLI logins, API keys and custom gateways using the public schema', async (t) => {
+ const dom = new JSDOM('<div id="providersEditor"></div>');
+ const previous = globalThis.document; globalThis.document = dom.window.document;
+ t.after(() => { globalThis.document = previous; dom.window.close(); });
+ const providers = [
+  { id: 'openai', name: 'OpenAI', harness: 'codex', status: 'No key' },
+  { id: 'gateway-studio', name: 'Studio gateway', custom: true, harness: 'opencode', status: 'Unreachable' },
+  { id: 'deepseek', name: 'DeepSeek', harness: 'opencode', status: 'Key rejected' },
+ ];
+ const harnesses = [
+  { source: 'codex-login', harness: 'codex', available: true },
+  { source: 'claude-login', harness: 'claude', available: false, reason: 'No Claude login found' },
+  // No-key API entries really have id, not source. This used to create duplicate login cards.
+  ...providers.map(provider => ({ ...provider, available: false, reason: 'No key; open Providers', models: [] })),
+ ];
+ const calls = [];
+ const pages = new SettingsPages({ toast() {}, setStatus() {}, api: async (url, options) => {
+  if (options) { calls.push({ url, method: options.method }); throw new Error('Still unreachable'); }
+  return url === '/api/providers' ? providers : { available: true, harnesses };
+ } });
+ await pages.openProviders();
+ const group = title => document.querySelector(`[aria-labelledby="${title}"]`);
+ assert.deepEqual([...group('providerLoginsTitle').querySelectorAll('h3')].map(el => el.textContent), ['Codex', 'Claude Code']);
+ assert.match(group('providerLoginsTitle').textContent, /No Claude login found/);
+ assert.deepEqual([...group('providerKeysTitle').querySelectorAll('[data-provider]')].map(el => el.dataset.provider), ['openai', 'deepseek']);
+ assert.equal(group('providerGatewaysTitle').querySelector('[data-provider]').dataset.provider, 'gateway-studio');
+ assert.doesNotMatch(document.body.textContent, /No key; open Providers|opencode login/);
+ assert.match(group('providerKeysTitle').textContent, /Key rejected/);
+ const gateway = document.querySelector('[data-provider="gateway-studio"]');
+ await gateway.querySelector('[data-test]').onclick();
+ assert.deepEqual(calls, [{ url: '/api/providers/gateway-studio/test', method: 'POST' }]);
+ assert.equal(gateway.querySelector('[data-status]').textContent, 'Still unreachable');
+});
+
+test('Providers reports a failed login catalogue without showing stale connected logins', async (t) => {
+ const dom = new JSDOM('<div id="providersEditor"></div>');
+ const previous = globalThis.document; globalThis.document = dom.window.document;
+ t.after(() => { globalThis.document = previous; dom.window.close(); });
+ const pages = new SettingsPages({ toast() {}, setStatus() {}, api: async url => {
+  if (url === '/api/providers') return [];
+  throw new Error('Login discovery unavailable');
+ } });
+ pages.models.catalog = { harnesses: [{ source: 'codex-login', harness: 'codex', available: true }] };
+ await pages.openProviders();
+ assert.match(document.body.textContent, /Login discovery unavailable/);
+ assert.doesNotMatch(document.body.textContent, /Connected/);
+});

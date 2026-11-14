@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { chromium, firefox, webkit } from 'playwright-core';
 import { createApp } from '../src/server.js';
+import { createLibraryService } from '../src/library.js';
 import { listenInRange } from '../test-support/loopback-port.js';
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAACXBIWXMAAAABAAAAAQBPJcTWAAAANklEQVR4nO3QwQkAMAwDsRS6/8aFjnCv/KQBbLjzZtdd3h8HSaIkUZIoSZQkShIliZJESaIpHwOEAXtEFT2UAAAAAElFTkSuQmCC', 'base64');
 for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared chrome, outward history and chat image upload/paste/drop`, { timeout: 60000 }, async (t) => {
@@ -24,12 +26,43 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
   }) } });
   t.after(async () => { await app.close(); rmSync(root, { recursive: true, force: true }); });
   const episode = app.store.createEpisode({ title: 'Workspace chrome' });
-  app.store.updateEpisode(episode.id, episode.revision, { cards: [{ id: 'opening', title: 'Opening', type: 'Video', prompt: 'Introduce the story' }] });
+  const library = createLibraryService({ workspace: root, store: app.store });
+  const graphic = await library.registerFile({ episodeId: episode.id, readable: Readable.from([png]), fileName: 'opening.png', contentType: 'image/png', selectedCategory: 'Graphics' });
+  app.store.updateEpisode(episode.id, episode.revision, { cards: [{ id: 'opening', title: 'Opening', type: 'Static Graphic', prompt: 'Introduce the story', itemId: graphic.id, referenceItemIds: [graphic.id] }] });
   await listenInRange(app.server);
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(`http://127.0.0.1:${app.server.address().port}/episodes?channel=${episode.channelId}`);
+  await page.locator('#episodes [data-episode-select]').waitFor();
+  const workspace = await page.locator('.workspace').boundingBox(), empty = await page.locator('#empty').boundingBox();
+  assert.ok(Math.abs(workspace.x + workspace.width - 1600) < 1, 'Landing workspace uses the hidden chat column');
+  assert.ok(Math.abs(empty.x + empty.width / 2 - workspace.x - workspace.width / 2) < 1, 'Landing message is centered in the available workspace');
+  const kind = page.getByRole('combobox', { name: 'Create as', exact: true });
+  const kindBox = await kind.boundingBox(), rail = await page.locator('.episode-rail').boundingBox();
+  assert.ok(kindBox.width >= 170 && kindBox.x + kindBox.width <= rail.x + rail.width, 'Creation kind is readable within the rail');
+  assert.equal(await page.getByRole('button', { name: 'Create a production', exact: true }).count(), 2);
   await page.goto(`http://127.0.0.1:${app.server.address().port}/episodes?channel=${episode.channelId}&episode=${episode.id}`);
   await page.locator('[data-chat-title]').waitFor();
+  await page.click('[data-tab="media"]');
+  const libraryItem = `[data-library-item="${graphic.id}"]`;
+  await page.locator(libraryItem).waitFor();
+  for (const width of [1600, 600, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    for (const category of ['Reference', 'B-roll', 'Narration']) {
+      const group = page.locator(`[data-library-category="${category}"]`);
+      assert.ok((await group.boundingBox()).height <= (width === 1600 ? 64 : 84), `${category} stays compact at ${width}px`);
+      assert.match(await group.textContent(), /0.*Drop library items/s);
+    }
+    assert.ok((await page.locator(libraryItem).boundingBox()).width >= 180, 'Populated library cards retain their usable size');
+  }
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  const graphicBox = await page.locator(libraryItem).boundingBox();
+  assert.ok(graphicBox.y + 100 < 1000, 'Graphics preview is visible below three empty categories');
+  await page.locator(libraryItem).dragTo(page.locator('[data-library-category="Narration"]'));
+  await page.locator(`[data-library-category="Narration"] ${libraryItem}`).waitFor();
+  await page.locator(libraryItem).dragTo(page.locator('[data-library-category="Graphics"]'));
+  await page.locator(`[data-library-category="Graphics"] ${libraryItem}`).waitFor();
+  await page.click('[data-tab="board"]');
   await page.getByRole('combobox', { name: 'Show', exact: true }).click();
   await page.keyboard.press('End'); await page.keyboard.press('Escape');
   assert.equal(await page.inputValue('#episodeFilter'), 'All');
@@ -71,14 +104,44 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
   }
   for (const width of [900, 600, 390]) {
     await page.setViewportSize({ width, height: 1000 });
-    if (process.env.STORYBENCH_CHROME_EVIDENCE) {
-      mkdirSync(process.env.STORYBENCH_CHROME_EVIDENCE, { recursive: true });
-      await page.screenshot({ path: path.join(process.env.STORYBENCH_CHROME_EVIDENCE, `${engine.name()}-${width}.png`), fullPage: true });
+    if (width <= 700) {
+      for (const expanded of [false, true]) {
+        if (expanded) await page.getByRole('button', { name: 'Expand Productions', exact: true }).click();
+        await page.reload();
+        await page.locator('.card-reference-panel img').waitFor();
+        assert.equal(await page.locator('#episodeRailToggle').getAttribute('aria-expanded'), String(expanded), 'Explicit rail preference survives phone reload');
+        for (const selector of ['.workspace', '.chat']) {
+          assert.ok((await page.locator(selector).boundingBox()).width >= width - 16, `${selector} uses the phone width with rail ${expanded ? 'expanded' : 'collapsed'}`);
+        }
+        assert.ok((await page.locator('#cards [data-key="prompt"]').boundingBox()).width >= width * .7, 'Card editor has room to write');
+        assert.ok((await page.locator('[data-chat-draft]').boundingBox()).width >= width - 70, 'Composer has room to write');
+        for (const tile of await page.locator('.card-reference-panel .reference-item, .reference-add-tile').all()) {
+          assert.ok((await tile.boundingBox()).width >= 200, 'Reference content and picker remain readable');
+        }
+        for (const control of await page.locator('.tabs button, .actions button, [data-promote], [data-delete], [data-chat-send]').all()) {
+          const box = await control.boundingBox();
+          assert.ok(box.x >= 0 && box.x + box.width <= width && box.width >= 30, 'Actions and tabs remain reachable');
+        }
+        if (expanded) {
+          const nav = page.locator('#episodes [data-episode-select]').first();
+          await nav.focus(); await page.keyboard.press('Enter');
+          assert.equal(await page.inputValue('#episodeTitle'), 'Workspace chrome');
+        }
+        if (process.env.STORYBENCH_CHROME_EVIDENCE) {
+          mkdirSync(process.env.STORYBENCH_CHROME_EVIDENCE, { recursive: true });
+          await page.screenshot({ path: path.join(process.env.STORYBENCH_CHROME_EVIDENCE, `ui-polish-r2-${engine.name()}-${width}-${expanded ? 'expanded' : 'collapsed'}.png`), fullPage: true });
+        }
+        await page.click('[data-tab="final"]');
+        assert.equal(await page.locator('#finalPanel').isVisible(), true);
+        await page.click('[data-tab="board"]');
+      }
+      await page.getByRole('button', { name: 'Collapse Productions', exact: true }).click();
     }
     assert.equal(await page.locator('.chat').isVisible(), true);
     const card = await page.locator('.story-card').boundingBox();
-    const section = await page.locator('.card-primary > .sb-select').last().boundingBox();
+    const section = await page.getByRole('combobox', { name: 'Story section', exact: true }).boundingBox();
     assert.ok(section.x + section.width <= card.x + card.width + 1, `Card controls fit at ${width}px`);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `No page overflow at ${width}px`);
     await page.getByRole('button', { name: 'Open chat history', exact: true }).click();
     const box = await page.locator('[data-chat-history-drawer]').boundingBox();
     assert.ok(box.x >= 0 && box.x + box.width <= width + 1);

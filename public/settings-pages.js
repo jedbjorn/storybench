@@ -1,4 +1,4 @@
-import { ChatSettings, selectionLabel } from './chat-settings.js';
+import { ChatSettings, HARNESS_LABELS } from './chat-settings.js';
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
 export class SettingsPages {
@@ -88,10 +88,15 @@ export class SettingsPages {
     root.innerHTML = '<p>Loading providers…</p>';
     try {
       const [providers, catalog] = await Promise.all([this.api('/api/providers'), this.models.loadCatalog()]);
-      const logins = (catalog?.harnesses || []).filter((entry) => !entry.source || entry.source.endsWith('-login'));
-      root.innerHTML = logins.map((entry) => `<section class="settings-card"><h2>${esc(entry.harness)} login</h2><p>${esc(entry.available ? 'Connected' : entry.reason)}</p><p>Sign in with the host CLI to reconnect.</p></section>`).join('') + providers.map((provider) => `<form class="settings-card" data-provider="${esc(provider.id)}"><h2>${esc(provider.name)}</h2><p>${esc(provider.status)} ${provider.suffix ? '••••' + esc(provider.suffix) : ''}</p><p>${esc(provider.warning || '')}</p><label>Replace key<input type="password" name="key" autocomplete="new-password" required></label><label><input type="checkbox" name="saveUnchecked">Save as Not checked if no model-list endpoint exists</label><button type="submit">Save key</button><button type="button" data-test>Test</button><button type="button" data-remove>Remove key</button><p role="status" data-status></p></form>`).join('') + `<form class="settings-card" data-gateway><h2>Custom gateway</h2><label>ID<input name="id" placeholder="gateway-local" required pattern="gateway-[a-z0-9_-]{1,40}"></label><label>Display name<input name="name" required></label><label>Base URL<input name="baseUrl" type="url" required></label><p>Host-local addresses are preserved. Workers reach them through a private relay for each request; no host TCP port is exposed.</p><label>Protocol<select name="protocol"><option value="openai">OpenAI-compatible</option><option value="anthropic">Anthropic</option></select></label><label>Model IDs (comma separated; otherwise discovered)<input name="models"></label><button type="submit">Save gateway</button><p role="status"></p></form>`;
-      root.querySelectorAll('[data-provider]').forEach((form, index) => {
-        const provider = providers[index], source = provider.id;
+      // API entries without a key have an id but no source; they are not CLI logins.
+      const logins = this.models.catalogError ? [] : (catalog?.harnesses || []).filter((entry) => entry.source?.endsWith('-login'));
+      const providerCard = (provider) => `<form class="settings-card provider-card" data-provider="${esc(provider.id)}"><h3>${esc(provider.name)}</h3><p class="provider-status">${esc(provider.status)} ${provider.suffix ? '••••' + esc(provider.suffix) : ''}</p>${provider.warning ? `<p class="error">${esc(provider.warning)}</p>` : ''}<label>Replace key<input type="password" name="key" autocomplete="new-password" required></label><label class="checkbox-row"><input type="checkbox" name="saveUnchecked"><span>Save as Not checked if no model-list endpoint exists</span></label><div class="settings-actions"><button type="submit" class="primary">Save key</button><button type="button" data-test>Test</button><button type="button" class="danger-text" data-remove>Remove key</button></div><p role="status" data-status></p></form>`;
+      root.innerHTML = `<section class="settings-group" aria-labelledby="providerLoginsTitle"><h2 id="providerLoginsTitle">CLI logins</h2><p class="help">Use the host CLI to sign in or reconnect.</p><div class="settings-grid">${logins.map((entry) => `<section class="settings-card" data-login="${esc(entry.source)}"><h3>${esc(HARNESS_LABELS[entry.harness] || entry.harness)}</h3><p class="provider-status">${esc(entry.available ? 'Connected' : entry.reason || 'Unavailable')}</p></section>`).join('') || `<p role="status">${esc(this.models.catalogError || catalog?.reason || 'No CLI login sources available.')}</p>`}</div></section>
+        <section class="settings-group" aria-labelledby="providerKeysTitle"><h2 id="providerKeysTitle">API keys</h2><div class="settings-grid">${providers.filter((provider) => !provider.custom).map(providerCard).join('')}</div></section>
+        <section class="settings-group" aria-labelledby="providerGatewaysTitle"><h2 id="providerGatewaysTitle">Custom gateways</h2><div class="settings-grid">${providers.filter((provider) => provider.custom).map(providerCard).join('')}
+        <form class="settings-card gateway-form" data-gateway><h3>Configure a gateway</h3><label>ID<input name="id" placeholder="gateway-local" required pattern="gateway-[a-z0-9_-]{1,40}"></label><label>Display name<input name="name" required></label><label>Base URL<input name="baseUrl" type="url" required></label><p class="help">Host-local addresses are preserved. Workers reach them through a private relay for each request; no host TCP port is exposed.</p><label>Protocol<select name="protocol"><option value="openai">OpenAI-compatible</option><option value="anthropic">Anthropic</option></select></label><label>Model IDs (comma separated; otherwise discovered)<input name="models"></label><div class="settings-actions"><button type="submit" class="primary">Save gateway</button></div><p role="status"></p></form></div></section>`;
+      root.querySelectorAll('[data-provider]').forEach((form) => {
+        const source = form.dataset.provider;
         const act = async (method, suffix = '', body = undefined) => {
           const status = form.querySelector('[data-status]');
           try {
@@ -126,7 +131,9 @@ export class SettingsPages {
       for (const value of rows) {
         const section = document.createElement('section');
         section.setAttribute('aria-label', `${value.mode} model default`);
-        const title = document.createElement('h2'); title.textContent = value.mode; root.append(title, section);
+        const card = document.createElement('div'); card.className = 'model-default-card';
+        const title = document.createElement('h2'); title.textContent = value.mode === 'deck' ? 'Deck' : value.mode === 'video' ? 'Episode / video' : value.mode;
+        card.append(title, section); root.append(card);
         this.models.open(section, { settings: { ...(value.selection || { harness: 'codex', model: null, effort: null }), revision: value.revision } }, {
           defaultMode: true, kind: value.mode, onDirty: () => this.changed(),
           onCancel: async () => { if (await this.canLeave()) await this.open('models'); },

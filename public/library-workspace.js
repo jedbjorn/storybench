@@ -112,7 +112,7 @@ export class LibraryWorkspace {
   render() {
     this.groups.innerHTML = categories.map((category) => {
       const items = this.items.filter((item) => item.category === category);
-      return `<section class="library-group" data-library-category="${category}"><div class="library-group-heading"><h3>${category}</h3><span>${items.length}</span></div><div class="asset-grid">${items.map((item) => this.card(item)).join("") || '<p class="library-empty">Drop items here or change their category.</p>'}</div></section>`;
+      return `<section class="library-group" data-library-category="${category}"><div class="library-group-heading"><h3>${category}</h3><span>${items.length}</span></div><div class="asset-grid">${items.map((item) => this.card(item)).join("") || '<p class="library-empty">Drop library items here, or import above.</p>'}</div></section>`;
     }).join("");
   }
   card(item) {
@@ -206,7 +206,7 @@ export class LibraryWorkspace {
     const item = this.items.find((candidate) => candidate.id === id);
     const episode = this.getEpisode();
     if (!item || !episode || item.episodeId !== episode.id) return;
-    if (!window.confirm(`Delete “${item.label}” from this episode library? It will also be removed from any cards and references using it. This cannot be undone.`)) return;
+    if (!window.confirm(`Delete “${item.label}” from this production’s library? It will also be removed from any cards and references using it. This cannot be undone.`)) return;
     try {
       await this.beforeDelete();
       const current = this.getEpisode();
@@ -245,11 +245,11 @@ export function episodeNavigatorHTML(episodes, filter, selectedId) {
   const active = states.map((state) => {
     if (filter !== "All" && filter !== state) return "";
     const rows = episodes.filter((episode) => !episode.archivedAt && episode.state === state);
-    return `<section class="episode-group" data-episode-state="${state}"><h3>${state}<span>${rows.length}</span></h3>${rowsHTML(rows, state) || '<p class="episode-empty">Drop episode here</p>'}</section>`;
+    return `<section class="episode-group" data-episode-state="${state}"><h3>${state}<span>${rows.length}</span></h3>${rowsHTML(rows, state) || '<p class="episode-empty">Drop production here</p>'}</section>`;
   }).join("");
   if (filter !== "All" && filter !== "Archived") return active;
   const archived = episodes.filter((episode) => episode.archivedAt);
   const rows = filter === "Archived" ? rowsHTML(archived, "Archived") : "";
-  const empty = filter === "Archived" || !archived.length ? "Drop episode here to archive" : `${archived.length} ${archived.length === 1 ? "episode" : "episodes"} hidden`;
+  const empty = filter === "Archived" || !archived.length ? "Drop production here to archive" : `${archived.length} ${archived.length === 1 ? "production" : "productions"} hidden`;
   return `${active}<section class="episode-group episode-group-archived" data-episode-state="Archived"><h3>Archived<span>${archived.length}</span></h3>${rows || `<p class="episode-empty">${empty}</p>`}</section>`;
 }
