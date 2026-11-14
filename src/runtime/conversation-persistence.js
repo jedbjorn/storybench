@@ -3,7 +3,7 @@
 // every rule it enforces (idle guard, optimistic settings revision, single native session per
 // segment, request transitions and Final intent).
 export function createV9ConversationPersistence(store) {
-  const settingsOf = (conversation) => ({ harness: conversation.harness, model: conversation.model, effort: conversation.effort,
+  const settingsOf = (conversation) => ({ inferenceSource: conversation.inferenceSource, harness: conversation.harness, model: conversation.model, effort: conversation.effort,
     source: conversation.settingsSource, revision: conversation.settingsRevision, updatedAt: conversation.settingsUpdatedAt });
   const segmentOf = (segment) => segment && { ...segment, seedIncluded: segment.seedIncludedMessages, seedOmitted: segment.seedOmittedMessages };
   return {
@@ -12,15 +12,15 @@ export function createV9ConversationPersistence(store) {
     initSettings(conversationId, value) {
       const current = store.requireConversation(conversationId);
       if (value.source !== "explicit-inherited") return settingsOf(current);
-      return settingsOf(store.updateConversationSettings(conversationId, current.settingsRevision, { harness: value.harness, model: value.model ?? null, effort: value.effort ?? null }));
+      return settingsOf(store.updateConversationSettings(conversationId, current.settingsRevision, { inferenceSource: value.inferenceSource, harness: value.harness, model: value.model ?? null, effort: value.effort ?? null }));
     },
     saveSettings: (conversationId, value, { expectedRevision }) =>
-      settingsOf(store.updateConversationSettings(conversationId, expectedRevision, { harness: value.harness, model: value.model ?? null, effort: value.effort ?? null })),
+      settingsOf(store.updateConversationSettings(conversationId, expectedRevision, { inferenceSource: value.inferenceSource, harness: value.harness, model: value.model ?? null, effort: value.effort ?? null })),
     lastExplicitSettings: () => store.lastExplicitSettings(),
     activeSegment: (conversationId) => segmentOf(store.getActiveSegment(conversationId)),
     listSegments: (conversationId) => store.listSegments(conversationId).map(segmentOf),
-    createSegment({ id = null, conversationId, harness, reason, previousSegmentId, firstMessageId = null, seedIncluded = null, seedOmitted = null, nativeSessionId = null, exceptRunId = null }) {
-      const segment = store.createSegment({ ...(id ? { id } : {}), conversationId, harness, reason, ...(previousSegmentId !== undefined ? { previousSegmentId } : {}),
+    createSegment({ id = null, conversationId, harness, inferenceSource, reason, previousSegmentId, firstMessageId = null, seedIncluded = null, seedOmitted = null, nativeSessionId = null, exceptRunId = null }) {
+      const segment = store.createSegment({ ...(id ? { id } : {}), conversationId, harness, inferenceSource, reason, ...(previousSegmentId !== undefined ? { previousSegmentId } : {}),
         firstMessageId, seedIncludedMessages: seedIncluded, seedOmittedMessages: seedOmitted, exceptRunId });
       return segmentOf(nativeSessionId ? store.setSegmentNativeSession(segment.id, nativeSessionId) : segment);
     },

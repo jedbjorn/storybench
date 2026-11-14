@@ -13,19 +13,25 @@ export class RuntimeError extends Error {
   }
 }
 
-export const HARNESSES = Object.freeze(["codex", "claude"]);
+export const HARNESSES = Object.freeze(["codex", "claude", "opencode"]);
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 // Native session IDs: Codex thread IDs and Claude session IDs are UUID-shaped.
 const SESSION_ID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:\-[\]]{0,79}$/;
+const MODEL = /^[A-Za-z0-9][A-Za-z0-9/._:\-[\]]{0,159}$/;
 
 // The only operations the app may ask of the host lifecycle entry point.
 const CONTROL_OPS = {
-  "worker.start": ["op", "requestId", "harness", "segmentId", "episodeDir", "workDir"],
+  "worker.start": ["op", "requestId", "harness", "segmentId", "episodeDir", "workDir", "source", "model"],
   "worker.stop": ["op", "requestId"],
   "worker.status": ["op", "requestId"],
   "harness.availability": ["op"],
   "harness.models": ["op", "harness", "refresh"],
+  "providers.list": ["op"],
+  "providers.models": ["op", "source", "refresh"],
+  "providers.key": ["op", "source", "key", "saveUnchecked"],
+  "providers.test": ["op", "source"],
+  "providers.remove": ["op", "source"],
+  "providers.gateway": ["op", "gateway"],
 };
 
 export function assertId(value, field) {
@@ -89,6 +95,10 @@ export function validateControlRequest(input) {
   if (!allowed) throw new RuntimeError("UNSUPPORTED_OP", `Unsupported control operation: ${String(input.op)}`);
   const extra = Object.keys(input).filter((key) => !allowed.includes(key));
   if (extra.length) throw new RuntimeError("UNEXPECTED_FIELDS", `Unexpected control fields: ${extra.join(", ")}`);
+  if (input.op.startsWith("providers.")) {
+    if (input.source !== undefined && (typeof input.source !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(input.source))) throw new RuntimeError("INVALID_SOURCE", "Invalid provider source");
+    return { ...input };
+  }
   if (input.op === "harness.availability") return { op: input.op };
   if (input.op === "harness.models") {
     if (input.refresh !== undefined && typeof input.refresh !== "boolean") throw new RuntimeError("INVALID_REQUEST", "refresh must be a boolean");
@@ -97,6 +107,9 @@ export function validateControlRequest(input) {
   const request = { op: input.op, requestId: assertId(input.requestId, "requestId") };
   if (input.op === "worker.start") {
     request.harness = assertHarness(input.harness);
+    request.source = input.source || `${request.harness}-login`;
+    if (!/^[a-z][a-z0-9_-]{0,63}$/.test(request.source)) throw new RuntimeError('INVALID_SOURCE', 'Invalid provider source');
+    request.model = input.model == null ? null : assertModel(input.model);
     request.segmentId = assertId(input.segmentId, "segmentId");
     request.episode = parseEpisodeDir(input.episodeDir);
     request.episode.work = parseWorkDir(input.workDir, request.episode);

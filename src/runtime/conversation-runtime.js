@@ -19,8 +19,8 @@
 //   createRun(run) / updateRun(id, patch) / listRuns(conversationId)
 import { randomUUID } from "node:crypto";
 
-export const HARNESS_LABELS = Object.freeze({ codex: "Codex", claude: "Claude Code" });
-const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:\-[\]]{0,79}$/;
+export const HARNESS_LABELS = Object.freeze({ codex: "Codex", claude: "Claude Code", opencode: "OpenCode" });
+const MODEL = /^[A-Za-z0-9][A-Za-z0-9/._:\-[\]]{0,159}$/;
 const EFFORT = /^[a-z]{2,12}$/;
 
 export class SelectionError extends Error {
@@ -29,8 +29,9 @@ export class SelectionError extends Error {
 
 // Validate a requested selection against the live catalogue (harness.models entries).
 // Returns the normalized selection plus notes (e.g. an unlisted exact model ID).
-export function validateSelection(catalog, { harness, model = null, effort = null }) {
-  const entry = catalog.find((candidate) => candidate.harness === harness);
+export const routeSource = (value) => value.inferenceSource || (value.source && !['default','migrated','explicit','explicit-inherited'].includes(value.source) ? value.source : `${value.harness}-login`);
+export function validateSelection(catalog, { harness, source = `${harness}-login`, model = null, effort = null }) {
+  const entry = catalog.find((candidate) => candidate.harness === harness && (candidate.source === source || !candidate.source && source === `${harness}-login`));
   if (!entry) throw new SelectionError("UNKNOWN_HARNESS", `Unsupported harness: ${String(harness)}`);
   if (!entry.available) throw new SelectionError("HARNESS_UNAVAILABLE", `${HARNESS_LABELS[harness]} is unavailable: ${entry.reason}`, 409);
   const notes = [];
@@ -50,7 +51,7 @@ export function validateSelection(catalog, { harness, model = null, effort = nul
     if (supported == null) throw new SelectionError("UNSUPPORTED_EFFORT", `Effort support for the unlisted model ${model} is unknown; leave effort at the native default`);
     if (!supported.includes(effort)) throw new SelectionError("UNSUPPORTED_EFFORT", `${effort} is not a supported effort for ${model ?? `the ${HARNESS_LABELS[harness]} default model`} (supported: ${supported.join(", ") || "none"})`);
   }
-  return { harness, model, effort, notes, advisory: Boolean(entry.advisory && model) };
+  return { harness, source, model, effort, notes, advisory: Boolean(entry.advisory && model) };
 }
 
 function defaultModelEfforts(entry) {
@@ -58,7 +59,7 @@ function defaultModelEfforts(entry) {
   return fallback ? fallback.efforts : entry.efforts ?? [];
 }
 
-const same = (a, b) => a.harness === b.harness && (a.model ?? null) === (b.model ?? null) && (a.effort ?? null) === (b.effort ?? null);
+const same = (a, b) => a.harness === b.harness && routeSource(a) === routeSource(b) && (a.model ?? null) === (b.model ?? null) && (a.effort ?? null) === (b.effort ?? null);
 
 // Decide how the next turn runs: resume the active segment's exact native session, or open
 // a new segment (first turn, a harness switch, or returning to an earlier harness). Native
@@ -67,12 +68,12 @@ export function planTurn(persistence, conversationId, { hasEarlierMessages = fal
   const settings = persistence.getSettings(conversationId);
   // Host default / STORYBENCH_CODEX_MODEL seed only an unmigrated Codex conversation's model.
   const model = settings.model ?? (settings.source !== "explicit" && settings.harness === "codex" ? defaultModel : null);
-  const selection = { harness: settings.harness, model, effort: settings.effort ?? null };
+  const selection = { source: routeSource(settings), harness: settings.harness, model, effort: settings.effort ?? null };
   const active = persistence.activeSegment(conversationId);
   // An active segment whose native session never started (e.g. a failed startup) starts it now,
   // seeded like any new segment.
-  if (active && active.harness === settings.harness) return { selection, segment: active, resumeId: active.nativeSessionId ?? null, newSegment: null, seed: !active.nativeSessionId && hasEarlierMessages };
-  if (!active && legacyThreadId && settings.harness === "codex" && !persistence.listSegments(conversationId).length)
+  if (active && active.harness === settings.harness && routeSource(active) === routeSource(settings)) return { selection, segment: active, resumeId: active.nativeSessionId ?? null, newSegment: null, seed: !active.nativeSessionId && hasEarlierMessages };
+  if (!active && legacyThreadId && routeSource(settings) === "codex-login" && settings.harness === "codex" && !persistence.listSegments(conversationId).length)
     return { selection, segment: null, resumeId: legacyThreadId, newSegment: { reason: "migrated", previousSegmentId: null, adoptId: conversationId, nativeSessionId: legacyThreadId }, seed: false };
   const segments = persistence.listSegments(conversationId);
   const previous = active ?? segments.at(-1) ?? null;
@@ -93,15 +94,15 @@ export function changeSettings(persistence, conversationId, requested, { catalog
   if (same(next, current)) return { settings: current, changed: false, duplicate: false, notes: next.notes };
   // The active segment is left as is: the next turn resumes it when its harness matches the
   // selection, and opens a new segment otherwise (planTurn).
-  const settings = persistence.saveSettings(conversationId, { harness: next.harness, model: next.model, effort: next.effort }, { expectedRevision });
+  const settings = persistence.saveSettings(conversationId, { harness: next.harness, inferenceSource: next.source, model: next.model, effort: next.effort }, { expectedRevision });
   return { settings, previous: current, changed: true, duplicate: false, notes: next.notes, advisory: next.advisory, harnessChanged: current.harness !== next.harness };
 }
 
 // A saved app default wins for new conversations. Preserve legacy inheritance until one is saved.
 export function initialSettings(persistence, defaults = null) {
-  if (defaults) return { ...defaults, source: "explicit-inherited" };
+  if (defaults) return { ...defaults, inferenceSource: routeSource(defaults), source: "explicit-inherited" };
   const last = persistence.lastExplicitSettings();
-  return last ? { harness: last.harness, model: last.model ?? null, effort: last.effort ?? null, source: "explicit-inherited" } : { harness: "codex", model: null, effort: null, source: "default" };
+  return last ? { inferenceSource: routeSource(last), harness: last.harness, model: last.model ?? null, effort: last.effort ?? null, source: "explicit-inherited" } : { harness: "codex", model: null, effort: null, source: "default" };
 }
 
 export function createMemoryConversationPersistence({ now = () => new Date().toISOString() } = {}) {
@@ -110,7 +111,7 @@ export function createMemoryConversationPersistence({ now = () => new Date().toI
   return {
     getSettings: get,
     initSettings(conversationId, value) {
-      const stored = { harness: value.harness, model: value.model ?? null, effort: value.effort ?? null, source: value.source === "explicit-inherited" ? "default" : value.source ?? "default", revision: 1, updatedAt: null, inheritedFrom: value.source === "explicit-inherited" ? "last-explicit" : null };
+      const stored = { inferenceSource: routeSource(value), harness: value.harness, model: value.model ?? null, effort: value.effort ?? null, source: value.source === "explicit-inherited" ? "default" : value.source ?? "default", revision: 1, updatedAt: null, inheritedFrom: value.source === "explicit-inherited" ? "last-explicit" : null };
       settings.set(conversationId, stored);
       return stored;
     },
@@ -126,9 +127,9 @@ export function createMemoryConversationPersistence({ now = () => new Date().toI
     },
     activeSegment: (conversationId) => segments.filter((segment) => segment.conversationId === conversationId && !segment.endedAt).at(-1) ?? null,
     listSegments: (conversationId) => segments.filter((segment) => segment.conversationId === conversationId),
-    createSegment({ conversationId, harness, reason, previousSegmentId = null, firstMessageId = null, seedIncluded = null, seedOmitted = null, id = null, nativeSessionId = null }) {
+    createSegment({ conversationId, harness, inferenceSource = `${harness}-login`, reason, previousSegmentId = null, firstMessageId = null, seedIncluded = null, seedOmitted = null, id = null, nativeSessionId = null }) {
       for (const segment of segments) if (segment.conversationId === conversationId && !segment.endedAt) segment.endedAt = now();
-      const segment = { id: id ?? `segment_${randomUUID()}`, conversationId, harness, nativeSessionId, reason, previousSegmentId, firstMessageId, seedIncluded, seedOmitted, createdAt: now(), endedAt: null };
+      const segment = { id: id ?? `segment_${randomUUID()}`, conversationId, harness, inferenceSource, nativeSessionId, reason, previousSegmentId, firstMessageId, seedIncluded, seedOmitted, createdAt: now(), endedAt: null };
       segments.push(segment);
       return segment;
     },

@@ -31,6 +31,7 @@ export class ChatWorkspace {
     this.root.innerHTML = `<div class="chat-toolbar"><button class="chat-history-toggle" data-chat-history-toggle type="button" aria-label="Open chat history" aria-controls="chatHistoryDrawer" aria-expanded="false">‹</button><div class="chat-identity"><b data-chat-title>Episode assistant</b><span data-chat-status role="status"></span></div><button class="chat-selection" data-chat-selection type="button" aria-haspopup="dialog" aria-controls="chatSettingsPanel" title="Harness, model and thinking for this conversation">Codex · default model</button></div><div id="chatSettingsPanel" class="chat-settings-panel" data-chat-settings-panel role="dialog" aria-label="Conversation harness and model" hidden></div><div class="chat-history-backdrop" data-chat-history-backdrop hidden></div><section id="chatHistoryDrawer" class="chat-history-drawer" data-chat-history-drawer aria-label="Chat history" hidden><div class="chat-history-heading"><strong>Chat history</strong><button data-chat-rename type="button">Rename</button></div><div class="chat-history-list" data-chat-history-list></div></section><div data-chat-messages></div><div class="chat-composer"><div class="chat-attachments" data-chat-attachments></div><div class="chat-upload-status" data-chat-upload-status role="status"></div><textarea data-chat-draft aria-label="Message" placeholder="Ask the episode assistant, or drop an image" rows="3"></textarea><div class="chat-composer-actions"><button class="chat-icon" data-chat-send type="button" aria-label="Send message" title="Send message">↑</button><button class="chat-icon" data-chat-attach type="button" aria-label="Attach images" title="Attach images"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m8 13 7-7a3 3 0 0 1 4 4l-9 9a5 5 0 0 1-7-7l10-10M6 15l8-8"/></svg></button><input data-chat-files type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden><button class="chat-icon" data-chat-new type="button" aria-label="New chat" title="New chat">＋</button><button class="chat-icon chat-stop" data-chat-stop type="button" aria-label="Stop active response" title="Stop active response" hidden>×</button></div><small>Enter to send · Shift+Enter for a new line</small></div>`;
     this.setHistoryOpen(false);
     this.bind(generation, episodeId);
+    await this.settings.loadCatalog();
     await this.refreshList(generation, episodeId);
     if (!this.isCurrent(generation, episodeId)) return;
     this.pollTimer = setInterval(() => this.refreshList(generation, episodeId, { preserveSelection: true }).catch(() => {}), 1000);
@@ -106,13 +107,24 @@ export class ChatWorkspace {
     const container = this.root.querySelector('[data-chat-attachments]');
     if (!container || !this.currentId) return;
     const state = this.imageDraft();
+    const attach = this.root.querySelector('[data-chat-attach]');
+    attach.disabled = !this.supportsImages(); attach.title = attach.disabled ? 'This model has no image input' : 'Attach images';
     container.innerHTML = state.attachments.map((item) => `<div class="chat-attachment"><img src="/api/episodes/${encodeURIComponent(this.episodeId)}/library/${encodeURIComponent(item.itemId)}/file" alt="${escapeHtml(item.label)}"><span>${escapeHtml(item.label)}</span><button type="button" data-chat-remove-image="${escapeHtml(item.itemId)}" aria-label="Remove ${escapeHtml(item.label)}">×</button></div>`).join('')
       + state.uploads.map((item) => `<div class="chat-attachment uploading"><span>Uploading ${escapeHtml(item.name)}…</span></div>`).join('');
     this.root.querySelector('[data-chat-upload-status]').textContent = state.error;
     this.root.querySelector('[data-chat-send]').disabled = this.isBusy() || this.sending || state.uploads.length > 0;
   }
 
+  supportsImages() {
+    const settings = this.current?.settings;
+    if (!settings) return true;
+    const source = settings.inferenceSource || `${settings.harness}-login`;
+    const entry = this.settings.catalog?.harnesses?.find((entry) => (entry.source || `${entry.harness}-login`) === source);
+    const model = entry?.models?.find((model) => model.id === settings.model);
+    return !model?.inputModalities || model.inputModalities.includes('image');
+  }
   async addImages(files) {
+    if (!this.supportsImages()) { this.imageDraft().error = 'This model has no image input. Choose another model to attach images.'; this.paintImages(); return; }
     const episodeId = this.episodeId, conversationId = this.currentId;
     if (!episodeId || !conversationId || this.sending) return;
     const state = this.imageDraft(conversationId);

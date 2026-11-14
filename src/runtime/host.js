@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+import { createProviderService } from './providers.js';
 // Storybench host lifecycle entry point (spec #11 Runtime Contract; spec #10 Health and
 // Lifecycle). Runs on the host under the user's service manager and is the only
 // component with Docker authority. It:
@@ -26,7 +26,7 @@ import { RuntimeError, resolveEpisodeDirectory, validateControlRequest } from ".
 
 const MAX_CONTROL_BYTES = 64 * 1024;
 
-export function createHost(rawConfig, { log = (event) => console.log(JSON.stringify({ at: new Date().toISOString(), ...event })), syncIntervalMs = 2000, dockerApi = dockerCli, followLogs = followContainerLogs } = {}) {
+export function createHost(rawConfig, { log = (event) => console.log(JSON.stringify({ at: new Date().toISOString(), ...event })), syncIntervalMs = 2000, dockerApi = dockerCli, followLogs = followContainerLogs, providerService = null } = {}) {
   const { docker, ensureNetwork, inspectContainer, listByLabels } = dockerApi;
   const config = validateHostConfig(rawConfig);
   if (config.manifest) {
@@ -36,6 +36,7 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
   const paths = hostPaths(config);
   const n = names(config.installId);
   const workers = new Map();
+  const providers = providerService || createProviderService();
   const discovery = createModelDiscovery({ config, stageRoot: path.join(config.runtimeRoot, "credentials") });
   let server, syncTimer, appId, appExit, appLogs, stopped, stopping = false;
 
@@ -108,11 +109,15 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     // That target must exist on the host before `docker run`; it is an EMPTY 0600 placeholder
     // that never holds token bytes (the staged copy lives only in the runtime dir). A
     // non-empty placeholder would mean something wrote to it while unmounted: refuse loudly.
+    const login = request.source === `${request.harness}-login`;
+    if (login && !['codex', 'claude'].includes(request.harness)) throw new RuntimeError('INVALID_SOURCE', 'OpenCode requires a provider source');
+    if (login) {
     const placeholder = path.join(sessionDir, CREDENTIAL_FILES[request.harness]);
     await writeFile(placeholder, "", { flag: "a", mode: 0o600 });
     const placeholderInfo = await lstat(placeholder);
     if (!placeholderInfo.isFile() || placeholderInfo.size !== 0 || (placeholderInfo.mode & 0o077))
       throw new RuntimeError("SESSION_CREDENTIAL_PLACEHOLDER", "The session credential mountpoint must be an empty 0600 file; it was changed outside a worker", { status: 409 });
+    }
     const requestDir = paths.requestDir(request.requestId);
     await rm(requestDir, { recursive: true, force: true });
     await mkdir(path.join(requestDir, "app"), { recursive: true, mode: 0o700 });
@@ -120,8 +125,18 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     let credential;
     try {
       // Resolve the host's current login fresh for this worker (decision #43).
-      credential = await CredentialLink.stage({ harness: request.harness, hostPath: config.credentials[request.harness], stageDir: paths.credentialDir(request.requestId) });
-      const args = workerRunArgs(config, request, { presentRoots: await presentRoots(), credentialFile: credential.stagePath });
+      if (login) credential = await CredentialLink.stage({ harness: request.harness, hostPath: config.credentials[request.harness], stageDir: paths.credentialDir(request.requestId) });
+      let route = null, envFile = null;
+      if (!login) {
+        const selected = await providers.route(request.source);
+        if (selected.harness !== request.harness) throw new RuntimeError('INVALID_SOURCE', 'Provider does not use the requested harness');
+        const { key, ...metadata } = selected; route = { ...metadata, source: request.source, id: request.source, keyEnv: key ? selected.env : null };
+        await mkdir(paths.credentialDir(request.requestId), { recursive: true, mode: 0o700 });
+        envFile = path.join(paths.credentialDir(request.requestId), 'selected.env');
+        await writeFile(envFile, key ? `${selected.env}=${key}\n` : '', { mode: 0o600, flag: 'wx' });
+        credential = { lastAction: 'snapshot', conflict: false, sync: async () => 'unchanged', dispose: () => rm(paths.credentialDir(request.requestId), { recursive: true, force: true }) };
+      }
+      const args = workerRunArgs(config, request, { presentRoots: await presentRoots(), credentialFile: credential.stagePath, envFile, route });
       const containerId = await docker(args);
       // Only the worker launcher's structured diagnostics reach the journal (no prompt/model text).
       const logs = followLogs({ containerId, event: "worker.output", fields: { requestId: request.requestId }, log, filter: workerDiagnostic });
@@ -169,6 +184,12 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
 
   async function handle(raw) {
     const request = validateControlRequest(raw);
+    if (request.op === 'providers.list') return providers.list();
+    if (request.op === 'providers.models') return providers.models(request.source, { refresh: request.refresh });
+    if (request.op === 'providers.key') return providers.replace(request.source, request.key, { saveUnchecked: request.saveUnchecked === true });
+    if (request.op === 'providers.test') return providers.test(request.source);
+    if (request.op === 'providers.remove') return providers.remove(request.source);
+    if (request.op === 'providers.gateway') return providers.saveGateway(request.gateway);
     // While draining, the app may still stop and inspect its workers, but nothing new starts.
     if (stopping && ["worker.start", "harness.models"].includes(request.op)) throw new RuntimeError("STOPPING", "Storybench is shutting down", { status: 503 });
     if (request.op === "harness.availability") return harnessAvailability(config.credentials);

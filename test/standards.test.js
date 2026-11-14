@@ -50,7 +50,7 @@ test('v9 migration backs up data and leaves branding and conversations intact', 
   const ep = store.createEpisode();
   store.updateEpisode(ep.id, ep.revision, { cards: [{ id: 'intro', title: 'Hello', type: 'Video' }] });
   const template = store.promoteCard(ep.id, 'intro', { role: 'intro' });
-  store.db.exec('DROP TABLE channel_standards; DROP TABLE model_default; DELETE FROM migration_log WHERE version=10; PRAGMA user_version=9');
+  store.db.exec('DROP TABLE channel_standards; DROP TABLE IF EXISTS model_default; DROP TABLE model_defaults; DELETE FROM migration_log WHERE version=10; PRAGMA user_version=9');
   store.close(); store = new Store(root);
   assert.equal(store.dataRootIdentity().schemaVersion, SCHEMA_VERSION);
   assert.ok(existsSync(path.join(root, 'storybench.pre-v10.sqlite')));

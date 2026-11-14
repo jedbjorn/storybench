@@ -24,6 +24,7 @@ export class SettingsPages {
     this.dirty = false;
     this.setStatus('Ready');
     if (page === 'branding') await this.openBranding();
+    if (page === 'providers') await this.openProviders();
     if (page === 'models') await this.openModels();
   }
   async openBranding() {
@@ -82,17 +83,55 @@ export class SettingsPages {
       };
     } catch (cause) { root.innerHTML = `<p class="error">${esc(cause.message)}</p>`; }
   }
+  async openProviders() {
+    const root = document.querySelector('#providersEditor');
+    root.innerHTML = '<p>Loading providers…</p>';
+    try {
+      const [providers, catalog] = await Promise.all([this.api('/api/providers'), this.models.loadCatalog()]);
+      const logins = (catalog?.harnesses || []).filter((entry) => !entry.source || entry.source.endsWith('-login'));
+      root.innerHTML = logins.map((entry) => `<section class="settings-card"><h2>${esc(entry.harness)} login</h2><p>${esc(entry.available ? 'Connected' : entry.reason)}</p><p>Sign in with the host CLI to reconnect.</p></section>`).join('') + providers.map((provider) => `<form class="settings-card" data-provider="${esc(provider.id)}"><h2>${esc(provider.name)}</h2><p>${esc(provider.status)} ${provider.suffix ? '••••' + esc(provider.suffix) : ''}</p><p>${esc(provider.warning || '')}</p><label>Replace key<input type="password" name="key" autocomplete="new-password" required></label><label><input type="checkbox" name="saveUnchecked">Save as Not checked if no model-list endpoint exists</label><button type="submit">Save key</button><button type="button" data-test>Test</button><button type="button" data-remove>Remove key</button><p role="status" data-status></p></form>`).join('') + `<form class="settings-card" data-gateway><h2>Custom gateway</h2><label>ID<input name="id" placeholder="gateway-local" required pattern="gateway-[a-z0-9_-]{1,40}"></label><label>Display name<input name="name" required></label><label>Base URL<input name="baseUrl" type="url" required></label><p>Host localhost addresses become host.docker.internal so workers can reach your model.</p><label>Protocol<select name="protocol"><option value="openai">OpenAI-compatible</option><option value="anthropic">Anthropic</option></select></label><label>Model IDs (comma separated; otherwise discovered)<input name="models"></label><button type="submit">Save gateway</button><p role="status"></p></form>`;
+      root.querySelectorAll('[data-provider]').forEach((form, index) => {
+        const provider = providers[index], source = provider.id;
+        const act = async (method, suffix = '', body = undefined) => {
+          const status = form.querySelector('[data-status]');
+          try {
+            this.pending = this.api(`/api/providers/${encodeURIComponent(source)}${suffix}`, { method, ...(body ? { body: JSON.stringify(body) } : {}) });
+            await this.pending; this.dirty = false; await this.openProviders();
+          } catch (error) { status.textContent = error.message; }
+          finally { this.pending = null; }
+        };
+        form.oninput = () => this.changed();
+        form.onsubmit = (event) => { event.preventDefault(); const key = form.elements.key.value; form.elements.key.value = ''; return act('PUT', '', { key, saveUnchecked: form.elements.saveUnchecked.checked }); };
+        form.querySelector('[data-test]').onclick = () => act('POST', '/test');
+        form.querySelector('[data-remove]').onclick = () => act('DELETE');
+      });
+      const gateway = root.querySelector('[data-gateway]');
+      gateway.oninput = () => this.changed();
+      gateway.onsubmit = async (event) => {
+        event.preventDefault();
+        const body = Object.fromEntries(new FormData(gateway)); body.models = body.models.split(',').map((id) => id.trim()).filter(Boolean);
+        try { this.pending = this.api('/api/providers', { method: 'PUT', body: JSON.stringify(body) }); await this.pending; this.dirty = false; await this.openProviders(); }
+        catch (error) { gateway.querySelector('[role="status"]').textContent = error.message; }
+        finally { this.pending = null; }
+      };
+    } catch (error) { root.innerHTML = `<p class="error">${esc(error.message)}</p>`; }
+  }
   async openModels() {
     const root = document.querySelector('#defaultModelEditor');
     root.innerHTML = '<p>Loading models…</p>';
     try {
-      const [value] = await Promise.all([this.api('/api/model-default'), this.models.loadCatalog()]);
-      document.querySelector('#defaultModelSummary').textContent = value.selection ? `Saved default: ${selectionLabel(value.selection)}` : 'No app default saved yet. Until you save one, new conversations inherit the last conversation choice.';
-      this.models.open(root, { settings: { ...(value.selection || { harness: 'codex', model: null, effort: null }), revision: value.revision } }, {
-        defaultMode: true, onDirty: () => this.changed(),
-        onCancel: async () => { if (await this.canLeave()) await this.open('models'); },
-        onSaved: async () => { this.dirty = false; await this.openModels(); this.setStatus('Default model saved'); this.toast('Default saved for new conversations'); },
-      });
+      const [rows] = await Promise.all([this.api('/api/model-defaults'), this.models.loadCatalog()]);
+      root.innerHTML = '';
+      document.querySelector('#defaultModelSummary').textContent = 'Defaults for new conversations by production kind';
+      for (const value of rows) {
+        const section = document.createElement('section');
+        const title = document.createElement('h2'); title.textContent = value.mode; root.append(title, section);
+        this.models.open(section, { settings: { ...(value.selection || { harness: 'codex', model: null, effort: null }), revision: value.revision } }, {
+          defaultMode: true, kind: value.mode, onDirty: () => this.changed(),
+          onCancel: async () => { if (await this.canLeave()) await this.open('models'); },
+          onSaved: async () => { this.dirty = false; await this.openModels(); this.setStatus('Default model saved'); this.toast('Default saved for new conversations'); },
+        });
+      }
     } catch (cause) { root.innerHTML = `<p class="error">${esc(cause.message)}</p>`; }
   }
 }

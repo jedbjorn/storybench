@@ -1,3 +1,4 @@
+import { OpenCodeConnection } from './opencode.js';
 // App-side orchestration of one worker-backed production request (slice version; the
 // lifecycle lane #22 and adapter lane #26 integrate this with chat/jobs):
 //   render boot/skills -> ask the host for a worker -> bind scoped tools to a request
@@ -47,9 +48,9 @@ export async function openWorkerRequest(options) {
 }
 
 async function openHeldRequest({
-  controlSocket, store, requestId, conversationId, harness, segmentId, episodeId,
+  controlSocket, store, requestId, conversationId, harness, source = `${harness}-login`, segmentId, episodeId,
   bootContext = {}, templates, onToolCall = () => {}, wrapTools = (tools) => tools,
-  model = null, library = null, release = null, isShortcutMessage = defaultIsShortcutMessage,
+  model = null, supportsImages = true, library = null, release = null, isShortcutMessage = defaultIsShortcutMessage,
 }) {
   const dataRoot = store.workspace;
   // App and worker must see project files at identical paths so worker-reported paths
@@ -69,6 +70,7 @@ async function openHeldRequest({
   const effectiveRelease = release ?? releaseFromEnv();
   const scoped = createScopedTools(scope, { store, library: library ?? createLibraryService({ workspace: dataRoot, store }), release: effectiveRelease, isShortcutMessage });
   const tools = wrapTools(scoped);
+  if (!supportsImages) tools.definitions = tools.definitions.filter(({ name }) => !['inspect_image', 'inspect_contact_sheet'].includes(name));
   scoped.setServedDefinitions(tools.definitions);
   // Render before the worker starts so the harness never sees a half-written boot. The boot
   // context may be a function of what this request actually serves and where it works.
@@ -79,7 +81,7 @@ async function openHeldRequest({
     episodeDir: location.directory, templates,
     context: { ...context, paths: { ...context.paths, episode: location.directory, work: store.episodeWorkDirectory(episodeId), requestWork: requestWorkDir } },
   });
-  const started = await controlRequest(controlSocket, { op: "worker.start", requestId, harness, segmentId, episodeDir: episodeDir.relative, workDir: workRelative });
+  const started = await controlRequest(controlSocket, { op: "worker.start", requestId, harness, source, model, segmentId, episodeDir: episodeDir.relative, workDir: workRelative });
   const token = randomBytes(32).toString("hex");
   let bridge;
   try {
@@ -110,6 +112,7 @@ async function openHeldRequest({
       const child = await connectHarness(started.harnessSocket, { harness: "claude", model: assertModel(model), ...(resume ? { resume: assertSessionId(resume) } : {}) });
       return new ClaudeStreamSession(child, { onEvent });
     },
+    openCodeConnection(options) { return new OpenCodeConnection({ ...options, spawnSession: (header) => connectHarness(started.harnessSocket, header) }); },
     status: () => controlRequest(controlSocket, { op: "worker.status", requestId }),
     async stop() {
       await bridge.close().catch(() => {});

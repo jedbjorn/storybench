@@ -754,7 +754,7 @@ window.addEventListener("beforeunload", (event) => {
   if (storyEditor.isDirty() || dirty || saveInFlight || settingsPages.dirty || settingsPages.pending) event.preventDefault();
 });
 const settingsPages = new SettingsPages({ api, toast, setStatus: (text) => { $("#saveState").textContent = text; } });
-const pageFor = (url) => ['branding', 'models'].includes(url.pathname.slice(1)) ? url.pathname.slice(1) : 'episodes';
+const pageFor = (url) => ['branding', 'models', 'providers'].includes(url.pathname.slice(1)) ? url.pathname.slice(1) : 'episodes';
 let page = pageFor(new URL(location.href)), navigationIndex = history.state?.pageIndex ?? 0, restoringHistory = false, navigating = false;
 let currentUrl = new URL(location.href);
 history.replaceState({ ...history.state, pageIndex: navigationIndex }, '', currentUrl);
@@ -778,6 +778,7 @@ async function showPage(next) {
   $('#episodesPage').hidden = next !== 'episodes';
   $('#brandingPage').hidden = next !== 'branding';
   $('#modelsPage').hidden = next !== 'models';
+  $('#providersPage').hidden = next !== 'providers';
   pageLinks();
   await settingsPages.open(next);
   if (next === 'branding') await refreshBrandingTemplates();

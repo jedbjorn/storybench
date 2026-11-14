@@ -14,7 +14,7 @@ export const MANIFEST = ".storybench/renders.json";
 // Native skill discovery roots, verified against the installed harnesses:
 // Claude Code 2.1.278 reads <cwd>/.claude/skills; Codex 0.155.1 lists <cwd>/.agents/skills
 // (and .codex/skills) as repo-scope skills via skills/list.
-export const SKILL_ROOTS = Object.freeze({ claude: ".claude/skills", codex: ".agents/skills" });
+export const SKILL_ROOTS = Object.freeze({ claude: ".claude/skills", codex: ".agents/skills", opencode: ".opencode/skills" });
 const BOOT_FILES = ["AGENTS.md", "CLAUDE.md"];
 const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 

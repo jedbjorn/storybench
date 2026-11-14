@@ -287,7 +287,7 @@ test("conversation settings: explicit choices are revisioned; the latest explici
   assert.throws(() => w.store.updateConversationSettings(w.conversation.id, 1, { harness: "codex" }), (error) => error.statusCode === 409);
   assert.throws(() => w.store.updateConversationSettings(w.conversation.id, 2, { harness: "gemini" }), /harness must be/);
   assert.throws(() => w.store.updateConversationSettings(w.conversation.id, 2, { harness: "codex", model: "x\ny" }), /single-line/);
-  assert.deepEqual(w.store.lastExplicitSettings(), { harness: "claude", model: "opus", effort: "high" });
+  assert.deepEqual(w.store.lastExplicitSettings(), { inferenceSource: "claude-login", harness: "claude", model: "opus", effort: "high" });
   assert.equal(w.store.getConversation(w.second.id).settingsSource, "default", "other conversations are untouched");
 });
 

@@ -25,14 +25,14 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 export const DEFAULT_CHANNEL_NAME = "Main";
 // IDs become directory names, so they must be single safe path segments.
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
 const LEGACY_EPISODE_SUBDIRS = ["reference", "b-roll", "narration", "graphics", "drafts", "final", "cache", "conflicts", "work"];
 const CHANNEL_EPISODE_SUBDIRS = ["work", "outputs", "outputs/drafts", "outputs/final", "outputs/graphics", "conflicts"];
 const channelNameKey = (name) => name.normalize("NFKC").toLowerCase();
-export const HARNESSES = Object.freeze(["codex", "claude"]);
+export const HARNESSES = Object.freeze(["codex", "claude", "opencode"]);
 export const SEGMENT_REASONS = Object.freeze(["initial", "migrated", "harness-switch", "harness-return", "resume-unavailable"]);
 export const RUN_KINDS = Object.freeze(["chat", "card_build", "still_graphic", "animated_graphic", "draft", "final", "other"]);
 export const RUN_ORIGINS = Object.freeze(["typed", "button"]);
@@ -396,6 +396,7 @@ export class Store {
     if (version < 10) this.migrateV10();
     if (version < 11) this.migrateV11();
     if (version < 12) this.migrateV12();
+    if (version < 13) this.migrateV13();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -919,6 +920,37 @@ export class Store {
       this.db.exec("PRAGMA user_version=12; COMMIT");
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
+  migrateV13() {
+    // Rebuild the three CHECK-constrained tables using SQLite's generalized ALTER
+    // procedure. Keep all indexes/triggers, identities and foreign-key references.
+    if (this.columns('conversations').has('inference_source') && this.db.prepare("SELECT name FROM sqlite_master WHERE name='model_defaults'").get()) {
+      this.db.exec('DROP TABLE IF EXISTS model_default; PRAGMA user_version=13'); return;
+    }
+    this.db.exec('PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE');
+    try {
+      const triggers = this.db.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger'").all();
+      for (const trigger of triggers) this.db.exec(`DROP TRIGGER "${trigger.name}"`);
+      for (const table of ['conversations', 'conversation_segments', 'production_runs']) {
+        if (this.columns(table).has('inference_source') || table === 'production_runs' && this.columns('conversations').has('inference_source')) continue;
+        const schema = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table).sql;
+        const indexes = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL").all(table);
+        const expanded = schema.replace(/harness IN \('codex','claude'\)/g, "harness IN ('codex','claude','opencode')");
+        this.db.exec(expanded.replace(/^CREATE TABLE\s+(?:"[^"]+"|\w+)/i, `CREATE TABLE new_${table}`));
+        this.db.exec(`INSERT INTO new_${table} SELECT * FROM ${table}; DROP TABLE ${table}; ALTER TABLE new_${table} RENAME TO ${table}`);
+        for (const index of indexes) this.db.exec(index.sql);
+      }
+      for (const trigger of triggers) this.db.exec(trigger.sql);
+      if (!this.columns('conversations').has('inference_source')) this.db.exec('ALTER TABLE conversations ADD COLUMN inference_source TEXT');
+      if (!this.columns('conversation_segments').has('inference_source')) this.db.exec('ALTER TABLE conversation_segments ADD COLUMN inference_source TEXT');
+      this.db.exec(`CREATE TABLE model_defaults(mode TEXT PRIMARY KEY, selection TEXT, revision INTEGER NOT NULL DEFAULT 1);
+        INSERT INTO model_defaults(mode,selection,revision) SELECT 'video',selection,revision FROM model_default;
+        DROP TABLE model_default;`);
+      if (this.db.prepare('PRAGMA foreign_key_check').all().length) throw new StoreError('Inference migration found foreign-key violations', 500);
+      this.db.prepare('INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(13,?)').run(now());
+      this.db.exec('PRAGMA user_version=13; COMMIT');
+    } catch (error) { if (this.db.isTransaction) this.db.exec('ROLLBACK'); throw error; }
+    finally { this.db.exec('PRAGMA foreign_keys=ON'); }
+  }
   getBrandStandards(channelId) {
     this.requireChannel(channelId);
     const row = this.db.prepare("SELECT * FROM channel_standards WHERE channel_id=?").get(channelId);
@@ -943,15 +975,17 @@ export class Store {
     if (!result.changes) throw new StoreError("Brand standards changed in another view. Reload before saving.", 409, { current: this.getBrandStandards(channelId) });
     return this.getBrandStandards(channelId);
   }
-  getModelDefault() {
-    const row = this.db.prepare("SELECT selection,revision FROM model_default WHERE singleton=1").get();
-    return { selection: parse(row.selection, null), revision: row.revision };
+  getModelDefault(mode = 'video') {
+    const row = this.db.prepare('SELECT selection,revision FROM model_defaults WHERE mode=?').get(mode);
+    return { selection: parse(row?.selection, null), revision: row?.revision ?? 0 };
   }
-  saveModelDefault(expectedRevision, selection) {
-    const result = this.db.prepare("UPDATE model_default SET selection=?,revision=revision+1 WHERE singleton=1 AND revision=?")
-      .run(JSON.stringify(selection), Number.isInteger(expectedRevision) ? expectedRevision : -1);
-    if (!result.changes) throw new StoreError("Default model changed in another view. Reload before saving.", 409, { current: this.getModelDefault() });
-    return this.getModelDefault();
+  listModelDefaults() { return this.db.prepare('SELECT mode FROM model_defaults ORDER BY mode').all().map(({ mode }) => ({ mode, ...this.getModelDefault(mode) })); }
+  saveModelDefault(expectedRevision, selection, mode = 'video') {
+    if (typeof mode !== 'string' || !/^[a-z][a-z0-9_-]{0,40}$/.test(mode)) throw new StoreError('Invalid production kind');
+    const current = this.getModelDefault(mode);
+    if (!Number.isInteger(expectedRevision) || current.revision !== expectedRevision) throw new StoreError('Default model changed in another view. Reload before saving.', 409, { current });
+    this.db.prepare(`INSERT INTO model_defaults(mode,selection,revision) VALUES(?,?,1) ON CONFLICT(mode) DO UPDATE SET selection=excluded.selection,revision=model_defaults.revision+1`).run(mode, JSON.stringify(selection));
+    return this.getModelDefault(mode);
   }
   insertHistory(episode, actor, createdAt, parentRevision) {
     this.db.prepare(`INSERT INTO episode_history(episode_id,revision,title,notes,cards,actor,created_at,parent_revision,reference_prompt,reference_item_ids)
@@ -1975,7 +2009,7 @@ export class Store {
   // ---- Schema 9 accessors: conversation selection, native-session segments, production requests ----
   conversationRow(row) {
     return row ? { id: row.id, episodeId: row.episode_id, name: row.name, state: row.state, threadId: row.thread_id ?? null,
-      harness: row.harness, model: row.model ?? null, effort: row.effort ?? null, settingsSource: row.settings_source,
+      inferenceSource: row.inference_source || `${row.harness}-login`, harness: row.harness, model: row.model ?? null, effort: row.effort ?? null, settingsSource: row.settings_source,
       settingsRevision: row.settings_revision, settingsUpdatedAt: row.settings_updated_at ?? null, activeSegmentId: row.active_segment_id ?? null,
       createdAt: row.created_at, updatedAt: row.updated_at } : null;
   }
@@ -1999,26 +2033,26 @@ export class Store {
     if (work) throw new StoreError("Request-owned production work is still running on this episode; finish or stop it first", 409, { jobId: work.id, requestId: work.request_id });
     return conversation;
   }
-  updateConversationSettings(conversationId, expectedRevision, { harness, model = null, effort = null } = {}) {
+  updateConversationSettings(conversationId, expectedRevision, { harness, inferenceSource = `${harness}-login`, model = null, effort = null } = {}) {
     const current = this.requireConversation(conversationId);
     if (!HARNESSES.includes(harness)) throw new StoreError(`harness must be one of ${HARNESSES.join(", ")}`);
     const values = [harness, shortText(model, "model"), shortText(effort, "effort")];
     if (!Number.isInteger(expectedRevision) || expectedRevision !== current.settingsRevision)
       throw new StoreError(`Stale conversation settings: expected revision ${current.settingsRevision}`, 409, { current });
     this.assertConversationIdle(conversationId);
-    const result = this.db.prepare(`UPDATE conversations SET harness=?,model=?,effort=?,settings_source='explicit',settings_revision=settings_revision+1,settings_updated_at=?
-      WHERE id=? AND settings_revision=?`).run(...values, now(), conversationId, expectedRevision);
+    const result = this.db.prepare(`UPDATE conversations SET inference_source=?,harness=?,model=?,effort=?,settings_source='explicit',settings_revision=settings_revision+1,settings_updated_at=?
+      WHERE id=? AND settings_revision=?`).run(inferenceSource, ...values, now(), conversationId, expectedRevision);
     if (!result.changes) throw new StoreError("Stale conversation settings", 409, { current: this.getConversation(conversationId) });
     return this.getConversation(conversationId);
   }
   // The most recent explicit choice anywhere, used to preselect a new conversation.
   lastExplicitSettings() {
-    const row = this.db.prepare("SELECT harness,model,effort FROM conversations WHERE settings_source='explicit' ORDER BY settings_updated_at DESC, id DESC LIMIT 1").get();
-    return row ? { harness: row.harness, model: row.model ?? null, effort: row.effort ?? null } : null;
+    const row = this.db.prepare("SELECT inference_source,harness,model,effort FROM conversations WHERE settings_source='explicit' ORDER BY settings_updated_at DESC, id DESC LIMIT 1").get();
+    return row ? { inferenceSource: row.inference_source || `${row.harness}-login`, harness: row.harness, model: row.model ?? null, effort: row.effort ?? null } : null;
   }
 
   segmentRow(row) {
-    return row ? { id: row.id, conversationId: row.conversation_id, harness: row.harness, nativeSessionId: row.native_session_id ?? null, reason: row.reason,
+    return row ? { id: row.id, conversationId: row.conversation_id, inferenceSource: row.inference_source || `${row.harness}-login`, harness: row.harness, nativeSessionId: row.native_session_id ?? null, reason: row.reason,
       previousSegmentId: row.previous_segment_id ?? null, firstMessageId: row.first_message_id ?? null,
       seedIncludedMessages: row.seed_included_messages ?? null, seedOmittedMessages: row.seed_omitted_messages ?? null, createdAt: row.created_at, endedAt: row.ended_at ?? null } : null;
   }
@@ -2032,7 +2066,7 @@ export class Store {
   }
   // Starts a new native-session segment and makes it active; the previous active segment ends. Native session IDs are
   // never carried across harnesses: set the new one with setSegmentNativeSession once the harness reports it.
-  createSegment({ id: requestedId = null, conversationId, harness, reason, previousSegmentId, firstMessageId = null, seedIncludedMessages = null, seedOmittedMessages = null, exceptRunId = null } = {}) {
+  createSegment({ id: requestedId = null, conversationId, harness, inferenceSource = `${harness}-login`, reason, previousSegmentId, firstMessageId = null, seedIncludedMessages = null, seedOmittedMessages = null, exceptRunId = null } = {}) {
     const conversation = this.assertConversationIdle(conversationId, { exceptRunId });
     if (!HARNESSES.includes(harness)) throw new StoreError(`harness must be one of ${HARNESSES.join(", ")}`);
     // A segment created on behalf of a dispatched request (exceptRunId) must be for that request's own
@@ -2051,8 +2085,8 @@ export class Store {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       if (previous) this.db.prepare("UPDATE conversation_segments SET ended_at=? WHERE id=? AND conversation_id=? AND ended_at IS NULL").run(stamp, previous, conversationId);
-      this.db.prepare(`INSERT INTO conversation_segments(id,conversation_id,harness,native_session_id,reason,previous_segment_id,first_message_id,seed_included_messages,seed_omitted_messages,created_at)
-        VALUES(?,?,?,NULL,?,?,?,?,?,?)`).run(segmentId, conversationId, harness, reason, previous ?? null, firstMessageId, seedIncludedMessages, seedOmittedMessages, stamp);
+      this.db.prepare(`INSERT INTO conversation_segments(id,conversation_id,harness,inference_source,native_session_id,reason,previous_segment_id,first_message_id,seed_included_messages,seed_omitted_messages,created_at)
+        VALUES(?,?,?,?,NULL,?,?,?,?,?,?)`).run(segmentId, conversationId, harness, inferenceSource, reason, previous ?? null, firstMessageId, seedIncludedMessages, seedOmittedMessages, stamp);
       this.db.prepare("UPDATE conversations SET active_segment_id=?,updated_at=? WHERE id=?").run(segmentId, stamp, conversationId);
       this.db.exec("COMMIT");
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
