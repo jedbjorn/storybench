@@ -133,6 +133,8 @@ export async function smokeBrowser() {
         assert.equal(resumed.results.media.status,'pass',`${harness} resumed duplicate: ${JSON.stringify(resumed.results)}`);
         assert.equal(resumed.results.media.details[0].paused,false);
         assert.ok(resumed.results.media.details[0].time>pausedVideo.time);
+        // Presenter opens at 1000x800; per-state QA needs the matching viewport.
+        await act({pageId:'presenter-1',action:'resize',viewport:{width:1280,height:720}});
         for(const i of [0,1]) {
           await act({pageId:'presenter-1',action:'select',selector:'#slide-select',value:String(i+2)});
           await act({action:'wait',milliseconds:200});
@@ -145,8 +147,8 @@ export async function smokeBrowser() {
           await act({pageId:'presenter-1',action:'click',selector:'[data-command="video-restart"]'});
           await act({action:'wait',milliseconds:100});
           const playback=await check({checks:['media']});assert.equal(playback.results.media.status,'pass',`${harness} codec ${i}: ${JSON.stringify(playback.results)}`);
-          assert.ok(!(await currentEvidence()).missing.some(m=>m.startsWith(`video-${i}: presenter media control`) || m.startsWith(`video-${i}: advancing media`)),
-            'real Presenter restart plus advancing audience playback satisfies both media requirements');
+          const missingMedia=(await currentEvidence()).missing.filter(m=>m.startsWith(`video-${i}: presenter media control`) || m.startsWith(`video-${i}: advancing media`));
+          assert.deepEqual(missingMedia,[], 'real Presenter restart plus advancing audience playback satisfies both media requirements');
         }
         await act({action:'key',key:'End'});
         await act({action:'wait',milliseconds:0,selector:'[data-gallery="1"]'});
