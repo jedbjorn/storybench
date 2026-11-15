@@ -5,8 +5,10 @@ import { createServer } from "node:net";
 import { timingSafeEqual } from "node:crypto";
 import { chmod, rm } from "node:fs/promises";
 import { toMcpResult } from "./tools.js";
+import { RESEARCH_TRANSPORT_BYTES } from "../store.js";
+import { toolErrorText } from "../codex.js";
 
-const MAX_BYTES = 256 * 1024;
+const MAX_BYTES = RESEARCH_TRANSPORT_BYTES;
 
 function tokenMatches(expected, supplied) {
   const a = Buffer.from(String(expected));
@@ -18,14 +20,20 @@ export async function startBridge({ socketPath, token, tools, onCall = () => {} 
   if (typeof token !== "string" || token.length < 32) throw new Error("Bridge token must be at least 32 characters");
   await rm(socketPath, { force: true });
   const server = createServer((socket) => {
-    let buffer = "";
+    let buffer = "", bytes = 0, handled = false;
     socket.setEncoding("utf8");
     socket.on("error", () => {});
     socket.on("data", async (chunk) => {
+      if (handled) return;
       buffer += chunk;
-      if (buffer.length > MAX_BYTES) return socket.destroy();
+      bytes += Buffer.byteLength(chunk, "utf8");
+      if (bytes > MAX_BYTES) {
+        handled = true;
+        return socket.end(JSON.stringify({ ok: false, error: `Tool request exceeds the ${MAX_BYTES} byte transport limit; shorten it before saving` }) + "\n");
+      }
       const newline = buffer.indexOf("\n");
       if (newline < 0) return;
+      handled = true;
       socket.pause();
       let reply;
       try {
@@ -35,7 +43,7 @@ export async function startBridge({ socketPath, token, tools, onCall = () => {} 
         else if (message.op === "tools/call") {
           onCall({ name: message.name, arguments: message.arguments });
           try { reply = { ok: true, result: toMcpResult(await tools.call(message.name, message.arguments)) }; }
-          catch (error) { reply = { ok: true, result: { isError: true, content: [{ type: "text", text: error.message || "Tool failed" }] } }; }
+          catch (error) { reply = { ok: true, result: { isError: true, content: [{ type: "text", text: toolErrorText(error) }] } }; }
         } else reply = { ok: false, error: "Unsupported bridge operation" };
       } catch { reply = { ok: false, error: "Invalid bridge message" }; }
       socket.end(JSON.stringify(reply) + "\n");

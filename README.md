@@ -256,3 +256,13 @@ Storybench is part of [Designs/OS](https://designs-os.com). Other open-source pr
 - **[Pick-It](https://jedbjorn.github.io/pick-it/)** — a Revit add-in that picks any colour on screen, shows its RGB values on the ribbon button and adds it to Revit's custom colours. ([source](https://github.com/jedbjorn/pick-it))
 
 Deck productions support editable slides, presenter notes, reveal diagrams, local media and portable offline HTML/ZIP builds. See [deck authoring and the editable eight-slide demo](docs/deck-authoring.md).
+
+### Production research
+
+Every video and deck has a **Research** tab after Media Library, including archived productions and every workflow stage. Edit the Markdown Summary and add, edit, remove or reorder source Links, then Save or Cancel. Summary previews disable embedded HTML and images. Links open only when clicked; saving or reading research never fetches linked pages, verifies their claims, imports media or rebuilds outputs. Research is factual/background context, separate from feel references.
+
+Human edits and the assistant's `read_research` / `save_research` tools share the same saved record. Unsaved edits stay in the editor; navigation and production actions ask you to Save, Discard or Stay. If another editor or the assistant saves first, your complete draft is preserved: compare the latest saved summary and links, reconcile explicitly, or reload the latest version and discard your draft. Idle views refresh saved research; an open editor stays unchanged.
+
+The HTTP interface is `GET /api/episodes/:id/research` and `PUT` at the same path with `{ expectedResearchRevision, summary, links }`. Tool saves use that same payload, scoped to the active request's production. Reads/saves return `{ episodeId, researchRevision, summary, links, updatedAt, actor }`; links are ordered `{ id, url, title?, note? }` records. Retain returned IDs when editing/reordering; omit an ID only for a new link. Stale saves return a conflict and the current complete record, without changing saved research.
+
+Limits are measured in UTF-8 bytes: summary 1 MiB; at most 100 links; IDs 200 bytes (letters/digits/dots/underscores/hyphens, starting with a letter or digit); HTTP(S) URL 8192 bytes; optional title 512 bytes; optional relevance note 2048 bytes. The complete normalized summary/link JSON is limited to 2 MiB, including JSON escaping. HTTP research writes and the scoped tool bridge accept up to 16 MiB of wire JSON to allow escaping and envelope overhead. Invalid or oversized saves fail with useful errors and never truncate content. These operations supply saved research only, not the contents of linked pages.

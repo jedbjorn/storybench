@@ -3,7 +3,8 @@ import { installSelectControls } from "/select-control.js";
 import { installWorkspaceChrome } from "/workspace-chrome.js";
 import { installChannelDrawer } from "/channel-drawer.js";
 import { SettingsPages } from "/settings-pages.js";
-import { StoryEditor } from "/story-editor.js?v=round2-editor";
+import { StoryEditor, createStoryRenderer } from "/story-editor.js?v=round2-editor";
+import { ResearchEditor } from "/research-workspace.js";
 import { LibraryWorkspace, episodeNavigatorHTML, uploadLibraryFile } from "/library-workspace.js";
 import { attachMediaToCard, categoryForCardMedia, setCardType } from "/card-workspace.js";
 import { linkReference, referencePanelHTML, unlinkReference } from "/reference-workspace.js";
@@ -98,7 +99,7 @@ function render() {
   $("#filteredEpisodeNotice").innerHTML = selectedHidden ? `Current production is in ${esc(episodeGroup)}. <button data-reveal-episode>Show it</button>` : "";
   $("#empty").hidden = !!episode;
   $("#editor").hidden = !episode;
-  if (!episode) { $('#episodeTitle').value = ''; $('#episodeNotes').value = ''; return; }
+  if (!episode) { researchEditor.close(); $('#episodeTitle').value = ''; $('#episodeNotes').value = ''; return; }
   const deck = episode.kind === "deck";
   for (const selector of ['#preview', '#export', '#openGraphic', '[data-tab="drafts"]', '[data-tab="final"]']) {
     const control = $(selector); if (control) control.hidden = deck;
@@ -108,7 +109,7 @@ function render() {
   $("#addCard").classList.toggle("primary", deck && !episode.cards.length);
   $("#buildDeck").classList.toggle("primary", !!episode.cards.length);
   if (deck && (!$("#draftsPanel").hidden || !$("#finalPanel").hidden)) {
-    for (const name of ['story','board','media','drafts','final']) $(`#${name}Panel`).hidden = name !== 'board';
+    for (const name of ['story','board','media','research','drafts','final']) $(`#${name}Panel`).hidden = name !== 'board';
     document.querySelectorAll('.tabs > button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'board'));
   }
   $("#boardPanel h2").textContent = deck ? "Slides" : "Story cards";
@@ -125,6 +126,7 @@ function render() {
   renderJobs();
   if (!$("#storyPanel").hidden)
     storyEditor.open(episode.id).catch((error) => toast(error.message));
+  if (!$("#researchPanel").hidden) researchEditor.open(episode.id);
 }
 function renderJobs() {
   if (!episode) return;
@@ -159,6 +161,7 @@ const storyEditor = new StoryEditor({
   toast,
   onSaved: () => refreshJobs().catch((error) => toast(error.message)),
 });
+const researchEditor = new ResearchEditor({ root: $("#researchPanel"), api, renderMarkdown: createStoryRenderer() });
 const libraryWorkspace = new LibraryWorkspace({ api, toast, getEpisode: () => episode, refreshState: () => load(episode?.id), beforeDelete: flushDraft, onMutation: () => refreshJobs().catch((error) => toast(error.message)) });
 const chatWorkspace = new ChatWorkspace({ root: $("#chatWorkspace"), api, toast, getEpisode: () => episode, onBusyChange: setProductionBusy, beforeSend: async () => { if (!(await leaveStory())) throw new Error("Save or discard story edits before sending"); await flushDraft(); } });
 async function syncChat() {
@@ -170,6 +173,9 @@ async function syncChat() {
 async function leaveStory() {
   const choice = await storyEditor.requestLeave();
   return choice !== "stay";
+}
+async function leaveResearch() {
+  return (await researchEditor.requestLeave()) !== "stay";
 }
 function setProductionBusy(busy) {
   const explanation = busy ? "A request is already active for this episode. Let it finish or press Stop." : "";
@@ -451,6 +457,7 @@ async function save(changes = {}) {
     return save();
 }
 async function flushDraft() {
+  if (!(await leaveResearch())) throw new Error("Save or discard research edits before continuing");
   clearTimeout(fieldTimer);
   while (dirty || saveInFlight || saveRequested) {
     if (dirty || saveRequested) await save();
@@ -652,18 +659,23 @@ $("#undo").onclick = async () => {
     toast(e.message);
   }
 };
+let tabGeneration = 0;
 async function showTab(tab, { confirmStory = true } = {}) {
+      const generation = ++tabGeneration;
       const b = document.querySelector(`.tabs > button[data-tab="${tab}"]`);
       if (!b) return;
       if (confirmStory && b.dataset.tab !== "story" && !(await leaveStory())) return;
+      if (b.dataset.tab !== "research" && !(await leaveResearch())) return;
+      if (generation !== tabGeneration) return;
       document
         .querySelectorAll(".tabs > button")
         .forEach((x) => x.classList.toggle("active", x === b));
-      ["story", "board", "media", "drafts", "final"].forEach(
+      ["story", "board", "media", "research", "drafts", "final"].forEach(
         (x) => ($(`#${x}Panel`).hidden = b.dataset.tab !== x),
       );
       if (b.dataset.tab === "story" && episode)
         storyEditor.open(episode.id).catch((error) => toast(error.message));
+      if (b.dataset.tab === "research" && episode) researchEditor.open(episode.id);
       if (b.dataset.tab === "media" && episode)
         libraryWorkspace.open().catch((error) => toast(error.message));
       if (b.dataset.tab === "board" && episode)
@@ -691,6 +703,7 @@ function summarizeDeletion(report) {
   return parts.join(" · ");
 }
 async function deleteOutputs(outputs) {
+  await flushDraft();
   const target = episode.id;
   releaseOutputPlayers(outputs.map((output) => output.id));
   const report = await api(`/api/episodes/${target}/outputs/delete`, { method: "POST", body: JSON.stringify({ outputs }) });
@@ -703,6 +716,7 @@ document.querySelectorAll("[data-jobs-list]").forEach((list) => list.onclick = a
   if ((move || remove) && episode) {
     try {
       if (move) {
+        await flushDraft();
         await api(`/api/episodes/${episode.id}/outputs/${move.dataset.moveToDrafts}/move-to-drafts`, { method: "POST", body: JSON.stringify({ expectedRevision: Number(move.dataset.revision) }) });
         await load(episode.id);
         toast("Moved to Drafts. The video and its history are unchanged.");
@@ -778,6 +792,7 @@ $("#graphicForm").onsubmit = async (event) => {
 setInterval(async () => {
   if (!episode) return;
   try {
+    await researchEditor.refresh();
     if (
       !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName) &&
       state.jobs.some((j) => ["queued", "running"].includes(j.state))
@@ -785,12 +800,12 @@ setInterval(async () => {
       await load(episode.id);
     } else await refreshJobs(episode.id);
   } catch (error) {
-    if ([404, 410].includes(error.status)) await navigate(new URL('/episodes', location.href).href, null, { prepared: true, replace: true });
+    if ([404, 410].includes(error.status)) await navigate(new URL('/episodes', location.href).href, null, { replace: true });
     else toast(error.message);
   }
 }, 1800);
 window.addEventListener("beforeunload", (event) => {
-  if (storyEditor.isDirty() || dirty || saveInFlight || settingsPages.dirty || settingsPages.pending) event.preventDefault();
+  if (storyEditor.isDirty() || researchEditor.isDirty() || researchEditor.pending || dirty || saveInFlight || settingsPages.dirty || settingsPages.pending) event.preventDefault();
 });
 const settingsPages = new SettingsPages({ api, toast, setStatus: (text) => { $("#saveState").textContent = text; } });
 const pageFor = (url) => ['branding', 'models', 'providers'].includes(url.pathname.slice(1)) ? url.pathname.slice(1) : 'episodes';
@@ -830,6 +845,7 @@ async function canLeaveContext() {
     const prompt = $('[data-story-leave]');
     if (!prompt.hidden) prompt.querySelector('[data-leave-stay]').focus();
     if (!(await storyChoice)) return false;
+    if (!(await leaveResearch())) return false;
     await flushDraft();
     return true;
   } finally { resumeDrawer(); }

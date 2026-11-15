@@ -14,10 +14,19 @@ export class CodexError extends Error {
 // A tool handler may return { [TOOL_CONTENT]: contentItems } to supply app-server
 // content items directly (for example inputImage results) instead of JSON text.
 export const TOOL_CONTENT = Symbol.for('storybench.codex.toolContent');
+// Keep revision conflicts actionable through both native dynamic tools and MCP.
+export const toolErrorText = (error) => error?.current?.researchRevision !== undefined
+  ? JSON.stringify({ error: error.message, statusCode: error.statusCode, current: error.current })
+  : error?.message || 'Tool failed';
 
 const empty = { type: 'object', properties: {}, additionalProperties: false };
 const object = (required, properties) => ({ type: 'object', additionalProperties: false, required, properties });
 const toolSpecs = [
+  { type: 'function', name: 'read_research', description: 'Read the complete saved research summary and ordered links for this production, including production identity and independent researchRevision. Saved URLs are not fetched or verified.', inputSchema: empty },
+  { type: 'function', name: 'save_research', description: 'Directly replace this production’s complete research using expectedResearchRevision. Retain link IDs when editing/reordering; omitted IDs are generated. Limits in UTF-8 bytes: summary 1 MiB; 100 links; ID 200; HTTP(S) URL 8192; title 512; note 2048; normalized JSON 2 MiB. Oversize is rejected without truncation. On conflict read current research and reconcile.', inputSchema: object(['expectedResearchRevision','summary','links'], {
+    expectedResearchRevision: { type: 'integer', minimum: 1 }, summary: { type: 'string' },
+    links: { type: 'array', maxItems: 100, items: object(['url'], { id: { type: 'string' }, url: { type: 'string' }, title: { type: 'string' }, note: { type: 'string' } }) },
+  }) },
   { type: 'function', name: 'read_deck', description: 'Read saved ordered slides, story and current revision.', inputSchema: empty },
   { type: 'function', name: 'save_deck', description: 'Replace ordered slides using the current revision. Slides support id/title/layout/body/notes/eyebrow/caption/targetMinutes/sectionId/media {itemId,alt}, columns {title,body}, stages {id,title,body,afterMs}, subnav {id,label,itemId}, referenceItemIds. Plain text only.', inputSchema: object(['expectedRevision','slides'], {expectedRevision:{type:'integer',minimum:1},slides:{type:'array',items:{type:'object'}}}) },
   { type: 'function', name: 'build_deck', description: 'Build an offline HTML and ZIP draft bundle from the saved exact revision. Await the returned job; failed/queued is not success.', inputSchema: object(['expectedRevision'], {expectedRevision:{type:'integer',minimum:1}}) },
@@ -160,7 +169,7 @@ export class CodexConnection {
       const contentItems = result?.[TOOL_CONTENT] ?? [{ type: 'inputText', text: JSON.stringify(result) }];
       this.#write({ id: message.id, result: { success: true, contentItems } });
     } catch (error) {
-      this.#write({ id: message.id, result: { success: false, contentItems: [{ type: 'inputText', text: error?.message || 'Tool failed' }] } });
+      this.#write({ id: message.id, result: { success: false, contentItems: [{ type: 'inputText', text: toolErrorText(error) }] } });
     }
   }
 

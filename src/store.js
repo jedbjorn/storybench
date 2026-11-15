@@ -36,6 +36,8 @@ export const RESEARCH_LIMITS = Object.freeze({
   summaryBytes: 1024 * 1024, maxLinks: 100, linkIdBytes: 200,
   urlBytes: 8192, titleBytes: 512, noteBytes: 2048, recordBytes: 2 * 1024 * 1024,
 });
+// Allows fully Unicode-escaped JSON for every valid record plus request/envelope metadata.
+export const RESEARCH_TRANSPORT_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_CHANNEL_NAME = "Main";
 // IDs become directory names, so they must be single safe path segments.
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;

@@ -157,7 +157,7 @@ test('Codex JSONL client declares scoped tools and answers dynamic tool calls', 
   const start = requests.find((request) => request.method === 'thread/start');
   assert.equal(start.params.sandbox, 'read-only');
   assert.equal(start.params.approvalPolicy, 'never');
-  assert.deepEqual(start.params.dynamicTools.map((tool) => tool.name), ['read_deck','save_deck','build_deck','get_context','get_operation_guide','read_conversation_history','read_reference_excerpt','update_story','update_cards','validate_render','create_draft','declare_final_request','create_final','get_job','await_job','cancel_job','move_final_to_drafts','list_graphic_recipes','get_graphic_recipe','create_graphic_recipe','update_graphic_recipe','render_graphic','list_branding','promote_card','apply_branding']);
+  assert.deepEqual(start.params.dynamicTools.map((tool) => tool.name), ['read_research','save_research','read_deck','save_deck','build_deck','get_context','get_operation_guide','read_conversation_history','read_reference_excerpt','update_story','update_cards','validate_render','create_draft','declare_final_request','create_final','get_job','await_job','cancel_job','move_final_to_drafts','list_graphic_recipes','get_graphic_recipe','create_graphic_recipe','update_graphic_recipe','render_graphic','list_branding','promote_card','apply_branding']);
   const declareFinal = start.params.dynamicTools.find((tool) => tool.name === 'declare_final_request');
   const createFinal = start.params.dynamicTools.find((tool) => tool.name === 'create_final');
   assert.deepEqual(declareFinal.inputSchema, { type: 'object', additionalProperties: false, required: ['messageId'], properties: { messageId: { type: 'integer', minimum: 1 } } });

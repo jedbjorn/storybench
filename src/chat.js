@@ -135,7 +135,22 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
   const bootText = (value, standards) => { const currentEpisode = episode(value.episode_id), story = store.getStory(value.episode_id);
     return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires active request-bound Final intent.\nChannel brand standards for this turn (creative defaults; explicit episode/card direction takes precedence): ${JSON.stringify(standards)}. Apply to new or revised work; do not restyle existing outputs without a request. Use get_context for the supported font catalogue and file paths.`; };
   const jobService = value => episode(value.episode_id).kind === 'deck' ? decks : renders;
+  const researchScope = (value, origin, args = {}) => {
+    ensureActive(value, origin);
+    const current = episode(value.episode_id);
+    if ((args.episodeId !== undefined && args.episodeId !== current.id) ||
+        (args.channelId !== undefined && args.channelId !== current.channelId))
+      throw error("Research tools are bound to this request's production and channel", 403);
+  };
   const tools = (value, origin) => ({
+    // Keep the full saved record at this explicit delivery point for task #73 freshness tracking.
+    read_research: (args = {}) => { researchScope(value, origin, args); return store.getResearch(value.episode_id); },
+    save_research: (args = {}) => {
+      researchScope(value, origin, args);
+      const saved = store.saveResearch(value.episode_id, args.expectedResearchRevision, args, "agent");
+      onChange(value.episode_id);
+      return saved;
+    },
     read_deck: () => store.getDeck(value.episode_id),
     save_deck: ({expectedRevision, slides}) => { ensureActive(value, origin); return store.saveDeck(value.episode_id,expectedRevision,slides,'agent'); },
     build_deck: ({expectedRevision}) => { ensureActive(value, origin); return decks.enqueue({episodeId:value.episode_id,expectedRevision,requestId:origin.requestId}); },
