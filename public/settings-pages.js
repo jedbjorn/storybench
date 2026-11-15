@@ -1,4 +1,5 @@
 import { ChatSettings, HARNESS_LABELS } from './chat-settings.js';
+import { openColorPicker } from './color-picker.js';
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
 export class SettingsPages {
@@ -39,13 +40,18 @@ export class SettingsPages {
         }
       }
       root.innerHTML = `<form id="standardsForm" class="settings-card">
-        <h2>Colors <small>Up to three</small></h2><div class="standards-grid">${[0, 1, 2].map((i) => `<label>${['Base color', 'Accent color', 'Background color'][i]}<div class="color-field"><input type="color" data-swatch="${i}" aria-label="Pick ${['base', 'accent', 'background'][i]} color" value="${value.colors[i] || '#ffffff'}"><input name="color${i}" data-color="${i}" aria-label="${['Base', 'Accent', 'Background'][i]} color hex" placeholder="#1255FF" pattern="#[0-9a-fA-F]{6}" maxlength="7" value="${esc(value.colors[i] || '')}"><button type="button" data-clear-color="${i}" aria-label="Clear ${['base', 'accent', 'background'][i]} color">×</button></div></label>`).join('')}</div>
+        <h2>Colors <small>Up to three</small></h2><div class="standards-grid">${[0, 1, 2].map((i) => `<div class="color-slot"><label for="brandColor${i}">${['Base color', 'Accent color', 'Background color'][i]}</label><div class="color-field"><button type="button" class="color-trigger" data-swatch="${i}" aria-haspopup="dialog" aria-label="Pick ${['base', 'accent', 'background'][i]} color"><span></span></button><input id="brandColor${i}" name="color${i}" data-color="${i}" aria-label="${['Base', 'Accent', 'Background'][i]} color hex" placeholder="#1255FF" pattern="#[0-9a-fA-F]{6}" maxlength="7" value="${esc(value.colors[i] || '')}"><button type="button" data-clear-color="${i}" aria-label="Clear ${['base', 'accent', 'background'][i]} color">×</button></div></div>`).join('')}</div>
         <h2>Fonts <small>Up to three</small></h2><div class="standards-grid">${[0, 1, 2].map((i) => `<label>${['Base font', 'Accent font', 'Alternate font'][i]}<select name="font${i}" data-font="${i}"><option value="">No font selected</option>${fonts.map((font) => `<option value="${esc(font.family)}" ${value.fonts[i] === font.family ? 'selected' : ''} ${font.available ? '' : 'disabled'}>${esc(font.family)}${font.available ? '' : ' — unavailable'}</option>`).join('')}</select><span class="font-preview" data-font-preview="${i}">The story starts here.<br><b>Make it yours.</b></span></label>`).join('')}</div>
         <h2>Channel style prompt</h2><label class="style-direction">Creative direction<textarea name="stylePrompt" maxlength="10000" rows="5" placeholder="Describe the channel’s look, pacing, tone and recurring visual choices…">${esc(value.stylePrompt)}</textarea></label>
         <p class="help">Standards guide new and revised work. Specific episode or card instructions can override them.</p>
         <div class="settings-actions"><button class="primary" type="submit">Save standards</button><button type="button" data-standards-reload>Reload saved</button><span class="error" role="alert" data-standards-error></span></div>
       </form>`;
       const form = root.querySelector('form');
+      const syncSwatch = (index) => {
+        const color = form.elements[`color${index}`].value;
+        form.querySelector(`[data-swatch="${index}"] span`).style.background = /^#[0-9a-f]{6}$/i.test(color) ? color : '';
+      };
+      [0, 1, 2].forEach(syncSwatch);
       const preview = () => form.querySelectorAll('[data-font]').forEach((select) => {
         const sample = form.querySelector(`[data-font-preview="${select.dataset.font}"]`);
         sample.style.fontFamily = select.value ? `"${select.value}"` : 'inherit';
@@ -53,15 +59,22 @@ export class SettingsPages {
       });
       preview();
       form.oninput = (event) => {
-        if (event.target.dataset.swatch != null) form.elements[`color${event.target.dataset.swatch}`].value = event.target.value.toUpperCase();
-        if (event.target.dataset.color != null && /^#[0-9a-f]{6}$/i.test(event.target.value)) form.querySelector(`[data-swatch="${event.target.dataset.color}"]`).value = event.target.value;
+        if (event.target.dataset.color != null) syncSwatch(event.target.dataset.color);
         this.changed(); preview();
       };
       form.onchange = () => { this.changed(); preview(); };
       form.onclick = (event) => {
+        const trigger = event.target.closest('[data-swatch]');
+        if (trigger) {
+          const field = form.elements[`color${trigger.dataset.swatch}`];
+          openColorPicker({ trigger, value: field.value, onPick: (color) => {
+            field.value = color; field.dispatchEvent(new Event('input', { bubbles: true }));
+          } });
+          return;
+        }
         const index = event.target.dataset.clearColor;
         if (index == null) return;
-        form.elements[`color${index}`].value = ''; this.changed();
+        form.elements[`color${index}`].value = ''; syncSwatch(index); this.changed();
       };
       form.querySelector('[data-standards-reload]').onclick = async () => { if (await this.canLeave()) await this.open('branding'); };
       form.onsubmit = async (event) => {

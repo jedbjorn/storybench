@@ -772,8 +772,29 @@ header .page-nav { display: flex; align-self: stretch; align-items: center; gap:
 .settings-page input, .settings-page select, .settings-page textarea { min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 9px; background: white; color: var(--ink); }
 .settings-page textarea { resize: vertical; }
 .color-field { display: flex; gap: 6px; }
-.color-field input[type="color"] { padding: 3px; width: 42px; height: 40px; flex-shrink: 0; }
+.color-slot { display: grid; gap: 8px; }
+.color-trigger { padding: 4px; width: 42px; height: 40px; flex-shrink: 0; }
+.color-trigger span { display: block; width: 100%; height: 100%; border: 1px solid #0003; border-radius: 4px; background: repeating-conic-gradient(#e1e5e1 0% 25%, #fff 0% 50%) 0 / 10px 10px; }
 .color-field input[data-color] { width: 100%; }
+.color-picker { width: 340px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow: auto; padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); color: var(--ink); box-shadow: 0 16px 60px #173d3933; }
+.color-picker::backdrop { background: #173d3933; }
+.color-picker h2 { margin: 0 0 18px; font: bold 21px Georgia, serif; }
+.color-picker fieldset { margin: 0 0 16px; padding: 0; border: 0; min-width: 0; }
+.color-picker legend, .color-picker-label { margin-bottom: 7px; font-size: 12px; color: var(--muted); }
+.color-picker-label { display: block; }
+.color-picker-swatches { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+.color-picker-swatch { height: 34px; padding: 0; border: 1px solid #0004; border-radius: 5px; }
+.color-picker-swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--deep); }
+.color-picker :focus-visible, .color-trigger:focus-visible { outline: 2px solid var(--deep); outline-offset: 3px; }
+.color-picker-hex { display: flex; align-items: center; gap: 8px; }
+.color-picker-preview { width: 34px; height: 34px; flex-shrink: 0; border: 1px solid #0004; border-radius: 5px; }
+.color-picker-hex input { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 8px; font: 14px ui-monospace, monospace; }
+.color-picker-hex input[aria-invalid="true"] { border-color: var(--accent); }
+.color-picker .error { margin: 6px 0 0; font-size: 12px; }
+.color-picker-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.color-picker-actions button { font-size: 12px; }
+.color-picker-actions [data-cancel] { margin-left: auto; }
+.color-picker-native { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .font-preview { display: block; margin-top: 10px; font-size: 21px; min-height: 64px; color: var(--deep); }
 .settings-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 #defaultModelEditor { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 24px; }
