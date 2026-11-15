@@ -100,7 +100,7 @@ report_deck_qa({sessionId:opened.sessionId,
     assessment:"Opening title is clipped; the diagram is legible but has too little heading space.",
     findings:[{severity:"blocking",description:"Opening title clips at 1280x720."}]}]});
 close_deck_qa({sessionId:opened.sessionId});
-const current = read_deck();
+const current = get_context();
 // Edit saved source, not generated HTML. Preserve IDs, mappings and notes.
 current.slides[0].title = "A shorter title";
 const saved = save_deck({expectedRevision:current.revision, slides:current.slides});
@@ -130,4 +130,4 @@ A rebuild invalidates prior QA completion even at the same saved revision. Old f
 
 After the final report, call `close_deck_qa` and `get_deck_qa_report({jobId:deliveredJob.id})`. Deliver the ZIP with the exact build's QA status, evidence paths, concise summary and unresolved limitations. If `qaStatus` is incomplete, label it as a draft; creator-directed early handoff stays explicitly incomplete. Model self-QA does not guarantee the creator's aesthetic judgment or physical dual-display behavior. Do not claim live-model reasoning from automated scripted fixtures.
 
-Before opening QA, call `get_capabilities` and read `deck.runtime`, `deck.installation` and `deck.screenshotInput`. Startup and installation checks establish different facts; image transport tests do not verify the selected model's visual interpretation. If browser or screenshot input is unavailable, preserve the editable draft and state the specific incomplete-QA reason. `read_deck` also includes the current runtime readiness.
+Before opening QA, call `get_capabilities` and read `deck.runtime`, `deck.installation` and `deck.screenshotInput`. Startup and installation checks establish different facts; image transport tests do not verify the selected model's visual interpretation. If browser or screenshot input is unavailable, preserve the editable draft and state the specific incomplete-QA reason. `get_context` also includes the current runtime readiness.

@@ -126,6 +126,10 @@ test('editable eight-slide demo: manual DOM edit, fake-agent bridge save/build, 
     const tools=selectKindTools(mergeTools({definitions:[],call:async()=>{}},options.tools),'deck');
     bridge=await startBridge({socketPath,token,tools});
     const current=await rpc(socketPath,token,'read_deck',{});
+    const context=await rpc(socketPath,token,'get_context',{});
+    assert.equal(context.deckCapabilities.installation.state,'unverified');
+    assert.match(context.deckCapabilities.runtime.source,/local development/);
+    assert.equal(Object.hasOwn(current,'capabilities'),false,'read_deck remains the saved revision contract');
     const before=structuredClone(current),jobsBefore=app.store.listJobs(current.id).map(job=>job.id);
     current.slides[1].body=`Agent revision ${turn}`;
     current.slides[5].stages.reverse();
