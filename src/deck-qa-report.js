@@ -54,10 +54,15 @@ export async function readQaSessions(parent) {
   return records.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
 }
 
-export function evaluateQa(job, records) {
+// Only the request-owned report operation can vouch for a live open session.
+const usableLifecycle = (record, activeSession) => record.lifecycle === 'closed' ||
+  (record.lifecycle === 'open' && activeSession?.sessionId && activeSession?.requestId &&
+    record.sessionId === activeSession.sessionId && record.requestId === activeSession.requestId);
+
+export function evaluateQa(job, records, activeSession) {
   const missing = new Set();
   const usable = records.filter(r => r.bundleSha256 === job.snapshot.bundleSha256 && r.sourceRevision === job.revision &&
-    ['open', 'closed'].includes(r.lifecycle));
+    usableLifecycle(r, activeSession));
   const shots = usable.flatMap(r => r.screenshots.filter(s => s.delivered).map(s => ({ ...s,
     review: r.reviews?.find(v => v.artifactId === s.artifactId), artifactRoot: r.artifactRoot })));
   const reviewed = shots.filter(s => s.review && s.fullResolutionDelivered && !s.clip);
@@ -105,10 +110,13 @@ export function evaluateQa(job, records) {
     }
     if (slide.stages.length) {
       requireAction(`${slide.id}: replay`, a => a.state.slideId === slide.id && a.action === 'click' && /replay/.test(a.selector ?? ''));
-      requireAction(`${slide.id}: manual stage selection`, a => a.state.slideId === slide.id && /data-stage|#stage-select/.test(a.selector ?? ''));
+      requireAction(`${slide.id}: manual stage selection`, a => a.state.slideId === slide.id &&
+        ((a.action === 'click' && /\[data-stage(?:=|\])/.test(a.selector ?? '')) ||
+          (a.action === 'select' && a.selector === '#stage-select')));
       if (slide.stages.some(s => s.afterMs > 0)) requireAction(`${slide.id}: reveal timing`, a => a.state.slideId === slide.id && a.action === 'wait' && a.state.stage.includes(String(slide.stages.length - 1)));
     }
-    if (slide.subnav.length) requireAction(`${slide.id}: gallery navigation`, a => a.state.slideId === slide.id && /data-gallery/.test(a.selector ?? ''));
+    if (slide.subnav.length) requireAction(`${slide.id}: gallery navigation`, a => a.state.slideId === slide.id &&
+      a.action === 'click' && /\[data-gallery(?:=|\])/.test(a.selector ?? ''));
   }
   return { qaStatus: missing.size ? 'incomplete' : 'complete', missing: [...missing], viewports, findings,
     reviewedImages: reviewed.map(s => ({ artifactId: s.artifactId, sha256: s.sha256, path: `${s.artifactRoot}/${s.file}`, state: s.state, review: s.review })),
@@ -117,12 +125,12 @@ export function evaluateQa(job, records) {
     coverage: usable.flatMap(r => r.coverage), checks, limitations: ['Model self-QA; creator aesthetic judgment and physical displays remain unverified.'] };
 }
 
-export async function getQaReport(store, episodeId, jobId) {
+export async function getQaReport(store, episodeId, jobId, activeSession) {
   const build = await readDeckBundle(store, episodeId, jobId);
   const records = await readQaSessions(build.parent);
-  const report = evaluateQa(build.job, records);
-  if (records.length && !['open','closed'].includes(records.at(-1).lifecycle)) {
-    report.qaStatus='incomplete'; report.missing.push('latest QA session cancelled, expired or disconnected');
+  const report = evaluateQa(build.job, records, activeSession);
+  if (records.length && !usableLifecycle(records.at(-1), activeSession)) {
+    report.qaStatus='incomplete'; report.missing.push('latest QA session not explicitly closed or currently active (interrupted or unverified)');
   }
   // Never trust the historical qaStatus in a session file as current delivery status.
   const latest = store.listJobs(episodeId).find(j => j.kind === 'deck' && j.state === 'completed');

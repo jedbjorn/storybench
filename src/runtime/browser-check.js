@@ -90,7 +90,12 @@ export async function smokeBrowser() {
         await act({pageId:'presenter-1',action:'select',selector:'#slide-select',value:'1'});
         await act({action:'wait',milliseconds:700});
         let state=(await inspect({})).data.screenshots[0].state;assert.equal(state.slideId,'stages');assert.equal(state.visibleGroups.length,3);
+        const report=async()=>(await client.call('report_deck_qa',{sessionId,summary:'Scripted control-operation regression',reviews:[],changesMade:[]})).data;
+        await act({action:'wait',milliseconds:0,selector:'[data-stage="0"]'});
+        await act({pageId:'presenter-1',action:'wait',milliseconds:0,selector:'#stage-select'});
+        assert.ok((await report()).missing.includes('stages: manual stage selection'),'no-op selectors cannot prove stage operation');
         await act({pageId:'presenter-1',action:'select',selector:'#stage-select',value:'0'});
+        assert.ok(!(await report()).missing.includes('stages: manual stage selection'),'real Presenter selection supplies evidence');
         await act({action:'wait',milliseconds:300});
         state=(await inspect({})).data.screenshots[0].state;assert.deepEqual(state.stage,['0']);assert.equal(state.visibleGroups.length,1);
         await act({pageId:'presenter-1',action:'click',selector:'[data-command="replay"]'});
@@ -127,7 +132,11 @@ export async function smokeBrowser() {
           await act({action:'wait',milliseconds:100});
           const playback=await check({checks:['media']});assert.equal(playback.results.media.status,'pass',`${harness} codec ${i}: ${JSON.stringify(playback.results)}`);
         }
-        await act({action:'key',key:'End'});await act({action:'click',selector:'.slide:not([hidden]) [data-gallery="1"]'});
+        await act({action:'key',key:'End'});
+        await act({action:'wait',milliseconds:0,selector:'[data-gallery="1"]'});
+        assert.ok((await report()).missing.includes('gallery: gallery navigation'),'no-op selector cannot prove gallery operation');
+        await act({action:'click',selector:'.slide:not([hidden]) [data-gallery="1"]'});
+        assert.ok(!(await report()).missing.includes('gallery: gallery navigation'),'real gallery click supplies evidence');
         state=(await inspect({})).data.screenshots[0].state;assert.deepEqual(state.gallery,['1']);
         const sheet=await inspect({slideIds:['opening','stages','gallery']});assert.ok(sheet.data.contactSheet);assert.equal(sheet.data.screenshots.length,3);
         await act({action:'resize',viewport:{width:640,height:480}});assert.equal((await inspect({clip:{x:0,y:0,width:320,height:240}})).data.screenshots[0].state.viewport.width,640);

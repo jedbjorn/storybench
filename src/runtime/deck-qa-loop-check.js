@@ -91,7 +91,22 @@ export async function checkCorrectionLoop() {
           assert.equal(report.qaStatus,'complete',JSON.stringify(report.missing));
           assert.equal(report.jobId,corrected.id);assert.equal(report.sourceRevision,corrected.revision);
           assert.ok(report.sessions[0].browser.actualVersion);assert.ok(report.reviewedImages.length>=6);
+          // Standalone reads cannot vouch for an open session, even in this request.
+          const assertExcluded=excluded=>{
+            assert.equal(excluded.qaStatus,'incomplete');assert.deepEqual(excluded.reviewedImages,[]);
+            assert.deepEqual(excluded.checks,[]);assert.deepEqual(excluded.coverage,[]);
+            for(const missing of ['visual/narrative summary','audience navigation','actual fullscreen entry'])
+              assert.ok(excluded.missing.includes(missing),missing);
+          };
+          assertExcluded(await call('get_deck_qa_report',{jobId:corrected.id}));
           await call('close_deck_qa',{sessionId});
+          assert.equal((await call('get_deck_qa_report',{jobId:corrected.id})).qaStatus,'complete');
+          // Emulate a hard interruption: durable evidence survived, terminal write did not.
+          const sessionFile=path.join(root,opened.artifactRoot,'session.json'),closed=await readFile(sessionFile,'utf8');
+          const abandoned={...JSON.parse(closed),lifecycle:'open',requestId:'abandoned-request'};
+          await writeFile(sessionFile,JSON.stringify(abandoned));
+          assertExcluded(await call('get_deck_qa_report',{jobId:corrected.id}));
+          await writeFile(sessionFile,closed);
           assert.equal((await call('get_deck_qa_report',{jobId:corrected.id})).qaStatus,'complete');
           const imageFile=path.join(root,report.reviewedImages[0].path),bytes=await readFile(imageFile);
           await writeFile(imageFile,'replaced');assert.equal((await call('get_deck_qa_report',{jobId:corrected.id})).qaStatus,'incomplete');await writeFile(imageFile,bytes);

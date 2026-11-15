@@ -274,7 +274,7 @@ export function createDeckQa({store,scope}) {
           if(name==='check_deck_qa') return checks(s,args);
           if(name==='report_deck_qa') {
             recordReview(s.record,args); await save(s);
-            const report=await getQaReport(store,scope.episodeId,s.record.jobId);
+            const report=await getQaReport(store,scope.episodeId,s.record.jobId,{sessionId:s.id,requestId:scope.requestId});
             if(s.closed) throw new Error('QA session closed during reporting');
             s.record.qaStatus=report.qaStatus; await save(s); return json(report);
           }
