@@ -16,7 +16,7 @@ export class OpenCodeConnection {
   async startThread() { this.threadId = randomUUID(); return this.threadId; }
   async resumeThread(id) { this.threadId = id; this.resume = true; return id; }
   emit(method, params) { this.onEvent({ method, params: { threadId: this.threadId, turnId: this.turnId, ...params } }); }
-  async startTurn(threadId, text, images = []) {
+  async startTurn(threadId, text, images = [], { onDelivered } = {}) {
     this.turnId = randomUUID(); this.completed = false;
     const child = await this.spawnSession({ harness: 'opencode', model: this.model, sessionId: threadId, ...(this.resume ? { resume: threadId } : {}), ...(this.effort ? { effort: this.effort } : {}) }); this.child = child;
     const lines = createInterface({ input: child.stdout });
@@ -33,7 +33,7 @@ export class OpenCodeConnection {
     child.once('error', () => this.onError(new Error('OpenCode worker connection failed')));
     child.once('exit', () => { if (!this.completed) this.emit('turn/completed', { turn: { id: this.turnId, status: this.interrupted ? 'interrupted' : 'failed', error: 'OpenCode exited before completion' } }); });
     this.emit('turn/started', { turn: { id: this.turnId } });
-    child.stdin.write(JSON.stringify({ text, images }) + '\n');
+    child.stdin.write(JSON.stringify({ text, images }) + '\n', (error) => { if (!error) onDelivered?.(); });
     return this.turnId;
   }
   async interrupt() { this.interrupted = true; this.child?.kill(); return {}; }

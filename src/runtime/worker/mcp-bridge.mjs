@@ -17,6 +17,8 @@ function fromRequestConfig() {
 const configured = process.env.STORYBENCH_BRIDGE_TOKEN ? {} : fromRequestConfig();
 const SOCKET = process.env.STORYBENCH_BRIDGE_SOCKET ?? configured.STORYBENCH_BRIDGE_SOCKET;
 const TOKEN = process.env.STORYBENCH_BRIDGE_TOKEN ?? configured.STORYBENCH_BRIDGE_TOKEN;
+const DELIVERY_ACK = Symbol('deliveryAck');
+let deliveryBarrier = Promise.resolve();
 
 function forward(message) {
   return new Promise((resolve, reject) => {
@@ -29,14 +31,25 @@ function forward(message) {
     socket.on("end", () => {
       try {
         const reply = JSON.parse(buffer);
-        if (reply.ok) resolve(reply.result);
+        if (reply.ok) {
+          if (reply.deliveryId) Object.defineProperty(reply.result, DELIVERY_ACK, { value: () => forward({ op: 'tools/acknowledge', deliveryId: reply.deliveryId }) });
+          resolve(reply.result);
+        }
         else reject(new Error(reply.error || "Storybench bridge rejected the call"));
       } catch { reject(new Error("Storybench bridge returned an invalid reply")); }
     });
   });
 }
 
-const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
+const send = (message, acknowledge) => {
+  let release;
+  if (acknowledge) deliveryBarrier = new Promise(resolve => { release = resolve; });
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n", async error => {
+    try { if (!error) await acknowledge?.(); }
+    catch { /* No receipt: subsequent authoring remains refused and requires a fresh read. */ }
+    finally { release?.(); }
+  });
+};
 
 async function dispatch(message) {
   const { id, method, params } = message;
@@ -58,8 +71,9 @@ lines.on("line", async (line) => {
   try { message = JSON.parse(line); }
   catch { send({ id: null, error: { code: -32700, message: "Parse error" } }); return; }
   try {
+    await deliveryBarrier; // A follow-up tool cannot overtake acknowledgement of its preceding read.
     const result = await dispatch(message);
-    if (message.id !== undefined && result !== undefined) send({ id: message.id, result });
+    if (message.id !== undefined && result !== undefined) send({ id: message.id, result }, result?.[DELIVERY_ACK]);
   } catch (error) {
     if (message.id !== undefined) send({ id: message.id, error: { code: error.rpcCode ?? -32603, message: error.message } });
   }

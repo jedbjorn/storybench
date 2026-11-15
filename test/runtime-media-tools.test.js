@@ -117,7 +117,7 @@ test("cross-project reads are allowed and labelled; the database is never readab
 
 test("registration validates format, category and editable source, records provenance and respects the board revision", async (t) => {
   const f = await fixture(t);
-  const tools = f.tools();
+  const tools = f.tools({ assertAuthoringContext() {} }); // Service unit fixture; request research gating has integration coverage.
   await exec("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=white:s=64x48:d=1", "-frames:v", "1", path.join(f.scope.workDir, "title.png")]);
   await writeFile(path.join(f.scope.workDir, "title.py"), "# editable source\n");
   await writeFile(path.join(f.scope.workDir, "notes.txt"), "plain text");

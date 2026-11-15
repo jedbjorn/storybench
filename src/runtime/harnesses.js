@@ -8,12 +8,13 @@ import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { CodexConnection, CodexError, TOOL_CONTENT } from "../codex.js";
 import { toCodexContentItems } from "./tools.js";
+import { TOOL_DELIVERED, withToolDelivery } from "../tool-delivery.js";
 
 export class WorkerCodexConnection extends CodexConnection {
   constructor({ child, tools, effort = null, ...options }) {
     const handlers = Object.fromEntries(tools.definitions.map((definition) => [
       definition.name,
-      async (args) => ({ [TOOL_CONTENT]: toCodexContentItems(await tools.call(definition.name, args)) }),
+      async (args) => { const output = await tools.call(definition.name, args); return withToolDelivery({ [TOOL_CONTENT]: toCodexContentItems(output) }, output?.[TOOL_DELIVERED]); },
     ]));
     super({ ...options, tools: handlers, spawn: () => child });
     // Storybench tools are served over the request's MCP bridge (see the worker launch
@@ -57,14 +58,14 @@ export class WorkerCodexConnection extends CodexConnection {
     };
   }
 
-  async startTurn(threadId, text, images = []) {
+  async startTurn(threadId, text, images = [], { onDelivered } = {}) {
     this.startingEvents = [];
     try {
       const result = await this.request("turn/start", {
         threadId, input: [{ type: "text", text }, ...images.map((image) => ({ type: "image", url: `data:${image.mimeType};base64,${image.data}` }))], cwd: this.cwd,
         approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" },
         ...(this.effort ? { effort: this.effort } : {}),
-      }, { uncertain: true });
+      }, { uncertain: true, onDelivered });
       const id = result?.turn?.id;
       if (!id) throw new CodexError("CODEX_PROTOCOL_ERROR", "turn/start returned no turn id.", { uncertain: true });
       const buffered = this.startingEvents;
@@ -114,10 +115,10 @@ export class ClaudeStreamSession {
   }
 
   // Send one user turn and resolve with the stream's `result` event.
-  send(text, images = []) {
+  send(text, images = [], onDelivered) {
     if (this.closed) return Promise.reject(new Error("Claude session is closed"));
     const done = new Promise((resolve, reject) => this.waiters.push({ resolve, reject }));
-    this.child.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text }, ...images.map((image) => ({ type: "image", source: { type: "base64", media_type: image.mimeType, data: image.data } }))] } }) + "\n");
+    this.child.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text }, ...images.map((image) => ({ type: "image", source: { type: "base64", media_type: image.mimeType, data: image.data } }))] } }) + "\n", (error) => { if (!error) onDelivered?.(); });
     return done;
   }
 
@@ -207,7 +208,7 @@ export class ClaudeChatConnection {
     }
   }
 
-  async startTurn(threadId, text, images = []) {
+  async startTurn(threadId, text, images = [], { onDelivered } = {}) {
     if (!this.launch || threadId !== this.threadId) throw new Error("Start or resume the Claude session before starting a turn");
     const launch = { ...this.launch }, resuming = Boolean(launch.resume);
     const child = await this.spawnSession({ harness: "claude", model: this.model, ...(this.effort ? { effort: this.effort } : {}), ...launch });
@@ -245,7 +246,7 @@ export class ClaudeChatConnection {
         this.#emit("turn/completed", { turn: { id: this.turnId, status: this.interrupted ? "interrupted" : "failed", ...(detail ? { error: detail } : {}) }, model: this.resolved.model });
       }
     });
-    this.session.send(text, images).then(() => { this.completed = true; }, (error) => {
+    this.session.send(text, images, onDelivered).then(() => { this.completed = true; }, (error) => {
       if (resuming && !this.session?.init) settleReady(readyReject, this.#resumeUnavailable(raw.trim() || error.message));
       else if (!this.completed) this.onError(error);
     });

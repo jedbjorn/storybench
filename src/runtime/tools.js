@@ -111,7 +111,7 @@ export const TOOL_DEFINITIONS = Object.freeze([
   },
   {
     name: "register_work_file",
-    description: "Register a completed media file you created in this episode's work/ directory as a library item (validated path inside work/, no symlinks, completed bytes, decodable image/video/audio). Records provenance, the editable source file and derivation. Optionally assigns it to a card, respecting the board revision: on conflict the item stays in the library and the conflict is reported.",
+    description: "Register a completed media file you created in this episode's work/ directory as a library item (validated path inside work/, no symlinks, completed bytes, decodable image/video/audio). Records provenance, the editable source file and derivation. Card assignment requires complete current research delivered in this active request before composition. Optionally assigns it to a card, respecting the board revision: on conflict the item stays in the library and the conflict is reported.",
     inputSchema: { type: "object", additionalProperties: false, required: ["path"], properties: {
       path: { type: "string", description: "The finished file, e.g. work/title.png (relative to the episode directory) or absolute." },
       name: { type: "string", description: "Display name for the library item." },
@@ -125,7 +125,7 @@ export const TOOL_DEFINITIONS = Object.freeze([
   },
   {
     name: "reuse_project_item",
-    description: "Reuse an item from another episode or channel in this episode when the creator asks: registers it in this episode's library with origin provenance, deduplicated within this channel, without changing the source. A creator chat instruction may be cited in `direction` for provenance. Optionally assigns it to a card (revision-checked).",
+    description: "Reuse an item from another episode or channel in this episode when the creator asks: registers it in this episode's library with origin provenance, deduplicated within this channel, without changing the source. A creator chat instruction may be cited in `direction` for provenance. Card assignment requires complete current research delivered in this active request before composition. Optionally assigns it to a card (revision-checked).",
     inputSchema: { type: "object", additionalProperties: false, required: ["sourceEpisodeId", "sourceItemId"], properties: {
       sourceEpisodeId: { type: "string" }, sourceItemId: { type: "string" },
       sourceChannelId: { type: "string", description: "Optional check that the source episode is in this channel." },
@@ -201,7 +201,7 @@ export function assignToCard(store, episodeId, itemId, { cardId, expectedRevisio
 // scope: { requestId, conversationId, harness, model, channelId, episodeId, dataRoot, episodeDir, workDir, requestWorkDir }
 // (resolved by the app from the store path API). `store` is the app's open Store and
 // `library` its library service; storage/mutation rules stay in those services.
-export function createScopedTools(scope, { store, library = null, isShortcutMessage = defaultIsShortcutMessage, release = null } = {}) {
+export function createScopedTools(scope, { store, library = null, isShortcutMessage = defaultIsShortcutMessage, release = null, assertAuthoringContext = () => { throw new RuntimeError('RESEARCH_CONTEXT_REQUIRED', 'Read complete current research in an active request before assigning media to cards', { status: 409 }); } } = {}) {
   let served = TOOL_DEFINITIONS;
   const handlers = {
     async inspect_image(args = {}) {
@@ -232,6 +232,7 @@ export function createScopedTools(scope, { store, library = null, isShortcutMess
       return json(searchProject(store, scope, args));
     },
     async register_work_file(args = {}) {
+      if (args.cardId) assertAuthoringContext();
       const file = await resolveWorkFile(scope.workDir, args.path, { base: scope.episodeDir });
       if (args.category != null && !Object.hasOwn(KINDS_FOR_CATEGORY, args.category)) throw new RuntimeError("INVALID_CATEGORY", "category must be Graphics, B-roll or Narration");
       if (args.cardId != null && typeof args.cardId !== "string") throw new RuntimeError("INVALID_CARD", "cardId must be a string");
@@ -273,11 +274,13 @@ export function createScopedTools(scope, { store, library = null, isShortcutMess
       const item = store.attachLibraryItem(scope.episodeId, asset.id, { category, label: name, sourceKind: "file", provenance });
       const recorded = direction ? derived.filter((entry) => entry.reference && entry.episode.id === scope.episodeId)
         .map((entry) => recordDirection(store, scope, entry.item.id, direction).id) : [];
+      if (args.cardId) assertAuthoringContext(); // Recheck after asynchronous staging/import, immediately before the write.
       const card = assignToCard(store, scope.episodeId, item.id, args);
       return json({ registered: true, libraryItemId: item.id, assetId: asset.id, category, kind: asset.kind, sha256: asset.hash, deduplicated,
         width: asset.width, height: asset.height, duration: asset.duration, editableSource: provenance.editableSource, referenceDirections: recorded, ...card });
     },
     async reuse_project_item(args = {}) {
+      if (args.cardId) assertAuthoringContext();
       if (!library) throw new RuntimeError("UNAVAILABLE", "Project reuse is not available in this request", { status: 501 });
       const sourceItem = getItem(store, args.sourceEpisodeId, args.sourceItemId);
       const reference = isReferenceItem(store, args.sourceEpisodeId, sourceItem);
@@ -289,6 +292,7 @@ export function createScopedTools(scope, { store, library = null, isShortcutMess
       });
       // Each directed request records its own direction, even when the item was reused before.
       const recorded = reference && direction ? recordDirection(store, scope, result.item.id, direction, `Reused from ${label(originOf(store, args.sourceEpisodeId, sourceItem))}`) : null;
+      if (args.cardId) assertAuthoringContext(); // A research edit or Stop during copying cannot authorize assignment.
       const card = assignToCard(store, scope.episodeId, result.item.id, args);
       return json({ reused: true, libraryItemId: result.item.id, assetId: result.item.assetId, category: result.item.category, copiedBytes: result.copied,
         deduplicated: result.deduplicated, alreadyPresent: result.alreadyPresent, from: originOf(store, args.sourceEpisodeId, sourceItem), reference, referenceDirection: recorded?.id ?? null, ...card });

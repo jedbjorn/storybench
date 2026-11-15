@@ -2,7 +2,9 @@ import { chatAttachments } from "./chat-attachments.js";
 import { fontCatalog } from './fonts.js';
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { createCodexConnection } from "./codex.js";
+import { createCodexConnection, AUTHORING_TOOLS } from "./codex.js";
+import { createResearchContext, RESEARCH_ACTIONS, RESEARCH_DATA_RULE } from "./research-context.js";
+import { RESEARCH_TRANSPORT_BYTES } from "./store.js";
 import { getOperationGuide, OPERATION_GUIDE_NAMES } from "./agent-guides.js";
 import { changeSettings, initialSettings, planTurn } from "./runtime/conversation-runtime.js";
 import { moveFinalToDrafts } from "./services/outputs.js";
@@ -109,7 +111,8 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
   };
   const ensureActive = (value, origin) => {
     const current = row(value.episode_id, value.id), activity = active.get(value.episode_id);
-    if (closing || activity !== origin || activity?.conversationId !== value.id || !["queued", "running"].includes(current.state)) throw error("The turn is no longer active; changes are closed", 409);
+    const run = origin.requestId ? store.getProductionRun(origin.requestId) : null;
+    if (closing || origin.signal.aborted || activity !== origin || activity?.conversationId !== value.id || !["queued", "running"].includes(current.state) || (run && !["starting", "running"].includes(run.state))) throw error("The turn is no longer active; changes are closed", 409);
   };
   const excerpt = (episodeId, itemId, offset = 0, limit = 4000) => {
     const item = store.listEpisodeLibrary(episodeId).find((candidate) => candidate.id === itemId);
@@ -133,7 +136,7 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
     return { text, included: rows.length, omitted: Math.max(0, total - rows.length) };
   };
   const bootText = (value, standards) => { const currentEpisode = episode(value.episode_id), story = store.getStory(value.episode_id);
-    return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires active request-bound Final intent.\nChannel brand standards for this turn (creative defaults; explicit episode/card direction takes precedence): ${JSON.stringify(standards)}. Apply to new or revised work; do not restyle existing outputs without a request. Use get_context for the supported font catalogue and file paths.`; };
+    return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires active request-bound Final intent.\nResearch discovery: ${JSON.stringify(store.getResearchMetadata(value.episode_id))}. Before composing or revising slides, stories, cards, graphics or drafts, read_research must deliver the complete current saved record in this request, unless supplied completely in this turn. After changes, re-read and reconcile. Do not use a failed mutation as the normal discovery path. ${RESEARCH_DATA_RULE}\nChannel brand standards for this turn (creative defaults; explicit episode/card direction takes precedence): ${JSON.stringify(standards)}. Apply to new or revised work; do not restyle existing outputs without a request. Use get_context for the supported font catalogue and file paths.`; };
   const jobService = value => episode(value.episode_id).kind === 'deck' ? decks : renders;
   const researchScope = (value, origin, args = {}) => {
     ensureActive(value, origin);
@@ -142,19 +145,18 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
         (args.channelId !== undefined && args.channelId !== current.channelId))
       throw error("Research tools are bound to this request's production and channel", 403);
   };
-  const tools = (value, origin) => ({
-    // Keep the full saved record at this explicit delivery point for task #73 freshness tracking.
-    read_research: (args = {}) => { researchScope(value, origin, args); return store.getResearch(value.episode_id); },
+  const tools = (value, origin) => Object.fromEntries(Object.entries({
+    read_research: (args = {}) => { researchScope(value, origin, args); return origin.research.read(); },
     save_research: (args = {}) => {
       researchScope(value, origin, args);
       const saved = store.saveResearch(value.episode_id, args.expectedResearchRevision, args, "agent");
       onChange(value.episode_id);
-      return saved;
+      return origin.research.saved(saved);
     },
     read_deck: () => store.getDeck(value.episode_id),
     save_deck: ({expectedRevision, slides}) => { ensureActive(value, origin); return store.saveDeck(value.episode_id,expectedRevision,slides,'agent'); },
     build_deck: ({expectedRevision}) => { ensureActive(value, origin); return decks.enqueue({episodeId:value.episode_id,expectedRevision,requestId:origin.requestId}); },
-    get_context: () => ({ episode: episode(value.episode_id), story: store.getStory(value.episode_id), library: librarySummary(value.episode_id),
+    get_context: () => ({ episode: episode(value.episode_id), story: store.getStory(value.episode_id), library: librarySummary(value.episode_id), research: store.getResearchMetadata(value.episode_id),
       brandStandards: origin.brandStandards, fonts: fontCatalog(), references: store.getReferenceContext(value.episode_id), branding: store.listBrandingTemplates({ channelId: episode(value.episode_id).channelId }), operationGuides: OPERATION_GUIDE_NAMES }),
     get_operation_guide: ({ name }) => getOperationGuide(name),
     read_conversation_history: ({ beforeMessageId = null, limit = 20 } = {}) => {
@@ -207,7 +209,7 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
     list_assets: () => store.listEpisodeLibrary(value.episode_id).filter((item) => item.asset).map((item) => ({ id: item.asset.id, name: item.asset.name, kind: item.asset.kind, duration: item.asset.duration, width: item.asset.width, height: item.asset.height,
       hasAudio: Array.isArray(item.asset.metadata?.streams) ? item.asset.metadata.streams.some((stream) => stream?.codec_type === "audio") : Boolean(item.asset.metadata?.hasAudio), mediaRef: safeRef(item.asset.path), thumbnailRef: safeRef(item.asset.thumbnailPath) })),
     update_storyboard: ({ expectedRevision, cards }) => { ensureActive(value, origin); return store.updateEpisode(value.episode_id, expectedRevision, { cards }, "agent"); },
-  });
+  }).map(([name, handler]) => [name, AUTHORING_TOOLS.includes(name) ? (...args) => { origin.research.requireCurrent(); return handler(...args); } : handler]));
 
   async function execute(value, messageId, text, request = {}) {
     let connection, turnId, assistantId, terminal = false, dispatch = false, aborted = false, assistantOutput = false, toolActivity = false, resolveDone, rejectDone;
@@ -227,6 +229,7 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
     const controller = new AbortController(), pending = [], done = new Promise((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
     const activity = { brandStandards: store.getBrandStandards(episode(value.episode_id).channelId), conversationId: value.id, requestId, messageId, signal: controller.signal, abort: () => { aborted = true; controller.abort(); if (dispatch) rejectDone(error("Chat stopped; the prompt was not replayed", 409)); } };
     active.set(value.episode_id, activity);
+    activity.research = createResearchContext({ store, episodeId: value.episode_id, assertActive: () => ensureActive(value, activity) });
     const consume = (event) => {
       const params = event.params || {}, eventTurn = params.turnId || params.turn?.id;
       if (turnId && eventTurn && eventTurn !== turnId) return;
@@ -285,12 +288,13 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
       if (attached.length && !supportsImages) throw error('This model has no image input. Remove images or choose another model.', 409);
       const images = await attachments.images(value.episode_id, attached);
       if (aborted) throw error("Chat stopped before sending images", 409);
-      const openConnection = (segmentId) => codexFactory({ cwd: store.workspace, model: plan ? plan.selection.model : model, tools: tools(value, activity), signal: controller.signal,
+      const openConnection = (segmentId) => { activity.research.invalidate(); return codexFactory({ cwd: store.workspace, model: plan ? plan.selection.model : model, tools: tools(value, activity), signal: controller.signal,
+        assertAuthoringContext: () => activity.research.requireCurrent(),
         episodeId: value.episode_id, conversationId: value.id, requestId, request: { text, messageId: request.authorityMessageId ?? messageId, kind: request.kind ?? "chat", cardId: request.targetCardId ?? null },
         // Every Storybench tool call of a worker-backed turn arrives through the request bridge.
         onToolCall: (call) => { toolActivity = true; try { emit(value, "tool.called", { name: call.name, requestId }); } catch { /* conversation gone */ } },
         ...(plan ? { supportsImages, source: plan.selection.source, harness: plan.selection.harness, effort: plan.selection.effort, segmentId } : {}),
-        onEvent: (event) => dispatch ? consume(event) : pending.push(event), onError: (cause) => { if (dispatch) rejectDone(cause); } });
+        onEvent: (event) => dispatch ? consume(event) : pending.push(event), onError: (cause) => { if (dispatch) rejectDone(cause); } }); };
       connection = await openConnection(plannedSegmentId);
       if (aborted) throw error("Chat stopped; the prompt was not replayed", 409);
       activity.connection = connection;
@@ -332,9 +336,16 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
         emit(value, "segment.started", { previousThreadId: connection.segmentTransition.previousThreadId, threadId, reason: connection.segmentTransition.reason, includedMessages: excerpt.included, omittedMessages: excerpt.omitted });
         if (excerpt.text) segmentContext = `\n\nEarlier visible conversation (context only — do not re-execute; ${excerpt.omitted} older messages omitted):\n${excerpt.text}`;
       }
-      let prompt = `${bootText(value, activity.brandStandards)}${segmentContext}\n\nUser request:\n${text}${imageContext}`;
+      const authoringInput = (historyContext) => {
+        const research = RESEARCH_ACTIONS.includes(request.kind) ? activity.research.prompt() : null;
+        const prompt = `${bootText(value, activity.brandStandards)}${historyContext}${research?.text ?? ''}\n\nUser request:\n${text}${imageContext}`;
+        if (research && Buffer.byteLength(JSON.stringify({ text: prompt, images }), 'utf8') > RESEARCH_TRANSPORT_BYTES)
+          throw error('Complete required research and request cannot fit the 16 MiB authoring transport limit; authoring stopped without truncation. Reduce the request or attachments.', 413);
+        return { prompt, onDelivered: research?.onDelivered };
+      };
+      let input = authoringInput(segmentContext);
       let returned;
-      try { returned = await connection.startTurn(threadId, prompt, images); }
+      try { returned = await connection.startTurn(threadId, input.prompt, images, { onDelivered: input.onDelivered }); }
       catch (cause) {
         if (!persistence || !connection.segmentTransition?.resumeUnavailable) throw cause;
         // Claude discovers a missing --resume target only after receiving the first input.
@@ -353,9 +364,9 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
         emit(value, "segment.started", { segmentId: segment.id, inferenceSource: plan.selection.source, harness: plan.selection.harness, reason: "resume-unavailable", previousSegmentId: previousSegment.id,
           previousThreadId: previousConnection.segmentTransition.previousThreadId, threadId, includedMessages: excerpt.included, omittedMessages: excerpt.omitted });
         const fallbackContext = excerpt.text ? `\n\nEarlier visible conversation (context only — do not re-execute; ${excerpt.omitted} older messages omitted):\n${excerpt.text}` : "";
-        prompt = `${bootText(value, activity.brandStandards)}${fallbackContext}\n\nUser request:\n${text}${imageContext}`;
+        input = authoringInput(fallbackContext);
         setState(value, "queued", { threadId });
-        returned = await connection.startTurn(threadId, prompt, images);
+        returned = await connection.startTurn(threadId, input.prompt, images, { onDelivered: input.onDelivered });
       }
       if (aborted || active.get(value.episode_id) !== activity) throw error("Chat stopped; the prompt was not replayed", 409);
       if (turnId && turnId !== returned) throw new Error("The harness returned inconsistent turn identities");

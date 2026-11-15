@@ -52,7 +52,7 @@ export async function openWorkerRequest(options) {
 async function openHeldRequest({
   controlSocket, store, requestId, conversationId, harness, source = `${harness}-login`, segmentId, episodeId,
   bootContext = {}, templates, onToolCall = () => {}, wrapTools = (tools) => tools,
-  model = null, supportsImages = true, library = null, release = null, isShortcutMessage = defaultIsShortcutMessage,
+  model = null, supportsImages = true, library = null, release = null, isShortcutMessage = defaultIsShortcutMessage, assertAuthoringContext,
 }) {
   const kind = resolveKind(store.getEpisode(episodeId));
   const loaded = templates ?? await loadTemplates(DEFAULT_TEMPLATES, kind);
@@ -73,7 +73,7 @@ async function openHeldRequest({
     dataRoot, episodeDir: location.directory, workDir: store.episodeWorkDirectory(episodeId), requestWorkDir,
   };
   const effectiveRelease = release ?? releaseFromEnv();
-  const scoped = createScopedTools(scope, { store, library: library ?? createLibraryService({ workspace: dataRoot, store }), release: effectiveRelease, isShortcutMessage });
+  const scoped = createScopedTools(scope, { store, library: library ?? createLibraryService({ workspace: dataRoot, store }), release: effectiveRelease, isShortcutMessage, assertAuthoringContext });
   const tools = selectKindTools(wrapTools(scoped), kind, { supportsImages });
   scoped.setServedDefinitions(tools.definitions);
   // Render before the worker starts so the harness never sees a half-written boot. The boot

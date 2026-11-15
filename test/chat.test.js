@@ -1,3 +1,4 @@
+import { TOOL_DELIVERED } from '../src/tool-delivery.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -38,6 +39,7 @@ test('chat persists deltas, resumes exact thread, and mutates through revisioned
         if (turn === 1) {
           const project = await options.tools.get_project({});
           projectedAssets = await options.tools.list_assets({});
+          const research = options.tools.read_research(); JSON.stringify(research); research[TOOL_DELIVERED]();
           await options.tools.update_storyboard({ expectedRevision: project.revision, cards: [{ title: 'Opening', purpose: 'Hook', missing: 'B-roll' }] });
         }
         options.onEvent({ method: 'item/agentMessage/delta', params: { threadId, turnId, delta: 'the story.' } });
@@ -234,6 +236,7 @@ test('typed Final declaration binds its originating message and create_final for
   assert.deepEqual({ kind: declared.kind, intent: declared.finalIntent, source: declared.originatingMessageId }, { kind: 'final', intent: 'active', source: options.request.messageId });
   assert.equal(options.tools.request_final, undefined);
   assert.equal(options.tools.mint_final_grant, undefined);
+  const research = options.tools.read_research(); JSON.stringify(research); research[TOOL_DELIVERED]();
   assert.deepEqual(options.tools.create_final({ expectedRenderRevision: 'render_exact' }), { id: 'job_final' });
   assert.deepEqual(enqueued, { episodeId: episode.id, outputClass: 'final', expectedRenderRevision: 'render_exact', conversationId: conversation.id, requestId: options.requestId });
   await chat.interrupt(episode.id, conversation.id); await until(() => chat.get(episode.id, conversation.id).state === 'interrupted');

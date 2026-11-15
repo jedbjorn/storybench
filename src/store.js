@@ -529,12 +529,17 @@ export class Store {
   // Both production kinds share this shape: { episodeId, researchRevision, summary, links,
   // updatedAt, actor }. Empty legacy/new records start at revision 1 with actor null.
   // Pending-deletion owners are unavailable (410); removed/missing productions return 404.
-  getResearch(episodeId) {
+  getResearchMetadata(episodeId) {
     const production = this.db.prepare("SELECT channel_id FROM episodes WHERE id=?").get(episodeId);
     if (!production) throw new StoreError("Production not found", 404);
     this.requireChannel(production.channel_id);
-    const row = this.db.prepare("SELECT * FROM production_research WHERE episode_id=?").get(episodeId);
+    const row = this.db.prepare("SELECT revision FROM production_research WHERE episode_id=?").get(episodeId);
     if (!row) throw new StoreError("Research record not found", 500);
+    return { episodeId, available: true, researchRevision: row.revision, readOperation: "read_research" };
+  }
+  getResearch(episodeId) {
+    this.getResearchMetadata(episodeId);
+    const row = this.db.prepare("SELECT * FROM production_research WHERE episode_id=?").get(episodeId);
     return researchRow(row);
   }
   // Complete { summary, links } replacement. A 409 carries `current` for reconciliation.

@@ -7,6 +7,7 @@ import { STORYBENCH_TOOLS } from "../codex.js";
 import { controlRequest } from "./channel.js";
 import { openWorkerRequest } from "./request.js";
 import { segmentForConversation } from "./session-migrate.js";
+import { TOOL_DELIVERED, withToolDelivery } from "../tool-delivery.js";
 
 // Until #26 adds per-harness segments, a conversation's Codex segment is the conversation.
 export const defaultSegmentFor = segmentForConversation;
@@ -29,6 +30,7 @@ export function defaultBootContextFor(store, { episodeId, conversationId = null,
     channel: { id: location.channelId, name: oneLine(channel?.name) || "unknown", direction: oneLine(channel?.direction, 1000) || "unknown (no channel direction is recorded)" },
     episode: { id: episodeId, title: oneLine(episode?.title) || "unknown", notes: oneLine(episode?.notes, 2000) || "none recorded", state: episode?.state ?? "unknown", revision: String(episode?.revision ?? NOT_REPORTED) },
     story: { revision: storyRevision },
+    research: store.getResearchMetadata?.(episodeId) ?? { episodeId, available: false, researchRevision: NOT_REPORTED, readOperation: 'read_research' },
     request: { text: requestText, messageId: request.messageId != null ? String(request.messageId) : NOT_REPORTED, kind: request.kind ?? "chat", cardId: request.cardId ?? "none" },
     conversation: { id: conversationId ?? NOT_REPORTED, name: oneLine(conversation?.name) || NOT_REPORTED },
     paths: {
@@ -60,7 +62,8 @@ export function mergeTools(runtimeTools, chatHandlers = {}) {
       if (runtimeNames.has(name)) return runtimeTools.call(name, args);
       const handler = chatHandlers[name];
       if (typeof handler !== "function") throw Object.assign(new Error(`Unknown Storybench tool: ${String(name)}`), { code: "UNKNOWN_TOOL" });
-      return { text: JSON.stringify(await handler(args ?? {})) };
+      const result = await handler(args ?? {});
+      return withToolDelivery({ text: JSON.stringify(result) }, result?.[TOOL_DELIVERED]);
     },
   };
 }
@@ -70,13 +73,13 @@ export function mergeTools(runtimeTools, chatHandlers = {}) {
 // request-scoped worker whose session directory is that segment's. Without a segment
 // the conversation ID is the segment.
 export function createWorkerHarnessFactory({ store, controlSocket, templates, segmentFor = defaultSegmentFor, bootContextFor = defaultBootContextFor, onRequest = () => {} }) {
-  return async function workerHarnessFactory({ episodeId, conversationId, requestId, harness = "codex", source = `${harness}-login`, model, supportsImages = true, effort = null, segmentId = null, request: turnRequest = {}, tools, onEvent, onError, onToolCall = () => {} }) {
+  return async function workerHarnessFactory({ episodeId, conversationId, requestId, harness = "codex", source = `${harness}-login`, model, supportsImages = true, effort = null, segmentId = null, request: turnRequest = {}, tools, onEvent, onError, assertAuthoringContext, onToolCall = () => {} }) {
     if (!episodeId || !conversationId || !requestId) throw new Error("Worker-backed turns need episode, conversation and request identity");
     if (!["codex", "claude", "opencode"].includes(harness)) throw new Error(`Unsupported harness: ${harness}`);
     const request = await openWorkerRequest({
       controlSocket, store, requestId, conversationId, harness, source, segmentId: segmentId ?? segmentFor(conversationId), episodeId, templates,
       bootContext: bootContextFor(store, { episodeId, conversationId, model, effort, harness, request: turnRequest }), model, supportsImages,
-      wrapTools: (runtimeTools) => mergeTools(runtimeTools, tools), onToolCall,
+      wrapTools: (runtimeTools) => mergeTools(runtimeTools, tools), onToolCall, assertAuthoringContext,
     });
     onRequest({ requestId, episodeId, conversationId, harness, containerId: request.started.containerId, render: request.render });
     let connection;
