@@ -34,4 +34,5 @@ jobs:
             printf '%s image %s\n' "$role" "$image"
             docker run --rm --network none "$image" node /opt/storybench/app/src/runtime/image-check.js probe "$role"
             docker run --rm --network none "$image" node /opt/storybench/app/src/runtime/image-check.js smoke
+            docker run --rm --network none "$image" node /opt/storybench/app/src/runtime/svg-check.js "$role"
           done

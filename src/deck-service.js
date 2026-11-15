@@ -4,6 +4,8 @@ import { mkdir, open, realpath, writeFile, rename, rm } from 'node:fs/promises';
 import { buildDeck } from './deck-template/build.js';
 import { HeavyJobQueue } from './job-runner.js';
 import { StoreError } from './store.js';
+import { createHash } from 'node:crypto';
+import { looksLikeSvg, parseSvg } from './svg.js';
 
 // Uncompressed standard ZIP: portable, deterministic and no shell/archive dependency.
 export function zipBundle(files) {
@@ -39,9 +41,9 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
         let staging, published;
         try {
           update(job,{state:'running',progress:0.1}); signal.throwIfAborted();
-          const assets = {}, root = await realpath(store.workspace);
+          const assets = {}, provenance = {}, root = await realpath(store.workspace);
           async function media(itemId, slideId) {
-            const asset = snapshot.library.find(i => i.id === itemId)?.asset;
+            const item = snapshot.library.find(i => i.id === itemId), asset = item?.asset;
             if (!asset || !['image','video'].includes(asset.kind)) throw new Error(`Slide ${slideId}: missing image/video ${itemId}`);
             const source = path.resolve(root,asset.path);
             let actual;
@@ -49,11 +51,20 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
             if (!source.startsWith(root + path.sep) || actual !== source) throw new Error(`Slide ${slideId}: unsafe media path`);
             const handle = await open(source,constants.O_RDONLY | constants.O_NOFOLLOW);
             let bytes; try { if (!(await handle.stat()).isFile()) throw new Error('Media is not a file'); bytes = await handle.readFile(); } finally { await handle.close(); }
-            const extension = asset.kind === 'video'
+            if (createHash('sha256').update(bytes).digest('hex') !== asset.hash) throw new Error(`Slide ${slideId}: media ${itemId} differs from its registered source`);
+            let vector;
+            if (looksLikeSvg(bytes)) {
+              try { vector = parseSvg(bytes); } catch (error) { throw new Error(`Slide ${slideId}, asset ${itemId}: ${error.message}`); }
+            }
+            const extension = vector && asset.kind === 'image' ? '.svg' : asset.kind === 'video'
               ? (bytes.subarray(4,8).toString() === 'ftyp' ? '.mp4' : bytes.subarray(0,4).toString('hex') === '1a45dfa3' ? '.webm' : null)
               : (bytes.subarray(0,8).toString('hex') === '89504e470d0a1a0a' ? '.png' : bytes.subarray(0,3).toString('hex') === 'ffd8ff' ? '.jpg' : bytes.subarray(0,3).toString() === 'GIF' ? '.gif' : bytes.subarray(8,12).toString() === 'WEBP' ? '.webp' : null);
-            if (!extension) throw new Error(`Slide ${slideId}: unsupported media format; use PNG/JPEG/GIF/WebP or MP4/WebM`);
+            if (!extension) throw new Error(`Slide ${slideId}: unsupported media format; use supported SVG, PNG/JPEG/GIF/WebP or MP4/WebM`);
             const src = `assets/media_${asset.id.replace(/[^a-zA-Z0-9_-]/g,'_')}${extension}`;
+            // Bundle provenance uses durable identities, never host paths or conversation content.
+            provenance[itemId] = { itemId, assetId: asset.id, channelId: asset.channelId, sourceSha256: asset.hash, file: src,
+              ...(vector ? { svgProfile: vector.profile, editableSource: src } : {}),
+              ...(item.provenance?.reusedFrom ? { reusedFrom: { itemId: item.provenance.reusedFrom.itemId, assetId: item.provenance.reusedFrom.assetId, channelId: item.provenance.reusedFrom.channelId } } : {}) };
             assets[src] = bytes; return {type:asset.kind,src,alt:asset.name || 'Deck media'};
           }
           const slides = [];
@@ -65,7 +76,7 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
             slides.push(slide);
           }
           const files = buildDeck({title:snapshot.title,slides,fonts:snapshot.fonts},{assets});
-          const manifest = {sourceRevision:deck.revision,productionId:episodeId,fonts:snapshot.fonts,files:[...files.keys(),'manifest.json']};
+          const manifest = {sourceRevision:deck.revision,productionId:episodeId,fonts:snapshot.fonts,assets:Object.values(provenance),files:[...files.keys(),'manifest.json']};
           files.set('manifest.json',JSON.stringify(manifest,null,2));
           const parent = path.join(store.episodeDirectory(episodeId),'outputs','decks');
           await mkdir(parent,{recursive:true});
