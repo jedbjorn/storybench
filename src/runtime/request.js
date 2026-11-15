@@ -121,9 +121,13 @@ async function openHeldRequest({
     openCodeConnection(options) { return new OpenCodeConnection({ ...options, spawnSession: (header) => connectHarness(started.harnessSocket, header) }); },
     status: () => controlRequest(controlSocket, { op: "worker.status", requestId }),
     async stop() {
-      await scoped.close();
-      await bridge.close().catch(() => {});
-      return controlRequest(controlSocket, { op: "worker.stop", requestId });
+      let result;
+      try { await scoped.close(); }
+      finally {
+        await bridge.close().catch(() => {});
+        result = await controlRequest(controlSocket, { op: "worker.stop", requestId });
+      }
+      return result;
     },
   };
 }
