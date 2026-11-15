@@ -11,7 +11,7 @@ import { Store, SCHEMA_VERSION } from "../src/store.js";
 import { createApp } from "../src/server.js";
 import { createLibraryService } from "../src/library.js";
 import { adoptWorkspace, initDataRoot, inspectDataRoot, openDataRoot } from "../src/services/data-root.js";
-import { createChannel, getDefaultChannel, listChannels, renameChannel, useChannel } from "../src/services/channels.js";
+import { createChannel, getDefaultChannel, listChannels, openChannel, renameChannel, useChannel } from "../src/services/channels.js";
 
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 function tempDir(t, prefix = "storybench-channels-") {
@@ -52,12 +52,30 @@ test("channel records: first is default, names are unique case-insensitively, re
   assert.equal(useChannel(root, "travel").id, travel.id);
   const listed = listChannels(root);
   assert.equal(listed.defaultChannelId, travel.id);
-  assert.deepEqual(listed.channels.map((channel) => channel.name), ["Cooking", "Travel"]);
+  assert.deepEqual(listed.channels.map((channel) => channel.name), ["Travel", "Cooking"]);
   const renamed = renameChannel(root, cooking.id, "Kitchen");
   assert.equal(renamed.id, cooking.id);
+  assert.equal(renamed.revision, cooking.revision + 1);
   assert.ok(existsSync(path.join(root, "channels", cooking.id, "media")), "rename keeps the ID-named directory");
   assert.throws(() => useChannel(root, "Cooking"), (error) => error.statusCode === 404);
   assert.throws(() => renameChannel(root, travel.id, "kitchen"), (error) => error.statusCode === 409);
+});
+
+test("channel opens persist newest-first order without changing the installation default", (t) => {
+  const root = path.join(tempDir(t), "root");
+  initDataRoot(root);
+  const alpha = createChannel(root, "Alpha"), beta = createChannel(root, "Beta"), gamma = createChannel(root, "Gamma");
+  assert.deepEqual(listChannels(root).channels.map(({ id }) => id), [gamma.id, beta.id, alpha.id]);
+  openChannel(root, alpha.id);
+  openChannel(root, beta.id);
+  openChannel(root, alpha.id);
+  assert.deepEqual(listChannels(root).channels.map(({ id }) => id), [alpha.id, beta.id, gamma.id]);
+  assert.equal(getDefaultChannel(root).id, alpha.id);
+  assert.throws(() => renameChannel(root, alpha.id, "Stale", alpha.revision - 1), (error) => error.statusCode === 409);
+  const openedSeq = listChannels(root).channels[0].openedSeq;
+  const renamed = renameChannel(root, alpha.id, "New Alpha", alpha.revision);
+  assert.equal(renamed.openedSeq, openedSeq);
+  assert.equal(listChannels(root).channels[0].id, alpha.id);
 });
 
 test("two channels keep separate libraries for same-named, same-byte media and dedup only within a channel", async (t) => {
@@ -149,6 +167,14 @@ test("wrong-channel and mismatched IDs fail at shared operations and in the data
   assert.equal((await fetch(`${base}/api/state?channel=channel_missing`)).status, 404);
   const created = await fetch(`${base}/api/channels/${b.id}/episodes`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Via route" }) });
   assert.equal((await created.json()).channelId, b.id);
+  const opened = await fetch(`${base}/api/channels/${b.id}/open`, { method: "POST" });
+  assert.equal(opened.status, 200);
+  assert.equal((await opened.json()).openedSeq, 1);
+  const rename = (expectedRevision) => fetch(`${base}/api/channels/${b.id}`, { method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "Renamed Beta", expectedRevision }) });
+  assert.equal((await rename(b.revision - 1)).status, 409);
+  assert.equal((await rename(b.revision)).status, 200);
+  assert.equal((await rename(b.revision)).status, 409);
   const ambiguous = await fetch(`${base}/api/episodes`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   assert.equal(ambiguous.status, 400);
 });

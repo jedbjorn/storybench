@@ -17,7 +17,7 @@ import { createLibraryService } from "./library.js";
 import { renderGraphic, validateGraphicRecipe } from "./graphics.js";
 import { createRenderService } from "./render-service.js";
 import { openDataRoot } from "./services/data-root.js";
-import { createChannel, listChannels, renameChannel, useChannel } from "./services/channels.js";
+import { createChannel, listChannels, openChannel, renameChannel, useChannel } from "./services/channels.js";
 import { deleteDraftOutputs, listDraftCleanup, moveFinalToDrafts } from "./services/outputs.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -243,7 +243,13 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         if (parts[2] === "default" && parts.length === 3 && req.method === "GET") return send(res, 200, { channel: store.getDefaultChannel() });
         if (parts[2] === "default" && parts.length === 3 && req.method === "PUT") return send(res, 200, useChannel(store, (await jsonBody(req)).channel));
         if (parts[2] && parts.length === 3 && req.method === "GET") return send(res, 200, store.requireChannel(parts[2]));
-        if (parts[2] && parts.length === 3 && req.method === "PUT") return send(res, 200, renameChannel(store, store.requireChannel(parts[2]).id, (await jsonBody(req)).name));
+        if (parts[2] && parts.length === 3 && req.method === "PUT") {
+          const body = await jsonBody(req);
+          if (!Number.isInteger(body.expectedRevision)) throw new StoreError("expectedRevision is required to rename a channel");
+          return send(res, 200, renameChannel(store, store.requireChannel(parts[2]).id, body.name, body.expectedRevision));
+        }
+        if (parts[2] && parts[3] === "open" && parts.length === 4 && req.method === "POST")
+          return send(res, 200, openChannel(store, parts[2]));
         if (parts[2] && parts[3] === "episodes" && parts.length === 4 && req.method === "GET")
           return send(res, 200, store.listEpisodes({ channelId: store.requireChannel(parts[2]).id }));
         if (parts[2] && parts[3] === "episodes" && parts.length === 4 && req.method === "POST") {

@@ -12,6 +12,7 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -26,7 +27,7 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 export const DEFAULT_CHANNEL_NAME = "Main";
 // IDs become directory names, so they must be single safe path segments.
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
@@ -400,6 +401,7 @@ export class Store {
     if (version < 12) this.migrateV12();
     if (version < 13) this.migrateV13();
     if (version < 14) this.migrateV14();
+    if (version < 15) this.migrateV15();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -418,6 +420,18 @@ export class Store {
       this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(14,?)").run(now());
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+  migrateV15() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (!this.columns("channels").has("opened_seq")) this.db.exec("ALTER TABLE channels ADD COLUMN opened_seq INTEGER");
+      if (!this.columns("channels").has("revision")) this.db.exec("ALTER TABLE channels ADD COLUMN revision INTEGER NOT NULL DEFAULT 1");
+      this.db.exec(`CREATE TABLE IF NOT EXISTS channel_open_clock(singleton INTEGER PRIMARY KEY CHECK(singleton=1), value INTEGER NOT NULL);
+        INSERT OR IGNORE INTO channel_open_clock(singleton,value) VALUES(1,0);
+        PRAGMA user_version=15;`);
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(15,?)").run(now());
+      this.db.exec("COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
   requireProductionKind(episodeId, kind) {
     const production = this.getEpisode(episodeId);
@@ -1032,11 +1046,12 @@ export class Store {
       schemaVersion: Number(this.db.prepare("PRAGMA user_version").get().user_version) };
   }
   channelRow(row, defaultId = this.dataRootIdentity()?.defaultChannelId) {
-    return row && { id: row.id, name: row.name, isDefault: row.id === defaultId, createdAt: row.created_at, updatedAt: row.updated_at };
+    return row && { id: row.id, name: row.name, isDefault: row.id === defaultId, createdAt: row.created_at,
+      updatedAt: row.updated_at, openedSeq: row.opened_seq, revision: row.revision };
   }
   listChannels() {
     const defaultId = this.dataRootIdentity()?.defaultChannelId;
-    return this.db.prepare("SELECT * FROM channels ORDER BY created_at,id").all().map((row) => this.channelRow(row, defaultId));
+    return this.db.prepare("SELECT * FROM channels ORDER BY opened_seq IS NULL,opened_seq DESC,created_at DESC,id").all().map((row) => this.channelRow(row, defaultId));
   }
   getChannel(channelId) {
     return this.channelRow(this.db.prepare("SELECT * FROM channels WHERE id=?").get(String(channelId ?? "")));
@@ -1062,26 +1077,44 @@ export class Store {
     try {
       if (this.db.prepare("SELECT 1 FROM channels WHERE name_key=?").get(key))
         throw new StoreError(`A channel named "${displayName}" already exists`, 409);
+      this.ensureChannelDirectories(channelId);
       this.db.prepare("INSERT INTO channels(id,name,name_key,created_at,updated_at) VALUES(?,?,?,?,?)").run(channelId, displayName, key, stamp, stamp);
       // The first channel becomes the default navigation target.
       this.db.prepare("UPDATE data_root SET default_channel_id=?,updated_at=? WHERE singleton=1 AND default_channel_id IS NULL").run(channelId, stamp);
       this.db.exec("COMMIT");
-    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
-    this.ensureChannelDirectories(channelId);
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      rmSync(this.channelDirectory(channelId), { recursive: true, force: true });
+      throw error;
+    }
     return this.getChannel(channelId);
   }
-  renameChannel(channelId, name) {
-    this.requireChannel(channelId);
+  renameChannel(channelId, name, expectedRevision = null) {
+    const current = this.requireChannel(channelId);
+    if (expectedRevision !== null && expectedRevision !== current.revision)
+      throw new StoreError("Channel changed in another view. Reload before renaming.", 409, { current });
     const displayName = normalizeChannelName(name);
     const key = channelNameKey(displayName);
     this.db.exec("BEGIN IMMEDIATE");
     try {
       if (this.db.prepare("SELECT 1 FROM channels WHERE name_key=? AND id<>?").get(key, channelId))
         throw new StoreError(`A channel named "${displayName}" already exists`, 409);
-      this.db.prepare("UPDATE channels SET name=?,name_key=?,updated_at=? WHERE id=?").run(displayName, key, now(), channelId);
+      const changed = this.db.prepare("UPDATE channels SET name=?,name_key=?,updated_at=?,revision=revision+1 WHERE id=? AND revision=?")
+        .run(displayName, key, now(), channelId, current.revision);
+      if (!changed.changes) throw new StoreError("Channel changed in another view. Reload before renaming.", 409);
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
     return this.getChannel(channelId);
+  }
+  openChannel(channelId) {
+    this.requireChannel(channelId);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const seq = this.db.prepare("UPDATE channel_open_clock SET value=value+1 WHERE singleton=1 RETURNING value").get().value;
+      this.db.prepare("UPDATE channels SET opened_seq=? WHERE id=?").run(seq, channelId);
+      this.db.exec("COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+    return this.requireChannel(channelId);
   }
   getDefaultChannel() {
     const defaultId = this.dataRootIdentity()?.defaultChannelId;
