@@ -60,8 +60,9 @@ test('deck workspace creates, edits, reopens and keeps video controls separate',
   }
   for (const width of [600, 390]) {
     await page.setViewportSize({ width, height: 1000 });
-    assert.ok((await page.locator('.workspace').boundingBox()).width >= width - 16, 'Deck navigation does not squeeze slides');
-    assert.ok((await page.locator('.deck-slide > label > [data-slide-field="body"]').boundingBox()).width >= width * .75, 'Slide text has room to edit');
+    const availableWidth = width - (await page.locator('#episodeRailToggle').boundingBox()).width;
+    assert.ok((await page.locator('.workspace').boundingBox()).width >= availableWidth - 16, 'Deck workspace uses the available width beside the rail');
+    assert.ok((await page.locator('.deck-slide > label > [data-slide-field="body"]').boundingBox()).width >= availableWidth * .75, 'Slide text has room to edit');
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     if (process.env.STORYBENCH_DECK_EVIDENCE) await page.screenshot({ path: path.join(process.env.STORYBENCH_DECK_EVIDENCE, `ui-polish-r2-synthetic-deck-${width}.png`), fullPage: true });
   }
