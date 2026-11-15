@@ -13,3 +13,7 @@
 h1,h2{font-family:var(--font-accent,Manrope),Arial,sans-serif}.slide header,.caption,.gallery figcaption{font-family:var(--font-alternate,Manrope),Arial,sans-serif}
 
 .layout-text-media .stage-nav{grid-column:1/-1}[data-vector-step][data-pending="true"]{opacity:0;visibility:hidden}
+
+/* Reserve scroll space beneath the fixed controls so the last reveal is clickable. */
+#presentation{padding-bottom:var(--footer)}
+@media(max-width:900px),print{#presentation{padding-bottom:0}}

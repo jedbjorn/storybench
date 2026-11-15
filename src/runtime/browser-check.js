@@ -17,6 +17,7 @@ import { selectKindTools } from './kinds.js';
 import { startBridge } from './bridge.js';
 import { runChecked } from './image-check.js';
 import { BROWSER_IDENTITY } from '../deck-qa.js';
+import { evaluateQa } from '../deck-qa-report.js';
 
 export async function browserFixture(root) {
   const store=new Store(root),episode=store.createEpisode({kind:'deck',title:'Packaged browser proof'});
@@ -90,11 +91,27 @@ export async function smokeBrowser() {
         await act({pageId:'presenter-1',action:'select',selector:'#slide-select',value:'1'});
         await act({action:'wait',milliseconds:700});
         let state=(await inspect({})).data.screenshots[0].state;assert.equal(state.slideId,'stages');assert.equal(state.visibleGroups.length,3);
+        const report=async()=>(await client.call('report_deck_qa',{sessionId,summary:'Scripted control-operation regression',reviews:[],changesMade:[]})).data;
+        // Prior harnesses leave valid closed batches. Isolate the negative proof
+        // to this harness's actual persisted actions, not the aggregate report.
+        const currentEvidence=async()=>{
+          const record=JSON.parse(await readFile(path.join(root,opened.artifactRoot,'session.json'),'utf8'));
+          return evaluateQa(fixture.job,[record],{sessionId,requestId:fixture.scope(harness).requestId});
+        };
+        await act({action:'wait',milliseconds:0,selector:'[data-stage="0"]'});
+        await act({pageId:'presenter-1',action:'wait',milliseconds:0,selector:'#stage-select'});
+        assert.ok((await currentEvidence()).missing.includes('stages: manual stage selection'),'no-op selectors cannot prove stage operation');
         await act({pageId:'presenter-1',action:'select',selector:'#stage-select',value:'0'});
+        assert.ok(!(await report()).missing.includes('stages: manual stage selection'),'real Presenter selection supplies evidence');
+        assert.ok(!(await currentEvidence()).missing.includes('stages: manual stage selection'));
         await act({action:'wait',milliseconds:300});
         state=(await inspect({})).data.screenshots[0].state;assert.deepEqual(state.stage,['0']);assert.equal(state.visibleGroups.length,1);
         await act({pageId:'presenter-1',action:'click',selector:'[data-command="replay"]'});
         await act({action:'wait',milliseconds:700});assert.equal((await inspect({})).data.screenshots[0].state.visibleGroups.length,3);
+        // Regression for fixed-footer occlusion: a real audience click must work.
+        await act({action:'click',selector:'#stages [data-command="replay"]'});
+        await act({action:'wait',milliseconds:700});
+        assert.equal((await inspect({})).data.screenshots[0].state.visibleGroups.length,3);
         // The first MP4 stays hidden at zero while the same asset plays on another slide.
         await act({pageId:'presenter-1',action:'select',selector:'#slide-select',value:'4'});
         await act({action:'wait',milliseconds:200});
@@ -116,14 +133,29 @@ export async function smokeBrowser() {
         assert.equal(resumed.results.media.status,'pass',`${harness} resumed duplicate: ${JSON.stringify(resumed.results)}`);
         assert.equal(resumed.results.media.details[0].paused,false);
         assert.ok(resumed.results.media.details[0].time>pausedVideo.time);
+        // Presenter opens at 1000x800; per-state QA needs the matching viewport.
+        await act({pageId:'presenter-1',action:'resize',viewport:{width:1280,height:720}});
         for(const i of [0,1]) {
           await act({pageId:'presenter-1',action:'select',selector:'#slide-select',value:String(i+2)});
           await act({action:'wait',milliseconds:200});
+          const videoShot=(await inspect({})).data.screenshots[0];
+          await client.call('report_deck_qa',{sessionId,summary:'Scripted media-control evidence regression',changesMade:[],
+            reviews:[{artifactId:videoShot.artifactId,assessment:'Video image received through native MCP transport.',findings:[]}]});
+          await act({pageId:'presenter-1',action:'wait',milliseconds:0,selector:'[data-command="video-restart"]'});
+          assert.ok((await currentEvidence()).missing.some(m=>m.startsWith(`video-${i}: presenter media control`)),
+            'a no-op with the media selector cannot satisfy the control requirement');
           await act({pageId:'presenter-1',action:'click',selector:'[data-command="video-restart"]'});
           await act({action:'wait',milliseconds:100});
           const playback=await check({checks:['media']});assert.equal(playback.results.media.status,'pass',`${harness} codec ${i}: ${JSON.stringify(playback.results)}`);
+          const missingMedia=(await currentEvidence()).missing.filter(m=>m.startsWith(`video-${i}: presenter media control`) || m.startsWith(`video-${i}: advancing media`));
+          assert.deepEqual(missingMedia,[], 'real Presenter restart plus advancing audience playback satisfies both media requirements');
         }
-        await act({action:'key',key:'End'});await act({action:'click',selector:'.slide:not([hidden]) [data-gallery="1"]'});
+        await act({action:'key',key:'End'});
+        await act({action:'wait',milliseconds:0,selector:'[data-gallery="1"]'});
+        assert.ok((await currentEvidence()).missing.includes('gallery: gallery navigation'),'no-op selector cannot prove gallery operation');
+        await act({action:'click',selector:'.slide:not([hidden]) [data-gallery="1"]'});
+        assert.ok(!(await report()).missing.includes('gallery: gallery navigation'),'real gallery click supplies evidence');
+        assert.ok(!(await currentEvidence()).missing.includes('gallery: gallery navigation'));
         state=(await inspect({})).data.screenshots[0].state;assert.deepEqual(state.gallery,['1']);
         const sheet=await inspect({slideIds:['opening','stages','gallery']});assert.ok(sheet.data.contactSheet);assert.equal(sheet.data.screenshots.length,3);
         await act({action:'resize',viewport:{width:640,height:480}});assert.equal((await inspect({clip:{x:0,y:0,width:320,height:240}})).data.screenshots[0].state.viewport.width,640);

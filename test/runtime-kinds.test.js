@@ -165,3 +165,33 @@ test('request resolves saved kind before touching files, ignores selector kind, 
   assert.equal(await readFile(path.join(dir, 'AGENTS.md'), 'utf8'), 'active instructions');
   assert.equal(activeRenderHolder(dir), null);
 });
+
+test('create and edit deck turns render the mandatory correction loop on all harnesses and refresh existing context', async t => {
+  const templates = await loadTemplates(undefined, 'deck');
+  const { DECK_QA_DEFINITIONS } = await import('../src/deck-qa-tools.js');
+  const definitions = [...selectKindTools(all(), 'deck').definitions, ...DECK_QA_DEFINITIONS];
+  const old = { ...templates, boot: 'Old deck instructions', skills: [] };
+  for (const harness of ['codex','claude','opencode']) for (const editing of [false,true]) {
+    const episodeDir = await temp(t);
+    const store = { workspace:episodeDir, episodeLocation:()=>({directory:episodeDir,channelId:'channel-one',legacy:true}),
+      getEpisode:()=>({title:editing?'Existing deck':'New deck',revision:editing?8:1}), episodeOutputDirectory:()=>path.join(episodeDir,'outputs/drafts') };
+    const context = defaultBootContextFor(store,{episodeId:'e',harness})({served:definitions.map(d=>d.name)});
+    context.paths.episode=episodeDir;context.paths.work=path.join(episodeDir,'work');
+    const options={episodeDir,segmentId:`${harness}-${editing}`,version:contextFingerprint('deck',old,definitions)};
+    const fake=()=>({startThread:async()=> 'fresh',resumeThread:async()=>{throw new Error('must not resume stale context');}});
+    await (await bindInstructionContext(fake(),options)).startThread();
+    await renderEpisodeBoot({episodeDir,context,templates,kind:'deck'});
+    const connection=await bindInstructionContext(fake(),{...options,version:contextFingerprint('deck',templates,definitions)});
+    await connection.resumeThread('fresh');assert.equal(connection.segmentTransition.reason,'instruction-context-changed');
+    for (const file of ['AGENTS.md','CLAUDE.md']) {
+      const body=await readFile(path.join(episodeDir,file),'utf8');
+      assert.match(body,/When creating or editing a deck, build the saved revision and live-drive it in the browser/);
+      assert.match(body,/fix issues, rebuild and recheck/);assert.match(body,/report QA incomplete/);
+      assert.match(body,/report_deck_qa/);assert.match(body,/get_deck_qa_report/);
+    }
+    const root={codex:'.agents',claude:'.claude',opencode:'.opencode'}[harness];
+    const skill=await readFile(path.join(episodeDir,root,'skills/storybench-compose-deck/SKILL.md'),'utf8');
+    for (const operation of ['open_deck_qa','act_deck_qa','inspect_deck_qa','check_deck_qa','report_deck_qa','save_deck','build_deck','get_deck_qa_report']) assert.ok(skill.includes(operation));
+    assert.match(skill,/Creation:/);assert.match(skill,/Editing:/);assert.match(skill,/adjacent transitions/);
+  }
+});

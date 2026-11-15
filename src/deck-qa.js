@@ -3,12 +3,13 @@
 import path from 'node:path';
 import os from 'node:os';
 import { mkdtemp, mkdir, readFile, writeFile, rename, rm, realpath } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { chromium } from 'playwright-core';
 import { Resvg } from '@resvg/resvg-js';
 import { extractBuild } from './deck-qa-bundle.js';
+import { getQaReport, recordReview } from './deck-qa-report.js';
 import { withToolDelivery } from './tool-delivery.js';
 const require = createRequire(import.meta.url);
 export const QA_LIMITS = Object.freeze({ sessions: 2, lifetimeMs: 600_000, operationMs: 20_000, screenshots: 120, actions: 600, errors: 100 });
@@ -72,13 +73,13 @@ export function createDeckQa({store,scope}) {
       await s.context?.close().catch(()=>{});
       await s.browser?.close().catch(()=>{});
       s.record.lifecycle = reason; s.record.closedAt = new Date().toISOString();
-      s.record.qaStatus = 'incomplete';
+      if (reason !== 'closed') s.record.qaStatus = 'incomplete';
       await s.persistence?.catch(()=>{});
       try { await save(s); } finally {
         if(s.temp) await rm(s.temp,{recursive:true,force:true});
         active--; session = null; closing = null;
       }
-      return {closed:true,sessionId:s.id,jobId:s.record.jobId,evidence:s.record.artifactRoot,qaStatus:'incomplete',reason};
+      return {closed:true,sessionId:s.id,jobId:s.record.jobId,evidence:s.record.artifactRoot,qaStatus:s.record.qaStatus,reason};
     })();
     return closing;
   }
@@ -91,16 +92,21 @@ export function createDeckQa({store,scope}) {
   async function snapshot(s,page) {
     const state = await page.evaluate(inspectPage);
     state.pageId = [...s.pages].find(([,p])=>p===page)?.[0];
+    if (state.pageId !== 'audience') {
+      const audience = await pageFor(s).evaluate(inspectPage);
+      state.slideId = audience.slideId; state.stage = audience.stage; state.gallery = audience.gallery;
+    }
+    state.emulation = s.emulations.get(state.pageId) ?? {media:'screen',reducedMotion:'no-preference'};
     state.pages = [...s.pages].filter(([,p])=>!p.isClosed()).map(([pageId])=>({pageId}));
-    const key = JSON.stringify([state.pageId,state.slideId,state.stage,state.gallery,state.viewport,s.emulation]);
-    if (!s.record.coverage.some(c=>c.key===key)) s.record.coverage.push({key,pageId:state.pageId,slideId:state.slideId,stage:state.stage,gallery:state.gallery,viewport:state.viewport,emulation:s.emulation});
+    const key = JSON.stringify([state.pageId,state.slideId,state.stage,state.gallery,state.viewport,state.emulation]);
+    if (!s.record.coverage.some(c=>c.key===key)) s.record.coverage.push({key,pageId:state.pageId,slideId:state.slideId,stage:state.stage,gallery:state.gallery,viewport:state.viewport,emulation:state.emulation});
     return state;
   }
   async function open(args) {
     if (session || active >= QA_LIMITS.sessions) throw new Error('QA browser capacity reached; close the existing session before opening another');
     boundedText(args.jobId,'build ID',100); const size = viewport(args.viewport);
     active++;
-    const s = {id:randomUUID(),pages:new Map(),closed:false,record:{},emulation:{media:'screen',reducedMotion:'no-preference'}};
+    const s = {id:randomUUID(),pages:new Map(),closed:false,record:{},emulations:new Map()};
     s.initialized = new Promise(resolve => {s.resolveInitialized=resolve;});
     session = s;
     try {
@@ -111,9 +117,9 @@ export function createDeckQa({store,scope}) {
       s.evidenceDir = path.join(s.build.parent,'qa',s.id);
       await mkdir(s.evidenceDir,{recursive:true,mode:0o700});
       if (await realpath(s.evidenceDir)!==s.evidenceDir) throw new Error('Unsafe QA evidence path');
-      s.record = {version:1,sessionId:s.id,jobId:args.jobId,productionId:scope.episodeId,requestId:scope.requestId,conversationId:scope.conversationId,harness:scope.harness,model:scope.model,
+      s.record = {version:2,sessionId:s.id,jobId:args.jobId,productionId:scope.episodeId,requestId:scope.requestId,conversationId:scope.conversationId,harness:scope.harness,model:scope.model,
         sourceRevision:s.build.sourceRevision,bundleSha256:s.build.bundleSha256,browser:BROWSER_IDENTITY,startedAt:new Date().toISOString(),
-        artifactRoot:path.relative(store.workspace,s.evidenceDir),qaStatus:'incomplete',lifecycle:'open',screenshots:[],coverage:[],checks:[],actions:[],errors:[]};
+        artifactRoot:path.relative(store.workspace,s.evidenceDir),qaStatus:'incomplete',lifecycle:'open',screenshots:[],coverage:[],checks:[],actions:[],errors:[],reviews:[],changesMade:[]};
       const error = (type,message) => { if(s.record.errors.length<QA_LIMITS.errors) s.record.errors.push({type,message:String(message).replaceAll(s.temp,'<qa>').slice(0,1500)}); };
       // Whitelist environment: no inference, account, proxy or application credentials.
       // The full pinned Chromium channel includes the supported MP4/WebM decode path.
@@ -156,12 +162,18 @@ export function createDeckQa({store,scope}) {
     if(s.record.screenshots.length>=QA_LIMITS.screenshots) throw new Error('Screenshot batch limit reached; close/reopen this build to continue');
     const size=page.viewportSize();
     if(clip && (!['x','y','width','height'].every(k=>Number.isInteger(clip[k])) || clip.x<0 || clip.y<0 || clip.width<1 || clip.height<1 || clip.x+clip.width>size.width || clip.y+clip.height>size.height)) throw new Error('Screenshot crop must be inside the viewport');
-    const state=await snapshot(s,page),bytes=await page.screenshot({type:'png',...(clip?{clip}:{}),timeout:5000});
+    const state=await snapshot(s,page);
+    // In print CSS every slide is visible. Capture the selected article itself,
+    // otherwise a later slide ID could be attached to an image of the first page.
+    const printSlide=state.emulation.media==='print' && state.pageId==='audience' && !clip;
+    const bytes=printSlide
+      ? await page.locator(`article[id="${state.slideId}"]`).screenshot({type:'png',timeout:5000})
+      : await page.screenshot({type:'png',...(clip?{clip}:{}),timeout:5000});
     if(s.closed) throw new Error('QA session closed during screenshot');
     if(bytes.length>4*1024*1024) throw new Error('Screenshot exceeds transport bound; use a smaller viewport or crop');
     const artifactId=randomUUID(),file=`${artifactId}.png`;
     await writeFile(path.join(s.evidenceDir,file),bytes,{flag:'wx'});
-    const record={artifactId,file,state,clip:clip??null,delivered:false,createdAt:new Date().toISOString()};s.record.screenshots.push(record);
+    const record={artifactId,file,state,clip:clip??null,sha256:createHash('sha256').update(bytes).digest('hex'),delivered:false,fullResolutionDelivered:false,createdAt:new Date().toISOString()};s.record.screenshots.push(record);
     return {bytes,record};
   }
   async function inspect(s,args) {
@@ -184,10 +196,11 @@ export function createDeckQa({store,scope}) {
     if(s.closed) throw new Error('QA session closed during inspection');
     await save(s);
     return withToolDelivery({text:JSON.stringify({sessionId:s.id,jobId:s.record.jobId,bundleSha256:s.record.bundleSha256,contactSheet,screenshots:captures.map(c=>c.record),errors:s.record.errors}),images:[{data:image.toString('base64'),mimeType:'image/png'}]},()=>{
-      captures.forEach(c=>{c.record.delivered=true;});void save(s).catch(()=>{});
+      captures.forEach(c=>{c.record.delivered=true;c.record.fullResolutionDelivered=!args.slideIds;});void save(s).catch(()=>{});
     });
   }
   async function act(s,args) {
+    s.record.qaStatus='incomplete';
     const page=pageFor(s,args.pageId);
     if(s.record.actions.length>=QA_LIMITS.actions) throw new Error('Action limit reached; reopen the same build to continue');
     switch(args.action) {
@@ -203,7 +216,7 @@ export function createDeckQa({store,scope}) {
       case 'focus': await page.bringToFront(); break;
       case 'emulate':
         if(!['screen','print'].includes(args.media??'screen') || !['reduce','no-preference'].includes(args.reducedMotion??'no-preference')) throw new Error('Unsupported media emulation');
-        s.emulation={media:args.media??'screen',reducedMotion:args.reducedMotion??'no-preference'};await page.emulateMedia(s.emulation);break;
+        { const emulation={media:args.media??'screen',reducedMotion:args.reducedMotion??'no-preference'};s.emulations.set(args.pageId??'audience',emulation);await page.emulateMedia(emulation);break; }
       case 'close-page': if((args.pageId??'audience')==='audience') throw new Error('Use close_deck_qa to close the audience');await page.close(); break;
       default: throw new Error('Unsupported QA action');
     }
@@ -254,10 +267,17 @@ export function createDeckQa({store,scope}) {
       try {
         return await Promise.race([(async()=>{
           if(name==='open_deck_qa') return open(args);
+          if(name==='get_deck_qa_report') return json(await getQaReport(store,scope.episodeId,args.jobId));
           const s=requireSession(args.sessionId);
           if(name==='inspect_deck_qa') return inspect(s,args);
           if(name==='act_deck_qa') return act(s,args);
           if(name==='check_deck_qa') return checks(s,args);
+          if(name==='report_deck_qa') {
+            recordReview(s.record,args); await save(s);
+            const report=await getQaReport(store,scope.episodeId,s.record.jobId,{sessionId:s.id,requestId:scope.requestId});
+            if(s.closed) throw new Error('QA session closed during reporting');
+            s.record.qaStatus=report.qaStatus; await save(s); return json(report);
+          }
           throw new Error('Unknown QA operation');
         })(),new Promise((_,reject)=>{timer=setTimeout(()=>{void close('operation-timeout').catch(()=>{});reject(new Error('QA operation timed out; evidence incomplete, reopen the build'));},QA_LIMITS.operationMs);})]);
       } finally {clearTimeout(timer);busy=false;}
