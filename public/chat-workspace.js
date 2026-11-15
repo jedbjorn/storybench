@@ -1,3 +1,4 @@
+import { ChatTranscript } from "./chat-transcript.js";
 import { uploadLibraryFile } from "./library-workspace.js";
 import { ChatSettings, boundaryText, selectionLabel } from "./chat-settings.js";
 
@@ -16,6 +17,9 @@ export class ChatWorkspace {
     this.historyOpen = false;
     this.settings = new ChatSettings({ root, api, toast });
     this.current = null;
+    this.selection = 0;
+    this.refreshSequence = 0;
+    this.listSequence = 0;
   }
 
   async open() {
@@ -28,7 +32,7 @@ export class ChatWorkspace {
     this.conversations = [];
     if (!episodeId) return this.clear();
     this.root.hidden = false;
-    this.root.innerHTML = `<div class="chat-toolbar"><button class="chat-history-toggle" data-chat-history-toggle type="button" aria-label="Open chat history" aria-controls="chatHistoryDrawer" aria-expanded="false">‹</button><div class="chat-identity"><b data-chat-title>${this.getEpisode()?.kind === "deck" ? "Deck" : "Episode"} assistant</b><span data-chat-status role="status"></span></div><button class="chat-selection" data-chat-selection type="button" aria-haspopup="dialog" aria-controls="chatSettingsPanel" title="Harness, model and thinking for this conversation">Codex · default model</button></div><div id="chatSettingsPanel" class="chat-settings-panel" data-chat-settings-panel role="dialog" aria-label="Conversation harness and model" hidden></div><div class="chat-history-backdrop" data-chat-history-backdrop hidden></div><section id="chatHistoryDrawer" class="chat-history-drawer" data-chat-history-drawer aria-label="Chat history" hidden><div class="chat-history-heading"><strong>Chat history</strong><button data-chat-rename type="button">Rename</button></div><div class="chat-history-list" data-chat-history-list></div></section><div data-chat-messages></div><div class="chat-composer"><div class="chat-attachments" data-chat-attachments></div><div class="chat-upload-status" data-chat-upload-status role="status"></div><textarea data-chat-draft aria-label="Message" placeholder="Ask the ${this.getEpisode()?.kind === "deck" ? "deck" : "episode"} assistant, or drop an image" rows="3"></textarea><div class="chat-composer-actions"><button class="chat-icon" data-chat-send type="button" aria-label="Send message" title="Send message">↑</button><button class="chat-icon" data-chat-attach type="button" aria-label="Attach images" title="Attach images"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m8 13 7-7a3 3 0 0 1 4 4l-9 9a5 5 0 0 1-7-7l10-10M6 15l8-8"/></svg></button><input data-chat-files type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden><button class="chat-icon" data-chat-new type="button" aria-label="New chat" title="New chat">＋</button><button class="chat-icon chat-stop" data-chat-stop type="button" aria-label="Stop active response" title="Stop active response" hidden>×</button></div><small>Enter to send · Shift+Enter for a new line</small></div>`;
+    this.root.innerHTML = `<div class="chat-toolbar"><button class="chat-history-toggle" data-chat-history-toggle type="button" aria-label="Open chat history" aria-controls="chatHistoryDrawer" aria-expanded="false">‹</button><div class="chat-identity"><b data-chat-title>${this.getEpisode()?.kind === "deck" ? "Deck" : "Episode"} assistant</b><span data-chat-status role="status"></span></div><button class="chat-selection" data-chat-selection type="button" aria-haspopup="dialog" aria-controls="chatSettingsPanel" title="Harness, model and thinking for this conversation">Codex · default model</button></div><div id="chatSettingsPanel" class="chat-settings-panel" data-chat-settings-panel role="dialog" aria-label="Conversation harness and model" hidden></div><div class="chat-history-backdrop" data-chat-history-backdrop hidden></div><section id="chatHistoryDrawer" class="chat-history-drawer" data-chat-history-drawer aria-label="Chat history" hidden><div class="chat-history-heading"><strong>Chat history</strong><button data-chat-rename type="button">Rename</button></div><div class="chat-history-list" data-chat-history-list></div></section><div class="chat-transcript-panel"><div data-chat-messages tabindex="0" aria-label="Conversation messages"></div><button class="chat-jump" data-chat-jump type="button" aria-label="Jump to end" title="Jump to end" hidden><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v16m-6-6 6 6 6-6"/></svg></button></div><div class="chat-composer"><div class="chat-attachments" data-chat-attachments></div><div class="chat-upload-status" data-chat-upload-status role="status"></div><textarea data-chat-draft aria-label="Message" placeholder="Ask the ${this.getEpisode()?.kind === "deck" ? "deck" : "episode"} assistant, or drop an image" rows="3"></textarea><div class="chat-composer-actions"><button class="chat-icon" data-chat-send type="button" disabled aria-label="Send message" title="Send message">↑</button><button class="chat-icon" data-chat-attach type="button" aria-label="Attach images" title="Attach images"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m8 13 7-7a3 3 0 0 1 4 4l-9 9a5 5 0 0 1-7-7l10-10M6 15l8-8"/></svg></button><input data-chat-files type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden><button class="chat-icon" data-chat-new type="button" aria-label="New chat" title="New chat">＋</button><button class="chat-icon chat-stop" data-chat-stop type="button" aria-label="Stop active response" title="Stop active response" hidden>×</button></div><small>Enter to send · Shift+Enter for a new line</small></div>`;
     this.setHistoryOpen(false);
     this.bind(generation, episodeId);
     await this.settings.loadCatalog();
@@ -49,6 +53,11 @@ export class ChatWorkspace {
 
   clear() { this.root.hidden = true; this.root.innerHTML = ""; }
   stopTimers() {
+    this.transcript?.destroy();
+    this.transcript = null;
+    this.current = null;
+    this.sending = false;
+    ++this.selection;
     clearInterval(this.pollTimer); clearTimeout(this.draftTimer);
     this.pollTimer = null; this.draftTimer = null;
     if (this.outsideClick) this.root.ownerDocument.removeEventListener("click", this.outsideClick);
@@ -66,12 +75,12 @@ export class ChatWorkspace {
     if (!this.episodeId || !this.currentId) await this.open();
     if (!this.episodeId || !this.currentId) throw new Error("Open an episode before asking the assistant");
     if (this.isBusy()) throw new Error("A request is already active for this episode. Let it finish or press Stop; this request was not queued.");
-    const episodeId = this.episodeId, conversationId = this.currentId;
+    const episodeId = this.episodeId, conversationId = this.currentId, generation = this.generation;
     await this.flushDraft();
     await this.beforeSend();
     const value = await this.api(`${this.itemUrl(episodeId, conversationId)}/production-requests`, { method: "POST",
       body: JSON.stringify({ kind, targetCardId, prompt, clientRequestId }) });
-    if (this.isCurrent(this.generation, episodeId, conversationId)) await this.refreshList(this.generation, episodeId, { preserveSelection: true });
+    if (this.isCurrent(generation, episodeId, conversationId)) await this.refreshList(generation, episodeId, { preserveSelection: true });
     return value;
   }
 
@@ -179,7 +188,7 @@ export class ChatWorkspace {
       if (next === this.currentId) return this.setHistoryOpen(false);
       await this.flushDraft();
       if (!this.isCurrent(generation, episodeId)) return;
-      this.currentId = next;
+      this.selectConversation(next);
       await this.refresh(generation, episodeId, next);
       if (this.isCurrent(generation, episodeId, next)) {
         this.paintConversationList();
@@ -202,7 +211,7 @@ export class ChatWorkspace {
       if (!this.isCurrent(generation, episodeId)) return;
       const value = await this.api(`/api/episodes/${episodeId}/chats`, { method: "POST", body: JSON.stringify({ name: `Conversation ${this.conversations.length + 1}` }) });
       if (!this.isCurrent(generation, episodeId)) return;
-      this.currentId = value.id;
+      this.selectConversation(value.id);
       await this.refreshList(generation, episodeId, { preserveSelection: true });
     };
     this.root.querySelector("[data-chat-rename]").onclick = async () => {
@@ -247,7 +256,7 @@ export class ChatWorkspace {
     };
     const send = this.root.querySelector("[data-chat-send]");
     send.onclick = async () => {
-      const conversationId = this.currentId, text = draft.value;
+      const conversationId = this.currentId, text = draft.value, selection = this.selection;
       const imageDraft = this.imageDraft(conversationId);
       if ((!text.trim() && !imageDraft.attachments.length) || send.disabled || this.sending) return;
       this.sending = true; send.disabled = true;
@@ -256,11 +265,11 @@ export class ChatWorkspace {
         await this.beforeSend();
         await this.api(`${this.itemUrl(episodeId, conversationId)}/messages`, { method: "POST", body: JSON.stringify({ text, ...(imageDraft.attachments.length ? { attachmentIds: imageDraft.attachments.map((item) => item.itemId) } : {}) }) });
         imageDraft.attachments = []; imageDraft.dirty = false; imageDraft.error = "";
-        if (!this.isCurrent(generation, episodeId, conversationId)) return;
+        if (!this.isCurrent(generation, episodeId, conversationId) || selection !== this.selection) return;
         if (draft.value === text) { draft.value = ""; draft.dataset.dirty = "false"; }
         await this.refreshList(generation, episodeId, { preserveSelection: true });
       } catch (cause) { this.toast(cause.message); }
-      finally { this.sending = false; this.paintImages(); }
+      finally { if (this.isCurrent(generation, episodeId)) { this.sending = false; this.paintImages(); } }
     };
     draft.onkeydown = (event) => {
       if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
@@ -301,21 +310,42 @@ export class ChatWorkspace {
     this.root.querySelector("[data-chat-rename]").disabled = !current;
   }
 
+  selectConversation(id) {
+    if (this.currentId === id && this.transcript) return;
+    const switching = this.currentId !== null;
+    this.transcript?.destroy();
+    this.currentId = id;
+    this.current = null;
+    ++this.selection;
+    this.transcript = new ChatTranscript(this.root.querySelector('[data-chat-messages]'), this.root.querySelector('[data-chat-jump]'), this.getEpisode()?.kind);
+    const draft = this.draftField();
+    if (switching) { draft.value = ''; draft.dataset.dirty = 'false'; }
+    this.root.querySelector('[data-chat-send]').disabled = true;
+    this.root.querySelector('[data-chat-stop]').hidden = true;
+    this.root.querySelector('[data-chat-status]').textContent = '';
+  }
+
   async refreshList(generation, episodeId, { preserveSelection = false } = {}) {
+    const sequence = ++this.listSequence, selection = this.selection;
     let conversations = await this.api(`/api/episodes/${episodeId}/chats`);
     if (!this.isCurrent(generation, episodeId)) return;
     if (!conversations.length) conversations = [await this.api(`/api/episodes/${episodeId}/chats`, { method: "POST", body: JSON.stringify({ name: "Conversation 1" }) })];
     if (!this.isCurrent(generation, episodeId)) return;
+    if (selection !== this.selection || sequence < (this.appliedListSequence ?? 0)) return;
+    this.appliedListSequence = sequence;
     this.conversations = conversations;
-    if (!preserveSelection || !conversations.some((value) => value.id === this.currentId)) this.currentId = conversations[0].id;
+    if (!preserveSelection || !conversations.some((value) => value.id === this.currentId)) this.selectConversation(conversations[0].id);
     this.paintConversationList();
     await this.refresh(generation, episodeId, this.currentId);
   }
 
   async refresh(generation, episodeId, conversationId) {
+    if (!this.isCurrent(generation, episodeId, conversationId)) return;
+    const sequence = ++this.refreshSequence, selection = this.selection;
     const imageRevision = this.imageDraft(conversationId).revision;
     const value = await this.api(this.itemUrl(episodeId, conversationId));
-    if (!this.isCurrent(generation, episodeId, conversationId)) return;
+    if (!this.isCurrent(generation, episodeId, conversationId) || selection !== this.selection || sequence < (this.appliedRefreshSequence ?? 0)) return;
+    this.appliedRefreshSequence = sequence;
     this.current = value;
     const status = this.root.querySelector("[data-chat-status]");
     const active = !value.error && working(value.state);
@@ -327,12 +357,27 @@ export class ChatWorkspace {
     chip.textContent = selectionLabel(value.settings);
     chip.dataset.selectable = value.settings ? "true" : "false";
     // Messages and visible boundaries (settings changes, new native sessions) in time order.
-    const boundaries = (value.events ?? []).map((event) => ({ at: event.createdAt, text: boundaryText(event) })).filter((entry) => entry.text);
+    const boundaries = (value.events ?? []).map((event) => ({ key: `event:${event.sequence}`, at: event.createdAt, text: boundaryText(event) })).filter((entry) => entry.text);
     const retryByMessage = new Map((value.runs ?? []).filter((run) => ["failed", "interrupted"].includes(run.state)).map((run) => [run.originatingMessageId, run.id]));
-    const items = [...value.messages.map((message) => ({ at: message.createdAt, html: `<p class="chat-${escapeHtml(message.role)}" data-message-id="${message.id}"><b>${message.role === "user" ? "You" : "Assistant"}</b><span>${escapeHtml(message.text)}${(message.attachments || []).map((item) => `<a class="chat-image-link" href="/api/episodes/${encodeURIComponent(episodeId)}/library/${encodeURIComponent(item.itemId)}/file" target="_blank" rel="noopener"><img src="/api/episodes/${encodeURIComponent(episodeId)}/library/${encodeURIComponent(item.itemId)}/file" alt="${escapeHtml(item.label)}" loading="lazy"></a>`).join("")}</span>${retryByMessage.has(message.id) ? `<button type="button" data-chat-retry="${escapeHtml(retryByMessage.get(message.id))}" aria-label="Retry this request as a new explicit request">Retry</button>` : ""}</p>` })),
-      ...boundaries.map((entry) => ({ at: entry.at, html: `<p class="chat-boundary" role="note"><span>${escapeHtml(entry.text)}</span></p>` }))]
+    // A transport error can leave an assistant row marked streaming. Its
+    // originating user/run still carries terminal truth, even on later turns.
+    let origin;
+    const visible = value.messages.flatMap(message => {
+      if (message.role === 'user') { origin = message; return [{ ...message }]; }
+      let state = message.state;
+      if (['queued', 'running', 'streaming'].includes(state)) {
+        const run = (value.runs ?? []).find(run => run.originatingMessageId === origin?.id);
+        const terminal = [run?.state, origin?.state].find(state => ['failed', 'interrupted'].includes(state));
+        if (terminal) state = terminal;
+        else if (active) return [];
+        else state = value.state === 'interrupted' ? 'interrupted' : 'failed';
+      }
+      return [{ ...message, state }];
+    });
+    const items = [...visible.map((message) => ({ key: `m:${message.id}`, at: message.createdAt, html: `<p class="chat-${escapeHtml(message.role)}" data-message-id="${escapeHtml(message.id)}"><b>${message.role === "user" ? "You" : "Assistant"}</b><span>${escapeHtml(message.text)}${(message.attachments || []).map((item) => `<a class="chat-image-link" href="/api/episodes/${encodeURIComponent(episodeId)}/library/${encodeURIComponent(item.itemId)}/file" target="_blank" rel="noopener"><img src="/api/episodes/${encodeURIComponent(episodeId)}/library/${encodeURIComponent(item.itemId)}/file" alt="${escapeHtml(item.label)}" loading="lazy"></a>`).join("")}</span>${message.role === 'assistant' && ['failed', 'interrupted'].includes(message.state) ? `<small class="chat-response-outcome">${message.state === 'interrupted' ? 'Interrupted' : 'Failed'} · partial response</small>` : ''}${retryByMessage.has(message.id) ? `<button type="button" data-chat-retry="${escapeHtml(retryByMessage.get(message.id))}" aria-label="Retry this request as a new explicit request">Retry</button>` : ""}</p>` })),
+      ...boundaries.map((entry) => ({ ...entry, html: `<p class="chat-boundary" role="note"><span>${escapeHtml(entry.text)}</span></p>` }))]
       .sort((a, b) => String(a.at ?? "").localeCompare(String(b.at ?? "")));
-    this.root.querySelector("[data-chat-messages]").innerHTML = items.map((item) => item.html).join("") || `<p>Start a conversation about this ${this.getEpisode()?.kind === "deck" ? "deck" : "episode"}.</p>`;
+    this.transcript.render(items.length || active ? items : [{ key: 'empty', html: `<p>Start a conversation about this ${this.getEpisode()?.kind === "deck" ? "deck" : "episode"}.</p>` }], active);
     const draft = this.draftField();
     if (draft.dataset.dirty !== "true") { draft.value = value.draft || ""; draft.dataset.dirty = "false"; }
     const busy = this.conversations.some((item) => working(item.state));

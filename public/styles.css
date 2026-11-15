@@ -583,17 +583,30 @@ h2 {
 .chat-history-item span { color: var(--muted); font-size: 10px; text-transform: uppercase; }
 .chat-history-item:hover { background: var(--pale); }
 .chat-history-item.selected { border-color: var(--line); background: #f3f5f2; }
+.chat-transcript-panel { position: relative; display: flex; flex: 1; min-height: 0; }
+.chat-jump {
+  position: absolute; bottom: 12px; left: 14px; z-index: 1;
+  display: grid; place-items: center; width: 36px; height: 36px;
+  padding: 0; border: 1px solid var(--line); border-radius: 50%;
+  background: #fff; color: var(--deep); box-shadow: 0 2px 8px #183d2820;
+}
+.chat-jump[hidden] { display: none; }
+.chat-response-animation { width: 170px; max-width: 100%; margin-left: auto; }
+.chat-response-animation canvas { display: block; width: 100%; height: auto; aspect-ratio: 1; }
+.chat-response-outcome { color: var(--muted); }
 [data-chat-messages] {
+  overflow-anchor: none;
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   flex: 1;
   padding: 18px;
 }
-[data-chat-messages] > p { display: grid; gap: 4px; max-width: 88%; margin: 0 0 14px; }
-[data-chat-messages] > p.chat-user { margin-left: auto; }
-[data-chat-messages] > p > b { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
-[data-chat-messages] > p > span { padding: 9px 11px; border-radius: 10px; background: #f0f0ec; white-space: pre-wrap; }
-[data-chat-messages] > p.chat-user > span { background: var(--deep); color: #fff; }
+.chat-transcript > p { display: grid; gap: 4px; max-width: 88%; margin: 0 0 14px; }
+.chat-transcript > p.chat-user { margin-left: auto; }
+.chat-transcript > p > b { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.chat-transcript > p > span { padding: 9px 11px; border-radius: 10px; background: #f0f0ec; white-space: pre-wrap; }
+.chat-transcript > p.chat-user > span { background: var(--deep); color: #fff; }
 .chat-composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -763,8 +776,8 @@ button.danger:disabled { opacity: .5; }
 .chat-settings-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .chat-settings a, .settings-page a { color: var(--deep); text-underline-offset: 3px; }
 .chat-settings > a { display: inline-block; margin-top: 12px; }
-[data-chat-messages] > p.chat-boundary { max-width: 100%; margin: 6px auto 14px; text-align: center; }
-[data-chat-messages] > p.chat-boundary > span { background: transparent; border: 1px dashed var(--line); color: var(--muted); font-size: 11px; }
+.chat-transcript > p.chat-boundary { max-width: 100%; margin: 6px auto 14px; text-align: center; }
+.chat-transcript > p.chat-boundary > span { background: transparent; border: 1px dashed var(--line); color: var(--muted); font-size: 11px; }
 
 /* Channel-level pages share the episode shell and preserve its state. */
 [hidden] { display: none !important; }
