@@ -84,10 +84,11 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
           if (await realpath(parent) !== parent) throw new Error('Unsafe deck output directory');
           staging = path.join(parent,`.${job.id}.staging`); await mkdir(staging);
           for (const [name,bytes] of files) { signal.throwIfAborted(); await mkdir(path.dirname(path.join(staging,name)),{recursive:true}); await writeFile(path.join(staging,name),bytes,{flag:'wx'}); }
-          await writeFile(path.join(staging,'bundle.zip'),zipBundle(files),{flag:'wx'});
+          const zip = zipBundle(files), bundleSha256 = createHash('sha256').update(zip).digest('hex');
+          await writeFile(path.join(staging,'bundle.zip'),zip,{flag:'wx'});
           update(job,{state:'running',progress:0.9}); signal.throwIfAborted();
           published = path.join(parent,job.id); await rename(staging,published); staging = null;
-          signal.throwIfAborted(); update(job,{state:'completed',progress:1,outputPath:path.relative(root,path.join(published,'bundle.zip')),snapshot:{...snapshot,manifest}});
+          signal.throwIfAborted(); update(job,{state:'completed',progress:1,outputPath:path.relative(root,path.join(published,'bundle.zip')),snapshot:{...snapshot,manifest,bundleSha256}});
         } catch (error) {
           if (published) await rm(published,{recursive:true,force:true});
           update(job,{state:signal.aborted ? 'cancelled' : 'failed',error:error.message});

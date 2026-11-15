@@ -1,5 +1,6 @@
 // One explicit registry. Entries name template branches and allowed app operations;
 // definitions and handlers remain owned by the existing scoped services.
+import { DECK_QA_DEFINITIONS } from '../deck-qa-tools.js';
 import { RuntimeError } from './validate.js';
 
 export const SHARED_TOOLS = Object.freeze([
@@ -15,7 +16,7 @@ export const KIND_REGISTRY = Object.freeze({
     'create_graphic_recipe', 'update_graphic_recipe', 'render_graphic',
     'list_branding', 'promote_card', 'apply_branding',
   ]) }),
-  deck: Object.freeze({ templates: 'deck', tools: Object.freeze(['update_story', 'read_deck', 'save_deck', 'build_deck', 'get_job', 'await_job', 'cancel_job']) }),
+  deck: Object.freeze({ templates: 'deck', tools: Object.freeze(['update_story', 'read_deck', 'save_deck', 'build_deck', 'get_job', 'await_job', 'cancel_job', ...DECK_QA_DEFINITIONS.map(d => d.name)]) }),
 });
 
 export function resolveKind(production, registry = KIND_REGISTRY) {
@@ -28,7 +29,7 @@ export function selectKindTools(tools, kind, { supportsImages = true, registry =
   const entry = registry[resolveKind({ kind }, registry)];
   const allowed = new Set([...SHARED_TOOLS, ...entry.tools]);
   const definitions = tools.definitions.filter(({ name }) => allowed.has(name) &&
-    (supportsImages || !['inspect_image', 'inspect_contact_sheet'].includes(name))).map((definition) => {
+    (supportsImages || !['inspect_image', 'inspect_contact_sheet', 'inspect_deck_qa'].includes(name))).map((definition) => {
     if (kind === 'video' || !['register_work_file', 'reuse_project_item'].includes(definition.name)) return definition;
     // The shared library operation stays available; video card assignment does not.
     const properties = Object.fromEntries(Object.entries(definition.inputSchema.properties).filter(([name]) => !['cardId', 'expectedRevision', 'assign'].includes(name)));
