@@ -201,3 +201,65 @@ test('graphics reject deck card targets at HTTP, service and publication boundar
   assert.deepEqual(s.listEpisodeHistory(deck.id), history);
   assert.deepEqual(s.getDeck(deck.id).slides, JSON.parse(before.cards));
 });
+
+test('staged vector editor persists group mappings, reorder/duplicate identity and removal through saved data', t => {
+  const f = fixture(t), s = f.store, deck = s.createEpisode({ kind: 'deck' });
+  const asset = s.saveAsset({ name: 'plan.svg', hash: 'vector-editor', kind: 'image', path: 'media/plan.svg',
+    metadata: { contentType: 'image/svg+xml', svgGroupIds: ['observe', 'connect', 'plan'] } });
+  const item = s.attachLibraryItem(deck.id, asset.id, { category: 'Graphics' });
+  const slides = [{ id: 'vector', title: 'A plan', layout: 'process', notes: 'Three steps', stages: [
+    { id: 'first', title: 'Observe' }, { id: 'second', title: 'Connect and plan' },
+  ] }];
+  const dom = new JSDOM('<main></main>'), root = dom.window.document.querySelector('main');
+  t.after(() => dom.window.close());
+  const render = () => { root.innerHTML = deckBoardHTML(slides, [item], []); };
+  render(); bindDeckBoard(root, { getSlides: () => slides, onDirty() {}, onSave() {}, render });
+  const edit = (selector, value) => { const field = root.querySelector(selector); field.value = value; field.dispatchEvent(new dom.window.Event('input', { bubbles: true })); };
+  edit('[data-slide-field="vectorItemId"]', item.id);
+  edit('[data-slide-field="vectorAlt"]', 'Three parts of a shared plan');
+  for (const [i, values] of [['0', ['observe']], ['1', ['connect', 'plan']]]) {
+    const field = root.querySelector(`[data-part-index="${i}"] [data-slide-field="svgGroupIds"]`);
+    for (const option of field.options) option.selected = values.includes(option.value);
+    field.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  }
+  root.querySelector('[data-part-index="1"] [data-slide-action="part-up"]').click();
+  root.querySelector('[data-slide-action="duplicate"]').click();
+  assert.equal(slides[0].stages[0].id, 'second');
+  assert.deepEqual(slides[0].stages[0].svgGroupIds, ['connect', 'plan']);
+  assert.notEqual(slides[0].stages[0].id, slides[1].stages[0].id);
+  const saved = s.saveDeck(deck.id, 1, slides);
+  assert.deepEqual(f.reopen().getDeck(deck.id).slides, saved.slides);
+  const unlinked = f.store.deleteLibraryItem(deck.id, item.id, item.revision, saved.revision);
+  assert.equal(unlinked.cards[0].vector, null);
+  assert.equal(unlinked.cards[0].stages[0].svgGroupIds, undefined);
+  assert.equal(unlinked.cards[0].stages[0].id, 'second');
+  assert.ok(f.store.getAsset(asset.id));
+});
+
+test('vector mappings reject absent/duplicate groups, wrong assets and ambiguous compositions without saving', t => {
+  const { store: s } = fixture(t), deck = s.createEpisode({ kind: 'deck' });
+  const asset = s.saveAsset({ name: 'plan.svg', hash: 'vector-validation', kind: 'image', path: 'media/plan.svg',
+    metadata: { contentType: 'image/svg+xml', svgGroupIds: ['one', 'two'] } });
+  const item = s.attachLibraryItem(deck.id, asset.id, { category: 'Graphics' });
+  const valid = { id: 'mapped', title: 'Mapped', layout: 'process', vector: { itemId: item.id, alt: 'Plan' }, stages: [
+    { id: 'first', title: 'First', svgGroupIds: ['one'] }, { id: 'second', title: 'Second', svgGroupIds: ['two'] },
+  ] };
+  for (const mutate of [
+    v => { v.stages[0].svgGroupIds = []; }, v => { v.stages[0].svgGroupIds = ['missing']; },
+    v => { v.stages[0].svgGroupIds = ['one', 'one']; }, v => { v.stages[1].svgGroupIds = ['one']; },
+    v => { v.stages[0].svgGroupIds = 'one'; }, v => { delete v.stages[0].svgGroupIds; },
+    v => { delete v.vector; }, v => { v.vector.itemId = 'not-a-member'; },
+    v => { v.media = { itemId: item.id }; }, v => { v.layout = 'columns'; },
+    v => { v.stages[1].id = v.stages[0].id; }, v => { v.stages[1].afterMs = 3600001; },
+  ]) {
+    const value = structuredClone(valid); mutate(value);
+    assert.throws(() => s.saveDeck(deck.id, 1, [value]));
+    assert.equal(s.getDeck(deck.id).revision, 1);
+  }
+  const raster = s.saveAsset({ name: 'photo.png', hash: 'raster-validation', kind: 'image', path: 'media/photo.png' });
+  const rasterItem = s.attachLibraryItem(deck.id, raster.id, { category: 'Graphics' });
+  assert.throws(() => s.saveDeck(deck.id, 1, [{ ...valid, vector: { itemId: rasterItem.id } }]), /registered SVG/);
+  const unrelated = s.createEpisode({ kind: 'deck' });
+  assert.throws(() => s.saveDeck(unrelated.id, 1, [valid]), /library item not found/);
+  assert.equal(s.saveDeck(deck.id, 1, [valid]).revision, 2);
+});

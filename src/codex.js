@@ -22,6 +22,20 @@ export const toolErrorText = (error) => error?.current?.researchRevision !== und
 
 const empty = { type: 'object', properties: {}, additionalProperties: false };
 const object = (required, properties) => ({ type: 'object', additionalProperties: false, required, properties });
+const deckText = { type: 'string' };
+const deckMedia = object(['itemId'], { itemId: deckText, alt: deckText });
+const deckSlide = object(['id', 'title', 'layout'], {
+  id: deckText, title: deckText, layout: { type: 'string', enum: ['title', 'section', 'statement', 'text-media', 'columns', 'full-media', 'process'] },
+  body: deckText, notes: deckText, eyebrow: deckText, caption: deckText,
+  targetMinutes: { type: 'number', minimum: 0 }, sectionId: { type: ['string', 'null'] },
+  media: { anyOf: [deckMedia, { type: 'null' }] }, vector: { anyOf: [deckMedia, { type: 'null' }] },
+  referenceItemIds: { type: 'array', items: deckText },
+  columns: { type: 'array', items: object(['title'], { title: deckText, body: deckText }) },
+  stages: { type: 'array', items: object(['id', 'title'], { id: deckText, title: deckText, body: deckText,
+    afterMs: { type: 'number', minimum: 0, maximum: 3600000 },
+    svgGroupIds: { type: 'array', minItems: 1, uniqueItems: true, items: deckText, description: 'Registered SVG group IDs revealed by this stable stage. Required for each vector stage; groups cannot be mapped twice.' } }) },
+  subnav: { type: 'array', items: object(['id', 'label'], { id: deckText, label: deckText, itemId: deckText }) },
+});
 export const AUTHORING_TOOLS = Object.freeze(['save_deck', 'build_deck', 'update_story', 'update_cards', 'update_storyboard', 'create_draft', 'create_final', 'create_graphic_recipe', 'update_graphic_recipe', 'render_graphic', 'apply_branding']);
 const toolSpecs = [
   { type: 'function', name: 'read_research', description: 'Read the complete saved research summary and ordered links for this production, including production identity and independent researchRevision. Saved URLs are not fetched or verified.', inputSchema: empty },
@@ -30,7 +44,7 @@ const toolSpecs = [
     links: { type: 'array', maxItems: 100, items: object(['url'], { id: { type: 'string' }, url: { type: 'string' }, title: { type: 'string' }, note: { type: 'string' } }) },
   }) },
   { type: 'function', name: 'read_deck', description: 'Read saved ordered slides, story and current revision.', inputSchema: empty },
-  { type: 'function', name: 'save_deck', description: 'Replace ordered slides using the current revision. Slides support id/title/layout/body/notes/eyebrow/caption/targetMinutes/sectionId/media {itemId,alt}, columns {title,body}, stages {id,title,body,afterMs}, subnav {id,label,itemId}, referenceItemIds. Plain text only.', inputSchema: object(['expectedRevision','slides'], {expectedRevision:{type:'integer',minimum:1},slides:{type:'array',items:{type:'object'}}}) },
+  { type: 'function', name: 'save_deck', description: 'Replace ordered slides using the current revision. Preserve slide/stage IDs when reordering. A vector {itemId,alt} selects a registered SVG; each stage maps svgGroupIds from asset metadata, cumulatively revealed in stage order. Vector layouts: title, text-media, full-media, process; do not combine vector with media/gallery. Unmapped geometry stays visible. afterMs delays each reveal, including the first; zero waits for manual selection. Plain text only; never executable markup.', inputSchema: object(['expectedRevision','slides'], {expectedRevision:{type:'integer',minimum:1},slides:{type:'array',items:deckSlide}}) },
   { type: 'function', name: 'build_deck', description: 'Build an offline HTML and ZIP draft bundle from the saved exact revision. Await the returned job; failed/queued is not success.', inputSchema: object(['expectedRevision'], {expectedRevision:{type:'integer',minimum:1}}) },
   { type: 'function', name: 'get_context', description: 'Read current scoped episode, story, cards, library and revisions, with research discovery metadata only. Call read_research for the complete saved summary and links before composing or revising authoring work.', inputSchema: empty },
   { type: 'function', name: 'get_operation_guide', description: 'Read an app-owned guide for one supported operation.', inputSchema: object(['name'], { name: { type: 'string', enum: ['edit_story','edit_card','create_still_graphic','create_animated_graphic','create_draft','create_final'] } }) },

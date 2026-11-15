@@ -57,6 +57,11 @@ test('Codex dynamic definitions, Claude and OpenCode MCP lists share schemas and
   const dir = await temp(t);
   for (const kind of ['video', 'deck']) for (const supportsImages of [true, false]) {
     const tools = selectKindTools(all(), kind, { supportsImages });
+    if (kind === 'deck') {
+      const slide = tools.definitions.find(tool => tool.name === 'save_deck').inputSchema.properties.slides.items;
+      assert.ok(slide.properties.vector);
+      assert.equal(slide.properties.stages.items.properties.svgGroupIds.uniqueItems, true);
+    }
     const codex = new WorkerCodexConnection({ child: {}, tools, dynamicTools: true });
     assert.deepEqual(codex.dynamicTools.map(({ type, ...spec }) => spec), tools.definitions);
     const socketPath = path.join(dir, 'bridge.sock'), token = 'k'.repeat(64);
@@ -90,11 +95,13 @@ test('kind templates isolate guidance, clean owned files in every native root, a
   assert.equal(result.kind, 'deck');
   assert.equal(await readFile(user, 'utf8'), 'user');
   for (const root of ['.agents', '.claude', '.opencode']) {
+    assert.match(await readFile(path.join(episodeDir, root, 'skills/storybench-compose-deck/SKILL.md'), 'utf8'), /svgGroupIds/);
     assert.ok(result.removed.includes(`${root}/skills/storybench-finish-video/SKILL.md`));
     assert.equal(await readFile(path.join(episodeDir, root, 'skills/storybench-read-references/SKILL.md'), 'utf8'),
       await readFile(path.join(episodeDir, '.agents/skills/storybench-read-references/SKILL.md'), 'utf8'));
   }
   const boot = await readFile(path.join(episodeDir, 'AGENTS.md'), 'utf8');
+  assert.match(boot, /staged SVG illustrations/);
   assert.match(boot, /tools served to this request: get_context/);
   assert.doesNotMatch(boot, /create_final|create_draft|update_cards|storybench-finish-video/);
 });

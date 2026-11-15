@@ -3,6 +3,7 @@ import { JSDOM } from 'jsdom';
 import { open } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { fontForFamily, fontPath } from './fonts.js';
+import { validateVectorStages } from './deck-data.js';
 
 export const SVG_PROFILE = 'storybench-svg-1';
 export const SVG_LIMITS = Object.freeze({ bytes: 512 * 1024, elements: 2000, depth: 32, dimension: 4096, expanded: 10000 });
@@ -109,7 +110,7 @@ export async function readSvgSource(source) {
   } finally { if (owned) await handle.close(); }
 }
 
-export function parseSvg(bytes, { namespace = null } = {}) {
+export function parseSvg(bytes, { namespace = null, stages = null } = {}) {
   if (Buffer.byteLength(bytes) > SVG_LIMITS.bytes) fail(`source exceeds ${SVG_LIMITS.bytes} bytes`);
   let source;
   try { source = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(bytes)); } catch { fail('source must be UTF-8 XML'); }
@@ -233,6 +234,19 @@ export function parseSvg(bytes, { namespace = null } = {}) {
     const width = dimension('width', 2), height = dimension('height', 3);
     if (![width, height].every(n => Number.isFinite(n) && n > 0 && n <= SVG_LIMITS.dimension) || ['width', 'height'].some(n => root.getAttribute(n)?.endsWith('%'))) fail('root needs finite pixel dimensions or a viewBox, at most 4096 per side');
     const groupIds = nodes.filter(n => n.localName === 'g' && n.id).map(n => n.id);
+    const mapped = [];
+    if (stages !== null) {
+      validateVectorStages(stages, groupIds);
+      for (const [index, stage] of stages.entries()) for (const id of stage.svgGroupIds) {
+        const node = ids.get(id);
+        if (node.closest('defs,clipPath,mask,pattern')) fail(`stage group ${id} must be visible geometry, not a definition`);
+        mapped.push({ node, index });
+      }
+      for (const { node } of mapped) {
+        if (mapped.some(other => other.node !== node && other.node.contains(node))) fail(`stage group ${node.id} cannot nest inside another mapped group`);
+        if (references.some(ref => !ref.accessibility && ref.node.localName === 'use' && (ids.get(ref.id).contains(node) || node.contains(ids.get(ref.id))))) fail(`stage group ${node.id} cannot be reused by use; map independent visible groups`);
+      }
+    }
     if (namespace !== null) {
       if (!ID.test(namespace)) fail('invalid instance namespace');
       const renamed = id => `${namespace}-${id}`;
@@ -247,6 +261,13 @@ export function parseSvg(bytes, { namespace = null } = {}) {
         }
       }
       for (const node of nodes.filter(n => n.localName === 'style')) node.textContent = styles.filter(s => s.node === node).map(rule => `${rule.selectors.map(s => s[0] + renamed(s.slice(1))).join(',')}{${rule.declarations.map(([k, v]) => `${k}:${v.replace(/url\(#([^)]*)\)/g, (_, id) => `url(#${renamed(id)})`)}`).join(';')}}`).join('\n');
+    }
+    // Trusted wrappers preserve the author's opacity, transforms and selector IDs.
+    // Runtime attributes are never accepted from source SVG.
+    for (const { node, index } of mapped) {
+      const wrapper = doc.createElementNS(NS, 'g');
+      wrapper.setAttribute('data-vector-step', String(index));
+      node.replaceWith(wrapper); wrapper.append(node);
     }
     return { profile: SVG_PROFILE, width, height, groupIds, fonts: [...fonts], source, svg: root.outerHTML };
   } finally { dom.window.close(); }

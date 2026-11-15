@@ -15,7 +15,7 @@ Supported vocabulary:
 
 Limits: 512 KiB source, 2000 elements, nesting depth 32, 10,000 expanded elements, 20,000 path tokens per path, finite bounded coordinates/transforms, at most 2048 pixels per inspection side and 8 MiB PNG output. Unsupported content fails with the profile and offending construct; no silent stripping or raster replacement.
 
-Scripts, event handlers, foreignObject, nested SVG roots, embedded images, remote/local filesystem resources, external fonts/styles, DTDs/entities, processing instructions, CSS variables/escapes/imports, arbitrary selectors, authored animation and unsupported elements/attributes are rejected. Author static geometry; later saved vector-stage mappings can use the returned stable `svgGroupIds`. Existing text stages are unchanged by this asset foundation.
+Scripts, event handlers, foreignObject, nested SVG roots, embedded images, remote/local filesystem resources, external fonts/styles, DTDs/entities, processing instructions, CSS variables/escapes/imports, arbitrary selectors, authored animation and unsupported elements/attributes are rejected. Author static geometry; saved vector-stage mappings use the returned stable `svgGroupIds`. Map independent visible groups, never definitions, nested mapped groups or reused geometry. Trusted export wrappers reveal the mapped groups cumulatively, without altering their authored transforms or opacity. Static SVG and text stages remain supported.
 
 Exact-image diagnostic entrypoints (network disabled, disposable data):
 
@@ -24,4 +24,4 @@ node src/runtime/svg-check.js app
 node src/runtime/svg-check.js worker
 ```
 
-The app fixture exercises import, registration, image tools, reuse, saved static slide/gallery export and retained ZIP source. The worker exercises the native module plus the `resvg` authoring command. Both validate a substantial synthetic illustration and reject active SVG. Their versioned results establish this static asset foundation only; staged composition, browser QA, installation activation/readiness integration and final aesthetic/deployed verification have separate acceptance.
+The app fixture exercises import, registration, image tools, reuse, saved static slide/gallery and staged vector export and retained ZIP source. The worker exercises the native module plus the `resvg` authoring command. Both validate a substantial synthetic illustration and reject active SVG. Their versioned results establish parsed geometry, retained source and staged export; browser QA, installation activation/readiness integration and final aesthetic/deployed verification have separate acceptance.

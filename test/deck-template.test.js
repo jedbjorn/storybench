@@ -10,20 +10,21 @@ const bundle = () => buildDeck(structuredClone(exampleDeck), { assets: exampleAs
 function page(files, name = 'index.html', { opener = null, hash = '', reduced = false } = {}) {
   const dom = new JSDOM(String(files.get(name)), { url: `file:///export/${name}${hash}`, runScripts: 'outside-only', pretendToBeVisual: true });
   const w = dom.window, timeouts = new Map(), intervals = new Map();
-  let id = 0, hidden = false;
+  let id = 0, hidden = false, now = 0;
+  const delays = new Map(); w.Date.now = () => now;
   Object.defineProperty(w.document, 'hidden', { get: () => hidden });
   const motion = { matches: reduced, addEventListener: (_event, callback) => { motion.change = callback; } };
   w.matchMedia = () => motion;
-  w.setTimeout = (fn) => { timeouts.set(++id, fn); return id; };
-  w.clearTimeout = (key) => timeouts.delete(key);
+  w.setTimeout = (fn, delay) => { timeouts.set(++id, fn); delays.set(id, delay); return id; };
+  w.clearTimeout = (key) => { timeouts.delete(key); delays.delete(key); };
   w.setInterval = (fn) => { intervals.set(++id, fn); return id; };
   w.clearInterval = (key) => intervals.delete(key);
   w.HTMLMediaElement.prototype.pause = function () { this.wasPaused = true; };
   w.HTMLMediaElement.prototype.play = function () { this.wasPlayed = true; return Promise.resolve(); };
   w.opener = opener;
   w.eval(String(files.get(name === 'index.html' ? 'audience.js' : 'presenter.js')));
-  return { w, d: w.document, close: () => dom.window.close(), timeouts, intervals,
-    tick() { const tasks = [...timeouts.values()]; timeouts.clear(); tasks.forEach((fn) => fn()); },
+  return { w, d: w.document, close: () => dom.window.close(), timeouts, intervals, delays, elapse(ms) { now += ms; },
+    tick() { const tasks = [...timeouts.values()]; now += Math.max(0, ...delays.values()); timeouts.clear(); delays.clear(); tasks.forEach((fn) => fn()); },
     visibility(value) { hidden = value; w.document.dispatchEvent(new w.Event('visibilitychange')); }, motion,
     key(key, target = w.document.body) { target.dispatchEvent(new w.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })); },
     message(source, data) { w.dispatchEvent(new w.MessageEvent('message', { source, data })); },
@@ -253,4 +254,50 @@ test('presenter video commands control only active media and manual takeover sto
   p.key('Home'); assert.equal(playing, false);
   command('video-toggle'); await new Promise(setImmediate); assert.equal(playing, false);
   p.close();
+});
+
+const stagedSource = readFileSync(new URL('../src/runtime/fixtures/svg-illustration.svg', import.meta.url));
+const stagedBundle = () => buildDeck({ title: 'Staged illustration', slides: [
+  { id: 'vector', title: 'See, connect, plan', layout: 'process', notes: 'A geometry walkthrough',
+    vector: { type: 'image', src: 'assets/plan.svg', alt: 'An illustrated plan' },
+    stages: ['observe', 'connect', 'plan'].map((id, i) => ({ id: `stage_${id}`, title: id, svgGroupIds: [id], afterMs: i ? 500 : 200 })) },
+  { id: 'end', title: 'Finished', layout: 'statement' },
+] }, { assets: { 'assets/plan.svg': stagedSource } });
+
+test('actual SVG groups reveal cumulatively, hold, replay, pause and obey manual/presenter takeover', () => {
+  const p = page(stagedBundle()), sent = [];
+  const pending = () => [...p.d.querySelectorAll('[data-vector-step]')].map(group => group.dataset.pending);
+  assert.deepEqual(pending(), ['true', 'true', 'true']);
+  assert.equal(p.d.querySelector('#_sbv1-observe').parentElement.dataset.vectorStep, '0');
+  p.tick(); assert.deepEqual(pending(), ['false', 'true', 'true']);
+  p.elapse(150); p.visibility(true); assert.equal(p.timeouts.size, 0);
+  p.elapse(10000); p.visibility(false); assert.equal([...p.delays.values()][0], 350, 'resume uses the remaining delay');
+  p.tick(); assert.deepEqual(pending(), ['false', 'false', 'true']);
+  p.tick(); assert.deepEqual(pending(), ['false', 'false', 'false']);
+  assert.equal(p.timeouts.size, 0, 'completed diagram holds without looping');
+  click(p, '#vector [data-command="replay"]'); assert.deepEqual(pending(), ['true', 'true', 'true']);
+  p.key('ArrowRight'); assert.deepEqual(pending(), ['false', 'false', 'true']);
+  assert.equal(p.timeouts.size, 0);
+  p.tick(); assert.deepEqual(pending(), ['false', 'false', 'true']);
+  let channel;
+  const popup = { closed: false, postMessage: data => sent.push(data), focus() {} };
+  p.w.open = url => { channel = new URL(url).hash.slice(1); return popup; }; p.key('n');
+  const command = (name, index) => p.message(popup, { type: 'deck-command', channel, command: name, index });
+  command('stage', 0); assert.deepEqual(pending(), ['false', 'true', 'true']);
+  assert.deepEqual(Array.from(sent.at(-1).state.stages), ['observe', 'connect', 'plan']);
+  assert.equal(sent.at(-1).state.stage, 0);
+  command('replay'); assert.deepEqual(pending(), ['true', 'true', 'true']);
+  p.key('ArrowDown'); assert.equal(p.timeouts.size, 0, 'outgoing reveal cancelled');
+  p.key('ArrowUp'); assert.equal(p.timeouts.size, 1);
+  p.w.dispatchEvent(new p.w.Event('beforeprint')); assert.deepEqual(pending(), ['false', 'false', 'false']);
+  assert.equal(p.timeouts.size, 0);
+  p.w.dispatchEvent(new p.w.Event('afterprint')); assert.deepEqual(pending(), ['true', 'true', 'true']);
+  p.motion.matches = true; p.motion.change();
+  assert.deepEqual(pending(), ['false', 'false', 'false']);
+  assert.equal(sent.at(-1).state.stage, 2); assert.equal(p.timeouts.size, 0);
+  p.motion.matches = false; p.motion.change(); assert.equal(p.timeouts.size, 0, 'motion toggle does not rewind finished geometry');
+  p.close();
+  const reduced = page(stagedBundle(), 'index.html', { reduced: true });
+  assert.equal(reduced.d.querySelectorAll('[data-vector-step][data-pending="true"]').length, 0);
+  assert.equal(reduced.timeouts.size, 0); reduced.close();
 });
