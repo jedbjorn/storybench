@@ -29,6 +29,18 @@ COPY public ./public
 COPY agent ./agent
 
 FROM base AS app
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/storybench/browsers
+# Controller version and browser revision are pinned together by package-lock.json.
+# OS libraries come exclusively from the same signed snapshot as the base image.
+RUN apt-get -o Acquire::Check-Valid-Until=false update \
+ && apt-get install -y --no-install-recommends \
+      libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
+      libcups2t64 libdbus-1-3 libdrm2 libgbm1 libnspr4 libnss3 \
+      libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
+      libxkbcommon0 libxrandr2 \
+ && rm -rf /var/lib/apt/lists/* \
+ && node node_modules/playwright-core/cli.js install chromium --no-shell \
+ && chmod -R a+rX /opt/storybench/browsers
 ENV NODE_ENV=production STORYBENCH_BIND_HOST=0.0.0.0
 LABEL io.storybench.image-role=app
 CMD ["node", "src/server.js", "--data-root", "/storybench/data"]

@@ -43,3 +43,39 @@ The first stage appears immediately unless it has a positive delay. Each later d
 Choose varied layouts with short readable copy, generous space and deliberate hierarchy. Split crowded content into slides. Use process reveals for diagrams and gallery entries for alternate demo views. Check notes and captions. Do not claim aesthetic quality from structural tests.
 
 Call `build_deck({expectedRevision})` after save. The build snapshots current channel font roles: Base for body/notes, Accent for headings, Alternate for eyebrows/captions. Unset roles keep Manrope. Selected regular/bold files and licences ship in the offline bundle; changes apply on the next build, leaving existing exports intact. Use `await_job({jobId})` and inspect failures, including their slide ID, before revising. Completed jobs expose a portable ZIP at `/api/jobs/<id>/deck/bundle.zip` and preview at `/api/jobs/<id>/deck/index.html`. Ask the creator to use Open preview / Download bundle. Reopen saved slides, edit and build a new version; previous successes remain. Final publication and cleanup of deck bundles are deferred.
+
+### Packaged browser tools
+
+After `build_deck` and `await_job` return a completed build, open that exact ZIP:
+
+```json
+{"tool":"open_deck_qa","arguments":{"jobId":"<completed-job-id>","viewport":{"width":1280,"height":720}}}
+{"tool":"inspect_deck_qa","arguments":{"sessionId":"<session-id>"}}
+{"tool":"act_deck_qa","arguments":{"sessionId":"<session-id>","action":"click","selector":"#presenter-open"}}
+{"tool":"inspect_deck_qa","arguments":{"sessionId":"<session-id>","pageId":"presenter-1"}}
+{"tool":"act_deck_qa","arguments":{"sessionId":"<session-id>","pageId":"presenter-1","action":"select","selector":"#slide-select","value":"1"}}
+{"tool":"check_deck_qa","arguments":{"sessionId":"<session-id>","checks":["console","resources","fonts","media","layout","presenter","fullscreen"]}}
+{"tool":"inspect_deck_qa","arguments":{"sessionId":"<session-id>","slideIds":["<slide-id-1>","<slide-id-2>"]}}
+{"tool":"close_deck_qa","arguments":{"sessionId":"<session-id>"}}
+```
+
+Use the returned page IDs, slide inventory, DOM text and element bounds. `click`
+accepts a selector; `key` accepts presentation keys; `select` accepts selector and
+value; `resize` accepts viewport; `wait` is bounded to 2,000 milliseconds. `emulate`
+accepts `media: "print" | "screen"` and `reducedMotion: "reduce" | "no-preference"`.
+Use `focus` for a page and `close-page` for Presenter disconnect/reopen testing.
+Use `inspect_deck_qa` after actions to see the actual result; it returns PNG image
+content, not a path-only description. In Codex code mode forward the returned MCP
+image block with `image(...)`. A `clip` with integer x/y/width/height captures a
+viewport detail. An audience contact sheet accepts at most six saved slide IDs;
+its cell order matches the input and each cell has a full-resolution artifact.
+
+The session is bound to the current request and production, one immutable build,
+and a ten-minute lifetime. Close before opening another build. Screenshots,
+mechanical diagnostics, attempted coverage and delivery receipts persist beneath
+the build's managed QA artifacts. Closing/cancellation does not mean QA passed.
+A check's pass covers its observed state only; missing playback, unopened Presenter,
+unentered fullscreen, unseen states and visual/narrative review remain incomplete.
+Layout heuristics identify candidates to inspect, not design judgments. Older
+outputs without a digest must be rebuilt. Missing browser or image capability
+preserves the draft and must be reported as incomplete QA.

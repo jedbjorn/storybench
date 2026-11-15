@@ -2,7 +2,7 @@
 // definitions really served to this harness, the image-returning tools among them, and
 // the media command versions verified in this release's worker image (release manifest).
 // Nothing is advertised on assumption; unverified items say so.
-const IMAGE_TOOLS = ["inspect_image", "inspect_contact_sheet"];
+const IMAGE_TOOLS = ["inspect_image", "inspect_contact_sheet", "inspect_deck_qa"];
 // Both harnesses receive Storybench tools over the request's MCP bridge. Image routes are
 // advertised as verified only after the repeatable nonce proof (scripts/image-receipt-proof.mjs:
 // both harnesses must echo random text drawn in fresh images, 5/5). Codex 0.155.1 production
@@ -45,6 +45,8 @@ export function describeCapabilities({ scope, served, release = null }) {
     imageInput: (() => {
       if (!imageTools.length) return { available: false, reason: "no image-returning tool is served in this request" };
       const route = imageRouteStatus(scope.harness, release);
+      if (imageTools.includes("inspect_deck_qa")) return { available: true, verified: false, tools: imageTools,
+        reason: "Deck screenshots use MCP image blocks; legacy inspect_image proofs do not verify this tool or the selected model. Inspect actual returned images before making visual QA claims." };
       // The tools are served either way; only a proven route is advertised as verified.
       return route.verified ? { available: true, ...route, tools: imageTools } : { available: true, verified: false, reason: route.reason, tools: imageTools };
     })(),

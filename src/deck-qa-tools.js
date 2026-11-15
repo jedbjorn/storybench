@@ -1,0 +1,16 @@
+import { createDeckQa } from './deck-qa.js';
+const text = { type: 'string' }, integer = { type: 'integer' };
+const object = (required, properties) => ({ type: 'object', additionalProperties: false, required, properties });
+const viewport = object(['width', 'height'], { width: { ...integer, minimum: 320, maximum: 1920 }, height: { ...integer, minimum: 240, maximum: 1080 } });
+const session = { sessionId: text }, page = { ...session, pageId: { ...text, description: 'audience or a presenter page ID returned by open/act' } };
+export const DECK_QA_DEFINITIONS = [
+  { name: 'open_deck_qa', description: 'Open one completed immutable deck ZIP in the packaged browser. Returns build digest, revision, pages, and coverage inventory. No paths or URLs accepted. One session per request, ten minute lifetime; close/reopen the same build to resume.', inputSchema: object(['jobId'], { jobId: text, viewport }) },
+  { name: 'inspect_deck_qa', description: 'Return actual PNG image blocks plus artifact IDs, DOM/accessibility and element bounds for the current audience/presenter state. Optional crop gives detail. slideIds (up to six) returns an audience contact sheet with per-slide artifacts for drill-down. Requires an image-capable model.', inputSchema: object(['sessionId'], { ...page, clip: object(['x','y','width','height'], {x:integer,y:integer,width:integer,height:integer}), slideIds: {type:'array', minItems:1,maxItems:6,items:text} }) },
+  { name: 'act_deck_qa', description: 'Drive the real audience or presenter page with a bounded click, key, select, resize, wait, media emulation, focus, or page close. Returns updated DOM/state and observations. Use inspect_deck_qa afterward to see the result. No arbitrary JavaScript or navigation.', inputSchema: object(['sessionId','action'], { ...page, action: {type:'string',enum:['click','key','select','resize','wait','emulate','focus','close-page']}, selector:text, key:text, value:text, viewport, milliseconds:{...integer,minimum:0,maximum:2000}, media:{type:'string',enum:['screen','print']}, reducedMotion:{type:'string',enum:['reduce','no-preference']} }) },
+  { name: 'check_deck_qa', description: 'Read bounded console/resource/font/media/layout/presenter/fullscreen diagnostics and coverage for this exact build. Media checks sample real playback progress. Pass describes the checked state only; unperformed states and aesthetic review remain incomplete.', inputSchema: object(['sessionId'], { ...page, checks:{type:'array',minItems:1,maxItems:7,items:{type:'string',enum:['console','resources','fonts','media','layout','presenter','fullscreen']}} }) },
+  { name: 'close_deck_qa', description: 'Close the browser and reclaim temporary profiles/extraction. Build-scoped screenshots and mechanical evidence persist. Closing never marks visual QA complete.', inputSchema: object(['sessionId'], session) },
+];
+export function createDeckQaTools(scope, { store }) {
+  const qa = createDeckQa({store, scope});
+  return { definitions: DECK_QA_DEFINITIONS, call: (name,args) => qa.call(name,args), close: () => qa.close() };
+}

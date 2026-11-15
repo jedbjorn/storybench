@@ -95,6 +95,7 @@ async function openHeldRequest({
     } } } };
     await writeFile(path.join(started.appRequestDir, "mcp.json"), JSON.stringify(mcpConfig), { mode: 0o600 });
   } catch (error) {
+    await scoped.close();
     await bridge?.close();
     await controlRequest(controlSocket, { op: "worker.stop", requestId }).catch(() => {});
     throw error;
@@ -120,6 +121,7 @@ async function openHeldRequest({
     openCodeConnection(options) { return new OpenCodeConnection({ ...options, spawnSession: (header) => connectHarness(started.harnessSocket, header) }); },
     status: () => controlRequest(controlSocket, { op: "worker.status", requestId }),
     async stop() {
+      await scoped.close();
       await bridge.close().catch(() => {});
       return controlRequest(controlSocket, { op: "worker.stop", requestId });
     },

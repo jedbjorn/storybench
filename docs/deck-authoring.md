@@ -36,3 +36,38 @@ Automated integration covers manual DOM editing and API save, deterministic fake
 Local reference source/structure review compared reusable composition and interaction patterns: navigation rail and hierarchy, chapter/statement contrast, paired copy/media, comparison columns, cumulative process reveals, gallery tabs and presenter notes/control synchronization. The generic template retains these patterns; gallery media is mapped separately from reveals so authoring preserves both. No private reference copy, screenshots or assets are distributed. The demo uses synthetic text and media through saved state rather than special-case HTML.
 
 No real-provider, manual-browser, deployed-app or final aesthetic/presentation-use pass is claimed. These are accepted pre-alpha uncertainties for hands-on refinement. No deployment is part of this delivery.
+
+### Packaged browser inspection
+
+Deck requests expose `open_deck_qa`, `act_deck_qa`, `inspect_deck_qa`,
+`check_deck_qa` and `close_deck_qa` through the same scoped MCP bridge on Codex,
+Claude and OpenCode. The app image contains Playwright 1.63.0 and its matching
+Chromium revision 1243 (153.0.8010.12), installed at image build time; no personal
+browser, provider call or runtime browser download is involved. Browser OS
+libraries use the image's pinned Debian snapshot. The worker needs no browser.
+
+Open accepts a completed build ID, validates the saved ZIP digest and extracts a
+private snapshot. Changed/older undigested bundles require rebuilding. Browser
+navigation and resources stay within that snapshot; external HTTP/WebSockets and
+outside files are refused. The browser receives a fresh temporary profile and an
+explicit environment without provider/account/proxy credentials. Only trusted
+exported runtime and validated assets are supported browser input.
+
+Sessions are request-owned, limited to one per request/two per app, ten minutes,
+four pages, 120 screenshots and 600 actions. Operations time out after 20 seconds;
+individual browser actions use five seconds. Viewports are bounded to 1920×1080,
+V8 heaps to 128 MiB and renderer count to two. Release checks run with a 1536 MiB
+container memory ceiling. Close, cancellation, request teardown, browser failure
+and expiration reclaim the profile/extraction; managed evidence remains at
+`outputs/decks/<job>/qa/<session>/`. Each session JSON identifies the build digest,
+revision, browser, page/state/viewport coverage, checks and screenshot artifacts.
+Screenshots acknowledged by the MCP transport are marked delivered, which does
+not assert that the model reviewed them. A closed session is still QA incomplete.
+
+The real-browser proof is `node src/runtime/browser-check.js`. It tests all three
+MCP routes without inference, including image decoding, file-URL ZIP rendering,
+local fonts, presenter notes/control, SVG reveals, MP4 and WebM playback, gallery,
+contact sheets and retained evidence. Missing Chromium fails this proof. The CI
+release image runs it with networking disabled; Node CI also installs the pinned
+browser for the mandatory regression suite. This proves exercised Chromium states,
+not a live model's aesthetic judgment, another browser, or physical dual displays.

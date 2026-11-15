@@ -2,6 +2,7 @@
 // episode / conversation / request; the worker cannot choose another scope. The same
 // implementations serve Codex (app-server dynamic tools) and Claude (MCP via the
 // request bridge). Storage/mutation rules stay in the existing app services.
+import { createDeckQaTools, DECK_QA_DEFINITIONS } from "../deck-qa-tools.js";
 import { randomUUID } from "node:crypto";
 import { constants, createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
@@ -202,7 +203,9 @@ export function assignToCard(store, episodeId, itemId, { cardId, expectedRevisio
 // (resolved by the app from the store path API). `store` is the app's open Store and
 // `library` its library service; storage/mutation rules stay in those services.
 export function createScopedTools(scope, { store, library = null, isShortcutMessage = defaultIsShortcutMessage, release = null, assertAuthoringContext = () => { throw new RuntimeError('RESEARCH_CONTEXT_REQUIRED', 'Read complete current research in an active request before assigning media to cards', { status: 409 }); } } = {}) {
-  let served = TOOL_DEFINITIONS;
+  const qa = createDeckQaTools(scope, { store });
+  const definitions = [...TOOL_DEFINITIONS, ...DECK_QA_DEFINITIONS];
+  let served = definitions;
   const handlers = {
     async inspect_image(args = {}) {
       const at = args.atSeconds == null ? null : assertTimestamp(args.atSeconds);
@@ -302,11 +305,13 @@ export function createScopedTools(scope, { store, library = null, isShortcutMess
     },
   };
   return {
-    definitions: TOOL_DEFINITIONS,
+    definitions,
+    close: () => qa.close(),
     // The request tells the tool set which definitions are actually served to the harness
     // (runtime tools plus any merged app operations), so capabilities never over-report.
     setServedDefinitions(definitions) { served = definitions; },
     async call(name, args) {
+      if (DECK_QA_DEFINITIONS.some(d => d.name === name)) return qa.call(name, args);
       if (!Object.hasOwn(handlers, name)) throw new RuntimeError("UNKNOWN_TOOL", `Unknown Storybench tool: ${String(name)}`, { status: 404 });
       return handlers[name](args && typeof args === "object" ? args : {});
     },
