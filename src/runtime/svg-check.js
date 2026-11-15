@@ -1,5 +1,5 @@
 // Role-specific production-path entrypoints for exact-image installation checks.
-// Later staged/browser checks compose this result; this receipt claims neither.
+// Browser/install integration composes this result; it makes no browser claim.
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -15,7 +15,7 @@ import { renderSvg } from '../svg-render.js';
 import { runChecked } from './image-check.js';
 import { HeavyJobQueue } from '../job-runner.js';
 
-export const SVG_CHECK_VERSION = 1;
+export const SVG_CHECK_VERSION = 2;
 export const illustrationURL = new URL('./fixtures/svg-illustration.svg', import.meta.url);
 export const invalidURL = new URL('./fixtures/svg-invalid.svg', import.meta.url);
 const call = async (tools, name, args) => JSON.parse((await tools.call(name, args)).text);
@@ -62,6 +62,8 @@ export async function smokeSvg(role) {
     assert.equal(reused.item.provenance.reusedFrom.itemId, registered.libraryItemId);
     const saved = store.saveDeck(destination.id, 1, [
       { id: 'illustration', title: 'Shared plan', layout: 'full-media', media: { itemId: reused.item.id, alt: 'Three workspaces and a landscape' }, notes: 'Observe, connect, plan.' },
+      { id: 'staged', title: 'From seeing to planning', layout: 'process', vector: { itemId: reused.item.id, alt: 'Three illustrated planning steps' },
+        stages: ['observe', 'connect', 'plan'].map(id => ({ id: `stage_${id}`, title: id, svgGroupIds: [id], afterMs: 1000 })) },
       { id: 'gallery', title: 'Look again', layout: 'statement', subnav: [{ id: 'detail', label: 'Editable source', itemId: reused.item.id }] },
     ]);
     const queue = new HeavyJobQueue();
@@ -77,8 +79,10 @@ export async function smokeSvg(role) {
     assert.ok(zip.includes(source));
     const html = await readFile(path.join(dir, 'index.html'), 'utf8');
     assert.match(html, /id="_sbv1-plan"/); assert.match(html, /id="_sbv2-plan"/);
+    assert.match(html, /<g data-vector-step="2"><g id="_sbv2-plan"/);
+    assert.deepEqual(completed.snapshot.slides[1].stages[2].svgGroupIds, ['plan']);
     await assert.rejects(library.registerFile({ episodeId: first.id, readable: Readable.from(invalid), fileName: 'bad.svg', selectedCategory: 'Graphics' }), /unsupported element script/);
-    return { ...result, import: true, registration: true, reuse: true, imageTool: true, savedStaticExport: true, retainedZipSource: true };
+    return { ...result, import: true, registration: true, reuse: true, imageTool: true, savedStaticExport: true, savedStagedExport: true, retainedZipSource: true };
   } finally { await decks?.close(); store?.close(); await rm(root, { recursive: true, force: true }); }
 }
 

@@ -93,6 +93,8 @@ test('HTTP build dispatch is production scoped, preview is opaque sandbox and ZI
 
 test('editable eight-slide demo: manual DOM edit, fake-agent bridge save/build, HTTP preview/ZIP, reopen and rebuild',async t=>{
  const { createDemo }=await import('../scripts/create-deck-demo.mjs');
+ const { Readable } = await import('node:stream');
+ const { createLibraryService } = await import('../src/library.js');
  const { JSDOM }=await import('jsdom');
  const { deckBoardHTML,bindDeckBoard }=await import('../public/deck-workspace.js');
  const { startBridge }=await import('../src/runtime/bridge.js');
@@ -126,6 +128,8 @@ test('editable eight-slide demo: manual DOM edit, fake-agent bridge save/build, 
     const current=await rpc(socketPath,token,'read_deck',{});
     const before=structuredClone(current),jobsBefore=app.store.listJobs(current.id).map(job=>job.id);
     current.slides[1].body=`Agent revision ${turn}`;
+    current.slides[5].stages.reverse();
+    assert.equal(current.slides[5].stages[0].svgGroupIds.length, 1);
     await assert.rejects(rpc(socketPath,token,'save_deck',{expectedRevision:current.revision,slides:current.slides}),/Research context has not been delivered/);
     await assert.rejects(rpc(socketPath,token,'build_deck',{expectedRevision:current.revision}),/Research context has not been delivered/);
     assert.deepEqual(app.store.getDeck(current.id),before);
@@ -143,6 +147,10 @@ test('editable eight-slide demo: manual DOM edit, fake-agent bridge save/build, 
  app=await createApp({workspace:root,chatOptions:{codexFactory:factory}});
  await new Promise(r=>app.server.listen(0,'127.0.0.1',r)); const base=`http://127.0.0.1:${app.server.address().port}`;
  const deck=await createDemo(app.store), slides=structuredClone(deck.slides);
+ const source = await readFile(new URL('../src/runtime/fixtures/svg-illustration.svg', import.meta.url));
+ const vector = await createLibraryService({ workspace: root, store: app.store }).registerFile({ episodeId: deck.id, readable: Readable.from(source), fileName: 'plan.svg', selectedCategory: 'Graphics' });
+ slides[5].vector = { itemId: vector.id, alt: 'An editable landscape and planning diagram' };
+ slides[5].stages = ['landscape','observe','connect','plan'].map((id, i) => ({ id: `stage_${id}`, title: id, afterMs: i ? 400 : 0, svgGroupIds: [id] }));
  assert.equal(slides.length,8);assert.equal(new Set(slides.map(s=>s.layout)).size,7);
  const dom=new JSDOM('<main></main>'),board=dom.window.document.querySelector('main'); board.innerHTML=deckBoardHTML(slides,app.store.listEpisodeLibrary(deck.id),[]);
  bindDeckBoard(board,{getSlides:()=>slides,onDirty(){},onSave(){},render(){}});
@@ -157,12 +165,13 @@ test('editable eight-slide demo: manual DOM edit, fake-agent bridge save/build, 
  }
  const job=app.store.listJobs(deck.id).find(j=>j.state==='completed');assert.ok(job);
  const html=await (await fetch(`${base}/api/jobs/${job.id}/deck/index.html`)).text(),page=new JSDOM(html);
- assert.equal(page.window.document.querySelectorAll('.slide').length,8);assert.equal(page.window.document.querySelectorAll('[data-step]').length,4);assert.equal(page.window.document.querySelectorAll('[data-gallery]').length,2);assert.ok(page.window.document.querySelector('video'));assert.match(html,/Manual notes/);page.window.close();
+ assert.equal(page.window.document.querySelectorAll('.slide').length,8);assert.equal(page.window.document.querySelectorAll('[data-step]').length,4);assert.equal(page.window.document.querySelectorAll('[data-gallery]').length,2);assert.ok(page.window.document.querySelector('video'));assert.match(html,/Manual notes/);assert.equal(page.window.document.querySelectorAll('[data-vector-step]').length,4);assert.equal(page.window.document.querySelector('#_sbv1-plan').parentElement.dataset.vectorStep,'0');page.window.close();
  assert.ok(job.snapshot.manifest.files.some(f=>f.endsWith('.webm')));assert.ok(job.snapshot.manifest.files.some(f=>f.endsWith('.png')));
  await app.close();app=null;
  const reopened=new Store(root),decks=createDeckService({store:reopened});
  try {
   const current=reopened.getDeck(deck.id);assert.equal(current.slides[1].body,'Agent revision 3');
+  assert.deepEqual(current.slides[5].stages.map(stage => stage.id), ['stage_plan','stage_connect','stage_observe','stage_landscape']);
   current.slides[7].body='A new question after reopening';const saved=reopened.saveDeck(deck.id,current.revision,current.slides);
   const rebuilt=await terminal(decks,deck.id,decks.enqueue({episodeId:deck.id,expectedRevision:saved.revision}));assert.equal(rebuilt.state,'completed',rebuilt.error);assert.notEqual(rebuilt.id,job.id);
  } finally {await decks.close();reopened.close();}

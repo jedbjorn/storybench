@@ -1,5 +1,20 @@
 // Saved composition data, shared by manual editing and runtime tools. No executable markup.
 export const DECK_LAYOUTS = ['title', 'section', 'statement', 'text-media', 'columns', 'full-media', 'process'];
+// Used with registered metadata on save and freshly parsed source on export.
+export function validateVectorStages(stages, groupIds) {
+  if (!Array.isArray(stages) || !stages.length) throw new Error('Vector composition requires reveal stages');
+  const seen = new Set(), stageIds = new Set();
+  for (const stage of stages) {
+    if (!stage || typeof stage.id !== 'string' || !stage.id.trim() || stageIds.has(stage.id)) throw new Error('Vector stage IDs must be nonempty and unique');
+    stageIds.add(stage.id);
+    if (!Array.isArray(stage.svgGroupIds) || !stage.svgGroupIds.length) throw new Error(`Stage ${stage.id}: select at least one SVG group`);
+    for (const id of stage.svgGroupIds) {
+      if (typeof id !== 'string' || !groupIds.includes(id)) throw new Error(`Stage ${stage.id}: missing SVG group ${id}`);
+      if (seen.has(id)) throw new Error(`Stage ${stage.id}: duplicate SVG group mapping ${id}`);
+      seen.add(id);
+    }
+  }
+}
 export function validateSlides(slides, { libraryItems = [], sections = [] } = {}) {
   const fail = (message) => { throw new Error(message); };
   const text = (value, name, required = false) => {
@@ -48,8 +63,19 @@ export function validateSlides(slides, { libraryItems = [], sections = [] } = {}
       if (key !== 'columns') ids(values, key);
       result[key] = values.map(value => key === 'subnav'
         ? { id: value.id, label: text(value.label, 'Sub-navigation label', true), ...(value.itemId ? { itemId: item(value.itemId).id } : {}) }
-        : { ...(key === 'stages' ? { id: value.id } : {}), title: text(value.title, `${key} title`, true), body: text(value.body ?? '', `${key} body`), ...(value.afterMs == null ? {} : { afterMs: timing(value.afterMs, 'afterMs') }) });
+        : { ...(key === 'stages' ? { id: value.id, ...(value.svgGroupIds === undefined ? {} : { svgGroupIds: value.svgGroupIds }) } : {}), title: text(value.title, `${key} title`, true), body: text(value.body ?? '', `${key} body`), ...(value.afterMs == null ? {} : { afterMs: timing(value.afterMs, 'afterMs') }) });
     }
+    if (slide.vector) {
+      const selected = item(slide.vector.itemId);
+      if (selected.asset?.kind !== 'image' || selected.asset.metadata?.contentType !== 'image/svg+xml') fail(`Slide ${slide.id}: vector must reference a registered SVG image`);
+      if (slide.media || result.subnav.length) fail(`Slide ${slide.id}: vector composition cannot also contain media or gallery views`);
+      if (!['title', 'text-media', 'full-media', 'process'].includes(slide.layout)) fail(`Slide ${slide.id}: vector requires title, text-media, full-media or process layout`);
+      try { validateVectorStages(result.stages, selected.asset.metadata.svgGroupIds ?? []); }
+      catch (error) { fail(`Slide ${slide.id}: ${error.message}`); }
+      result.vector = { itemId: selected.id, alt: text(slide.vector.alt ?? '', 'vector alt') };
+      for (const stage of result.stages) stage.svgGroupIds = [...stage.svgGroupIds];
+    } else if (result.stages.some(stage => stage.svgGroupIds !== undefined)) fail(`Slide ${slide.id}: SVG group mappings require a vector composition`);
+    if (result.stages.some(stage => stage.afterMs > 3600000)) fail(`Slide ${slide.id}: afterMs must be at most 3600000`);
     return result;
   });
 }

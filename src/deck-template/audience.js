@@ -6,14 +6,19 @@
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
   let index = Math.max(0, slides.findIndex((slide) => `#${slide.id}` === location.hash));
   let stage = 0, timer, manual = false, popup = null, channel = '', lastSeen = 0;
-  const steps = () => [...slides[index].querySelectorAll('[data-step]')];
+  let opening = false, remaining = null, due = 0, printing = false;
+  const steps = () => [...slides[index].querySelectorAll('.stages > [data-step]')];
   const video = () => [...slides[index].querySelectorAll('video')].find((target) => !target.closest('[hidden]'));
   const pauseVideos = () => document.querySelectorAll('video').forEach((target) => target.pause());
-  const cancel = () => { clearTimeout(timer); timer = undefined; };
+  const cancel = (reset = true) => {
+    if (timer !== undefined && !reset) remaining = Math.max(0, due - Date.now());
+    clearTimeout(timer); timer = undefined;
+    if (reset) remaining = null;
+  };
   function state() {
     return { index, stage, titles: slides.map((slide) => slide.dataset.title),
       notes: slides[index].querySelector('.speaker-notes').textContent,
-      stages: [...slides[index].querySelectorAll('[data-stage]')].map((button) => button.textContent),
+      stages: [...slides[index].querySelectorAll('.stage-nav [data-stage]')].map((button) => button.textContent),
       targetMinutes: Number(slides[index].dataset.minutes),
       video: video() ? { paused: video().paused } : null };
   }
@@ -21,21 +26,35 @@
     if (popup && !popup.closed) popup.postMessage({ type: 'deck-state', channel, state: state() }, '*');
   }
   function paintStage() {
-    steps().forEach((step, i) => { step.dataset.pending = String(i > stage && !reduced.matches); });
-    slides[index].querySelectorAll('[data-stage]').forEach((button, i) => button.setAttribute('aria-pressed', String(i === stage)));
+    const pending = i => String((opening || i > stage) && !reduced.matches && !printing);
+    steps().forEach((step, i) => { step.dataset.pending = pending(i); });
+    slides[index].querySelectorAll('[data-vector-step]').forEach(group => {
+      group.dataset.pending = pending(Number(group.dataset.vectorStep));
+      group.setAttribute('aria-hidden', group.dataset.pending);
+    });
+    slides[index].querySelectorAll('.stage-nav [data-stage]').forEach((button, i) => button.setAttribute('aria-pressed', String(i === stage)));
     publish();
   }
   function schedule() {
-    cancel();
-    if (manual || document.hidden || reduced.matches) return;
-    const next = steps()[stage + 1];
+    cancel(false);
+    if (manual || document.hidden || reduced.matches || printing) return;
+    const next = steps()[opening ? 0 : stage + 1];
     if (!next || !Number(next.dataset.delay)) return;
-    timer = setTimeout(() => { stage++; paintStage(); schedule(); }, Number(next.dataset.delay));
+    const delay = remaining ?? Number(next.dataset.delay); due = Date.now() + delay;
+    timer = setTimeout(() => {
+      timer = undefined; remaining = null;
+      if (opening) opening = false; else stage++;
+      paintStage(); schedule();
+    }, delay);
   }
   function takeOver() { manual = true; cancel(); }
+  function resetStages() {
+    cancel(); manual = false; stage = reduced.matches ? Math.max(0, steps().length - 1) : 0;
+    opening = !reduced.matches && Number(steps()[0]?.dataset.delay) > 0;
+  }
   function selectStage(value) {
     if (!Number.isInteger(value) || value < 0 || value >= steps().length) return;
-    takeOver(); stage = value; paintStage();
+    takeOver(); opening = false; stage = value; paintStage();
   }
   function play(target) {
     if (!target) return;
@@ -52,7 +71,7 @@
     if (!Number.isInteger(value)) return;
     const next = Math.max(0, Math.min(slides.length - 1, value));
     if (next !== index) {
-      cancel(); pauseVideos(); index = next; stage = 0; manual = false;
+      cancel(); pauseVideos(); index = next; resetStages();
       document.getElementById('presentation').focus({ preventScroll: true });
     }
     slides.forEach((slide, i) => { slide.hidden = i !== index; });
@@ -73,6 +92,7 @@
     else if (name === 'stage') selectStage(value);
     else if (name === 'sub-next') selectStage(stage + 1);
     else if (name === 'sub-previous') selectStage(stage - 1);
+    else if (name === 'replay') { resetStages(); paintStage(); schedule(); }
     else if (name === 'video-toggle' || name === 'video-restart') {
       takeOver(); const target = video();
       if (target) {
@@ -107,7 +127,7 @@
     }
   }, 1000);
   links.forEach((button) => button.addEventListener('click', () => show(Number(button.dataset.go))));
-  document.querySelectorAll('[data-stage]').forEach((button) => button.addEventListener('click', () => selectStage(Number(button.dataset.stage))));
+  document.querySelectorAll('.stage-nav [data-stage]').forEach((button) => button.addEventListener('click', () => selectStage(Number(button.dataset.stage))));
   document.querySelectorAll('[data-command]').forEach((button) => button.addEventListener('click', () => command(button.dataset.command)));
   // Gallery views are independent of cumulative diagram reveals.
   document.querySelectorAll('[data-gallery]').forEach((button) => button.addEventListener('click', () => {
@@ -139,12 +159,17 @@
     else if (event.key.toLowerCase() === 'n') { event.preventDefault(); openPresenter(); }
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { cancel(); pauseVideos(); } else schedule();
+    if (document.hidden) { cancel(false); pauseVideos(); } else schedule();
   });
-  reduced.addEventListener('change', () => { paintStage(); schedule(); });
+  reduced.addEventListener('change', () => {
+    if (reduced.matches) { takeOver(); opening = false; stage = Math.max(0, steps().length - 1); }
+    paintStage(); schedule();
+  });
+  window.addEventListener('beforeprint', () => { printing = true; cancel(false); paintStage(); });
+  window.addEventListener('afterprint', () => { printing = false; paintStage(); schedule(); });
   window.addEventListener('hashchange', () => {
     const found = slides.findIndex((slide) => `#${slide.id}` === location.hash);
     if (found >= 0) show(found);
   });
-  show(index);
+  resetStages(); show(index);
 })();

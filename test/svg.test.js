@@ -117,6 +117,12 @@ test('cross-channel SVG reuse and reopen preserve ownership; invalid builds reta
   const run = async () => { const j = decks.enqueue({ episodeId: second.id, expectedRevision: store.getDeck(second.id).revision }); await queue.draining; return decks.getJob(second.id, j.id); };
   const good = await run(); assert.equal(good.state, 'completed', good.error);
   const zip = await readFile(path.join(root, good.outputPath));
+  store.saveDeck(second.id, store.getDeck(second.id).revision, [{ id: 'art', title: 'Art', layout: 'process',
+    vector: { itemId: reused.item.id, alt: 'Art' }, stages: [{ id: 'tree-stage', title: 'Tree', svgGroupIds: ['tree'] }] }]);
+  const badMapping = await run(); assert.equal(badMapping.state, 'failed');
+  assert.match(badMapping.error, /Slide art.*stage group tree.*not a definition/);
+  assert.equal(badMapping.outputPath, null);
+  assert.deepEqual(await readFile(path.join(root, good.outputPath)), zip);
   await writeFile(path.join(root, reused.item.asset.path), svg('<script/>'));
   const broken = await run(); assert.equal(broken.state, 'failed'); assert.match(broken.error, /Slide art.*differs from its registered source/);
   assert.deepEqual(await readFile(path.join(root, good.outputPath)), zip);
@@ -127,4 +133,40 @@ test('cross-channel SVG reuse and reopen preserve ownership; invalid builds reta
   store.saveDeck(second.id, store.getDeck(second.id).revision, [{ id: 'bad', title: 'Bad', layout: 'full-media', media: { itemId: badItem.id, alt: 'Bad' } }]);
   const rejected = await run(); assert.equal(rejected.state, 'failed'); assert.match(rejected.error, /Slide bad, asset .*unsupported element script/);
   await assert.rejects(library.reuseItem({ source: { episodeId: second.id, itemId: reused.item.id }, destination: { episodeId: first.id } }), /unsupported element script/);
+});
+
+test('staged SVG export keeps internal definitions and uses inside the same visibility wrapper', () => {
+  const input = Buffer.from(svg('<g id="art"><defs><path id="shape" d="M0 0L20 0L10 20Z"/></defs><use href="#shape"/></g>'));
+  const files = buildDeck({ title: 'Local definitions', slides: [{ id: 'local', title: 'Local geometry', layout: 'process',
+    vector: { type: 'image', src: 'assets/local.svg', alt: 'Triangle' },
+    stages: [{ id: 'reveal', title: 'Reveal', svgGroupIds: ['art'] }] }] }, { assets: { 'assets/local.svg': input } });
+  assert.deepEqual(files.get('assets/local.svg'), input);
+  const dom = new JSDOM(files.get('index.html'));
+  try {
+    const doc = dom.window.document, wrapper = doc.querySelector('[data-vector-step="0"]');
+    assert.ok(wrapper);
+    const use = wrapper.querySelector('use'), target = doc.getElementById(use.getAttribute('href').slice(1));
+    assert.ok(wrapper.contains(target));
+    assert.equal(target.parentElement.localName, 'defs');
+    assert.equal(target.getAttribute('d'), 'M0 0L20 0L10 20Z');
+    assert.notEqual(target.id, 'shape', 'local references are namespaced with their target');
+    assert.equal(doc.querySelectorAll('[data-vector-step]').length, 1);
+  } finally { dom.window.close(); }
+});
+
+test('staged SVG export preserves geometry and rejects ambiguous or definition-only mappings', () => {
+  const stages = [{ id: 'reveal', title: 'Reveal', svgGroupIds: ['art'] }];
+  const input = svg('<g id="art" transform="translate(10 20)" opacity="0.6"><path d="M0 0L20 0L10 20Z"/></g>');
+  const parsed = parseSvg(Buffer.from(input), { namespace: 'a', stages });
+  assert.match(parsed.svg, /<g data-vector-step="0"><g id="a-art" transform="translate\(10 20\)" opacity="0.6">/);
+  assert.equal(parsed.source, input);
+  for (const [body, mapping, error] of [
+    ['<g id="outer"><g id="art"/></g>', [{ id: 'a', svgGroupIds: ['outer'] }, ...stages], /cannot nest/],
+    ['<defs><g id="art"/></defs><use href="#art"/>', stages, /not a definition/],
+    ['<g id="art"/><use href="#art"/>', stages, /cannot be reused/],
+    ['<g id="art"><path id="child" d="M0 0L10 10"/></g><use href="#child"/>', stages, /cannot be reused/],
+    ['<g id="outer"><g id="art"/></g><use href="#outer"/>', stages, /cannot be reused/],
+    ['<g id="art"/>', [{ id: 'a', svgGroupIds: ['missing'] }], /missing SVG group/],
+  ]) assert.throws(() => parseSvg(Buffer.from(svg(body)), { namespace: 'test', stages: mapping }), error);
+  assert.throws(() => parseSvg(Buffer.from(svg('<g data-vector-step="0"/>'))), /unsupported attribute/);
 });

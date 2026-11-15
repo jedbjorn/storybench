@@ -42,6 +42,7 @@
     document.querySelector('[data-command="next"]').disabled = state.index === state.titles.length - 1;
     document.querySelector('[data-command="sub-previous"]').disabled = !state.stages.length || state.stage === 0;
     document.querySelector('[data-command="sub-next"]').disabled = !state.stages.length || state.stage === state.stages.length - 1;
+    document.querySelector('[data-command="replay"]').disabled = !state.stages.length;
     for (const name of ['video-toggle', 'video-restart']) document.querySelector(`[data-command="${name}"]`).disabled = !state.video;
     document.getElementById('video-status').textContent = state.video ? (state.video.paused ? 'Video paused' : 'Video playing') : 'No video on this slide';
   });

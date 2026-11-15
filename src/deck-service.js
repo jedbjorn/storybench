@@ -71,6 +71,7 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
           for (const saved of snapshot.slides) {
             signal.throwIfAborted(); const slide = {...saved,subnav:undefined};
             if (saved.media) slide.media = {...await media(saved.media.itemId,saved.id),alt:saved.media.alt || saved.title};
+            if (saved.vector) slide.vector = {...await media(saved.vector.itemId,saved.id),alt:saved.vector.alt || saved.title};
             slide.gallery = [];
             for (const entry of saved.subnav) slide.gallery.push({id:entry.id,label:entry.label,...(entry.itemId ? {media:await media(entry.itemId,saved.id)} : {})});
             slides.push(slide);

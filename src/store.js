@@ -1709,6 +1709,7 @@ export class Store {
       throw new StoreError(`Stale episode revision: expected ${episode.revision}`, 409);
     const cards = episode.cards.map((card) => ({ ...card,
       ...(episode.kind === "deck" ? { media: card.media?.itemId === itemId ? null : card.media,
+        ...(card.vector?.itemId === itemId ? { vector: null, stages: (card.stages || []).map(({ svgGroupIds, ...stage }) => stage) } : {}),
         subnav: (card.subnav || []).map(entry => entry.itemId === itemId ? { ...entry, itemId: null } : entry) } : {}),
       itemId: card.itemId === itemId ? null : card.itemId,
       referenceItemIds: (card.referenceItemIds || []).filter((id) => id !== itemId),
