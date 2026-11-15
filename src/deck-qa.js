@@ -44,7 +44,7 @@ export function inspectPage() {
     presenter:document.querySelector('#connection')?.textContent ?? null,notes:document.querySelector('#notes')?.textContent ?? null,
     fonts:[...document.fonts].map(f=>({family:f.family,status:f.status})),
     images:[...document.images].map(e=>({src:e.getAttribute('src'),loaded:e.complete && e.naturalWidth>0})),
-    media:[...document.querySelectorAll('video')].map(e=>({src:e.getAttribute('src'),visible:visible(e),readyState:e.readyState,error:e.error?.code ?? null,paused:e.paused,time:e.currentTime,duration:Number.isFinite(e.duration)?e.duration:null})),
+    media:[...document.querySelectorAll('video')].map((e,index)=>({index,src:e.getAttribute('src'),visible:visible(e),readyState:e.readyState,error:e.error?.code ?? null,paused:e.paused,time:e.currentTime,duration:Number.isFinite(e.duration)?e.duration:null})),
     inventory:[...document.querySelectorAll('.slide')].map(e=>({slideId:e.id,title:e.dataset.title,stages:[...e.querySelectorAll('[data-stage]')].map(s=>s.dataset.stage),gallery:[...e.querySelectorAll('[data-gallery]')].map(g=>g.dataset.gallery)})),
     pageOverflow:document.documentElement.scrollWidth>innerWidth+2,
   };
@@ -224,7 +224,15 @@ export function createDeckQa({store,scope}) {
       if(name==='resources') {const errors=s.record.errors.filter(e=>!['console','page'].includes(e.type));result[name]=check(errors.length||state.images.some(i=>!i.loaded)?'fail':'pass','Observed local resources', {errors,images:state.images});}
       if(name==='fonts') result[name]=check(state.fonts.length && state.fonts.every(f=>f.status==='loaded')?'pass':'fail','Bundled font faces must actually load',state.fonts);
       if(name==='layout') {const candidates=state.elements.filter(e=>e.overflow || e.bounds.x< -2 || e.bounds.x+e.bounds.width>state.viewport.width+2 || e.bounds.y< -2 || e.bounds.y+e.bounds.height>state.viewport.height+2);result[name]=check(candidates.length||state.pageOverflow?'fail':'pass','Overflow candidates only; inspect the screenshot',candidates);}
-      if(name==='media') {const media=state.media.filter(m=>m.visible).map(m=>({...m,advancing:m.time>(before.media.find(b=>b.src===m.src)?.time??m.time)}));result[name]=check(!media.length?'unverified':media.some(m=>m.error)?'fail':media.every(m=>m.advancing)?'pass':'unverified','Only actual advancing playback proves decode; use Presenter media controls to start it',media);}
+      if(name==='media') {
+        // Generated bundles keep a static media DOM; an asset URL can occur on many slides.
+        const sameView=state.slideId===before.slideId && JSON.stringify([state.stage,state.gallery])===JSON.stringify([before.stage,before.gallery]);
+        const media=state.media.filter(m=>m.visible).map(m=>{
+          const previous=before.media[m.index];
+          return {...m,advancing:Boolean(sameView && previous?.src===m.src && previous.visible && !previous.paused && !m.paused && m.time>previous.time)};
+        });
+        result[name]=check(!media.length?'unverified':media.some(m=>m.error)?'fail':media.every(m=>m.advancing)?'pass':'unverified','Only actual advancing playback proves decode; use Presenter media controls to start it',media);
+      }
       if(name==='presenter') {
         const presenter=[...s.pages].find(([id,p])=>id!=='audience'&&!p.isClosed());
         if(!presenter) result[name]=check('unverified','Open Presenter through the audience control');

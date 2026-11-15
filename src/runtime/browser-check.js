@@ -35,6 +35,7 @@ export async function browserFixture(root) {
     {id:'opening',title:'A local plan',body:'Vector illustration with bundled fonts.',layout:'full-media',media:{itemId:svg.id},notes:'Private presenter notes'},
     {id:'stages',title:'Observe, connect, plan',layout:'process',vector:{itemId:svg.id},notes:'Three steps',stages:['observe','connect','plan'].map(id=>({id,title:id,svgGroupIds:[id],afterMs:200}))},
     ...media.map((m,i)=>({id:`video-${i}`,title:i?'WebM playback':'MP4 playback',layout:'full-media',media:{itemId:m.id},notes:'Start playback from Presenter'})),
+    {id:'video-reused',title:'Reused MP4 playback',layout:'full-media',media:{itemId:media[0].id},notes:'Independent playback of the same asset'},
     {id:'gallery',title:'Compare views',layout:'statement',subnav:[{id:'first',label:'First',itemId:svg.id},{id:'second',label:'Second',itemId:svg.id}],notes:'Compare two views'},
   ]);
   const queue=new HeavyJobQueue(),decks=createDeckService({store,queue});
@@ -94,10 +95,32 @@ export async function smokeBrowser() {
         state=(await inspect({})).data.screenshots[0].state;assert.deepEqual(state.stage,['0']);assert.equal(state.visibleGroups.length,1);
         await act({pageId:'presenter-1',action:'click',selector:'[data-command="replay"]'});
         await act({action:'wait',milliseconds:700});assert.equal((await inspect({})).data.screenshots[0].state.visibleGroups.length,3);
+        // The first MP4 stays hidden at zero while the same asset plays on another slide.
+        await act({pageId:'presenter-1',action:'select',selector:'#slide-select',value:'4'});
+        await act({action:'wait',milliseconds:200});
+        assert.equal((await check({checks:['media']})).results.media.status,'unverified');
+        await act({pageId:'presenter-1',action:'click',selector:'[data-command="video-restart"]'});
+        await act({action:'wait',milliseconds:500});
+        await act({pageId:'presenter-1',action:'click',selector:'[data-command="video-toggle"]'});
+        state=(await act({action:'wait',milliseconds:100})).state;
+        const pausedVideo=state.media.find(m=>m.visible),hiddenCopy=state.media.find(m=>!m.visible && m.src===pausedVideo.src);
+        assert.equal(state.slideId,'video-reused');assert.equal(pausedVideo.paused,true);
+        assert.equal(hiddenCopy.time,0);assert.ok(pausedVideo.time>hiddenCopy.time);
+        const paused=await check({checks:['media']});
+        assert.equal(paused.results.media.status,'unverified',`${harness} paused duplicate: ${JSON.stringify(paused.results)}`);
+        assert.equal(paused.results.media.details[0].advancing,false);
+        assert.equal(paused.results.media.details[0].time,pausedVideo.time);
+        await act({pageId:'presenter-1',action:'click',selector:'[data-command="video-toggle"]'});
+        await act({action:'wait',milliseconds:100});
+        const resumed=await check({checks:['media']});
+        assert.equal(resumed.results.media.status,'pass',`${harness} resumed duplicate: ${JSON.stringify(resumed.results)}`);
+        assert.equal(resumed.results.media.details[0].paused,false);
+        assert.ok(resumed.results.media.details[0].time>pausedVideo.time);
         for(const i of [0,1]) {
           await act({pageId:'presenter-1',action:'select',selector:'#slide-select',value:String(i+2)});
           await act({action:'wait',milliseconds:200});
           await act({pageId:'presenter-1',action:'click',selector:'[data-command="video-restart"]'});
+          await act({action:'wait',milliseconds:100});
           const playback=await check({checks:['media']});assert.equal(playback.results.media.status,'pass',`${harness} codec ${i}: ${JSON.stringify(playback.results)}`);
         }
         await act({action:'key',key:'End'});await act({action:'click',selector:'.slide:not([hidden]) [data-gallery="1"]'});
@@ -111,7 +134,7 @@ export async function smokeBrowser() {
         const closed=(await client.call('close_deck_qa',{sessionId})).data;assert.equal(closed.closed,true);assert.equal(closed.qaStatus,'incomplete');
         const retained=JSON.parse(await readFile(path.join(root,closed.evidence,'session.json'),'utf8'));assert.ok(retained.screenshots.every(s=>s.delivered));assert.ok(retained.coverage.length>6);
         await assert.rejects(client.call('inspect_deck_qa',{sessionId}),/closed|expired/);
-        routes[harness]={imageBlocks:true,delivered:true,presenter:true,mp4Playback:true,webmPlayback:true,stagedInteraction:true,contactSheet:true,evidenceRetained:true,fullscreen:fullscreen.results.fullscreen.status};
+        routes[harness]={imageBlocks:true,delivered:true,presenter:true,mp4Playback:true,webmPlayback:true,reusedVideoPauseAndPlayback:true,stagedInteraction:true,contactSheet:true,evidenceRetained:true,fullscreen:fullscreen.results.fullscreen.status};
       } finally {await client.close();}
     }
     return {checkVersion:1,browser:BROWSER_IDENTITY,exactZip:true,routes};
