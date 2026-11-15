@@ -71,3 +71,20 @@ contact sheets and retained evidence. Missing Chromium fails this proof. The CI
 release image runs it with networking disabled; Node CI also installs the pinned
 browser for the mandatory regression suite. This proves exercised Chromium states,
 not a live model's aesthetic judgment, another browser, or physical dual displays.
+
+
+## Installed deck readiness
+
+Install/update and reused releases must pass network-disabled checks against both exact image IDs before activation. The app diagnostic exercises retained SVG source, saved stages, extracted ZIP playback, Presenter, local fonts, MP4/WebM and screenshot image blocks through all three harness routes. The worker diagnostic proves SVG parsing, native raster inspection and the authoring command. Failed checks preserve the previous release. `storybench doctor` reruns these disposable diagnostics; use a normal update to repair an image rather than installing packages inside a running container.
+
+The manifest retains versioned, commit/image-bound deck evidence separately from command versions. Old manifests remain readable but cannot advertise verified deck support. Startup runs a bounded parser/renderer/template/font/browser screenshot check once per runtime identity. `/api/health`, `get_context` and `get_capabilities` report startup results separately from installation evidence. A local development check is identified as local. Screenshot tool availability and tested MCP image transport do not prove that an unknown selected model can interpret images; text-only routes may edit/export drafts but cannot finish visual QA.
+
+## Reproduce the synthetic delivery
+
+The editable demo includes a retained SVG illustration and four saved reveal groups, seven composition layouts, a local gallery/video and Presenter notes. Its source SVG is also kept in the deck work directory. It uses no private reference assets.
+
+```sh
+node src/runtime/deck-demo-check.js /absolute/path/to/demo-artifacts
+```
+
+This generates `demo.zip`, `editable-source.json`, `report.json` and a reopenable `workspace/` containing saved slides, media, build-bound screenshots and session evidence. Open the workspace using `node src/server.js --workspace /absolute/path/to/demo-artifacts/workspace --port <available-port>`, or unzip `demo.zip` and open `index.html` offline. Report image paths are relative to `workspace/`. The script exercises both pages at normal/constrained viewports, every reveal/gallery state, media, fullscreen and print/reduced motion. Its image assessments are explicitly scripted automated evidence. Deployment, live-model interpretation, physical displays and final aesthetic judgment remain pending for the installation owner after deployment.

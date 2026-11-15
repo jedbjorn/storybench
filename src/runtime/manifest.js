@@ -1,3 +1,4 @@
+import { validateDeckEvidence } from './deck-evidence.js';
 // Release manifest: the one definition of a release's paired app/worker image identity
 // (spec #10 "Installation Layout", spec #11 "Releases and proof"). Built by
 // src/runtime/release.js from docker/Dockerfile; read by the host lifecycle entry point and
@@ -37,14 +38,14 @@ export function manifestId(manifest) {
   return `sha256:${createHash("sha256").update(canonical(content)).digest("hex")}`;
 }
 
-export function createManifest({ packageName, packageVersion, commit, ref = null, builtAt = new Date().toISOString(), images, tools = {}, schema }) {
+export function createManifest({ packageName, packageVersion, commit, ref = null, builtAt = new Date().toISOString(), images, tools = {}, deck = null, schema }) {
   const manifest = {
     schema: MANIFEST_SCHEMA,
     package: { name: packageName, version: packageVersion },
     source: { commit, ref },
     builtAt,
     images: { app: { id: images.app }, worker: { id: images.worker } },
-    runtime: { protocol: RUNTIME_PROTOCOL, tools },
+    runtime: { protocol: RUNTIME_PROTOCOL, tools, ...(deck ? { deck } : {}) },
     database: { supportedSchema: { min: schema.min, max: schema.max } },
   };
   return { ...validateManifest(manifest), id: manifestId(manifest) };
@@ -59,6 +60,10 @@ export function validateManifest(input) {
   if (input.images.app.id === input.images.worker.id) fail("app and worker images must be distinct");
   if (!Number.isInteger(input.runtime?.protocol) || input.runtime.protocol < 1) fail("runtime.protocol");
   if (input.runtime.tools && (typeof input.runtime.tools !== "object" || Array.isArray(input.runtime.tools))) fail("runtime.tools");
+  if (input.runtime.deck) {
+    try { validateDeckEvidence(input.runtime.deck, { commit: input.source.commit, images: { app: input.images.app.id, worker: input.images.worker.id } }); }
+    catch (error) { fail(error.message); }
+  }
   const range = input.database?.supportedSchema;
   if (!Number.isInteger(range?.min) || !Number.isInteger(range?.max) || range.min < 0 || range.max < range.min) fail("database.supportedSchema");
   if (input.id !== undefined && input.id !== manifestId(input)) fail("id does not match content");
@@ -89,6 +94,7 @@ export function releaseIdentity(manifest) {
     protocol: manifest.runtime.protocol,
     supportedSchema: { ...manifest.database.supportedSchema },
     tools: { ...(manifest.runtime.tools ?? {}) },
+    ...(manifest.runtime.deck ? { deck: manifest.runtime.deck } : {}),
   };
 }
 

@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { existsSync, lstatSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { checkCompatibility, readReleaseManifest } from "../runtime/manifest.js";
+import { checkCompatibility, readReleaseManifest, releaseIdentity } from "../runtime/manifest.js";
 import { inspectDataRoot } from "../services/data-root.js";
 import { createMetadataBackup, currentRelease, mountPath, restoreMetadataBackup, stopService } from "./backup.js";
 import { CliError, EXIT } from "./errors.js";
@@ -313,11 +313,7 @@ export async function runUpdate(context, { options }) {
       step(adapters, "build");
       const staged = adapters.stageRelease ? await adapters.stageRelease({ context, commit: available.available, prior })
         : await stageRelease(context, { commit: available.available, remote: prior.manifest.source.remote, ref: prior.manifest.source.ref }, context.installAdapters);
-      target = { ...staged, root: staged.release, file: path.join(staged.release, "manifest.json"), identity: {
-        manifestId: staged.manifest.id, version: staged.manifest.package.version, commit: staged.manifest.source.commit,
-        images: { app: staged.manifest.images.app.id, worker: staged.manifest.images.worker.id }, protocol: staged.manifest.runtime.protocol,
-        supportedSchema: { ...staged.manifest.database.supportedSchema }, tools: { ...(staged.manifest.runtime.tools ?? {}) },
-      } };
+      target = { ...staged, root: staged.release, file: path.join(staged.release, "manifest.json"), identity: releaseIdentity(staged.manifest) };
       receipt.to = releaseRecord(target); saveAttempt(file, receipt, adapters);
       failureStep = "verify"; step(adapters, "verify"); await verifyStaged(context, target, adapters);
       failureStep = "busy-gate";

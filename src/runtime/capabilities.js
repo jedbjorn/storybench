@@ -1,3 +1,5 @@
+import { getDeckReadiness } from './deck-readiness.js';
+import { deckEvidenceSummary } from './deck-evidence.js';
 // What a worker request can actually do, derived only from what is wired: the tool
 // definitions really served to this harness, the image-returning tools among them, and
 // the media command versions verified in this release's worker image (release manifest).
@@ -39,6 +41,11 @@ export function describeCapabilities({ scope, served, release = null }) {
     ? { verified: true, source: "release manifest (probed in the worker image)", versions: release.tools }
     : { verified: false, source: "no release manifest in this app; command availability is unverified" };
   return {
+    deck: { runtime: getDeckReadiness(release), installation: release?.deckReadiness ?? deckEvidenceSummary(release?.deck, release),
+      vectorExport: names.includes("build_deck") ? getDeckReadiness(release).vector : { state: "unavailable", reason: "Deck build tools are not served in this production." },
+      browserQa: names.includes("open_deck_qa") ? getDeckReadiness(release).browser : { state: "unavailable", reason: "Deck browser tools are not served in this production." },
+      screenshotInput: { state: imageTools.includes("inspect_deck_qa") ? "unverified" : "unavailable",
+        reason: imageTools.includes("inspect_deck_qa") ? "MCP image transport is tested separately; the selected model must receive and assess actual screenshots. No live-model proof is inferred." : "No screenshot image tool is served for this model and production." } },
     harness: scope.harness,
     model: scope.model ?? null,
     tools: served.map((definition) => ({ name: definition.name, description: definition.description })),

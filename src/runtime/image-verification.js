@@ -1,3 +1,4 @@
+import { validateDeckCheck } from './deck-evidence.js';
 // Host-side invocation of the check shipped in each exact app/worker image.
 export const IMAGE_CHECK = "/opt/storybench/app/src/runtime/image-check.js";
 export const REQUIRED_TOOLS = Object.freeze({
@@ -6,13 +7,15 @@ export const REQUIRED_TOOLS = Object.freeze({
 });
 
 export async function checkImage(run, image, role, operation = "probe", options = {}) {
-  if (!REQUIRED_TOOLS[role] || !["probe", "smoke"].includes(operation)) throw new Error("Invalid image check");
-  const args = ["run", "--rm", "--network", "none", image, "node", IMAGE_CHECK, operation, ...(operation === "probe" ? [role] : [])];
-  const result = await run("docker", args, { ...options, timeoutMs: operation === "smoke" ? 120_000 : 30_000 });
+  if (!REQUIRED_TOOLS[role] || !["probe", "smoke", "deck"].includes(operation)) throw new Error("Invalid image check");
+  const args = ["run", "--rm", "--network", "none", ...(operation === "deck" ? ["--memory", "1536m", "--pids-limit", "256"] : []), image, "node",
+    ...(operation === "deck" ? ["/opt/storybench/app/src/runtime/deck-check.js", role] : [IMAGE_CHECK, operation, ...(operation === "probe" ? [role] : [])])];
+  const result = await run("docker", args, { ...options, timeoutMs: operation === "deck" ? 300_000 : operation === "smoke" ? 120_000 : 30_000 });
   if (result.code !== 0) throw new Error(`${role} image ${operation} failed: ${String(result.stderr || "").trim().split("\n")[0] || `exit ${result.code}`}`);
   let evidence;
   try { evidence = JSON.parse(result.stdout.trim()); }
   catch { throw new Error(`${role} image ${operation} returned invalid evidence`); }
+  if (operation === "deck") return validateDeckCheck(evidence, role);
   const required = operation === "probe" ? REQUIRED_TOOLS[role] : ["pillowPng", "svgPng", "pdfPng", "aacAudio", "h264AacAnimation", "decodedPng"];
   for (const key of required) if (operation === "probe" ? typeof evidence[key] !== "string" || !evidence[key].trim() : evidence[key] !== true)
     throw new Error(`${role} image ${operation} is missing ${key} evidence`);

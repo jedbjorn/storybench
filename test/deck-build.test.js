@@ -126,6 +126,10 @@ test('editable eight-slide demo: manual DOM edit, fake-agent bridge save/build, 
     const tools=selectKindTools(mergeTools({definitions:[],call:async()=>{}},options.tools),'deck');
     bridge=await startBridge({socketPath,token,tools});
     const current=await rpc(socketPath,token,'read_deck',{});
+    const context=await rpc(socketPath,token,'get_context',{});
+    assert.equal(context.deckCapabilities.installation.state,'unverified');
+    assert.match(context.deckCapabilities.runtime.source,/local development/);
+    assert.equal(Object.hasOwn(current,'capabilities'),false,'read_deck remains the saved revision contract');
     const before=structuredClone(current),jobsBefore=app.store.listJobs(current.id).map(job=>job.id);
     current.slides[1].body=`Agent revision ${turn}`;
     current.slides[5].stages.reverse();
@@ -147,6 +151,7 @@ test('editable eight-slide demo: manual DOM edit, fake-agent bridge save/build, 
  app=await createApp({workspace:root,chatOptions:{codexFactory:factory}});
  await new Promise(r=>app.server.listen(0,'127.0.0.1',r)); const base=`http://127.0.0.1:${app.server.address().port}`;
  const deck=await createDemo(app.store), slides=structuredClone(deck.slides);
+ assert.ok(slides[5].stages.slice(1).every(stage=>stage.afterMs>0),'demo automatic reveals must reach the final stage');
  const source = await readFile(new URL('../src/runtime/fixtures/svg-illustration.svg', import.meta.url));
  const vector = await createLibraryService({ workspace: root, store: app.store }).registerFile({ episodeId: deck.id, readable: Readable.from(source), fileName: 'plan.svg', selectedCategory: 'Graphics' });
  slides[5].vector = { itemId: vector.id, alt: 'An editable landscape and planning diagram' };
@@ -165,7 +170,7 @@ test('editable eight-slide demo: manual DOM edit, fake-agent bridge save/build, 
  }
  const job=app.store.listJobs(deck.id).find(j=>j.state==='completed');assert.ok(job);
  const html=await (await fetch(`${base}/api/jobs/${job.id}/deck/index.html`)).text(),page=new JSDOM(html);
- assert.equal(page.window.document.querySelectorAll('.slide').length,8);assert.equal(page.window.document.querySelectorAll('[data-step]').length,4);assert.equal(page.window.document.querySelectorAll('[data-gallery]').length,2);assert.ok(page.window.document.querySelector('video'));assert.match(html,/Manual notes/);assert.equal(page.window.document.querySelectorAll('[data-vector-step]').length,4);assert.equal(page.window.document.querySelector('#_sbv1-plan').parentElement.dataset.vectorStep,'0');page.window.close();
+ assert.equal(page.window.document.querySelectorAll('.slide').length,8);assert.equal(page.window.document.querySelectorAll('[data-step]').length,4);assert.equal(page.window.document.querySelectorAll('[data-gallery]').length,2);assert.ok(page.window.document.querySelector('video'));assert.match(html,/Manual notes/);assert.equal(page.window.document.querySelectorAll('[data-vector-step]').length,4);assert.equal(page.window.document.querySelector('#_sbv2-plan').parentElement.dataset.vectorStep,'0');page.window.close();
  assert.ok(job.snapshot.manifest.files.some(f=>f.endsWith('.webm')));assert.ok(job.snapshot.manifest.files.some(f=>f.endsWith('.png')));
  await app.close();app=null;
  const reopened=new Store(root),decks=createDeckService({store:reopened});

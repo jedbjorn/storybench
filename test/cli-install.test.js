@@ -1,3 +1,4 @@
+import { deckCheckFixture } from '../test-support/deck-evidence.js';
 import test from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -90,6 +91,34 @@ test("reused candidate fails a broken media smoke before activation", async (t) 
   assert.equal(existsSync(s.xdg.current), false);
 });
 
+test("reused candidate SVG/browser failures preserve the active pointer and manifest", async (t) => {
+  const s = fixture(t), release = path.join(s.xdg.releases, s.commit);
+  mkdirSync(release, { recursive: true });
+  const manifest = createManifest({ packageName: 'storybench', packageVersion: '0.1.0', commit: s.commit,
+    images: { app: APP, worker: WORKER }, schema: { min: 0, max: SCHEMA_VERSION } });
+  const bytes = JSON.stringify(manifest);
+  writeFileSync(path.join(release, 'manifest.json'), bytes);
+  activateSymlink(s.xdg.current, release);
+  for (const failedRole of ['app', 'worker']) {
+    const run = async (_command, args) => {
+      if (args[0] === 'image') return { code: 0, stdout: args[2] };
+      const role = args.includes(WORKER) ? 'worker' : 'app';
+      if (args.some(arg => arg.endsWith('/deck-check.js'))) {
+        const evidence = deckCheckFixture(role);
+        if (role === failedRole) evidence.svg.nativeRasterInspection = 'skipped';
+        return { code: 0, stdout: JSON.stringify(evidence) };
+      }
+      const evidence = args.includes('smoke')
+        ? { pillowPng: true, svgPng: true, pdfPng: true, aacAudio: true, h264AacAnimation: true, decodedPng: true }
+        : Object.fromEntries(REQUIRED_TOOLS[role].map(name => [name, name === 'node' ? 'v24.21.0' : ['codex','claude','opencode'].includes(name) ? '1.2.3' : 'available']));
+      return { code: 0, stdout: JSON.stringify(evidence) };
+    };
+    await assert.rejects(stageRelease({ xdg: s.xdg }, { commit: s.commit }, { runCommand: run }), /nativeRasterInspection evidence/);
+    assert.equal(readlinkSync(s.xdg.current), release);
+    assert.equal(readFileSync(path.join(release, 'manifest.json'), 'utf8'), bytes);
+  }
+});
+
 test("exact install, doctor, idempotent rerun and uninstall preserve configuration, data and state", async (t) => {
   const s = fixture(t);
   const calls = [], callRecords = [], systemCalls = [];
@@ -116,7 +145,7 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
         if (brokenImageTool && args.includes("probe")) return { code: 1, stdout: "", stderr: `${brokenImageTool}: not found` };
         const role = args.includes(WORKER) ? "worker" : "app";
         const operation = args.at(-2) === "probe" ? "probe" : args.at(-1);
-        const evidence = operation === "smoke"
+        const evidence = args.some(arg => arg.endsWith("/deck-check.js")) ? deckCheckFixture(role) : operation === "smoke"
           ? { pillowPng: true, svgPng: true, pdfPng: true, aacAudio: true, h264AacAnimation: true, decodedPng: true }
           : Object.fromEntries(REQUIRED_TOOLS[role].map((name) => [name, name === "node" ? "v24.21.0" : name === "codex" ? "0.155.1" : name === "claude" ? "2.1.278" : name === "opencode" ? "1.19.5" : "available"]));
         return { code: 0, stdout: `${JSON.stringify(evidence)}\n`, stderr: "" };
@@ -287,7 +316,7 @@ test("exact install, doctor, idempotent rerun and uninstall preserve configurati
   }),
     stdout: { write: (text) => { stdout += text; } }, stderr: { write: (text) => { stderr += text; } } });
   assert.equal(code, 0, `${stdout}\n${stderr}`);
-  for (const label of ["release manifest", "install receipt", "source access", "app image", "worker image", "data root", "codex production", "claude production", "editor readiness"])
+  for (const label of ["release manifest", "install receipt", "source access", "app image", "worker image", "data root", "codex production", "claude production", "editor readiness", "app SVG/deck diagnostic", "worker SVG/deck diagnostic"])
     assert.match(stdout, new RegExp(`PASS ${label}`));
   assert.match(stdout, /PASS health: healthy/);
   assert.doesNotMatch(stdout, /FAIL health/);

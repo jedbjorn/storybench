@@ -66,7 +66,7 @@ export async function bridgeClient(root, scoped, harness) {
 export async function smokeBrowser() {
   const root=await mkdtemp(path.join(os.tmpdir(),'sb-browser-check-'));let fixture;
   try {
-    fixture=await browserFixture(root);const routes={};let schemas;
+    fixture=await browserFixture(root);const routes={};let schemas, actualVersion;
     for(const harness of ['codex','claude','opencode']) {
       const scoped=createScopedTools(fixture.scope(harness),{store:fixture.store});
       const client=await bridgeClient(root,scoped,harness);
@@ -164,12 +164,12 @@ export async function smokeBrowser() {
         await act({action:'key',key:'Escape'});
         await act({action:'emulate',media:'print',reducedMotion:'reduce'});await inspect({});
         const closed=(await client.call('close_deck_qa',{sessionId})).data;assert.equal(closed.closed,true);assert.equal(closed.qaStatus,'incomplete');
-        const retained=JSON.parse(await readFile(path.join(root,closed.evidence,'session.json'),'utf8'));assert.ok(retained.screenshots.every(s=>s.delivered));assert.ok(retained.coverage.length>6);
+        const retained=JSON.parse(await readFile(path.join(root,closed.evidence,'session.json'),'utf8'));assert.ok(retained.screenshots.every(s=>s.delivered));assert.ok(retained.coverage.length>6);actualVersion=retained.browser.actualVersion;
         await assert.rejects(client.call('inspect_deck_qa',{sessionId}),/closed|expired/);
         routes[harness]={imageBlocks:true,delivered:true,presenter:true,mp4Playback:true,webmPlayback:true,reusedVideoPauseAndPlayback:true,stagedInteraction:true,contactSheet:true,evidenceRetained:true,fullscreen:fullscreen.results.fullscreen.status};
       } finally {await client.close();}
     }
-    return {checkVersion:1,browser:BROWSER_IDENTITY,exactZip:true,routes};
+    return {checkVersion:1,browser:{...BROWSER_IDENTITY,actualVersion},exactZip:true,routes};
   } finally {await fixture?.close();await rm(root,{recursive:true,force:true});}
 }
 if(process.argv[1]===fileURLToPath(import.meta.url)) {

@@ -100,6 +100,10 @@ export async function runDoctor(context) {
             const tools = await checkImage(run, expected, role, "probe", { env: context.env });
             report("PASS", `${role} packaged tools`, Object.entries(tools).map(([name, version]) => `${name} ${version}`).join(", "));
           } catch (error) { report("FAIL", `${role} packaged tools`, error.message); }
+          try {
+            const deck = await checkImage(run, expected, role, "deck", { env: context.env });
+            report("PASS", `${role} SVG/deck diagnostic`, `check ${deck.checkVersion}; ${deck.svg.profile}; ${role === "app" ? "browser, presenter, MP4/WebM and all three image transports" : "native rendering and SVG authoring"}`);
+          } catch (error) { report("FAIL", `${role} SVG/deck diagnostic`, `${error.message}. Run a normal update to rebuild the release; prior saved work is retained.`); }
         }
       }
     }

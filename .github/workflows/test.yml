@@ -35,9 +35,17 @@ jobs:
             printf '%s image %s\n' "$role" "$image"
             docker run --rm --network none "$image" node /opt/storybench/app/src/runtime/image-check.js probe "$role"
             docker run --rm --network none "$image" node /opt/storybench/app/src/runtime/image-check.js smoke
-            docker run --rm --network none "$image" node /opt/storybench/app/src/runtime/svg-check.js "$role"
+            docker run --rm --network none --memory 1536m --pids-limit 256 "$image" node /opt/storybench/app/src/runtime/deck-check.js "$role"
             if [ "$role" = app ]; then
-              docker run --rm --network none --memory 1536m --pids-limit 256 "$image" node /opt/storybench/app/src/runtime/browser-check.js
+              docker run --rm --network none --memory 1536m --pids-limit 256 "$image" node /opt/storybench/app/src/runtime/deck-startup-check.js --require-ready
               docker run --rm --network none --memory 1536m --pids-limit 256 "$image" node /opt/storybench/app/src/runtime/deck-qa-loop-check.js
+              mkdir -p demo-artifacts
+              docker run --rm --network none --memory 1536m --pids-limit 256 --user "$(id -u):$(id -g)" --mount "type=bind,src=$PWD/demo-artifacts,dst=/evidence" "$image" node /opt/storybench/app/src/runtime/deck-demo-check.js /evidence
+              test -r demo-artifacts/workspace/storybench.sqlite
             fi
           done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: editable-svg-deck-${{ github.sha }}
+          path: demo-artifacts/
+          if-no-files-found: error
