@@ -188,10 +188,15 @@ test('create and edit deck turns render the mandatory correction loop on all har
       assert.match(body,/When creating or editing a deck, build the saved revision and live-drive it in the browser/);
       assert.match(body,/fix issues, rebuild and recheck/);assert.match(body,/report QA incomplete/);
       assert.match(body,/report_deck_qa/);assert.match(body,/get_deck_qa_report/);
+      assert.match(body,/`read_deck` for the saved slides and revision before changing it/);
+      assert.match(body,/`get_context` for context and readiness/);
+      assert.match(body,/Read `get_capabilities` before starting QA/);
     }
     const root={codex:'.agents',claude:'.claude',opencode:'.opencode'}[harness];
     const skill=await readFile(path.join(episodeDir,root,'skills/storybench-compose-deck/SKILL.md'),'utf8');
     for (const operation of ['open_deck_qa','act_deck_qa','inspect_deck_qa','check_deck_qa','report_deck_qa','save_deck','build_deck','get_deck_qa_report']) assert.ok(skill.includes(operation));
     assert.match(skill,/Creation:/);assert.match(skill,/Editing:/);assert.match(skill,/adjacent transitions/);
+    assert.match(skill,/const current = read_deck\(\);/);
+    assert.match(skill,/save_deck\(\{expectedRevision:current\.revision, slides:current\.slides\}\)/);
   }
 });

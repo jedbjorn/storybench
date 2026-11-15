@@ -29,17 +29,25 @@ export async function checkDemoDelivery(destination) {
     const opened = await call('open_deck_qa', { jobId: job.id }), sessionId = opened.sessionId;
     const act = args => call('act_deck_qa', { sessionId, ...args });
     const check = checks => call('check_deck_qa', { sessionId, checks });
+    // The template fades stages for 450 ms. Include time for Presenter synchronization.
+    const settleMs = 600;
+    const assertStage = (state, slide, stage) => {
+      assert.equal(state.slideId, slide.id);
+      assert.deepEqual(state.stage, [String(stage)], `${slide.id}: selected stage`);
+      const groups = slide.vector ? slide.stages.slice(0, stage + 1).flatMap((entry, index) => entry.svgGroupIds.map(() => String(index))) : [];
+      assert.deepEqual(state.visibleGroups, groups, `${slide.id}/${stage}: cumulative visible vector groups`);
+    };
     const replay = async slide => {
       assert.ok(slide.stages.slice(1).every(stage => stage.afterMs > 0), 'Every later demo stage must advance automatically');
       await act({ action: 'click', selector: `#${slide.id} [data-command="replay"]` });
-      let remaining = slide.stages.reduce((sum, stage) => sum + (stage.afterMs ?? 0), 0) + 250;
+      let remaining = slide.stages.reduce((sum, stage) => sum + (stage.afterMs ?? 0), 0) + settleMs;
       let result;
       while (remaining > 0) {
         const milliseconds = Math.min(2000, remaining);
         result = await act({ action: 'wait', milliseconds });
         remaining -= milliseconds;
       }
-      assert.deepEqual(result.state.stage, [String(slide.stages.length - 1)], 'Replay must reach the final stage before manual takeover');
+      assertStage(result.state, slide, slide.stages.length - 1);
     };
     const reviews = [];
     const inspect = async (pageId = 'audience') => {
@@ -67,7 +75,11 @@ export async function checkDemoDelivery(destination) {
         await act({ pageId: presenter, action: 'select', selector: '#slide-select', value: String(index) });
         if (slide.stages.length) await replay(slide);
         for (let stage = 0; stage < Math.max(1, slide.stages.length); stage++) {
-          if (slide.stages.length) await act({ pageId: presenter, action: 'select', selector: '#stage-select', value: String(stage) });
+          if (slide.stages.length) {
+            await act({ pageId: presenter, action: 'select', selector: '#stage-select', value: String(stage) });
+            const settled = await act({ action: 'wait', milliseconds: settleMs });
+            assertStage(settled.state, slide, stage);
+          }
           for (let gallery = 0; gallery < Math.max(1, slide.subnav.length); gallery++) {
             if (slide.subnav.length) await act({ action: 'click', selector: `#${slide.id} [data-gallery="${gallery}"]` });
             const itemId = slide.subnav.length ? slide.subnav[gallery].itemId : slide.media?.itemId;
@@ -75,6 +87,7 @@ export async function checkDemoDelivery(destination) {
             if (media) await act({ pageId: presenter, action: 'click', selector: '[data-command="video-restart"]' });
             const state = await inspect();
             assert.equal(state.slideId, slide.id);
+            if (slide.stages.length) assertStage(state, slide, stage);
             assert.equal((await inspect(presenter)).notes, slide.notes);
             const checks = await check(['console', 'resources', 'fonts', 'layout', 'presenter', ...(media ? ['media'] : [])]);
             for (const [name, result] of Object.entries(checks.results)) assert.equal(result.status, 'pass', `${slide.id} ${name}: ${JSON.stringify(result)}`);

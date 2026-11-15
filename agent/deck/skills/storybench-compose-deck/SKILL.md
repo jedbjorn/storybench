@@ -100,7 +100,7 @@ report_deck_qa({sessionId:opened.sessionId,
     assessment:"Opening title is clipped; the diagram is legible but has too little heading space.",
     findings:[{severity:"blocking",description:"Opening title clips at 1280x720."}]}]});
 close_deck_qa({sessionId:opened.sessionId});
-const current = get_context();
+const current = read_deck();
 // Edit saved source, not generated HTML. Preserve IDs, mappings and notes.
 current.slides[0].title = "A shorter title";
 const saved = save_deck({expectedRevision:current.revision, slides:current.slides});

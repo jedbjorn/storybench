@@ -12,6 +12,10 @@ import { readReceipts, writeJsonAtomic } from "../src/cli/receipts.js";
 import { retainReleases, selectRetainedCommits, verifyActivation, verifyIsolated } from "../src/cli/update.js";
 import { resolveXdg } from "../src/cli/xdg.js";
 import { createManifest, manifestId } from "../src/runtime/manifest.js";
+import { bindDeckEvidence } from "../src/runtime/deck-evidence.js";
+import { createHealth, releaseFromEnv } from "../src/runtime/health.js";
+import { describeCapabilities } from "../src/runtime/capabilities.js";
+import { deckCheckFixture } from "../test-support/deck-evidence.js";
 import { initDataRoot } from "../src/services/data-root.js";
 
 const OLD = "a".repeat(40), NEW = "c".repeat(40), OTHER = "d".repeat(40);
@@ -260,6 +264,41 @@ test("running and stopped updates preserve metadata, exact pairs and service sta
     assert.deepEqual(receipt.to.images, { app: s.newManifest.images.app.id, worker: s.newManifest.images.worker.id });
     assert.ok(receipt.backup.path);
   });
+});
+
+test("stopped update preserves exact-image deck evidence through isolated environment, health and capabilities", async (t) => {
+  const s = await fixture(t, { active: false });
+  const images = { app: s.newManifest.images.app.id, worker: s.newManifest.images.worker.id };
+  const deck = bindDeckEvidence({ app: deckCheckFixture("app"), worker: deckCheckFixture("worker") }, NEW, images);
+  s.newManifest.runtime.deck = deck;
+  s.newManifest.id = manifestId(s.newManifest);
+  writeJsonAtomic(path.join(s.xdg.releases, NEW, "manifest.json"), s.newManifest);
+  delete s.adapters.verifyIsolated;
+  const db = new DatabaseSync(path.join(s.root, "storybench.sqlite"));
+  t.after(() => db.close());
+  const store = { db, dataRootIdentity: () => ({ id: databaseInfo(s.root).id }) };
+  let verificationEnv, snapshot;
+  const result = await s.run(["update"], { runCommand: async (command, args) => {
+    assert.equal(command, "docker");
+    if (args[0] === "run") {
+      const entry = args.find(arg => arg.startsWith("STORYBENCH_RELEASE="));
+      verificationEnv = { STORYBENCH_RELEASE: entry.slice("STORYBENCH_RELEASE=".length) };
+      assert.ok(args.includes(images.app));
+      return { code: 0, stdout: "candidate-container", stderr: "" };
+    }
+    if (args[0] === "exec") {
+      snapshot = createHealth({ store, release: releaseFromEnv(verificationEnv) }).snapshot();
+      return { code: 0, stdout: JSON.stringify(snapshot), stderr: "" };
+    }
+    assert.ok(["stop", "rm"].includes(args[0]), `Unexpected Docker command: ${args[0]}`);
+    return { code: 0, stdout: "", stderr: "" };
+  } });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(verificationEnv.STORYBENCH_RELEASE).deck, deck);
+  assert.equal(snapshot.deck.installation.state, "ready");
+  assert.equal(describeCapabilities({ scope: { harness: "codex" }, served: [], release: snapshot.release }).deck.installation.state, "ready");
+  assert.equal(s.active(), false);
+  assert.equal(path.basename(readlinkSync(s.xdg.current)), NEW);
 });
 
 test("the all-channel busy gate refuses unless --force and force bypasses no later check", async (t) => {
