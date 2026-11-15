@@ -23,7 +23,7 @@ export function unpackDeckZip(bytes) {
     throw new Error('Incomplete deck ZIP');
   return files;
 }
-export async function extractBuild(store, episodeId, jobId, destination) {
+export async function readDeckBundle(store, episodeId, jobId) {
   store.requireProductionKind(episodeId, 'deck');
   const job = store.getJob(jobId);
   if (!job || job.episodeId !== episodeId || job.kind !== 'deck' || job.state !== 'completed') throw new Error('QA requires a completed build belonging to this deck');
@@ -43,10 +43,14 @@ export async function extractBuild(store, episodeId, jobId, destination) {
   const files = unpackDeckZip(bytes), manifest = JSON.parse(files.get('manifest.json'));
   if (manifest.productionId !== episodeId || manifest.sourceRevision !== job.revision ||
       JSON.stringify([...files.keys()].sort()) !== JSON.stringify([...manifest.files].sort())) throw new Error('Deck ZIP manifest differs from its build');
-  for (const [name, data] of files) {
+  return { job, parent, files, bundleSha256: digest, sourceRevision: job.revision };
+}
+export async function extractBuild(store, episodeId, jobId, destination) {
+  const build = await readDeckBundle(store, episodeId, jobId);
+  for (const [name, data] of build.files) {
     const target = path.join(destination, name);
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, data, { flag: 'wx', mode: 0o400 });
   }
-  return { job, parent, files: [...files.keys()], bundleSha256: digest, sourceRevision: job.revision };
+  return { ...build, files: [...build.files.keys()] };
 }

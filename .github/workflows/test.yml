@@ -38,5 +38,6 @@ jobs:
             docker run --rm --network none "$image" node /opt/storybench/app/src/runtime/svg-check.js "$role"
             if [ "$role" = app ]; then
               docker run --rm --network none --memory 1536m --pids-limit 256 "$image" node /opt/storybench/app/src/runtime/browser-check.js
+              docker run --rm --network none --memory 1536m --pids-limit 256 "$image" node /opt/storybench/app/src/runtime/deck-qa-loop-check.js
             fi
           done
