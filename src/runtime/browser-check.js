@@ -17,6 +17,7 @@ import { selectKindTools } from './kinds.js';
 import { startBridge } from './bridge.js';
 import { runChecked } from './image-check.js';
 import { BROWSER_IDENTITY } from '../deck-qa.js';
+import { evaluateQa } from '../deck-qa-report.js';
 
 export async function browserFixture(root) {
   const store=new Store(root),episode=store.createEpisode({kind:'deck',title:'Packaged browser proof'});
@@ -91,11 +92,18 @@ export async function smokeBrowser() {
         await act({action:'wait',milliseconds:700});
         let state=(await inspect({})).data.screenshots[0].state;assert.equal(state.slideId,'stages');assert.equal(state.visibleGroups.length,3);
         const report=async()=>(await client.call('report_deck_qa',{sessionId,summary:'Scripted control-operation regression',reviews:[],changesMade:[]})).data;
+        // Prior harnesses leave valid closed batches. Isolate the negative proof
+        // to this harness's actual persisted actions, not the aggregate report.
+        const currentEvidence=async()=>{
+          const record=JSON.parse(await readFile(path.join(root,opened.artifactRoot,'session.json'),'utf8'));
+          return evaluateQa(fixture.job,[record],{sessionId,requestId:fixture.scope(harness).requestId});
+        };
         await act({action:'wait',milliseconds:0,selector:'[data-stage="0"]'});
         await act({pageId:'presenter-1',action:'wait',milliseconds:0,selector:'#stage-select'});
-        assert.ok((await report()).missing.includes('stages: manual stage selection'),'no-op selectors cannot prove stage operation');
+        assert.ok((await currentEvidence()).missing.includes('stages: manual stage selection'),'no-op selectors cannot prove stage operation');
         await act({pageId:'presenter-1',action:'select',selector:'#stage-select',value:'0'});
         assert.ok(!(await report()).missing.includes('stages: manual stage selection'),'real Presenter selection supplies evidence');
+        assert.ok(!(await currentEvidence()).missing.includes('stages: manual stage selection'));
         await act({action:'wait',milliseconds:300});
         state=(await inspect({})).data.screenshots[0].state;assert.deepEqual(state.stage,['0']);assert.equal(state.visibleGroups.length,1);
         await act({pageId:'presenter-1',action:'click',selector:'[data-command="replay"]'});
@@ -134,9 +142,10 @@ export async function smokeBrowser() {
         }
         await act({action:'key',key:'End'});
         await act({action:'wait',milliseconds:0,selector:'[data-gallery="1"]'});
-        assert.ok((await report()).missing.includes('gallery: gallery navigation'),'no-op selector cannot prove gallery operation');
+        assert.ok((await currentEvidence()).missing.includes('gallery: gallery navigation'),'no-op selector cannot prove gallery operation');
         await act({action:'click',selector:'.slide:not([hidden]) [data-gallery="1"]'});
         assert.ok(!(await report()).missing.includes('gallery: gallery navigation'),'real gallery click supplies evidence');
+        assert.ok(!(await currentEvidence()).missing.includes('gallery: gallery navigation'));
         state=(await inspect({})).data.screenshots[0].state;assert.deepEqual(state.gallery,['1']);
         const sheet=await inspect({slideIds:['opening','stages','gallery']});assert.ok(sheet.data.contactSheet);assert.equal(sheet.data.screenshots.length,3);
         await act({action:'resize',viewport:{width:640,height:480}});assert.equal((await inspect({clip:{x:0,y:0,width:320,height:240}})).data.screenshots[0].state.viewport.width,640);
