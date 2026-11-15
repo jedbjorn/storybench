@@ -1,8 +1,9 @@
-/* Native 960 × 880 mosaic studies. Geometry is rasterized at the new resolution. */
+/* Native 900 × 900 mosaic studies. Geometry is rasterized at the new resolution. */
 (() => {
   'use strict';
   const TAU = Math.PI * 2;
-  const RESOLUTION = 1.25;
+  const RESOLUTION = 900 / 768;
+  const ORIGIN_Y = (900 - 704 * RESOLUTION) / 2;
   const colors = ['#d5ad78', '#bc8f83', '#a2b7a0', '#8baeb3', '#d0c5a2', '#aba4bf'];
   const clamp = n => Math.max(0, Math.min(1, n));
   const ease = n => { n = clamp(n); return n * n * (3 - 2 * n); };
@@ -12,7 +13,7 @@
   function rect(c, x, y, w, h, color) {
     if (w <= 0 || h <= 0) return;
     c.fillStyle = color;
-    c.fillRect(snap(x * RESOLUTION), snap(y * RESOLUTION), snap(w * RESOLUTION), snap(h * RESOLUTION));
+    c.fillRect(snap(x * RESOLUTION), snap(y * RESOLUTION + ORIGIN_Y), snap(w * RESOLUTION), snap(h * RESOLUTION));
   }
   function alpha(c, amount, draw) {
     if (amount <= 0) return;
@@ -150,9 +151,9 @@
     }
   }
   const treatments = {
-    amber: { kind: 'amber', color: [218, 166, 64], rim: '#efd59a' },
-    mint: { kind: 'mint', color: [64, 178, 140], rim: '#b5efda' },
-    prism: { kind: 'prism', color: [155, 130, 211], rim: '#e0d6f4' },
+    amber: { kind: 'amber', color: [242, 150, 27], rim: '#efd59a' },
+    mint: { kind: 'mint', color: [24, 188, 159], rim: '#b5efda' },
+    prism: { kind: 'prism', color: [149, 94, 224], rim: '#e0d6f4' },
   };
   function pulse(t, center, radius) {
     const distance = Math.abs(t - center) / radius;
@@ -168,7 +169,7 @@
   // not additive white flashes that would wash out details on the light chat.
   function halo(c, x, y, radius, rgb, intensity) {
     if (intensity <= 0) return;
-    x *= RESOLUTION; y *= RESOLUTION; radius *= RESOLUTION;
+    x *= RESOLUTION; y = y * RESOLUTION + ORIGIN_Y; radius *= RESOLUTION;
     const gradient = c.createRadialGradient(x, y, 0, x, y, radius);
     const color = a => `rgba(${rgb.join(',')},${a})`;
     gradient.addColorStop(0, color(intensity));
@@ -182,21 +183,21 @@
     const breath = .95 + .05 * Math.cos(t * TAU);
     const a = light.assembly, o = light.output;
     if (glow.kind === 'amber') {
-      halo(c, 384, 340, 315 + a * 15 + o * 25, glow.color, (.13 + a * .17 + o * .23) * breath);
-      halo(c, 384, 334, 200, [245, 209, 118], .05 + a * .1 + o * .14);
+      halo(c, 384, 340, 315 + a * 15 + o * 25, glow.color, (.32 + a * .30 + o * .38) * breath);
+      halo(c, 384, 334, 200, [245, 209, 118], .16 + a * .25 + o * .35);
     } else if (glow.kind === 'mint') {
-      halo(c, 384, 340, 292, glow.color, .045 + a * .1 + o * .12);
+      halo(c, 384, 340, 292, glow.color, .24 + a * .32 + o * .4);
     } else {
       const drift = Math.sin(t * TAU) * 12;
-      halo(c, 340 + drift, 330, 306, glow.color, .12 + a * .13 + o * .17);
-      halo(c, 434 - drift, 346, 270, [220, 156, 165], .055 + a * .08 + o * .15);
-      halo(c, 384, 334, 232, [239, 194, 119], a * .2 + o * .28);
+      halo(c, 340 + drift, 330, 306, glow.color, .3 + a * .3 + o * .38);
+      halo(c, 434 - drift, 346, 270, [220, 156, 165], .18 + a * .18 + o * .27);
+      halo(c, 384, 334, 232, [239, 194, 119], .08 + a * .32 + o * .42);
     }
   }
   function tileGlow(c, x, y, w, h, glow, light, i, t) {
     const a = light.assembly, o = light.output;
     const shimmer = .94 + .06 * Math.sin(t * TAU + i * .8);
-    const intensity = glow.kind === 'mint' ? .16 + a * .34 + o * .12 : .1 + a * .2 + o * .1;
+    const intensity = glow.kind === 'mint' ? .24 + a * .36 + o * .18 : .2 + a * .3 + o * .15;
     const radius = Math.max(w, h) * (glow.kind === 'mint' ? .88 : 1.1);
     halo(c, x + w / 2, y + h / 2, radius, glow.color, intensity * shimmer);
     if (glow.kind === 'mint') {
@@ -231,8 +232,8 @@
     // the old raster. They stay fine even when the glow is at its brightest.
     alpha(c, .3 + beat * .65, () => {
       c.fillStyle = glow.rim;
-      c.fillRect(snap((x + 3) * RESOLUTION), snap((y + 2) * RESOLUTION), snap((w - 6) * RESOLUTION), 1);
-      c.fillRect(snap((x + 3) * RESOLUTION), snap((y + 3) * RESOLUTION), 1, snap((h * .34) * RESOLUTION));
+      c.fillRect(snap((x + 3) * RESOLUTION), snap((y + 2) * RESOLUTION + ORIGIN_Y), snap((w - 6) * RESOLUTION), 1);
+      c.fillRect(snap((x + 3) * RESOLUTION), snap((y + 3) * RESOLUTION + ORIGIN_Y), 1, snap((h * .34) * RESOLUTION));
     });
     if (glow.kind === 'mint') {
       alpha(c, .12 + beat * .35, () => {
@@ -247,6 +248,67 @@
       }
     }
   }
+  function celestialRings(c, glow, light, t) {
+    if (glow.kind !== 'prism') return;
+    for (const [moment, width] of [[.49, .065], [.64, .085]]) {
+      const power = pulse(t, moment, width);
+      if (!power) continue;
+      const progress = clamp((t - moment + width) / (width * 2));
+      const radius = (175 + progress * 180) * RESOLUTION;
+      const x = 384 * RESOLUTION, y = 338 * RESOLUTION + ORIGIN_Y;
+      const ring = c.createRadialGradient(x, y, 0, x, y, radius);
+      ring.addColorStop(0, 'rgba(181,116,226,0)');
+      ring.addColorStop(.84, 'rgba(181,116,226,0)');
+      ring.addColorStop(.94, `rgba(204,143,209,${power * .48})`);
+      ring.addColorStop(.966, `rgba(255,219,147,${power * .7})`);
+      ring.addColorStop(1, 'rgba(230,170,196,0)');
+      c.fillStyle = ring;
+      c.fillRect(snap(x - radius), snap(y - radius), snap(radius * 2), snap(radius * 2));
+    }
+  }
+  function horizon(c, glow, light, t) {
+    const power = Math.max(light.assembly, light.output);
+    const flash = Math.max(pulse(t, .49, .045), pulse(t, .64, .06));
+    if (power <= 0) return;
+    const color = glow.kind === 'mint' ? [42, 195, 189] : [249, 156, 40];
+    const core = glow.kind === 'mint' ? [215, 255, 245] : [255, 239, 182];
+    const center = glow.kind === 'prism' ? 405 : 384;
+    const y = 337;
+    // A continuous horizontal solar streak: broad colored atmosphere around a
+    // narrow hot center. The artwork stays visible through the brief flare.
+    halo(c, center, y, 155 + power * 40, color, .44 * power);
+    halo(c, center, y, 74, core, .5 * flash);
+    const left = 24 * RESOLUTION, right = 744 * RESOLUTION;
+    const yy = y * RESOLUTION + ORIGIN_Y;
+    const beam = c.createLinearGradient(left, yy, right, yy);
+    const rgba = (rgb, a) => `rgba(${rgb.join(',')},${a})`;
+    beam.addColorStop(0, rgba(color, 0));
+    beam.addColorStop(.13, rgba(color, .25));
+    beam.addColorStop(.35, rgba(color, .85));
+    beam.addColorStop(.5, rgba(core, .95));
+    beam.addColorStop(.65, rgba(color, .85));
+    beam.addColorStop(.87, rgba(color, .25));
+    beam.addColorStop(1, rgba(color, 0));
+    const breadth = glow.kind === 'mint' ? 31 : 23;
+    for (let dy = -78; dy <= 78; dy += 2) {
+      const falloff = Math.exp(-dy * dy / (2 * breadth * breadth));
+      alpha(c, power * falloff * .65, () => {
+        c.fillStyle = beam;
+        c.fillRect(snap(left), snap(yy + dy * RESOLUTION), snap(right - left), 3);
+      });
+    }
+    alpha(c, flash, () => {
+      c.fillStyle = beam;
+      c.fillRect(snap(left), snap(yy - 3 * RESOLUTION), snap(right - left), snap(6 * RESOLUTION));
+      // White-hot slit against the colored bloom, tapered rather than a bar.
+      polygon(c, [[57,y],[center,y-2.5],[713,y],[center,y+2.5]], glow.kind === 'mint' ? '#edfff7' : '#fff6d2');
+      polygon(c, [[center,y-39],[center+3,y],[center,y+39],[center-3,y]], '#fff3cf');
+      ellipse(c, center, y, 6, 6, '#fffce9');
+    });
+    if (glow.kind === 'mint') {
+      alpha(c, flash * .4, () => line(c, 110, y + 17, 658, y + 17, '#b3f5df', 2));
+    }
+  }
   function phase(raw) {
     const t = ((raw % 1) + 1) % 1;
     return {
@@ -258,7 +320,7 @@
     };
   }
   function begin(c) {
-    c.clearRect(0, 0, 960, 880);
+    c.clearRect(0, 0, 900, 900);
     c.save(); c.globalAlpha = 1;
   }
   function mosaic(c, raw, mode, treatment = 'amber') {
@@ -268,6 +330,7 @@
     const light = beats(t);
     const glow = treatments[treatment];
     ambient(c, glow, light, t);
+    celestialRings(c, glow, light, t);
     // The same fragments survive the full cycle; nothing resets or teleports.
     for (let i = 0; i < 24; i++) {
       const angle = i * 2.399963;
@@ -300,6 +363,7 @@
       const strength = .18 + .55 * (.5 + .5 * Math.sin(t * TAU + i * 1.7));
       sparkle(c, centerX + Math.cos(a) * 302, centerY + Math.sin(a) * 272, strength);
     }
+    horizon(c, glow, light, t);
     c.restore();
   }
   window.MosaicGlow = { draw: mosaic, beats };

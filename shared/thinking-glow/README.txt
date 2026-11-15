@@ -1,26 +1,25 @@
-STORYBENCH — MOSAIC GLOW STUDIES
+STORYBENCH — CELESTIAL MOSAIC GLOW
 
-Open index.html in a browser. No server, installation, or network access needed.
+Open index.html directly in a browser. No server or external assets required.
 
-Three synchronized mosaic loops inside the same light chat reference:
-1. Honey halo — diffuse amber light around the pieces and finished output.
-2. Luminous edges — mint light concentrated along tile and output borders.
-3. Opal bloom — lavender ambient light with warm highlights at both moments.
+Three synchronized mosaic loops in light chat mockups:
+1. Solar horizon — warm sunlight and an amber horizontal transition flare.
+2. Aurora horizon — a strong teal corona and cool horizontal flare.
+3. Eclipse bloom — violet atmosphere, expanding rings, and a golden flare.
 
-All three keep an ambient glow. A smooth pulse peaks at assembly (4.9 seconds),
-and a second peaks at output (6.4 seconds). The pulse lasts roughly 1.3 / 1.7
-seconds respectively, with a smooth rise and fall. No white flash or hard reset.
-Presentation / video can be switched without restarting the synchronized loops.
+All three keep a clearly visible ambient glow. Assembly peaks at 4.9 seconds;
+output peaks at 6.4 seconds. Each transition adds a broad, tapered horizon streak
+with a hot center and soft surrounding light. The underlying composition remains
+visible. The third treatment adds an expanding ring at both moments.
 
-Native canvas: 960 x 880, exactly 25% more in each dimension than 768 x 704.
-Geometry and light are rasterized at the new resolution, with new one-pixel
-highlight accents; no old bitmap is enlarged. Display remains 170 x 156 CSS px.
-Transparent artwork; 10-second loops; reduced-motion and hidden-tab handling.
+Native canvas: exactly 900 x 900. Geometry is rendered into the square canvas
+with uniform scale and vertical centering; the artwork is not stretched.
+Display: 170 x 170 CSS pixels, inline above the chat composer. Transparent
+backgrounds, continuous 10-second loops, presentation / video toggle.
+Reduced motion uses a still; hidden tabs stop drawing.
 
-Checks: syntax and whitespace; 84 sampled deterministic renders; exact endpoint
-matches and near-seam raster differences for every treatment and mode; pulse
-peaks; DOM mode switching, repeated loops, reduced motion and hidden tabs.
-Actual-size ambient / assembly / output contact sheets visually inspected.
+Verification: syntax and whitespace; 84 sampled deterministic renders; exact
+loop endpoints and near-seam raster comparison for all six treatment/mode
+combinations; pulse peaks; mode switching, repeated cycles, reduced motion,
+and hidden tabs in a DOM simulation. Chat-size contact sheets inspected.
 Live browser playback remains unverified (managed extension not connected).
-
-Earlier galleries remain in thinking-preview/ and thinking-inline/.
