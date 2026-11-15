@@ -112,10 +112,12 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
       await page.reload();
       await page.locator('.card-reference-panel img').waitFor();
       for (const selector of ['.workspace', '.chat']) {
-        assert.ok((await page.locator(selector).boundingBox()).width >= width - 16, `${selector} uses the phone width`);
+        const railWidth = (await page.locator('#episodeRailToggle').boundingBox()).width;
+        assert.ok((await page.locator(selector).boundingBox()).width >= width - railWidth - 16, `${selector} uses the phone width beside the rail`);
       }
       assert.ok((await page.locator('#cards [data-key="prompt"]').boundingBox()).width >= width * .7, 'Card editor has room to write');
-      assert.ok((await page.locator('[data-chat-draft]').boundingBox()).width >= width - 70, 'Composer has room to write');
+      const railWidth = (await page.locator('#episodeRailToggle').boundingBox()).width;
+      assert.ok((await page.locator('[data-chat-draft]').boundingBox()).width >= width - railWidth - 70, 'Composer has room to write');
       for (const tile of await page.locator('.card-reference-panel .reference-item, .reference-add-tile').all()) {
         assert.ok((await tile.boundingBox()).width >= 200, 'Reference content and picker remain readable');
       }

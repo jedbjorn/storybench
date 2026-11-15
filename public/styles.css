@@ -7,6 +7,7 @@
   --accent: #b94e32;
   --deep: #173d39;
   --pale: #e8f0ed;
+  --production-rail-width: 36px;
 }
 * {
   box-sizing: border-box;
@@ -91,6 +92,8 @@ header {
   color: var(--deep);
   font-size: 12px;
 }
+#channelsToggle { opacity: .6; }
+#channelsToggle:hover, #channelsToggle:focus-visible { opacity: 1; }
 main {
   height: calc(100vh - 66px);
   display: grid;
@@ -163,7 +166,27 @@ nav button.active {
   overflow: auto;
   padding: 28px 34px;
 }
-#episodeRailToggle { margin-bottom: 14px; }
+#episodesPage { margin-left: var(--production-rail-width); }
+#episodeRailToggle {
+  position: fixed;
+  inset: 66px auto 0 0;
+  z-index: 31;
+  width: var(--production-rail-width);
+  padding: 10px 0;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--paper);
+  color: var(--muted);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  font-size: 22px;
+}
+#episodeRailToggle:hover, #episodeRailToggle:focus-visible { background: var(--pale); color: var(--deep); }
+#episodeRailToggle:focus-visible { outline-offset: -2px; }
+#episodeRailToggle[aria-expanded=true] > span { transform: rotate(180deg); }
+body:has(#episodesPage[hidden]) #episodeRailToggle { display: none; }
 main:has(> .chat[hidden]) > .workspace { grid-column: 1 / -1; }
 .empty {
   text-align: center;
@@ -840,6 +863,7 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
 .drawer-backdrop[hidden] { display: none; }
 .slide-drawer { position: fixed; inset: 66px auto 0 0; width: min(340px, calc(100vw - 24px)); z-index: 31; overflow: hidden; display: flex; flex-direction: column; border-right: 1px solid var(--line); box-shadow: 12px 0 30px rgb(18 35 27 / 15%); transform: translateX(-105%); visibility: hidden; transition: transform .18s ease, visibility .18s ease; }
 .slide-drawer.is-open { transform: translateX(0); visibility: visible; }
+.episode-rail { left: var(--production-rail-width); width: min(340px, calc(100vw - var(--production-rail-width) - 24px)); }
 .drawer-heading { display: flex; flex: none; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
 .drawer-heading h2 { flex: 1; font: 600 20px Georgia; }
 .drawer-heading button { flex: none; }
