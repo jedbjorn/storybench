@@ -2,9 +2,10 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-const dejavu = (id, family, file) => ({ id, family, stems: ['/usr/share/fonts/truetype/dejavu/', '/usr/share/fonts/TTF/'], regular: `${file}.ttf`, bold: `${file}-Bold.ttf` });
-const liberation = (id, family, file) => ({ id, family, stems: ['/usr/share/fonts/truetype/liberation2/', '/usr/share/fonts/truetype/liberation/', '/usr/share/fonts/liberation/'], regular: `${file}-Regular.ttf`, bold: `${file}-Bold.ttf` });
-const bundled = (id, family, file) => ({ id, family, stems: [fileURLToPath(new URL(`./font-assets/${id}/`, import.meta.url))], regular: `${file}-Regular.ttf`, bold: `${file}-Bold.ttf` });
+const fontAsset = (name) => fileURLToPath(new URL(`./font-assets/${name}`, import.meta.url));
+const dejavu = (id, family, file) => ({ id, family, stems: ['/usr/share/fonts/truetype/dejavu/', '/usr/share/fonts/TTF/'], regular: `${file}.ttf`, bold: `${file}-Bold.ttf`, license: fontAsset('DejaVu-LICENSE.txt') });
+const liberation = (id, family, file) => ({ id, family, stems: ['/usr/share/fonts/truetype/liberation2/', '/usr/share/fonts/truetype/liberation/', '/usr/share/fonts/liberation/'], regular: `${file}-Regular.ttf`, bold: `${file}-Bold.ttf`, license: fontAsset('Liberation-LICENSE.txt') });
+const bundled = (id, family, file) => ({ id, family, stems: [fontAsset(`${id}/`)], regular: `${file}-Regular.ttf`, bold: `${file}-Bold.ttf`, license: fontAsset(`${id}/OFL.txt`) });
 export const FONTS = Object.freeze([
   dejavu('dejavu-sans', 'DejaVu Sans', 'DejaVuSans'),
   dejavu('dejavu-serif', 'DejaVu Serif', 'DejaVuSerif'),

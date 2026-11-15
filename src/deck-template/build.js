@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { fontForFamily, fontPath } from '../fonts.js';
 
 const layouts = ['title', 'section', 'statement', 'text-media', 'columns', 'full-media', 'process'];
 const escape = (value) => String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -12,7 +13,26 @@ const list = (value, field) => {
   return value;
 };
 
-/** Pure bundle assembly: no network, source-file reads or persistent model. */
+function typography(files, families = []) {
+  if (!Array.isArray(families) || families.length > 3) throw new Error('Deck fonts must be up to three supported families');
+  let css = '';
+  for (const family of new Set(families.filter(value => value !== null))) {
+    const font = fontForFamily(family);
+    if (!font) throw new Error(`Unsupported deck font: ${family}`);
+    for (const [weight, key] of [[400, 'regular'], [700, 'bold']]) {
+      const source = fontPath(font, key);
+      if (!source) throw new Error(`Deck font unavailable: ${font.family} ${key}`);
+      const name = `assets/font-${font.id}-${key}.ttf`;
+      files.set(name, readFileSync(source));
+      css += `@font-face{font-family:"${font.family}";src:url('${name}') format('truetype');font-weight:${weight};font-style:normal;font-display:swap}\n`;
+    }
+    files.set(`assets/font-${font.id}-LICENSE.txt`, readFileSync(font.license));
+  }
+  const roles = families.map((family, i) => family == null ? '' : `--font-${['base', 'accent', 'alternate'][i]}:"${fontForFamily(family).family}";`).join('');
+  return css + (roles ? `:root{${roles}}\n` : '');
+}
+
+/** Bundle assembly reads only packaged fonts/runtime files and supplied media bytes. */
 export function buildDeck(input, { assets = {} } = {}) {
   if (!input || typeof input !== 'object') throw new Error('Deck input required');
   const title = text(input.title, 'title');
@@ -72,5 +92,7 @@ export function buildDeck(input, { assets = {} } = {}) {
   files.set('index.html', shell(`<a class="skip" href="#presentation">Skip to slides</a><aside class="rail"><strong>${title}</strong><nav aria-label="Slides">${slides.map((slide, i) => `<button data-go="${i}">${String(i + 1).padStart(2, '0')} · ${escape(slide.title)}</button>`).join('')}</nav></aside><main id="presentation" tabindex="-1">${rendered.join('')}</main><footer>${buttons}<output id="counter" aria-live="polite"></output><button id="presenter-open">Presenter (N)</button><button id="fullscreen">Fullscreen</button></footer><p id="status" role="status"></p>`, 'audience.js'));
   files.set('presenter.html', shell(`<main class="presenter"><p id="connection" role="status">Connecting to audience…</p><output id="counter"></output><h1 id="current-title"></h1><p>Next: <span id="next-title"></span></p><label>Slide <select id="slide-select" disabled></select></label><div>${buttons}</div><h2>Speaker notes</h2><p id="notes"></p><label>Stage <select id="stage-select" disabled></select></label><div><button data-command="sub-previous">Previous stage</button><button data-command="sub-next">Next stage</button><button data-command="video-toggle">Play / pause</button><button data-command="video-restart">Restart video</button></div><p id="video-status"></p></main>`, 'presenter.js'));
   for (const name of ['audience.js', 'presenter.js', 'styles.css', 'assets/manrope-variable.ttf', 'assets/Manrope-OFL.txt']) files.set(name, readFileSync(new URL(name, import.meta.url)));
+  const fontCSS = typography(files, input.fonts);
+  if (fontCSS) files.set('styles.css', Buffer.from(files.get('styles.css') + '\n' + fontCSS));
   return files;
 }

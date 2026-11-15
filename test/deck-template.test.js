@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
 import { buildDeck } from '../src/deck-template/build.js';
 import { exampleDeck, exampleAssets } from '../src/deck-template/example.js';
+import { fontCatalog, fontForFamily } from '../src/fonts.js';
 
 const bundle = () => buildDeck(structuredClone(exampleDeck), { assets: exampleAssets });
 function page(files, name = 'index.html', { opener = null, hash = '', reduced = false } = {}) {
@@ -30,6 +31,39 @@ function page(files, name = 'index.html', { opener = null, hash = '', reduced = 
 }
 const current = (p) => p.d.querySelector('.slide:not([hidden])').id;
 const click = (p, selector) => p.d.querySelector(selector).click();
+
+test('every catalogue family exports both actual weights, notices and local CSS without bundling unused families', () => {
+  for (const font of fontCatalog()) {
+    const files = buildDeck({ ...exampleDeck, fonts: [null, font.family] }, { assets: exampleAssets });
+    const css = String(files.get('styles.css'));
+    assert.match(css, new RegExp(`--font-accent:"${font.family}"`));
+    assert.doesNotMatch(css, /--font-base:|--font-alternate:/);
+    for (const weight of ['regular', 'bold']) {
+      assert.deepEqual(files.get(`assets/font-${font.id}-${weight}.ttf`), readFileSync(font.files[weight]));
+    }
+    assert.deepEqual(files.get(`assets/font-${font.id}-LICENSE.txt`), readFileSync(fontForFamily(font.family).license));
+    assert.equal([...files.keys()].filter(name => name.startsWith('assets/font-')).length, 3);
+    for (const [, ref] of css.matchAll(/url\(['"]?([^'"\)]+)/g)) assert.ok(files.has(ref), ref);
+  }
+  const files = buildDeck({ ...exampleDeck, fonts: ['Kalam', 'Crimson Text', 'Space Mono'] }, { assets: exampleAssets });
+  assert.equal([...files.keys()].filter(name => name.startsWith('assets/font-')).length, 9);
+  const css = String(files.get('styles.css'));
+  assert.match(css, /--font-base:"Kalam";--font-accent:"Crimson Text";--font-alternate:"Space Mono"/);
+  assert.match(css, /h1,h2\{font-family:var\(--font-accent,Manrope\)/);
+  assert.match(css, /\.slide header,\.caption,\.gallery figcaption\{font-family:var\(--font-alternate,Manrope\)/);
+  assert.deepEqual(buildDeck({ ...exampleDeck, fonts: [null, null, null] }, { assets: exampleAssets }), bundle());
+});
+
+test('unknown, malformed and missing deck fonts fail before returning a bundle', () => {
+  for (const fonts of [null, 'Kalam', ['Kalam', null, null, null], ['missing'], ['../secret'], ['Kalam";src:url(https://remote)'], [''], [42], [{}]]) {
+    assert.throws(() => buildDeck({ ...exampleDeck, fonts }, { assets: exampleAssets }), /Deck fonts|Unsupported deck font/);
+  }
+  const font = fontForFamily('Kalam'), stems = font.stems;
+  try {
+    font.stems = ['/missing-storybench-fonts/'];
+    assert.throws(() => buildDeck({ ...exampleDeck, fonts: ['Kalam'] }, { assets: exampleAssets }), /Deck font unavailable: Kalam regular/);
+  } finally { font.stems = stems; }
+});
 
 test('deterministic data-driven layouts, safe text and licensed offline closure', () => {
   const files = bundle();

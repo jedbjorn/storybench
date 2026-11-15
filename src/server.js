@@ -626,6 +626,8 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         // adds the same boundary. No app storage, network or app-origin script authority.
         res.setHeader('Content-Security-Policy', "sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'none'");
         res.setHeader('X-Content-Type-Options','nosniff');
+        // Sandboxed previews have an opaque origin; bundled fonts need anonymous CORS.
+        if (path.extname(name) === '.ttf') res.setHeader('Access-Control-Allow-Origin', '*');
         if (name === 'bundle.zip') res.setHeader('Content-Disposition','attachment; filename="deck-bundle.zip"');
         return await streamProjectFile(req,res,file);
       }
