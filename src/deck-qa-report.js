@@ -66,7 +66,12 @@ export function evaluateQa(job, records, activeSession) {
   const shots = usable.flatMap(r => r.screenshots.filter(s => s.delivered).map(s => ({ ...s,
     review: r.reviews?.find(v => v.artifactId === s.artifactId), artifactRoot: r.artifactRoot })));
   const reviewed = shots.filter(s => s.review && s.fullResolutionDelivered && !s.clip);
-  const checks = usable.flatMap(r => r.checks);
+  // Sessions can overlap. Compare observation time, then session identity and
+  // in-session order for equal timestamps, independently of batch start order.
+  const checks = usable.flatMap(r => r.checks.map((check, index) => ({ check, sessionId: r.sessionId, index })))
+    .sort((a, b) => (Date.parse(a.check.at) || 0) - (Date.parse(b.check.at) || 0) ||
+      a.sessionId.localeCompare(b.sessionId) || a.index - b.index)
+    .map(entry => entry.check);
   const actions = usable.flatMap(r => r.actions);
   const viewports = [...new Map(reviewed.filter(s => screen(s.state)).map(s => [JSON.stringify(s.state.viewport), s.state.viewport])).values()];
   if (!viewports.some(v => v.width >= 1200 && v.height >= 700)) missing.add('normal viewport (at least 1200x700)');
@@ -100,8 +105,12 @@ export function evaluateQa(job, records, activeSession) {
         if (latestCheck(state, name)?.status !== 'pass') missing.add(`${slide.id}: ${name} check ${JSON.stringify([stage, gallery, viewport])}`);
       }
       const itemId = slide.subnav.length ? slide.subnav[Number(gallery[0])]?.itemId : slide.media?.itemId;
-      if (job.snapshot.library.find(i => i.id === itemId)?.asset.kind === 'video' && latestCheck(state, 'media')?.status !== 'pass')
-        missing.add(`${slide.id}: advancing media ${JSON.stringify([gallery, viewport])}`);
+      if (job.snapshot.library.find(i => i.id === itemId)?.asset.kind === 'video') {
+        if (latestCheck(state, 'media')?.status !== 'pass') missing.add(`${slide.id}: advancing media ${JSON.stringify([gallery, viewport])}`);
+        requireAction(`${slide.id}: presenter media control ${JSON.stringify([stage, gallery, viewport])}`, a =>
+          /^presenter-\d+$/.test(a.pageId) && key(a.state) === key(state) && a.action === 'click' &&
+          /^\[data-command=(["']?)(video-toggle|video-restart)\1\]$/.test(a.selector ?? ''));
+      }
     }
     for (const mode of ['print', 'reduce']) {
       if (!reviewed.some(s => s.state.pageId === 'audience' && s.state.slideId === slide.id &&

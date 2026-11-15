@@ -136,9 +136,17 @@ export async function smokeBrowser() {
         for(const i of [0,1]) {
           await act({pageId:'presenter-1',action:'select',selector:'#slide-select',value:String(i+2)});
           await act({action:'wait',milliseconds:200});
+          const videoShot=(await inspect({})).data.screenshots[0];
+          await client.call('report_deck_qa',{sessionId,summary:'Scripted media-control evidence regression',changesMade:[],
+            reviews:[{artifactId:videoShot.artifactId,assessment:'Video image received through native MCP transport.',findings:[]}]});
+          await act({pageId:'presenter-1',action:'wait',milliseconds:0,selector:'[data-command="video-restart"]'});
+          assert.ok((await currentEvidence()).missing.some(m=>m.startsWith(`video-${i}: presenter media control`)),
+            'a no-op with the media selector cannot satisfy the control requirement');
           await act({pageId:'presenter-1',action:'click',selector:'[data-command="video-restart"]'});
           await act({action:'wait',milliseconds:100});
           const playback=await check({checks:['media']});assert.equal(playback.results.media.status,'pass',`${harness} codec ${i}: ${JSON.stringify(playback.results)}`);
+          assert.ok(!(await currentEvidence()).missing.some(m=>m.startsWith(`video-${i}: presenter media control`) || m.startsWith(`video-${i}: advancing media`)),
+            'real Presenter restart plus advancing audience playback satisfies both media requirements');
         }
         await act({action:'key',key:'End'});
         await act({action:'wait',milliseconds:0,selector:'[data-gallery="1"]'});
