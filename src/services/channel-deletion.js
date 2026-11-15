@@ -104,7 +104,7 @@ export function createChannelDeletion(store, StoreError) {
       ["channels", `SELECT id,name,revision FROM channels WHERE id IN (${chosen})`],
       ...["episodes", "assets", "branding_templates", "channel_standards"].map((table) =>
         [table, `SELECT * FROM ${table} WHERE channel_id IN (${chosen})`]),
-      ...["episode_history", "stories", "story_sections", "story_history", "episode_library", "library_items", "graphic_recipes", "final_authorizations", "jobs", "conversations", "reference_directions"].map((table) =>
+      ...["episode_history", "stories", "story_sections", "story_history", "production_research", "episode_library", "library_items", "graphic_recipes", "final_authorizations", "jobs", "conversations", "reference_directions"].map((table) =>
         [table, `SELECT * FROM ${table} WHERE episode_id IN (${ep})`]),
       ["graphic_recipe_revisions", `SELECT * FROM graphic_recipe_revisions WHERE recipe_id IN (SELECT id FROM graphic_recipes WHERE episode_id IN (${ep}))`],
       ["output_designations", `SELECT * FROM output_designations WHERE job_id IN (SELECT id FROM jobs WHERE episode_id IN (${ep}))`],
@@ -179,7 +179,7 @@ export function createChannelDeletion(store, StoreError) {
         db.prepare(`DELETE FROM production_runs WHERE episode_id IN (${ep})`).run(...ids);
         db.prepare(`DELETE FROM conversations WHERE episode_id IN (${ep})`).run(...ids);
         db.prepare(`DELETE FROM jobs WHERE episode_id IN (${ep})`).run(...ids);
-        for (const table of ["episode_history", "story_history", "chat_events", "chat_messages", "chats"])
+        for (const table of ["episode_history", "story_history", "production_research", "chat_events", "chat_messages", "chats"])
           if (store.tableExists(table)) db.prepare(`DELETE FROM ${table} WHERE episode_id IN (${ep})`).run(...ids);
         db.prepare(`DELETE FROM episodes WHERE channel_id IN (${chosen})`).run(...ids);
         for (const table of ["branding_templates", "channel_standards", "assets"])

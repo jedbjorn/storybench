@@ -28,7 +28,14 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
+// Shared persistence/UI/tool limits: 1 MiB summary, 100 links, 200-byte IDs, 8 KiB URLs,
+// 512-byte titles, 2 KiB notes, 2 MiB complete normalized JSON (including escaping).
+// All text limits use UTF-8 bytes. Oversize input is rejected, never truncated.
+export const RESEARCH_LIMITS = Object.freeze({
+  summaryBytes: 1024 * 1024, maxLinks: 100, linkIdBytes: 200,
+  urlBytes: 8192, titleBytes: 512, noteBytes: 2048, recordBytes: 2 * 1024 * 1024,
+});
 export const DEFAULT_CHANNEL_NAME = "Main";
 // IDs become directory names, so they must be single safe path segments.
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
@@ -76,6 +83,51 @@ export class StoreError extends Error {
     this.statusCode = statusCode;
     Object.assign(this, details);
   }
+}
+
+// Shared by persistence and future UI/tool callers. Omitted link IDs are assigned once on save;
+// callers retain returned IDs when editing or reordering. Optional metadata may be omitted or empty.
+export function validateResearch(value) {
+  const text = (value, field, limit) => {
+    if (typeof value !== "string") throw new StoreError(`${field} must be a string`);
+    if (Buffer.byteLength(value, "utf8") > limit)
+      throw new StoreError(`${field} exceeds the ${limit} byte UTF-8 limit; shorten it before saving`, 413);
+    return value;
+  };
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new StoreError("Research must contain summary and links");
+  const summary = text(value.summary, "summary", RESEARCH_LIMITS.summaryBytes);
+  if (!Array.isArray(value.links)) throw new StoreError("links must be an array");
+  if (value.links.length > RESEARCH_LIMITS.maxLinks)
+    throw new StoreError(`Research supports at most ${RESEARCH_LIMITS.maxLinks} links; remove links before saving`, 413);
+  const seen = new Set();
+  const links = Array.from(value.links, (link) => {
+    if (!link || typeof link !== "object" || Array.isArray(link)) throw new StoreError("Each research link must be an object");
+    const linkId = link.id === undefined ? id("research_link") : text(link.id, "link.id", RESEARCH_LIMITS.linkIdBytes);
+    if (!SAFE_SEGMENT.test(linkId)) throw new StoreError("link.id must be 1 to 200 letters, digits, dots, underscores or hyphens, starting with a letter or digit");
+    if (seen.has(linkId)) throw new StoreError("Research link IDs must be unique");
+    seen.add(linkId);
+    const url = text(link.url, "link.url", RESEARCH_LIMITS.urlBytes);
+    let parsed;
+    try { parsed = new URL(url); } catch { throw new StoreError("link.url must be an absolute HTTP(S) URL"); }
+    if (!["http:", "https:"].includes(parsed.protocol) || !/^https?:\/\//i.test(url) || /\s/.test(url) || hasControlCharacters(url))
+      throw new StoreError("link.url must be an absolute HTTP(S) URL without whitespace or control characters");
+    const result = { id: linkId, url };
+    for (const [field, limit] of [["title", RESEARCH_LIMITS.titleBytes], ["note", RESEARCH_LIMITS.noteBytes]])
+      if (link[field] !== undefined) result[field] = text(link[field], `link.${field}`, limit);
+    return result;
+  });
+  const result = { summary, links };
+  if (Buffer.byteLength(JSON.stringify(result), "utf8") > RESEARCH_LIMITS.recordBytes)
+    throw new StoreError(`Research exceeds the ${RESEARCH_LIMITS.recordBytes} byte JSON limit; shorten the summary or links before saving`, 413);
+  return result;
+}
+
+function researchRow(row) {
+  return {
+    episodeId: row.episode_id, researchRevision: row.revision,
+    summary: row.summary, links: parse(row.links, []), updatedAt: row.updated_at, actor: row.actor,
+  };
 }
 
 function storyRow(row) {
@@ -410,6 +462,7 @@ export class Store {
     if (version < 14) this.migrateV14();
     if (version < 15) this.migrateV15();
     if (version < 16) this.migrateV16();
+    if (version < 17) this.migrateV17();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -454,6 +507,50 @@ export class Store {
         PRAGMA user_version=16;`);
       this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(16,?)").run(now());
       this.db.exec("COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+  migrateV17() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec(`CREATE TABLE IF NOT EXISTS production_research (
+        episode_id TEXT PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+        revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+        summary TEXT NOT NULL DEFAULT '', links TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL, actor TEXT CHECK(actor IN ('human','agent'))
+      );
+        INSERT OR IGNORE INTO production_research(episode_id,updated_at) SELECT id,updated_at FROM episodes;
+        PRAGMA user_version=17;`);
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(17,?)").run(now());
+      this.db.exec("COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+  // Both production kinds share this shape: { episodeId, researchRevision, summary, links,
+  // updatedAt, actor }. Empty legacy/new records start at revision 1 with actor null.
+  // Pending-deletion owners are unavailable (410); removed/missing productions return 404.
+  getResearch(episodeId) {
+    const production = this.db.prepare("SELECT channel_id FROM episodes WHERE id=?").get(episodeId);
+    if (!production) throw new StoreError("Production not found", 404);
+    this.requireChannel(production.channel_id);
+    const row = this.db.prepare("SELECT * FROM production_research WHERE episode_id=?").get(episodeId);
+    if (!row) throw new StoreError("Research record not found", 500);
+    return researchRow(row);
+  }
+  // Complete { summary, links } replacement. A 409 carries `current` for reconciliation.
+  // Actor is human/agent; successful saves advance only the independent research revision.
+  saveResearch(episodeId, expectedResearchRevision, content, actor = "human") {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const current = this.getResearch(episodeId);
+      if (!Number.isSafeInteger(expectedResearchRevision) || expectedResearchRevision !== current.researchRevision)
+        throw new StoreError(`Stale research revision: expected ${current.researchRevision}. Reload research before saving.`, 409, { current });
+      if (!["human", "agent"].includes(actor)) throw new StoreError("Research actor must be human or agent");
+      const accepted = validateResearch(content);
+      const changed = this.db.prepare(`UPDATE production_research SET summary=?,links=?,revision=revision+1,updated_at=?,actor=?
+        WHERE episode_id=? AND revision=?`).run(accepted.summary, JSON.stringify(accepted.links), now(), actor, episodeId, expectedResearchRevision);
+      if (changed.changes !== 1) throw new StoreError("Research changed before saving. Reload research before saving.", 409);
+      const saved = this.getResearch(episodeId);
+      this.db.exec("COMMIT");
+      return saved;
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
   requireProductionKind(episodeId, kind) {
@@ -1279,6 +1376,7 @@ export class Store {
           kind,
         );
       this.insertHistory({ ...episode, referencePrompt: "", referenceItemIds: [] }, "human", episode.createdAt, null);
+      this.db.prepare("INSERT INTO production_research(episode_id,updated_at) VALUES(?,?)").run(episode.id, episode.createdAt);
       this.db
         .prepare("INSERT INTO stories(episode_id,source,revision,sections,publication_pending,committed_hash,published_hash,updated_at) VALUES(?,?,?,?,?,?,?,?)")
         .run(episode.id, initialStory.source, 1, JSON.stringify(initialStory.sections), 1, hash(initialStory.source), null, episode.createdAt);
