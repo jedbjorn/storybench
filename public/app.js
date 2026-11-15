@@ -1,6 +1,7 @@
 import { newSlide, deckBoardHTML, bindDeckBoard } from "/deck-workspace.js";
 import { installSelectControls } from "/select-control.js";
 import { installWorkspaceChrome } from "/workspace-chrome.js";
+import { installProductionSearch } from "/production-search.js";
 import { installChannelDrawer } from "/channel-drawer.js";
 import { SettingsPages } from "/settings-pages.js";
 import { StoryEditor, createStoryRenderer } from "/story-editor.js?v=round2-editor";
@@ -70,7 +71,7 @@ function showChannel(channel) {
   $("#channelName").textContent = channel ? channel.name : "No channel";
   $("#channelName").title = channel ? `Channel ${channel.name} (${channel.id})` : "Create a channel to start";
 }
-async function load(select) {
+async function load(select, { remember = true } = {}) {
   const generation = ++loadGeneration, requestedId = channelId;
   const incoming = await api(stateUrl());
   if (generation !== loadGeneration || requestedId !== channelId) return;
@@ -84,7 +85,7 @@ async function load(select) {
   else if (episode)
     episode = state.episodes.find((e) => e.id === episode.id) || null;
   render();
-  if (select) rememberEpisode();
+  if (select && remember) rememberEpisode();
   await syncChat();
   if (episode && !$("#boardPanel").hidden) await loadBoardContext();
 }
@@ -660,7 +661,8 @@ $("#undo").onclick = async () => {
   }
 };
 let tabGeneration = 0;
-async function showTab(tab, { confirmStory = true } = {}) {
+async function showTab(tab, { confirmStory = true, remember = true } = {}) {
+      if (episode?.kind === 'deck' && ['drafts', 'final'].includes(tab)) tab = 'board';
       const generation = ++tabGeneration;
       const b = document.querySelector(`.tabs > button[data-tab="${tab}"]`);
       if (!b) return;
@@ -680,7 +682,16 @@ async function showTab(tab, { confirmStory = true } = {}) {
         libraryWorkspace.open().catch((error) => toast(error.message));
       if (b.dataset.tab === "board" && episode)
         loadBoardContext().catch((error) => toast(error.message));
+      if (remember || location.hash) {
+        const target = new URL(location.href); target.hash = tab;
+        if (target.href !== location.href) {
+          if (remember) { navigationIndex++; history.pushState({ pageIndex: navigationIndex }, '', target); }
+          else history.replaceState({ ...history.state, pageIndex: navigationIndex }, '', target);
+          currentUrl = target; pageLinks();
+        }
+      }
 }
+const tabFromUrl = (url) => ['board', 'story', 'media', 'research', 'drafts', 'final'].includes(url.hash.slice(1)) ? url.hash.slice(1) : 'board';
 document.querySelectorAll(".tabs > button").forEach((button) => {
   button.onclick = () => showTab(button.dataset.tab);
 });
@@ -809,7 +820,7 @@ window.addEventListener("beforeunload", (event) => {
 });
 const settingsPages = new SettingsPages({ api, toast, setStatus: (text) => { $("#saveState").textContent = text; } });
 const pageFor = (url) => ['branding', 'models', 'providers'].includes(url.pathname.slice(1)) ? url.pathname.slice(1) : 'episodes';
-let page = pageFor(new URL(location.href)), navigationIndex = history.state?.pageIndex ?? 0, restoringHistory = false, navigating = false;
+let page = pageFor(new URL(location.href)), navigationIndex = history.state?.pageIndex ?? 0, restoringHistory = false, navigating = false, pendingHistoryNavigation = null;
 let currentUrl = new URL(location.href);
 history.replaceState({ ...history.state, pageIndex: navigationIndex }, '', currentUrl);
 function pageLinks() {
@@ -865,7 +876,7 @@ async function navigate(target, popIndex = null, { prepared = false, replace = f
     if (nextChannel !== channelId || nextEpisode !== (episode?.id || null)) {
       viewChanged = true;
       channelId = nextChannel; episode = null;
-      await load(nextEpisode);
+      await load(nextEpisode, { remember: false });
     }
     if (nextChannel !== oldChannel) await recordChannelOpen(channelId);
     if (channelId) nextUrl.searchParams.set('channel', channelId);
@@ -875,6 +886,7 @@ async function navigate(target, popIndex = null, { prepared = false, replace = f
     } else navigationIndex = popIndex;
     accepted = true; currentUrl = new URL(location.href);
     await showPage(pageFor(currentUrl));
+    await showTab(tabFromUrl(currentUrl), { confirmStory: false, remember: false });
     chrome.close({ focus: false });
     if (nextChannel !== oldChannel) ($('#episodeTitle').offsetParent ? $('#episodeTitle') : $('#empty h1')).focus();
     return true;
@@ -901,8 +913,12 @@ async function navigate(target, popIndex = null, { prepared = false, replace = f
     return false;
   }
   finally {
-    if (!accepted && popIndex != null) { restoringHistory = true; history.go(navigationIndex - popIndex); }
+    if (!accepted && popIndex != null && !pendingHistoryNavigation) { restoringHistory = true; history.go(navigationIndex - popIndex); }
     navigating = false;
+    if (pendingHistoryNavigation) {
+      const pending = pendingHistoryNavigation; pendingHistoryNavigation = null;
+      navigate(pending.target, pending.index);
+    }
   }
 }
 async function navigateChannel(id, { prepared = false, replace = false } = {}) {
@@ -928,6 +944,7 @@ const chrome = installWorkspaceChrome(document, {
   onCloseChannels: () => channelDrawer.reset(),
   onEscape: () => channelDrawer.cancelTransient(),
 });
+installProductionSearch({ api, esc, navigate, onOpen: () => chrome.close({ focus: false }) });
 document.querySelectorAll('[data-page]').forEach((link) => link.onclick = (event) => {
   if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
   event.preventDefault();
@@ -936,6 +953,7 @@ document.querySelectorAll('[data-page]').forEach((link) => link.onclick = (event
 });
 window.addEventListener('popstate', (event) => {
   if (restoringHistory) { restoringHistory = false; return; }
+  if (navigating) { pendingHistoryNavigation = { target: location.href, index: event.state?.pageIndex ?? 0 }; return; }
   navigate(location.href, event.state?.pageIndex ?? 0);
 });
 load(new URL(location.href).searchParams.get('episode')).catch(async (error) => {
@@ -948,6 +966,7 @@ load(new URL(location.href).searchParams.get('episode')).catch(async (error) => 
 }).then(async () => {
   currentUrl = new URL(location.href);
   await showPage(page);
+  await showTab(tabFromUrl(currentUrl), { confirmStory: false, remember: false });
   await recordChannelOpen(channelId);
 }).catch((error) => toast(error.message));
 

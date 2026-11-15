@@ -82,7 +82,7 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
   await page.getByRole('combobox', { name: 'Show', exact: true }).click();
   await page.keyboard.press('Home'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
   assert.equal(await page.inputValue('#episodeFilter'), 'Scaffold');
-  assert.equal(await page.locator('[role=listbox]').count(), 0);
+  assert.equal(await page.locator('.sb-select-menu[role=listbox]').count(), 0);
   const openWorkspace = await page.locator('.workspace').boundingBox();
   await page.locator('#episodeRail [data-drawer-close]').click();
   assert.equal(await page.locator('#episodeRail').getAttribute('aria-hidden'), 'true');

@@ -19,7 +19,14 @@
         <a href="/providers" data-page="providers">Providers</a>
         <a href="/models" data-page="models">Models</a>
       </nav>
-      <div id="saveState" class="pill" role="status">Ready</div>
+      <div class="header-tools">
+        <div id="productionSearch" class="production-search">
+          <div class="search-field"><input id="productionSearchInput" type="search" placeholder="Search productions…" aria-label="Search all productions" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="productionSearchResults" autocomplete="off" tabindex="-1" inert></div>
+          <button id="productionSearchToggle" type="button" aria-label="Search productions" aria-expanded="false" aria-controls="productionSearchInput"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg></button>
+          <div class="search-dropdown" hidden><p id="productionSearchStatus" role="status"></p><div id="productionSearchResults" role="listbox" aria-label="Productions"></div></div>
+        </div>
+        <div id="saveState" class="pill" role="status">Ready</div>
+      </div>
     </header>
     <button id="episodeRailToggle" type="button" aria-label="Open Productions" aria-expanded="false" aria-controls="episodeRail"><span aria-hidden="true">›</span></button>
     <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>

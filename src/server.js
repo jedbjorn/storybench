@@ -246,6 +246,12 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           return send(res, 200, store.saveBrandStandards(channel.id, body.expectedRevision, body));
         }
       }
+      if (req.method === "GET" && url.pathname === "/api/production-search") {
+        const channels = new Map(store.listChannels().map((channel) => [channel.id, channel.name]));
+        return send(res, 200, store.listEpisodes().map(({ id, channelId, title, state, archivedAt, updatedAt }) => ({
+          id, channelId, channelName: channels.get(channelId), title, stage: archivedAt ? `Archived · ${state}` : state, updatedAt,
+        })));
+      }
       if (req.method === "GET" && url.pathname === "/api/state") {
         const channel = viewChannel();
         return send(res, 200, {
