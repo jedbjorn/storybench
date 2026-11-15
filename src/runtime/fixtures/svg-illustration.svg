@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="520" viewBox="0 0 800 520" role="img" aria-labelledby="title description">
+  <title id="title">From observation to a shared plan</title>
+  <desc id="description">Three connected workspaces around an editable vector landscape, with local gradients, clipping, masks and a soft shadow.</desc>
+  <style>.outline{fill:none;stroke:#294b60;stroke-width:2;stroke-linejoin:round}.label{font-family:Manrope;font-size:20px;fill:#15354a}.small{font-family:Manrope;font-size:14px;fill:#35576c}</style>
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d5edf7"/><stop offset="1" stop-color="#f5f8ef"/></linearGradient>
+    <radialGradient id="light"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#8bbba8"/></radialGradient>
+    <clipPath id="viewport"><rect x="180" y="150" width="440" height="210" rx="18"/></clipPath>
+    <mask id="soft-edge"><rect width="800" height="520" fill="white"/><circle cx="610" cy="350" r="24" fill="#888888"/></mask>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="160%"><feGaussianBlur stdDeviation="5"/></filter>
+    <g id="tree"><path d="M0 0L-14 26H14Z" fill="#4f9075"/><path d="M0 24V38" stroke="#294b60" stroke-width="3"/></g>
+  </defs>
+  <rect width="800" height="520" fill="#fcfaf5"/>
+  <ellipse cx="400" cy="375" rx="240" ry="22" opacity="0.2" fill="#294b60" filter="url(#shadow)"/>
+  <g id="landscape" clip-path="url(#viewport)" mask="url(#soft-edge)">
+    <rect x="180" y="150" width="440" height="210" fill="url(#sky)"/>
+    <circle cx="530" cy="205" r="38" fill="url(#light)"/>
+    <path d="M150 340Q270 210 380 300T650 280V380H150Z" fill="#b3d5b7"/>
+    <path d="M180 330C300 320 290 230 430 280S530 340 640 290" fill="none" stroke="#f6f3de" stroke-width="12"/>
+    <use href="#tree" x="240" y="250"/><use href="#tree" x="558" y="282"/>
+    <g transform="translate(330 250)"><polygon points="0,0 65,-32 130,0 65,33" fill="#ffffff"/><polygon points="0,0 65,33 65,85 0,52" fill="#8fb4c8"/><polygon points="65,33 130,0 130,52 65,85" fill="#54829e"/><path class="outline" d="M0 0L65-32 130 0V52L65 85 0 52ZM65 33V85M0 0L65 33 130 0"/></g>
+  </g>
+  <rect x="180" y="150" width="440" height="210" rx="18" class="outline"/>
+  <g id="observe"><circle cx="120" cy="95" r="30" fill="#d5edf7"/><path class="outline" d="M104 95Q120 75 136 95Q120 115 104 95Z"/><circle cx="120" cy="95" r="5" fill="#294b60"/><text x="120" y="150" text-anchor="middle" class="label">Observe</text></g>
+  <g id="connect"><rect x="355" y="55" width="90" height="70" rx="16" fill="#e5eed1"/><polyline points="375,90 395,72 425,102" class="outline"/><circle cx="375" cy="90" r="5" fill="#54829e"/><circle cx="395" cy="72" r="5" fill="#54829e"/><circle cx="425" cy="102" r="5" fill="#54829e"/><text x="400" y="150" text-anchor="middle" class="label">Connect</text></g>
+  <g id="plan"><rect x="650" y="65" width="60" height="65" rx="10" fill="#f6dfb4"/><path class="outline" d="M665 82H695M665 96H695M665 110H685"/><text x="680" y="155" text-anchor="middle" class="label">Plan</text></g>
+  <path d="M155 90H340M460 90H635" stroke="#54829e" stroke-width="2" stroke-dasharray="5 6"/>
+  <text x="400" y="440" text-anchor="middle" class="label">A shared view makes the next step clearer.</text>
+  <text x="400" y="472" text-anchor="middle" class="small">Editable geometry · portable source · local resources</text>
+</svg>

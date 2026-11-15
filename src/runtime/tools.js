@@ -262,7 +262,7 @@ export function createScopedTools(scope, { store, library = null, isShortcutMess
         requestId: scope.requestId, conversationId: scope.conversationId, harness: scope.harness,
         channelId: scope.channelId, episodeId: scope.episodeId, cardId: args.cardId ?? null,
         workPath: path.relative(scope.episodeDir, file.path),
-        editableSource: editable ? path.relative(scope.episodeDir, editable.path) : null,
+        editableSource: editable ? path.relative(scope.episodeDir, editable.path) : imported.metadata.svgProfile ? path.relative(scope.episodeDir, file.path) : null,
         derivedFrom: derived, referenceDirection: direction,
         sourceSha256: imported.hash, sourceSize: file.size, registeredAt: new Date().toISOString(),
       };

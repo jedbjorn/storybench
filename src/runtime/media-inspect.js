@@ -7,6 +7,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { RuntimeError } from "./validate.js";
+import { readSvgSource, parseSvg, svgProbe } from '../svg.js';
+import { renderSvg } from '../svg-render.js';
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 export const MEDIA_TIMEOUT_MS = 30_000;
@@ -51,7 +53,12 @@ export function assertTimestamp(value, field = "atSeconds") {
 
 // A still, or one video frame at an explicit timestamp, as PNG.
 // `source`: an open FileHandle (project media) or an app-owned path.
-export function frameAt(source, atSeconds = null, { maxWidth = 1024, timeoutMs } = {}) {
+export async function frameAt(source, atSeconds = null, { maxWidth = 1024, timeoutMs } = {}) {
+  const vector = await readSvgSource(source);
+  if (vector) {
+    if (atSeconds != null && assertTimestamp(atSeconds) !== 0) throw new RuntimeError('INVALID_TIMESTAMP', 'SVG is a still image; omit atSeconds');
+    return renderSvg(vector, { maxWidth, timeoutMs });
+  }
   const { input, fd } = inputOf(source);
   const args = [];
   if (atSeconds != null) args.push("-ss", String(assertTimestamp(atSeconds)));
@@ -91,6 +98,8 @@ export async function contactSheet(source, timestamps, { columns = Math.min(4, t
 
 // ffprobe summary (no raw tags, no paths), read through the same descriptor.
 export async function mediaSummary(source, { timeoutMs } = {}) {
+  const vector = await readSvgSource(source);
+  if (vector) return { ...svgProbe(parseSvg(vector)), container: 'svg', sizeBytes: vector.length, bitRate: null };
   const { input, fd } = inputOf(source);
   const raw = await runMedia("ffprobe", ["-v", "error", "-show_format", "-show_streams", "-of", "json", input], { source: fd, capture: true, timeoutMs, failure: "Could not read media metadata from this file" });
   let parsed;

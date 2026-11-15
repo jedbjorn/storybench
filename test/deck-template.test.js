@@ -96,7 +96,7 @@ test('deterministic data-driven layouts, safe text and licensed offline closure'
 });
 
 test('invalid content and paths fail before producing a bundle', () => {
-  for (const path of ['../secret.png', 'assets/../secret.png', 'https://site/image.png', 'assets/x.svg', 'assets/%2e%2e.png', 'assets/x.png?remote', 'assets/sub/x.png', 'assets/\\x.png']) {
+  for (const path of ['../secret.png', 'assets/../secret.png', 'https://site/image.png', 'assets/%2e%2e.png', 'assets/x.png?remote', 'assets/sub/x.png', 'assets/\\x.png']) {
     const input = structuredClone(exampleDeck); input.slides[5].media.src = path;
     assert.throws(() => buildDeck(input, { assets: exampleAssets }), /Invalid local/);
   }

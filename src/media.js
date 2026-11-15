@@ -4,6 +4,8 @@ import { access, mkdir, readFile, realpath, rename, stat, unlink, writeFile } fr
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { spawn } from 'node:child_process';
+import { readSvgSource, parseSvg, svgProbe } from './svg.js';
+import { renderSvg } from './svg-render.js';
 
 function mediaError(message) {
   const error = new Error(message);
@@ -73,6 +75,9 @@ async function capture(command, args, { signal } = {}) {
 export async function probeMedia(filePath, { signal } = {}) {
   const info = await stat(filePath).catch(() => null);
   if (!info?.isFile()) throw mediaError(`Media source is not a regular file: ${filePath}`);
+  signal?.throwIfAborted();
+  const vector = await readSvgSource(filePath);
+  if (vector) return svgProbe(parseSvg(vector));
   let parsed;
   try {
     const output = await capture('ffprobe', [
@@ -147,27 +152,33 @@ export async function importMedia({ workspace, sourcePath, mediaDirectory = null
       if (!managed.isFile() || managed.size !== after.size) throw mediaError('Managed media does not match its content identity');
       await unlink(staging);
     } else { await rename(staging, published); createdFile = true; }
+    const vector = await readSvgSource(published);
+    // Revalidate vectors against the current profile; old caches never confer SVG trust.
+    const vectorProbe = vector ? svgProbe(parseSvg(vector)) : null;
     const probeCache = join(root, 'cache', `${hash}-probe-v1.json`);
     let probe;
     try {
       const cached = JSON.parse(await readFile(probeCache, 'utf8'));
       if (cached.version !== 1 || cached.hash !== hash || cached.size !== after.size || !validProbe(cached.probe)) throw new Error('invalid cache');
-      probe = cached.probe;
+      probe = vectorProbe || cached.probe;
     } catch {
-      probe = await probeMedia(published);
+      probe = vectorProbe || await probeMedia(published);
       const cacheTemp = `${probeCache}.${randomUUID()}.tmp`;
       await writeFile(cacheTemp, JSON.stringify({ version: 1, hash, size: after.size, probe }), { mode: 0o600 });
       await rename(cacheTemp, probeCache);
     }
     let thumbnailPath;
     if (probe.kind !== 'audio') {
-      const thumb = join(root, 'cache', `${hash}-thumb.jpg`);
+      const thumb = join(root, 'cache', vector ? `${hash}-${probe.svgProfile}-thumb.png` : `${hash}-thumb.jpg`);
       if (!(await fileExists(thumb))) {
         const thumbTemp = `${thumb}.${randomUUID()}.tmp`;
         try {
-          const seek = probe.kind === 'video' && probe.duration ? Math.min(1, probe.duration / 2) : 0;
-          await run('ffmpeg', ['-v', 'error', '-threads', '1', '-ss', String(seek), '-i', published,
-            '-frames:v', '1', '-vf', "scale='min(640,iw)':-2", '-q:v', '3', '-f', 'image2', '-y', thumbTemp]);
+          if (vector) await writeFile(thumbTemp, await renderSvg(vector, { maxWidth: 640 }));
+          else {
+            const seek = probe.kind === 'video' && probe.duration ? Math.min(1, probe.duration / 2) : 0;
+            await run('ffmpeg', ['-v', 'error', '-threads', '1', '-ss', String(seek), '-i', published,
+              '-frames:v', '1', '-vf', "scale='min(640,iw)':-2", '-q:v', '3', '-f', 'image2', '-y', thumbTemp]);
+          }
           await rename(thumbTemp, thumb);
         } finally {
           await unlink(thumbTemp).catch(() => {});
@@ -184,6 +195,9 @@ export async function importMedia({ workspace, sourcePath, mediaDirectory = null
       createdAt: new Date().toISOString(),
       createdFile,
     };
+  } catch (error) {
+    if (createdFile) await unlink(published).catch(() => {});
+    throw error;
   } finally {
     await unlink(staging).catch(() => {});
   }

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fontForFamily, fontPath } from '../fonts.js';
+import { looksLikeSvg, parseSvg } from '../svg.js';
 
 const layouts = ['title', 'section', 'statement', 'text-media', 'columns', 'full-media', 'process'];
 const escape = (value) => String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -13,10 +14,10 @@ const list = (value, field) => {
   return value;
 };
 
-function typography(files, families = []) {
+function typography(files, families = [], svgFonts = []) {
   if (!Array.isArray(families) || families.length > 3) throw new Error('Deck fonts must be up to three supported families');
   let css = '';
-  for (const family of new Set(families.filter(value => value !== null))) {
+  for (const family of new Set([...families.filter(value => value !== null), ...svgFonts.filter(value => value !== 'Manrope')])) {
     const font = fontForFamily(family);
     if (!font) throw new Error(`Unsupported deck font: ${family}`);
     for (const [weight, key] of [[400, 'regular'], [700, 'bold']]) {
@@ -40,10 +41,16 @@ export function buildDeck(input, { assets = {} } = {}) {
   if (!slides.length) throw new Error('slides must not be empty');
   const files = new Map();
   const ids = new Set();
+  const vectors = new Map(), svgFonts = new Set();
+  let instance = 0;
   function asset(path, type) {
-    const extensions = type === 'video' ? /\.(mp4|webm)$/i : /\.(png|jpe?g|webp|gif)$/i;
+    const extensions = type === 'video' ? /\.(mp4|webm)$/i : /\.(svg|png|jpe?g|webp|gif)$/i;
     if (typeof path !== 'string' || !/^assets\/[a-zA-Z0-9_-][a-zA-Z0-9_.-]*$/.test(path) || !extensions.test(path)) throw new Error('Invalid local media path');
     if (!Object.hasOwn(assets, path) || !(assets[path] instanceof Uint8Array) || !assets[path].byteLength) throw new Error(`Missing media bytes: ${path}`);
+    if (/\.svg$/i.test(path) || looksLikeSvg(assets[path])) {
+      if (type !== 'image' || !/\.svg$/i.test(path)) throw new Error(`SVG media must use an .svg image path: ${path}`);
+      try { vectors.set(path, parseSvg(assets[path])); } catch (error) { throw new Error(`Asset ${path}: ${error.message}`); }
+    }
     files.set(path, Buffer.from(assets[path]));
     return escape(path);
   }
@@ -51,6 +58,13 @@ export function buildDeck(input, { assets = {} } = {}) {
     if (!value || !['image', 'video'].includes(value.type)) throw new Error('Media type must be image or video');
     const src = asset(value.src, value.type);
     const alt = text(value.alt, 'media.alt');
+    if (vectors.has(value.src)) {
+      const vector = parseSvg(assets[value.src], { namespace: `_sbv${++instance}` });
+      for (const family of vector.fonts) svgFonts.add(family);
+      // Inline validated geometry can load the bundle's fonts. Retain original editable
+      // bytes alongside it; each use gets isolated definitions and presentation styles.
+      return `<div class="vector-media" role="img" aria-label="${alt}">${vector.svg}</div>`;
+    }
     if (value.type === 'image') return `<img src="${src}" alt="${alt}">`;
     if (value.autoplay !== undefined && typeof value.autoplay !== 'boolean') throw new Error('media.autoplay must be boolean');
     const poster = value.poster ? ` poster="${asset(value.poster, 'image')}"` : '';
@@ -92,7 +106,8 @@ export function buildDeck(input, { assets = {} } = {}) {
   files.set('index.html', shell(`<a class="skip" href="#presentation">Skip to slides</a><aside class="rail"><strong>${title}</strong><nav aria-label="Slides">${slides.map((slide, i) => `<button data-go="${i}">${String(i + 1).padStart(2, '0')} · ${escape(slide.title)}</button>`).join('')}</nav></aside><main id="presentation" tabindex="-1">${rendered.join('')}</main><footer>${buttons}<output id="counter" aria-live="polite"></output><button id="presenter-open">Presenter (N)</button><button id="fullscreen">Fullscreen</button></footer><p id="status" role="status"></p>`, 'audience.js'));
   files.set('presenter.html', shell(`<main class="presenter"><p id="connection" role="status">Connecting to audience…</p><output id="counter"></output><h1 id="current-title"></h1><p>Next: <span id="next-title"></span></p><label>Slide <select id="slide-select" disabled></select></label><div>${buttons}</div><h2>Speaker notes</h2><p id="notes"></p><label>Stage <select id="stage-select" disabled></select></label><div><button data-command="sub-previous">Previous stage</button><button data-command="sub-next">Next stage</button><button data-command="video-toggle">Play / pause</button><button data-command="video-restart">Restart video</button></div><p id="video-status"></p></main>`, 'presenter.js'));
   for (const name of ['audience.js', 'presenter.js', 'styles.css', 'assets/manrope-variable.ttf', 'assets/Manrope-OFL.txt']) files.set(name, readFileSync(new URL(name, import.meta.url)));
-  const fontCSS = typography(files, input.fonts);
+  const fontCSS = typography(files, input.fonts, [...svgFonts]);
+  files.set('styles.css', Buffer.from(files.get('styles.css') + '\n.vector-media{width:100%;height:100%;display:flex;align-items:center;justify-content:center}.vector-media>svg{max-width:100%;max-height:100%;height:auto;font-family:Manrope}\n'));
   if (fontCSS) files.set('styles.css', Buffer.from(files.get('styles.css') + '\n' + fontCSS));
   return files;
 }

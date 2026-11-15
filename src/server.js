@@ -618,7 +618,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         const workspaceReal = await realpath(workspace);
         contained(workspaceReal, path.relative(workspaceReal, actual));
         const sourceType =
-          mime[path.extname(asset.metadata?.originPath || "").toLowerCase()];
+          asset.metadata?.contentType || mime[path.extname(asset.metadata?.originPath || "").toLowerCase()];
         return await streamProjectFile(
           req,
           res,

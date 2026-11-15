@@ -13,6 +13,7 @@ import { promisify } from "node:util";
 import { Readability } from "@mozilla/readability";
 import { JSDOM } from "jsdom";
 import { importMedia, probeMedia } from "./media.js";
+import { readSvgSource, parseSvg } from './svg.js';
 import { StoreError } from "./store.js";
 
 const execFileAsync = promisify(execFile);
@@ -176,12 +177,12 @@ export function createLibraryService({ workspace, store, fetchImpl = null, dnsLo
         let asset;
         let mediaProbe = null;
         try { mediaProbe = await probeMedia(temporary, { signal }); }
-        catch (error) { if (error.name === "AbortError") throw error; }
+        catch (error) { if (error.name === "AbortError" || error.code === 'INVALID_SVG') throw error; }
         if (mediaProbe) {
           const imported = await importMedia({ workspace, sourcePath: temporary, mediaDirectory: target.mediaDirectory });
           imported.name = name;
           imported.channelId = target.channelId;
-          imported.metadata = { ...imported.metadata, contentType, importedForCategory: chosenCategory };
+          imported.metadata = { ...imported.metadata, contentType: imported.metadata.contentType || contentType, importedForCategory: chosenCategory };
           const existing = store.getAssetByHash(imported.hash, target.channelId);
           asset = existing?.kind === "reference"
             ? store.repairReferenceAssetAsMedia(existing.id, imported)
@@ -308,6 +309,13 @@ export function createLibraryService({ workspace, store, fetchImpl = null, dnsLo
       const sourceChannel = store.getChannel(sourceEpisode.channelId);
       const origin = { channelId: sourceEpisode.channelId, channelName: sourceChannel?.name ?? null, episodeId: sourceEpisode.id,
         episodeTitle: sourceEpisode.title, itemId: item.id, assetId: item.assetId, hash: item.asset.hash, category: item.category, label: item.label };
+      if (item.asset.kind === 'image') {
+        const file = await sourceFile(item.asset), vector = await readSvgSource(file);
+        if (vector) {
+          parseSvg(vector);
+          if (crypto.createHash('sha256').update(vector).digest('hex') !== item.asset.hash) throw new StoreError('SVG source bytes no longer match the registered asset; it was not reused', 409);
+        } else if (item.asset.metadata?.svgProfile) throw new StoreError('SVG source is no longer valid; it was not reused', 409);
+      }
       const already = store.listEpisodeLibrary(destinationEpisode.id).find((candidate) => candidate.provenance?.reusedFrom?.itemId === item.id);
       let reused = already, copied = false;
       if (!reused) {

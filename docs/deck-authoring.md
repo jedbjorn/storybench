@@ -6,7 +6,7 @@ Choose **Build saved deck** in Slides. The job shows progress and errors (media 
 
 Keyboard: Up/Down changes slides, Left/Right changes reveals, Home/End jumps, N opens presenter. Gallery buttons select independent views. Reduced motion disables automatic reveals. Native video controls remain available. Local browser popup, autoplay and file-window behavior can vary; reopen Presenter from the audience if disconnected.
 
-To let the agent author a deck, describe the audience, narrative and desired feel in chat. Deck skills instruct it to read current state, save story/slides, register or reuse media, build and await completion. All harnesses share the same validated fields and revisions. Images must be PNG/JPEG/GIF/WebP; videos MP4/WebM. Render SVG graphics to PNG before attaching. Scripts and raw HTML are not authoring fields. A missing/unsupported asset or invalid layout fails the build without replacing earlier successes.
+To let the agent author a deck, describe the audience, narrative and desired feel in chat. Deck skills instruct it to read current state, save story/slides, register or reuse media, build and await completion. All harnesses share the same validated fields and revisions. Images may be supported SVG or PNG/JPEG/GIF/WebP; videos MP4/WebM. Register SVG source directly: inspection/thumbnail PNGs supplement the retained editable vector. HTML ZIP is the preferred output. See the [SVG profile](svg-profile.md) for supported geometry, styles, fonts and limits. Scripts and raw HTML are not authoring fields. A missing/unsupported asset or invalid layout fails the build without replacing earlier successes.
 
 ## Try the editable demo
 
