@@ -28,6 +28,7 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
   const episode = app.store.createEpisode({ title: 'Workspace chrome' });
   const library = createLibraryService({ workspace: root, store: app.store });
   const graphic = await library.registerFile({ episodeId: episode.id, readable: Readable.from([png]), fileName: 'opening.png', contentType: 'image/png', selectedCategory: 'Graphics' });
+  await library.registerFile({ episodeId: episode.id, readable: Readable.from([png]), fileName: 'long-label.png', label: 'Opening graphic with a longer library label that wraps over several lines', contentType: 'image/png', selectedCategory: 'Graphics' });
   app.store.updateEpisode(episode.id, episode.revision, { cards: [{ id: 'opening', title: 'Opening', type: 'Static Graphic', prompt: 'Introduce the story', itemId: graphic.id, referenceItemIds: [graphic.id] }] });
   await listenInRange(app.server);
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
@@ -47,6 +48,15 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
   await page.click('[data-tab="media"]');
   const libraryItem = `[data-library-item="${graphic.id}"]`;
   await page.locator(libraryItem).waitFor();
+  const libraryCards = await page.locator('[data-library-category="Graphics"] .library-item').all();
+  assert.equal(libraryCards.length, 2);
+  const actionBottoms = [];
+  for (const card of libraryCards) {
+    assert.ok((await card.boundingBox()).width <= 220, 'Library cards stay compact instead of filling the workspace');
+    const actions = await card.locator('.library-card-actions').boundingBox();
+    actionBottoms.push(actions.y + actions.height);
+  }
+  assert.ok(Math.abs(actionBottoms[0] - actionBottoms[1]) < 1, 'Card actions align along the bottom despite wrapped labels');
   for (const width of [1600, 600, 390]) {
     await page.setViewportSize({ width, height: 1000 });
     for (const category of ['Reference', 'B-roll', 'Narration']) {
@@ -59,9 +69,10 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
   await page.setViewportSize({ width: 1600, height: 1000 });
   const graphicBox = await page.locator(libraryItem).boundingBox();
   assert.ok(graphicBox.y + 100 < 1000, 'Graphics preview is visible below three empty categories');
-  await page.locator(libraryItem).dragTo(page.locator('[data-library-category="Narration"]'));
+  const dragOptions = { sourcePosition: { x: 20, y: 150 }, targetPosition: { x: 20, y: 10 } };
+  await page.locator(libraryItem).dragTo(page.locator('[data-library-category="Narration"] .library-group-heading'), dragOptions);
   await page.locator(`[data-library-category="Narration"] ${libraryItem}`).waitFor();
-  await page.locator(libraryItem).dragTo(page.locator('[data-library-category="Graphics"]'));
+  await page.locator(libraryItem).dragTo(page.locator('[data-library-category="Graphics"] .library-group-heading'), dragOptions);
   await page.locator(`[data-library-category="Graphics"] ${libraryItem}`).waitFor();
   await page.click('[data-tab="board"]');
   await page.click('#episodeRailToggle');

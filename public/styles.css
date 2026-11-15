@@ -397,7 +397,7 @@ h2 {
 }
 .asset-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 220px));
   gap: 12px;
   margin-top: 18px;
 }
@@ -414,11 +414,12 @@ h2 {
 .workspace-empty, [data-empty-jobs] { padding: 28px; margin: 16px 0; border: 1px dashed #b8c4be; border-radius: 12px; background: #ffffff80; color: var(--muted); text-align: center; }
 .workspace-empty h3 { margin: 0 0 8px; color: var(--ink); font-size: 17px; }
 .workspace-empty p { margin: 0; }
-.library-item { cursor: grab; overflow: hidden; }
+.library-item { display: flex; flex-direction: column; cursor: grab; overflow: hidden; }
+.library-item > div { display: flex; flex: 1; flex-direction: column; }
 .library-item > img, .library-item > video, .library-file-icon { width: 100%; aspect-ratio: 16/9; object-fit: cover; background: #edf1ee; }
 .library-file-icon { display: grid; place-items: center; font-size: 34px; color: var(--deep); }
 .library-item audio { width: 100%; min-height: 54px; }
-.library-card-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+.library-card-actions { display: flex; justify-content: space-between; align-items: center; margin-top: auto; padding-top: 8px; }
 .library-card-actions > div { display: flex; gap: 6px; }
 .library-card-actions button { padding: 4px 8px; }
 .extraction { display: inline; padding: 2px 5px; border-radius: 9px; background: var(--pale); }
