@@ -7,7 +7,7 @@ import { rm, stat, realpath } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Store, StoreError } from "./store.js";
+import { Store, StoreError, RESEARCH_TRANSPORT_BYTES } from "./store.js";
 import { importMedia } from "./media.js";
 import { createChatService } from "./chat.js";
 import { createModelCatalog, createWorkerHarnessFactory } from "./runtime/app-runtime.js";
@@ -59,12 +59,15 @@ function options(argv) {
   return out;
 }
 
-async function jsonBody(req) {
+async function jsonBody(req, limit = 6_500_000) {
   const chunks = [];
   let bytes = 0;
-  for await (const chunk of req) {
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     bytes += chunk.length;
-    if (bytes > 6_500_000) throw new StoreError("Request body too large", 413);
+    if (bytes > limit) {
+      req.resume();
+      throw new StoreError(`Request body exceeds the ${limit} byte transport limit; shorten it before saving`, 413);
+    }
     chunks.push(chunk);
   }
   if (!chunks.length) return {};
@@ -313,6 +316,16 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
       }
       if (parts[0] === "api" && parts[1] === "episodes" && parts[2]) {
         const episodeId = parts[2];
+        if (parts[3] === "research" && parts.length === 4 && ["GET", "PUT"].includes(req.method)) {
+          const current = store.getResearch(episodeId);
+          if (requestedChannel) store.assertEpisodeChannel(episodeId, requestedChannel);
+          if (req.method === "GET") return send(res, 200, current);
+          const body = await jsonBody(req, RESEARCH_TRANSPORT_BYTES);
+          if (!body || typeof body !== "object" || Array.isArray(body)) throw new StoreError("Research must contain expectedResearchRevision, summary and links");
+          const value = store.saveResearch(episodeId, body.expectedResearchRevision, body, "human");
+          notify(episodeId);
+          return send(res, 200, value);
+        }
         // Every episode-scoped route validates the caller's channel together with the episode ID.
         if (!store.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
         if (requestedChannel) store.assertEpisodeChannel(episodeId, requestedChannel);

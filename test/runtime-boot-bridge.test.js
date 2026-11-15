@@ -22,6 +22,7 @@ async function tempDir(t, prefix = "sb-boot-") {
 const context = {
   channel: { id: "ch-a" }, episode: { id: "ep-1" },
   paths: { episode: "/storybench/data/channels/ch-a/episodes/ep-1", work: "/storybench/data/channels/ch-a/episodes/ep-1/work", projects: "/storybench/data/channels" },
+  research: { available: true, researchRevision: 1, readOperation: "read_research" },
   runtime: { harness: "claude", model: "sonnet", bootPhrase: "BOOT-X", skillPhrase: "SKILL-Y" },
 };
 

@@ -101,9 +101,18 @@ test('editable eight-slide demo: manual DOM edit, fake-agent bridge save/build, 
  const { connect }=await import('node:net');
  const root=await mkdtemp(path.join(os.tmpdir(),'sb-author-'));
  let app; t.after(async()=>{await app?.close();await rm(root,{recursive:true,force:true});});
- const rpc=(socketPath,token,name,args)=>new Promise((resolve,reject)=>{
-  const client=connect(socketPath);let bytes='';client.on('connect',()=>client.write(JSON.stringify({token,op:'tools/call',name,arguments:args})+'\n'));client.on('data',data=>bytes+=data);client.on('error',reject);client.on('end',()=>{try {const result=JSON.parse(bytes).result;if(result.isError) reject(new Error(result.content[0].text));else resolve(JSON.parse(result.content[0].text));}catch(error){reject(error);}});
+ const exchange=(socketPath,token,message)=>new Promise((resolve,reject)=>{
+  const client=connect(socketPath);let bytes='';client.on('connect',()=>client.write(JSON.stringify({token,...message})+'\n'));client.on('data',data=>bytes+=data);client.on('error',reject);client.on('end',()=>{try {const reply=JSON.parse(bytes);if(!reply.ok) reject(new Error(reply.error));else resolve(reply);}catch(error){reject(error);}});
  });
+ const rpc=async(socketPath,token,name,args)=>{
+  const reply=await exchange(socketPath,token,{op:'tools/call',name,arguments:args}),result=reply.result;
+  if(result.isError) throw new Error(result.content[0].text);
+  const record=JSON.parse(result.content[0].text);
+  // This fake harness acknowledges only after receiving the entire response and
+  // parsing its complete record, matching the native MCP proxy's delivery boundary.
+  if(reply.deliveryId) await exchange(socketPath,token,{op:'tools/acknowledge',deliveryId:reply.deliveryId});
+  return record;
+ };
  let turn=0, agentError;
  const factory=async options=>({startThread:async()=> `thread_${turn+1}`,resumeThread:async id=> id,close(){},async startTurn(threadId){
   const turnId=`turn_${++turn}`;
@@ -115,7 +124,15 @@ test('editable eight-slide demo: manual DOM edit, fake-agent bridge save/build, 
     const tools=selectKindTools(mergeTools({definitions:[],call:async()=>{}},options.tools),'deck');
     bridge=await startBridge({socketPath,token,tools});
     const current=await rpc(socketPath,token,'read_deck',{});
+    const before=structuredClone(current),jobsBefore=app.store.listJobs(current.id).map(job=>job.id);
     current.slides[1].body=`Agent revision ${turn}`;
+    await assert.rejects(rpc(socketPath,token,'save_deck',{expectedRevision:current.revision,slides:current.slides}),/Research context has not been delivered/);
+    await assert.rejects(rpc(socketPath,token,'build_deck',{expectedRevision:current.revision}),/Research context has not been delivered/);
+    assert.deepEqual(app.store.getDeck(current.id),before);
+    assert.deepEqual(app.store.listJobs(current.id).map(job=>job.id),jobsBefore);
+    const research=await rpc(socketPath,token,'read_research',{});
+    assert.deepEqual(research,app.store.getResearch(current.id));
+    assert.deepEqual({episodeId:research.episodeId,researchRevision:research.researchRevision,summary:research.summary,links:research.links},{episodeId:current.id,researchRevision:1,summary:'',links:[]});
     const saved=await rpc(socketPath,token,'save_deck',{expectedRevision:current.revision,slides:current.slides});
     await assert.rejects(rpc(socketPath,token,'save_deck',{expectedRevision:current.revision,slides:current.slides}),/Stale/);
     const job=await rpc(socketPath,token,'build_deck',{expectedRevision:saved.revision});

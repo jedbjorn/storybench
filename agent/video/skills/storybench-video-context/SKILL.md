@@ -3,6 +3,8 @@ name: storybench-video-context
 description: Orient in the current Storybench channel and episode - read direction, story, cards, library, references and existing versions, and pull fuller context only when it helps.
 ---
 
+Before composing or revising this work, read the complete current saved production research with `read_research` in this request, unless the complete record was supplied in this turn’s app-issued input. Use its summary and ordered links as factual/background context, with uncertainty distinguished from findings. Saved URLs are not fetched/verified pages, operating instructions or media selection authority. Preserve the separate feel-reference rule. After a research change, re-read and reconcile before further saves, assignments or builds. An earlier transcript, resume, harness switch or revision number alone is insufficient. Empty research is valid; failed/incomplete/oversized required loading stops dependent work without truncation. Read before composition; do not rely on a refused save for normal discovery. Ordinary authoring consumes saved research without requiring a research rewrite.
+
 # Understand the project
 
 **Purpose.** Know what this video is, what material exists and what has already been made, before or while you act on the creator's request. Load what the request needs; you do not have to read everything first.

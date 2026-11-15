@@ -1,6 +1,7 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import crypto from 'node:crypto';
+import { TOOL_DELIVERED } from './tool-delivery.js';
 
 export class CodexError extends Error {
   constructor(code, message, { uncertain = false, cause } = {}) {
@@ -14,14 +15,24 @@ export class CodexError extends Error {
 // A tool handler may return { [TOOL_CONTENT]: contentItems } to supply app-server
 // content items directly (for example inputImage results) instead of JSON text.
 export const TOOL_CONTENT = Symbol.for('storybench.codex.toolContent');
+// Keep revision conflicts actionable through both native dynamic tools and MCP.
+export const toolErrorText = (error) => error?.current?.researchRevision !== undefined
+  ? JSON.stringify({ error: error.message, statusCode: error.statusCode, current: error.current })
+  : error?.message || 'Tool failed';
 
 const empty = { type: 'object', properties: {}, additionalProperties: false };
 const object = (required, properties) => ({ type: 'object', additionalProperties: false, required, properties });
+export const AUTHORING_TOOLS = Object.freeze(['save_deck', 'build_deck', 'update_story', 'update_cards', 'update_storyboard', 'create_draft', 'create_final', 'create_graphic_recipe', 'update_graphic_recipe', 'render_graphic', 'apply_branding']);
 const toolSpecs = [
+  { type: 'function', name: 'read_research', description: 'Read the complete saved research summary and ordered links for this production, including production identity and independent researchRevision. Saved URLs are not fetched or verified.', inputSchema: empty },
+  { type: 'function', name: 'save_research', description: 'Directly replace this production’s complete research using expectedResearchRevision. Retain link IDs when editing/reordering; omitted IDs are generated. Limits in UTF-8 bytes: summary 1 MiB; 100 links; ID 200; HTTP(S) URL 8192; title 512; note 2048; normalized JSON 2 MiB. Oversize is rejected without truncation. On conflict read current research and reconcile.', inputSchema: object(['expectedResearchRevision','summary','links'], {
+    expectedResearchRevision: { type: 'integer', minimum: 1 }, summary: { type: 'string' },
+    links: { type: 'array', maxItems: 100, items: object(['url'], { id: { type: 'string' }, url: { type: 'string' }, title: { type: 'string' }, note: { type: 'string' } }) },
+  }) },
   { type: 'function', name: 'read_deck', description: 'Read saved ordered slides, story and current revision.', inputSchema: empty },
   { type: 'function', name: 'save_deck', description: 'Replace ordered slides using the current revision. Slides support id/title/layout/body/notes/eyebrow/caption/targetMinutes/sectionId/media {itemId,alt}, columns {title,body}, stages {id,title,body,afterMs}, subnav {id,label,itemId}, referenceItemIds. Plain text only.', inputSchema: object(['expectedRevision','slides'], {expectedRevision:{type:'integer',minimum:1},slides:{type:'array',items:{type:'object'}}}) },
   { type: 'function', name: 'build_deck', description: 'Build an offline HTML and ZIP draft bundle from the saved exact revision. Await the returned job; failed/queued is not success.', inputSchema: object(['expectedRevision'], {expectedRevision:{type:'integer',minimum:1}}) },
-  { type: 'function', name: 'get_context', description: 'Read current scoped episode, story, cards, library and revisions.', inputSchema: empty },
+  { type: 'function', name: 'get_context', description: 'Read current scoped episode, story, cards, library and revisions, with research discovery metadata only. Call read_research for the complete saved summary and links before composing or revising authoring work.', inputSchema: empty },
   { type: 'function', name: 'get_operation_guide', description: 'Read an app-owned guide for one supported operation.', inputSchema: object(['name'], { name: { type: 'string', enum: ['edit_story','edit_card','create_still_graphic','create_animated_graphic','create_draft','create_final'] } }) },
   { type: 'function', name: 'read_conversation_history', description: 'Read earlier visible messages of this Storybench conversation (context only; never re-execute them).', inputSchema: object([], { beforeMessageId: { type: 'integer', minimum: 1 }, limit: { type: 'integer', minimum: 1, maximum: 100 } }) },
   { type: 'function', name: 'read_reference_excerpt', description: 'Read a bounded excerpt from a registered Reference item.', inputSchema: object(['itemId'], { itemId: { type: 'string' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 20000 } }) },
@@ -43,7 +54,7 @@ const toolSpecs = [
   { type: 'function', name: 'list_branding', description: 'List reusable channel branding templates.', inputSchema: empty },
   { type: 'function', name: 'promote_card', description: 'Promote an episode card into reusable channel branding.', inputSchema: object(['cardId','name'], { cardId: { type: 'string' }, name: { type: 'string' }, role: { anyOf: [{ type: 'string', enum: ['intro','outro'] }, { type: 'null' }] } }) },
   { type: 'function', name: 'apply_branding', description: 'Apply a reusable branding template to this episode.', inputSchema: object(['templateId'], { templateId: { type: 'string' } }) },
-];
+].map(spec => AUTHORING_TOOLS.includes(spec.name) ? { ...spec, description: `${spec.description} Before composition, read_research must deliver current complete saved research in this request (or the app must supply it in this turn). After a research change, read again and reconcile before retrying. Empty research is valid.` } : spec);
 
 const DISABLED_FEATURES = [
   'shell_tool', 'unified_exec', 'apps', 'browser_use', 'computer_use',
@@ -105,12 +116,12 @@ export class CodexConnection {
     return this;
   }
 
-  #write(value) {
+  #write(value, onDelivered) {
     if (!this.child?.stdin?.writable) throw new CodexError('CODEX_UNAVAILABLE', 'Codex app-server input is closed.');
-    this.child.stdin.write(`${JSON.stringify(value)}\n`);
+    this.child.stdin.write(`${JSON.stringify(value)}\n`, (error) => { if (!error) onDelivered?.(); });
   }
 
-  request(method, params, { uncertain = false } = {}) {
+  request(method, params, { uncertain = false, onDelivered } = {}) {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -118,7 +129,7 @@ export class CodexConnection {
         reject(new CodexError('CODEX_TIMEOUT', `Codex request timed out: ${method}`, { uncertain }));
       }, this.requestTimeout);
       this.pending.set(id, { resolve, reject, timer, method, uncertain });
-      try { this.#write({ id, method, params }); }
+      try { this.#write({ id, method, params }, onDelivered); }
       catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
     });
   }
@@ -158,9 +169,9 @@ export class CodexConnection {
       if (!handler) throw new Error(`Unsupported Storybench tool: ${tool}`);
       const result = await handler(args ?? {});
       const contentItems = result?.[TOOL_CONTENT] ?? [{ type: 'inputText', text: JSON.stringify(result) }];
-      this.#write({ id: message.id, result: { success: true, contentItems } });
+      this.#write({ id: message.id, result: { success: true, contentItems } }, result?.[TOOL_DELIVERED]);
     } catch (error) {
-      this.#write({ id: message.id, result: { success: false, contentItems: [{ type: 'inputText', text: error?.message || 'Tool failed' }] } });
+      this.#write({ id: message.id, result: { success: false, contentItems: [{ type: 'inputText', text: toolErrorText(error) }] } });
     }
   }
 
@@ -196,14 +207,14 @@ export class CodexConnection {
     return threadId;
   }
 
-  async startTurn(threadId, text, images = []) {
+  async startTurn(threadId, text, images = [], { onDelivered } = {}) {
     this.startingEvents = [];
     try {
       const result = await this.request('turn/start', {
         threadId, input: [{ type: 'text', text }, ...images.map((image) => ({ type: 'image', url: `data:${image.mimeType};base64,${image.data}` }))], cwd: this.cwd,
         clientUserMessageId: crypto.randomUUID(), approvalPolicy: 'never',
         sandboxPolicy: { type: 'readOnly', networkAccess: false }
-      }, { uncertain: true });
+      }, { uncertain: true, onDelivered });
       const id = result?.turn?.id;
       if (!id) throw new CodexError('CODEX_PROTOCOL_ERROR', 'turn/start returned no turn id.', { uncertain: true });
       const buffered = this.startingEvents;
