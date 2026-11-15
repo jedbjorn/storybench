@@ -12,7 +12,8 @@ import { importMedia } from "./media.js";
 import { createChatService } from "./chat.js";
 import { createModelCatalog, createWorkerHarnessFactory } from "./runtime/app-runtime.js";
 import { conversationPersistenceFor } from "./runtime/conversation-persistence.js";
-import { createHealth } from "./runtime/health.js";
+import { startDeckReadiness } from "./runtime/deck-readiness.js";
+import { createHealth, releaseFromEnv } from "./runtime/health.js";
 import { createLibraryService } from "./library.js";
 import { renderGraphic, validateGraphicRecipe } from "./graphics.js";
 import { createRenderService } from "./render-service.js";
@@ -150,6 +151,7 @@ async function streamFile(req, res, file, contentType) {
 }
 
 export async function createApp({ workspace: workspaceOption, dataRoot, onListen, storeOptions, renderOptions = {}, chatOptions = {} } = {}) {
+  await startDeckReadiness(releaseFromEnv());
   const store = dataRoot ? openDataRoot(dataRoot, { startup: true, storeOptions }) : new Store(workspaceOption, storeOptions);
   const workspace = store.workspace;
   const listeners = new Map();

@@ -1,3 +1,5 @@
+import { deckEvidenceSummary } from './deck-evidence.js';
+import { getDeckReadiness } from './deck-readiness.js';
 // Health snapshot for GET /api/health (spec #10 "Health and Lifecycle").
 // Bounded runtime facts only: never credentials, prompts, story text, media names, channel
 // names or filesystem paths. Activity counts are aggregated across ALL channels; the
@@ -17,6 +19,7 @@ export function releaseFromEnv(env = process.env) {
     if (!value || typeof value !== "object") return null;
     const pick = (text, max = 80) => (typeof text === "string" && text.length <= max ? text : null);
     return {
+      deckReadiness: deckEvidenceSummary(value.deck, value),
       manifestId: pick(value.manifestId), version: pick(value.version), commit: pick(value.commit),
       images: { app: pick(value.images?.app), worker: pick(value.images?.worker) },
       protocol: Number.isInteger(value.protocol) ? value.protocol : null,
@@ -43,6 +46,7 @@ export function createHealth({ store, getState = () => "ready", release = releas
         shuttingDown: state === "draining" || state === "stopped",
         package: { name: PACKAGE.name, version: PACKAGE.version },
         release: release ?? { manifestId: null, version: null, commit: null, images: { app: null, worker: null }, protocol: null },
+        deck: { runtime: getDeckReadiness(release), installation: release?.deckReadiness ?? { state: "unverified", reason: "No release receipt" } },
         schema: { current: Number(db.prepare("PRAGMA user_version").get().user_version), supported: { min: MIN_SUPPORTED_SCHEMA, max: SCHEMA_VERSION } },
         database: { id: identity?.id ?? null },
         activity: {

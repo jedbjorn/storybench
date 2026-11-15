@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { bindDeckEvidence } from './deck-evidence.js';
 // Build a release's paired app/worker images from docker/Dockerfile and write its
 // manifest. This is the single image/manifest definition; the installer (spec #10) calls
 // buildRelease() rather than defining its own.
@@ -39,8 +40,10 @@ export async function findReusableRelease(manifestPath, commit) {
   for (const role of ["app", "worker"]) {
     await checkImage(dockerCheck, found.manifest.images[role].id, role);
     await checkImage(dockerCheck, found.manifest.images[role].id, role, "smoke");
+    await checkImage(dockerCheck, found.manifest.images[role].id, role, "deck");
   }
-  return found.manifest;
+  // Legacy receipts stay readable; rebuild them to gain current deck identity.
+  return found.manifest.runtime.deck ? found.manifest : null;
 }
 
 export function imageBuildLabels(commit, installId = null) {
@@ -78,14 +81,16 @@ export async function buildRelease({ repo = REPO_ROOT, tag = "storybench", allow
       { maxBuffer: 64 * 1024 * 1024, env: { ...process.env, SOURCE_DATE_EPOCH: epoch } });
     images[target] = (await run("docker", ["image", "inspect", imageTag, "--format", "{{.Id}}"])).stdout.trim();
   }
-  const roleTools = {};
+  const roleTools = {}, deckChecks = {};
   for (const role of ["app", "worker"]) {
     roleTools[role] = await checkImage(dockerCheck, images[role], role);
     await checkImage(dockerCheck, images[role], role, "smoke");
+    deckChecks[role] = await checkImage(dockerCheck, images[role], role, "deck");
   }
   const tools = roleTools.worker;
   return createManifest({
     packageName: pkg.name, packageVersion: pkg.version, commit, ref,
+    deck: bindDeckEvidence(deckChecks, commit, images),
     images, tools: { ...tools, ...(dirty ? { dirtyCheckout: "true" } : {}) }, schema: { min: MIN_SUPPORTED_SCHEMA, max: SCHEMA_VERSION },
   });
 }

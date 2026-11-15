@@ -1,3 +1,4 @@
+import { bindDeckEvidence } from '../runtime/deck-evidence.js';
 // Exact-commit installation and release staging. The shell bootstrap only checks the host and
 // passes immutable source facts here; this module owns every installation mutation.
 import crypto from "node:crypto";
@@ -154,8 +155,9 @@ export async function stageRelease(context, metadata, adapters = {}) {
     for (const role of ["app", "worker"]) {
       await checkImage(run, reusable.images[role].id, role, "probe", { env: context.env });
       await checkImage(run, reusable.images[role].id, role, "smoke", { env: context.env });
+      await checkImage(run, reusable.images[role].id, role, "deck", { env: context.env });
     }
-    return { release: final, manifest: reusable, reused: true };
+    if (reusable.runtime.deck) return { release: final, manifest: reusable, reused: true };
   }
   let current = null;
   try {
@@ -180,6 +182,9 @@ export async function stageRelease(context, metadata, adapters = {}) {
       worker: await checkImage(run, manifest.images.worker.id, "worker", "probe", { env: context.env }),
     };
     for (const role of ["app", "worker"]) await checkImage(run, manifest.images[role].id, role, "smoke", { env: context.env });
+    const deckChecks = {};
+    for (const role of ["app", "worker"]) deckChecks[role] = await checkImage(run, manifest.images[role].id, role, "deck", { env: context.env });
+    manifest = { ...manifest, runtime: { ...manifest.runtime, deck: bindDeckEvidence(deckChecks, metadata.commit, { app: manifest.images.app.id, worker: manifest.images.worker.id }) } };
     const manifestModule = await import(`${pathToFileURL(path.join(stage, "src", "runtime", "manifest.js")).href}?install=${crypto.randomUUID()}`);
     const installedAt = new Date().toISOString();
     const installer = { node: process.version, npm: firstLine(await checked(run, "npm", ["--version"])),

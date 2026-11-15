@@ -165,7 +165,7 @@ test('editable eight-slide demo: manual DOM edit, fake-agent bridge save/build, 
  }
  const job=app.store.listJobs(deck.id).find(j=>j.state==='completed');assert.ok(job);
  const html=await (await fetch(`${base}/api/jobs/${job.id}/deck/index.html`)).text(),page=new JSDOM(html);
- assert.equal(page.window.document.querySelectorAll('.slide').length,8);assert.equal(page.window.document.querySelectorAll('[data-step]').length,4);assert.equal(page.window.document.querySelectorAll('[data-gallery]').length,2);assert.ok(page.window.document.querySelector('video'));assert.match(html,/Manual notes/);assert.equal(page.window.document.querySelectorAll('[data-vector-step]').length,4);assert.equal(page.window.document.querySelector('#_sbv1-plan').parentElement.dataset.vectorStep,'0');page.window.close();
+ assert.equal(page.window.document.querySelectorAll('.slide').length,8);assert.equal(page.window.document.querySelectorAll('[data-step]').length,4);assert.equal(page.window.document.querySelectorAll('[data-gallery]').length,2);assert.ok(page.window.document.querySelector('video'));assert.match(html,/Manual notes/);assert.equal(page.window.document.querySelectorAll('[data-vector-step]').length,4);assert.equal(page.window.document.querySelector('#_sbv2-plan').parentElement.dataset.vectorStep,'0');page.window.close();
  assert.ok(job.snapshot.manifest.files.some(f=>f.endsWith('.webm')));assert.ok(job.snapshot.manifest.files.some(f=>f.endsWith('.png')));
  await app.close();app=null;
  const reopened=new Store(root),decks=createDeckService({store:reopened});

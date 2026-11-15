@@ -1,3 +1,5 @@
+import { getDeckReadiness } from './runtime/deck-readiness.js';
+import { releaseFromEnv } from './runtime/health.js';
 import { chatAttachments } from "./chat-attachments.js";
 import { fontCatalog } from './fonts.js';
 import { randomUUID } from "node:crypto";
@@ -153,7 +155,7 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
       onChange(value.episode_id);
       return origin.research.saved(saved);
     },
-    read_deck: () => store.getDeck(value.episode_id),
+    read_deck: () => ({ ...store.getDeck(value.episode_id), capabilities: { runtime: getDeckReadiness(releaseFromEnv()), installation: releaseFromEnv()?.deckReadiness ?? { state: "unverified", reason: "No release receipt" }, request: "Use get_capabilities for the selected model and served image tools." } }),
     save_deck: ({expectedRevision, slides}) => { ensureActive(value, origin); return store.saveDeck(value.episode_id,expectedRevision,slides,'agent'); },
     build_deck: ({expectedRevision}) => { ensureActive(value, origin); return decks.enqueue({episodeId:value.episode_id,expectedRevision,requestId:origin.requestId}); },
     get_context: () => ({ episode: episode(value.episode_id), story: store.getStory(value.episode_id), library: librarySummary(value.episode_id), research: store.getResearchMetadata(value.episode_id),
