@@ -47,10 +47,23 @@ test('Channels and Productions overlay the workspace; selection, rename and bulk
   await page.click('#channelsToggle');
   await page.waitForFunction(() => document.querySelectorAll('.channel-card').length === 2);
   assert.match(await page.locator('.channel-card').first().textContent(), /Second/);
+  await page.route('**/api/channel-deletions', (route) => route.request().method() === 'GET'
+    ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'delete_pending', state: 'pending', error: 'Storage unavailable', channelIds: [] }]) })
+    : route.continue());
+  await page.keyboard.press('Escape');
+  await page.click('#channelsToggle');
+  await page.waitForFunction(() => !document.querySelector('#channelDeletePending').hidden);
+  assert.equal(await page.locator('#newChannel').isVisible(), true, 'pending cleanup leaves unrelated channels usable');
+  assert.equal(await page.locator('.channel-card').count(), 2);
+  await page.unroute('**/api/channel-deletions');
+  await page.keyboard.press('Escape');
+  await page.click('#channelsToggle');
+  await page.waitForFunction(() => document.querySelector('#channelDeletePending').hidden);
   await page.click('#selectChannels');
   assert.equal(await page.locator('#renameChannel').isEnabled(), false);
   assert.equal(await page.locator('#deleteChannels').isEnabled(), false);
   await page.locator('.channel-card').first().click();
+  assert.equal(await page.locator('.channel-card').first().evaluate((element) => element === document.activeElement), true, 'selection restores keyboard focus');
   assert.equal(await page.locator('#renameChannel').isEnabled(), true);
   await page.locator('.channel-card').last().click();
   assert.equal(await page.locator('#renameChannel').isEnabled(), false);
@@ -76,6 +89,11 @@ test('Channels and Productions overlay the workspace; selection, rename and bulk
   await page.click('#selectChannels');
   await page.locator('.channel-card').first().click();
   await page.locator('.channel-card').last().click();
+  await page.route('**/api/channel-deletions/preview', (route) => route.fulfill({ status: 409, contentType: 'application/json', body: '{"error":"Retained media dependency"}' }));
+  await page.click('#deleteChannels');
+  await page.waitForFunction(() => document.querySelector('#channelActionError').textContent.includes('Retained media dependency'));
+  assert.equal(await page.locator('#channelActionError').isVisible(), true);
+  await page.unroute('**/api/channel-deletions/preview');
   await page.click('#deleteChannels');
   await page.waitForFunction(() => !document.querySelector('#channelDeleteConfirm').hidden);
   assert.match(await page.locator('#channelDeleteSummary').textContent(), /2 channels, 1 production/);
@@ -92,4 +110,48 @@ test('Channels and Productions overlay the workspace; selection, rename and bulk
   assert.ok(drawer.x >= 0 && drawer.x + drawer.width <= 390);
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   assert.deepEqual(errors, []);
+});
+
+test('channel navigation exposes story leave choices and preserves a failed title save', { timeout: 20000 }, async (t) => {
+  let browser;
+  try { browser = await chromium.launch(); }
+  catch { if (existsSync('/usr/bin/chromium')) browser = await chromium.launch({ executablePath: '/usr/bin/chromium' }).catch(() => null); }
+  if (!browser) return t.skip('No launchable Chromium on this seat');
+  t.after(() => browser.close());
+  const root = mkdtempSync(path.join(tmpdir(), 'storybench-channel-guard-'));
+  const app = await createApp({ workspace: root });
+  t.after(async () => { await app.close(); rmSync(root, { recursive: true, force: true }); });
+  const first = app.store.getDefaultChannel(), second = app.store.createChannel('Second');
+  const episode = app.store.createEpisode({ title: 'Original title', channelId: first.id });
+  const port = await listenInRange(app.server);
+  const page = await browser.newPage();
+  await page.goto(`http://127.0.0.1:${port}/episodes?channel=${first.id}&episode=${episode.id}`);
+  await page.locator('#episodeTitle').waitFor();
+  await page.click('[data-tab=story]');
+  await page.click('[data-story-edit]');
+  await page.locator('.cm-content').press('End');
+  await page.locator('.cm-content').press('x');
+  await page.click('#channelsToggle');
+  await page.locator(`[data-channel-id="${second.id}"]`).click();
+  await page.locator('[data-story-leave]').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#channelsDrawer').getAttribute('aria-hidden'), 'true', 'drawer yields to the leave prompt');
+  await page.click('[data-leave-stay]');
+  assert.equal(await page.locator('#channelsDrawer').getAttribute('aria-hidden'), 'false');
+  assert.equal(await page.locator('#channelName').textContent(), first.name);
+  await page.locator(`[data-channel-id="${second.id}"]`).click();
+  await page.locator('[data-story-leave]').waitFor({ state: 'visible' });
+  await page.click('[data-leave-discard]');
+  await page.waitForFunction(() => document.querySelector('#channelName').textContent === 'Second');
+
+  await page.goto(`http://127.0.0.1:${port}/episodes?channel=${first.id}&episode=${episode.id}`);
+  await page.locator('#episodeTitle').waitFor();
+  await page.route(`**/api/episodes/${episode.id}`, (route) => route.request().method() === 'PUT'
+    ? route.fulfill({ status: 409, contentType: 'application/json', body: '{"error":"Injected conflict"}' })
+    : route.continue());
+  await page.fill('#episodeTitle', 'Unsaved title');
+  await page.click('#channelsToggle');
+  await page.locator(`[data-channel-id="${second.id}"]`).click();
+  await page.waitForFunction(() => document.querySelector('#saveState').textContent.includes('reload'));
+  assert.equal(await page.inputValue('#episodeTitle'), 'Unsaved title');
+  assert.equal(await page.locator('#channelName').textContent(), first.name);
 });

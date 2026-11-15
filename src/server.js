@@ -181,6 +181,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
   const deletionBusyReason = () => {
     if (activeMutations > 1) return "Another change is still in progress. Let it finish before deleting channels.";
     if (activeFileReads) return "A production file is still being read. Let the download finish before deleting channels.";
+    if (chat.workerStopFailure()) return `A worker could not be stopped: ${chat.workerStopFailure()}. Repair worker cleanup or restart Storybench before deleting channels.`;
     if (chat.hasActiveWorkers() || store.db.prepare("SELECT 1 FROM conversations WHERE state IN ('queued','running','interrupting') LIMIT 1").get() ||
       store.db.prepare("SELECT 1 FROM production_runs WHERE state IN ('starting','running') LIMIT 1").get())
       return "An agent turn is active. Let it finish and its worker stop before deleting channels.";

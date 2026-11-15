@@ -78,6 +78,7 @@ test("outputs UI moves a final to Drafts, deletes one draft and cleans up a sele
   const step = async (name, fn) => { try { return await fn(); } catch (error) { return diagnose(name, error); } };
   page.on("dialog", (dialog) => dialog.accept());
   await page.goto(`http://127.0.0.1:${PORT}/?channel=${channel.id}`);
+  await page.click('#episodeRailToggle');
   await page.click(`#episodes [data-id="${episode.id}"] [data-episode-select]`);
 
   // Move to Drafts from the Final view.

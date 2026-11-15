@@ -7,11 +7,11 @@ export function installChannelDrawer({ api, currentChannel, canLeave, navigateCh
     $('#channelSelectionActions').hidden = mode !== 'select';
     $('#channelNameForm').hidden = mode !== 'name';
     $('#channelDeleteConfirm').hidden = mode !== 'confirm';
-    $('#channelDeletePending').hidden = mode !== 'pending';
+    $('#channelDeletePending').hidden = !pending;
     $('#channelSelectionCount').textContent = `${selected.size} selected`;
     $('#renameChannel').disabled = selected.size !== 1 || busy;
     $('#deleteChannels').disabled = !selected.size || busy;
-    $('#channelCards').hidden = mode === 'confirm' || mode === 'pending';
+    $('#channelCards').hidden = mode === 'confirm';
     $('#channelCards').innerHTML = channels.map((channel) => {
       const current = channel.id === currentChannel(), checked = selected.has(channel.id);
       return `<button type="button" class="channel-card ${current ? 'current' : ''} ${checked ? 'selected' : ''}" data-channel-id="${esc(channel.id)}" aria-label="${mode === 'select' ? 'Select' : 'Open'} ${esc(channel.name)}" ${mode === 'select' ? `aria-pressed="${checked}"` : ''}>${mode === 'select' ? `<input type="checkbox" tabindex="-1" ${checked ? 'checked' : ''} aria-hidden="true">` : ''}<span><strong>${esc(channel.name)}</strong><small>${current ? 'Current channel' : channel.isDefault ? 'Default channel' : 'Channel'}</small></span></button>`;
@@ -23,7 +23,7 @@ export function installChannelDrawer({ api, currentChannel, canLeave, navigateCh
     selected = new Set([...selected].filter((id) => channels.some((channel) => channel.id === id)));
     const operations = await api('/api/channel-deletions');
     pending = operations[0] || null;
-    if (pending) { mode = 'pending'; showPending(); }
+    if (pending) showPending();
     paint();
   }
   function reset() { mode = 'browse'; selected.clear(); preview = null; nameTarget = null; $('#channelActionError').textContent = ''; paint(); }
@@ -39,7 +39,12 @@ export function installChannelDrawer({ api, currentChannel, canLeave, navigateCh
   $('#channelCards').addEventListener('click', async (event) => {
     const id = event.target.closest('[data-channel-id]')?.dataset.channelId;
     if (!id || busy) return;
-    if (mode === 'select') { selected.has(id) ? selected.delete(id) : selected.add(id); paint(); return; }
+    if (mode === 'select') {
+      selected.has(id) ? selected.delete(id) : selected.add(id);
+      paint();
+      $('#channelCards').querySelector(`[data-channel-id="${CSS.escape(id)}"]`)?.focus();
+      return;
+    }
     try { busy = true; await navigateChannel(id); }
     catch (error) { setError('#channelActionError', error); }
     finally { busy = false; }
@@ -73,7 +78,7 @@ export function installChannelDrawer({ api, currentChannel, canLeave, navigateCh
         await refresh(); mode = 'browse';
       }
       $('#channelNameError').textContent = ''; paint();
-    } catch (error) { setError('#channelActionError', error); }
+    } catch (error) { setError('#channelNameError', error); }
     finally { busy = false; }
   };
   $('#deleteChannels').onclick = async () => {
@@ -87,7 +92,7 @@ export function installChannelDrawer({ api, currentChannel, canLeave, navigateCh
       $('#channelDeleteNames').innerHTML = preview.channels.map((channel) => `<div>${esc(channel.name)}${channel.id === currentChannel() ? ' · current' : ''}${channel.id === preview.currentDefaultId ? ' · default' : ''}</div>`).join('');
       $('#confirmChannelDelete').textContent = `Delete ${preview.channels.length} channel${preview.channels.length === 1 ? '' : 's'}`;
       $('#channelDeleteError').textContent = ''; mode = 'confirm'; paint(); $('#cancelChannelDelete').focus();
-    } catch (error) { setError('#channelNameError', error); }
+    } catch (error) { setError('#channelActionError', error); }
     finally { busy = false; }
   };
   $('#cancelChannelDelete').onclick = cancelTransient;
@@ -99,12 +104,12 @@ export function installChannelDrawer({ api, currentChannel, canLeave, navigateCh
       const result = await api('/api/channel-deletions', { method: 'POST', body: JSON.stringify({ channelIds: preview.channelIds, token: preview.token, operationId }) });
       if (result.state === 'completed') {
         await afterDelete(result); selected.clear(); preview = null; mode = 'browse'; await refresh();
-      } else { pending = result; await afterDelete(result); mode = 'pending'; showPending(); paint(); }
+      } else { pending = result; await afterDelete(result); mode = 'browse'; await refresh(); }
     } catch (error) {
       const known = await api(`/api/channel-deletions/${operationId}`).catch(() => null);
       if (known) {
         if (known.state === 'completed') { await afterDelete(known); selected.clear(); preview = null; mode = 'browse'; await refresh(); }
-        else { pending = known; await afterDelete(known); mode = 'pending'; showPending(); paint(); }
+        else { pending = known; await afterDelete(known); mode = 'browse'; await refresh(); }
       } else {
         setError('#channelDeleteError', error);
         if (error.status === 409) { preview = null; mode = 'select'; await refresh(); setError('#channelActionError', error); }

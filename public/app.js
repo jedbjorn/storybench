@@ -464,8 +464,7 @@ async function flushDraft() {
   }
 }
 async function create() {
-  if (!(await leaveStory())) return;
-  await flushDraft();
+  if (!(await canLeaveContext())) return;
   if (!channelId) {
     chrome.open('channels');
     $('#newChannel').click();
@@ -481,8 +480,7 @@ async function create() {
 $("#episodes").onclick = async (e) => {
   if (!e.target.closest("[data-episode-select]")) return;
   const id = e.target.closest("[data-id]")?.dataset.id;
-  if (id && id !== episode?.id && (await leaveStory())) {
-    await flushDraft();
+  if (id && id !== episode?.id && (await canLeaveContext())) {
     episode = state.episodes.find((x) => x.id === id);
     rememberEpisode();
     render();
@@ -825,9 +823,16 @@ async function showPage(next) {
   if (next === 'branding') await refreshBrandingTemplates();
 }
 async function canLeaveContext() {
-  if (!(await settingsPages.canLeave()) || !(await leaveStory())) return false;
-  await flushDraft();
-  return true;
+  const resumeDrawer = chrome.suspend();
+  try {
+    if (!(await settingsPages.canLeave())) return false;
+    const storyChoice = leaveStory();
+    const prompt = $('[data-story-leave]');
+    if (!prompt.hidden) prompt.querySelector('[data-leave-stay]').focus();
+    if (!(await storyChoice)) return false;
+    await flushDraft();
+    return true;
+  } finally { resumeDrawer(); }
 }
 async function recordChannelOpen(id) {
   if (id) await api(`/api/channels/${encodeURIComponent(id)}/open`, { method: 'POST', body: '{}' });
@@ -835,13 +840,14 @@ async function recordChannelOpen(id) {
 async function navigate(target, popIndex = null, { prepared = false, replace = false } = {}) {
   if (navigating) return false;
   navigating = true;
-  let accepted = false;
+  let accepted = false, viewChanged = false;
   const oldChannel = channelId, oldEpisode = episode, oldState = state;
   try {
     if (!prepared && !(await canLeaveContext())) return false;
     const nextUrl = new URL(target), nextChannel = nextUrl.searchParams.get('channel');
     const nextEpisode = nextUrl.searchParams.get('episode');
     if (nextChannel !== channelId || nextEpisode !== (episode?.id || null)) {
+      viewChanged = true;
       channelId = nextChannel; episode = null;
       await load(nextEpisode);
     }
@@ -872,7 +878,9 @@ async function navigate(target, popIndex = null, { prepared = false, replace = f
         return true;
       } catch { /* Restore the previous view below if fallback cannot load. */ }
     }
-    channelId = oldChannel; episode = oldEpisode; state = oldState; ++loadGeneration; showChannel(oldState.channel); render();
+    if (viewChanged) {
+      channelId = oldChannel; episode = oldEpisode; state = oldState; ++loadGeneration; showChannel(oldState.channel); render();
+    }
     toast(error.message);
     return false;
   }

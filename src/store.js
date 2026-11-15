@@ -345,7 +345,7 @@ export class Store {
       if (Number(this.db.prepare("PRAGMA foreign_keys").get().foreign_keys) !== 1)
         throw new StoreError("SQLite foreign-key enforcement could not be enabled", 500);
       this.channelDeletion = createChannelDeletion(this, StoreError);
-      this.channelDeletion.recover();
+      if (startup) this.channelDeletion.recover();
       if (legacyWorkspace && !this.listChannels().length && !this.db.prepare("SELECT 1 FROM channel_deletions LIMIT 1").get())
         this.createChannel(firstChannelName);
       for (const channel of this.db.prepare("SELECT id FROM channels WHERE pending_delete_id IS NULL").all())
@@ -1629,8 +1629,8 @@ export class Store {
   }
   listBrandingTemplates({ channelId = null } = {}) {
     const rows = channelId
-      ? this.db.prepare("SELECT * FROM branding_templates WHERE channel_id=? ORDER BY created_at,id").all(channelId)
-      : this.db.prepare("SELECT * FROM branding_templates ORDER BY created_at,id").all();
+      ? this.db.prepare("SELECT b.* FROM branding_templates b JOIN channels c ON c.id=b.channel_id WHERE b.channel_id=? AND c.pending_delete_id IS NULL ORDER BY b.created_at,b.id").all(channelId)
+      : this.db.prepare("SELECT b.* FROM branding_templates b JOIN channels c ON c.id=b.channel_id WHERE c.pending_delete_id IS NULL ORDER BY b.created_at,b.id").all();
     return rows.map((row) => ({
       id: row.id, channelId: row.channel_id, name: row.name, role: row.role, sourceEpisodeId: row.source_episode_id,
       sourceCardId: row.source_card_id, card: parse(row.card_snapshot, {}), dependencies: parse(row.dependency_items, []),

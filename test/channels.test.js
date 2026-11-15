@@ -405,6 +405,64 @@ test("channel deletion refuses shared retained paths and symbolic links before c
   assert.equal(store.listChannels().length, 2);
 });
 
+test("deletion refuses selected media paths inside a surviving channel or adopted production", (t) => {
+  const { root, store, a, b } = twoChannelRoot(t);
+  const survivor = store.createEpisode({ title: "Survivor", channelId: b.id });
+  const story = path.join(store.episodeDirectory(survivor.id), "story.md");
+  writeFileSync(story, "keep survivor story");
+  store.saveAsset({ channelId: a.id, name: "misowned story", hash: "misowned-story", kind: "reference",
+    path: path.relative(root, story), metadata: {} });
+  assert.throws(() => store.channelDeletion.preview([a.id]), /retained channel or production owns/);
+  assert.equal(readFileSync(story, "utf8"), "keep survivor story");
+
+  const adoptedRoot = tempDir(t);
+  legacyWorkspace(adoptedRoot);
+  const adopted = new Store(adoptedRoot);
+  t.after(() => adopted.close());
+  const selected = adopted.createChannel("Selected");
+  const adoptedStory = path.join(adopted.episodeDirectory("episode-a"), "story.md");
+  writeFileSync(adoptedStory, "keep adopted story");
+  adopted.saveAsset({ channelId: selected.id, name: "misowned adopted story", hash: "misowned-adopted", kind: "reference",
+    path: path.relative(adoptedRoot, adoptedStory), metadata: {} });
+  assert.throws(() => adopted.channelDeletion.preview([selected.id]), /retained channel or production owns/);
+  assert.equal(readFileSync(adoptedStory, "utf8"), "keep adopted story");
+});
+
+test("offline opens leave pending deletion untouched; startup waits for active work", (t) => {
+  const root = path.join(tempDir(t), "data");
+  initDataRoot(root);
+  let store = openDataRoot(root);
+  const selected = store.createChannel("Selected"), survivor = store.createChannel("Survivor");
+  store.createEpisode({ title: "Selected work", channelId: selected.id });
+  const kept = store.createEpisode({ title: "Active work", channelId: survivor.id });
+  store.afterChannelDeleteAccepted = () => { throw new Error("injected crash"); };
+  const preview = store.channelDeletion.preview([selected.id]), operationId = `delete_${randomUUID()}`;
+  assert.throws(() => store.channelDeletion.accept({ channelIds: [selected.id], token: preview.token, operationId }), /injected crash/);
+  store.db.prepare("INSERT INTO conversations(id,episode_id,name,state,created_at,updated_at) VALUES(?,?,?,'running',?,?)")
+    .run(`conversation_${randomUUID()}`, kept.id, "Live", new Date().toISOString(), new Date().toISOString());
+  store.close();
+  assert.equal(initDataRoot(root).created, false);
+  store = openDataRoot(root, { startup: true });
+  t.after(() => store.close());
+  assert.equal(store.channelDeletion.status(operationId).state, "pending");
+  assert.equal(existsSync(path.join(root, "channels", selected.id)), true);
+  store.db.prepare("UPDATE conversations SET state='idle' WHERE episode_id=?").run(kept.id);
+  store.channelDeletion.recover();
+  assert.equal(store.channelDeletion.status(operationId).state, "completed");
+});
+
+test("pending channels reject branding role writes through the shared store", (t) => {
+  const { store, a } = twoChannelRoot(t);
+  let episode = store.createEpisode({ title: "Brand source", channelId: a.id });
+  episode = store.updateEpisode(episode.id, episode.revision, { cards: [{ id: "intro", title: "Intro", type: "Video", prompt: "" }] });
+  const template = store.promoteCard(episode.id, "intro", { name: "Opening" });
+  store.afterChannelDeleteAccepted = () => { throw new Error("injected crash"); };
+  const preview = store.channelDeletion.preview([a.id]);
+  assert.throws(() => store.channelDeletion.accept({ channelIds: [a.id], token: preview.token, operationId: `delete_${randomUUID()}` }), /injected crash/);
+  assert.throws(() => store.setBrandingRole(template.id, "outro"), (error) => error.statusCode === 404);
+  assert.equal(store.db.prepare("SELECT role FROM branding_templates WHERE id=?").get(template.id).role, null);
+});
+
 test("deleting the last prototype channel stays empty after restart", (t) => {
   const root = tempDir(t);
   let store = new Store(root);

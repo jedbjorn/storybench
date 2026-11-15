@@ -73,6 +73,16 @@ export function createChannelDeletion(store, StoreError) {
       for (const sidecar of JSON.parse(job.sidecar_paths || "[]")) addFile(sidecar);
     }
     const filePaths = new Set(files.keys()), dirPaths = [...dirs.keys()];
+    const survivingDirs = [
+      ...db.prepare(`SELECT id FROM channels WHERE id NOT IN (${placeholders(ids)})`).all(...ids).map(({ id }) => `channels/${id}`),
+      ...db.prepare(`SELECT directory FROM episodes WHERE channel_id NOT IN (${placeholders(ids)})`).all(...ids).map(({ directory }) => directory),
+    ];
+    for (const retainedDir of survivingDirs) {
+      location(retainedDir);
+      if ([...filePaths, ...dirPaths].some((candidate) => candidate === retainedDir ||
+        candidate.startsWith(`${retainedDir}/`) || retainedDir.startsWith(`${candidate}/`)))
+        throw new StoreError(`A retained channel or production owns ${retainedDir}; deletion cannot proceed`, 409);
+    }
     const retainedAssets = db.prepare(`SELECT path,thumbnail_path FROM assets WHERE channel_id NOT IN (${placeholders(ids)})`).all(...ids);
     const retainedJobs = db.prepare(`SELECT j.output_path,j.sidecar_paths FROM jobs j JOIN episodes e ON e.id=j.episode_id WHERE e.channel_id NOT IN (${placeholders(ids)})`).all(...ids);
     const retained = retainedAssets.flatMap((item) => [item.path, item.thumbnail_path]).concat(
@@ -225,10 +235,11 @@ export function createChannelDeletion(store, StoreError) {
     return finish(operationId);
   }
   function recover() {
+    if (databaseBusyReason(null, false)) return;
     for (const { id } of db.prepare("SELECT id FROM channel_deletions WHERE state='pending' ORDER BY created_at,id").all()) finish(id);
   }
-  function databaseBusyReason(exceptOperationId = null) {
-    if (db.prepare("SELECT 1 FROM channel_deletions WHERE state='pending' AND id<>? LIMIT 1").get(exceptOperationId ?? ""))
+  function databaseBusyReason(exceptOperationId = null, checkPending = true) {
+    if (checkPending && db.prepare("SELECT 1 FROM channel_deletions WHERE state='pending' AND id<>? LIMIT 1").get(exceptOperationId ?? ""))
       return "Another channel deletion is pending. Finish or retry it before deleting more channels.";
     if (db.prepare("SELECT 1 FROM jobs WHERE state IN ('queued','running','cancelling') LIMIT 1").get())
       return "Production work is active. Let it finish or cancel it before deleting channels.";

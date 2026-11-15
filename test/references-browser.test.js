@@ -61,6 +61,7 @@ test("episode and card reference panels link, upload, unlink and report unavaila
   page.on("pageerror", (error) => errors.push(error.message));
   const open = async () => {
     await page.goto(`http://127.0.0.1:${PORT}/?channel=${channel.id}`);
+    await page.click('#episodeRailToggle');
     await page.click(`#episodes [data-id="${episode.id}"] [data-episode-select]`);
     await page.waitForSelector("#episodeReferences [data-ref-add]:not([disabled])", { state: "attached" });
   };
@@ -125,7 +126,7 @@ test("episode and card reference panels link, upload, unlink and report unavaila
   await until(() => store.getEpisode(episode.id).cards[0].referenceItemIds.length === 1, "card reference unlinked");
   assert.ok(store.getLibraryItem(episode.id, clip.id));
   await page.waitForFunction((revision) => document.querySelector('#saveState').textContent === `Saved · r${revision}`, store.getEpisode(episode.id).revision);
-  await page.setViewportSize({ width: 1400, height: 1000 });
+  await page.setViewportSize({ width: 800, height: 1000 });
   const narrowPreview = await page.locator('[data-card-id="still-card"] .card-preview').boundingBox();
   const narrowReferences = await cardPanel.boundingBox();
   assert.ok(narrowReferences.y >= narrowPreview.y + narrowPreview.height, "references stack below the output on a narrow card");
