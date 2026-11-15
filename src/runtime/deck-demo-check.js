@@ -29,6 +29,18 @@ export async function checkDemoDelivery(destination) {
     const opened = await call('open_deck_qa', { jobId: job.id }), sessionId = opened.sessionId;
     const act = args => call('act_deck_qa', { sessionId, ...args });
     const check = checks => call('check_deck_qa', { sessionId, checks });
+    const replay = async slide => {
+      assert.ok(slide.stages.slice(1).every(stage => stage.afterMs > 0), 'Every later demo stage must advance automatically');
+      await act({ action: 'click', selector: `#${slide.id} [data-command="replay"]` });
+      let remaining = slide.stages.reduce((sum, stage) => sum + (stage.afterMs ?? 0), 0) + 250;
+      let result;
+      while (remaining > 0) {
+        const milliseconds = Math.min(2000, remaining);
+        result = await act({ action: 'wait', milliseconds });
+        remaining -= milliseconds;
+      }
+      assert.deepEqual(result.state.stage, [String(slide.stages.length - 1)], 'Replay must reach the final stage before manual takeover');
+    };
     const reviews = [];
     const inspect = async (pageId = 'audience') => {
       const response = await client.call('inspect_deck_qa', { sessionId, pageId });
@@ -53,11 +65,7 @@ export async function checkDemoDelivery(destination) {
       await act({ pageId: presenter, action: 'resize', viewport });
       for (const [index, slide] of deck.slides.entries()) {
         await act({ pageId: presenter, action: 'select', selector: '#slide-select', value: String(index) });
-        if (slide.stages.length) {
-          await act({ action: 'click', selector: `#${slide.id} [data-command="replay"]` });
-          await act({ action: 'wait', milliseconds: 2000 });
-          await act({ action: 'wait', milliseconds: 2000 });
-        }
+        if (slide.stages.length) await replay(slide);
         for (let stage = 0; stage < Math.max(1, slide.stages.length); stage++) {
           if (slide.stages.length) await act({ pageId: presenter, action: 'select', selector: '#stage-select', value: String(stage) });
           for (let gallery = 0; gallery < Math.max(1, slide.subnav.length); gallery++) {

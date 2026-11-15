@@ -151,6 +151,7 @@ test('editable eight-slide demo: manual DOM edit, fake-agent bridge save/build, 
  app=await createApp({workspace:root,chatOptions:{codexFactory:factory}});
  await new Promise(r=>app.server.listen(0,'127.0.0.1',r)); const base=`http://127.0.0.1:${app.server.address().port}`;
  const deck=await createDemo(app.store), slides=structuredClone(deck.slides);
+ assert.ok(slides[5].stages.slice(1).every(stage=>stage.afterMs>0),'demo automatic reveals must reach the final stage');
  const source = await readFile(new URL('../src/runtime/fixtures/svg-illustration.svg', import.meta.url));
  const vector = await createLibraryService({ workspace: root, store: app.store }).registerFile({ episodeId: deck.id, readable: Readable.from(source), fileName: 'plan.svg', selectedCategory: 'Graphics' });
  slides[5].vector = { itemId: vector.id, alt: 'An editable landscape and planning diagram' };
