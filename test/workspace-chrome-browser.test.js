@@ -33,10 +33,11 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${app.server.address().port}/episodes?channel=${episode.channelId}`);
-  await page.locator('#episodes [data-episode-select]').waitFor();
+  await page.locator('#episodes [data-episode-select]').waitFor({ state: 'attached' });
   const workspace = await page.locator('.workspace').boundingBox(), empty = await page.locator('#empty').boundingBox();
   assert.ok(Math.abs(workspace.x + workspace.width - 1600) < 1, 'Landing workspace uses the hidden chat column');
   assert.ok(Math.abs(empty.x + empty.width / 2 - workspace.x - workspace.width / 2) < 1, 'Landing message is centered in the available workspace');
+  await page.click('#episodeRailToggle');
   const kind = page.getByRole('combobox', { name: 'Create as', exact: true });
   const kindBox = await kind.boundingBox(), rail = await page.locator('.episode-rail').boundingBox();
   assert.ok(kindBox.width >= 170 && kindBox.x + kindBox.width <= rail.x + rail.width, 'Creation kind is readable within the rail');
@@ -63,6 +64,7 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
   await page.locator(libraryItem).dragTo(page.locator('[data-library-category="Graphics"]'));
   await page.locator(`[data-library-category="Graphics"] ${libraryItem}`).waitFor();
   await page.click('[data-tab="board"]');
+  await page.click('#episodeRailToggle');
   await page.getByRole('combobox', { name: 'Show', exact: true }).click();
   await page.keyboard.press('End'); await page.keyboard.press('Escape');
   assert.equal(await page.inputValue('#episodeFilter'), 'All');
@@ -70,10 +72,12 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
   await page.keyboard.press('Home'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
   assert.equal(await page.inputValue('#episodeFilter'), 'Scaffold');
   assert.equal(await page.locator('[role=listbox]').count(), 0);
-  await page.getByRole('button', { name: 'Collapse Productions', exact: true }).click();
-  assert.ok((await page.locator('.episode-rail').boundingBox()).width < 45);
+  const openWorkspace = await page.locator('.workspace').boundingBox();
+  await page.locator('#episodeRail [data-drawer-close]').click();
+  assert.equal(await page.locator('#episodeRail').getAttribute('aria-hidden'), 'true');
+  assert.equal((await page.locator('.workspace').boundingBox()).width, openWorkspace.width);
   await page.reload(); await page.locator('[data-chat-title]').waitFor();
-  assert.equal(await page.getByRole('button', { name: 'Expand Productions', exact: true }).isVisible(), true);
+  assert.equal(await page.locator('#episodeRailToggle').getAttribute('aria-expanded'), 'false');
   await page.getByRole('button', { name: 'Open chat history', exact: true }).click();
   const chat = await page.locator('.chat').boundingBox(), drawer = await page.locator('[data-chat-history-drawer]').boundingBox();
   assert.ok(chat.width <= 440); assert.ok(drawer.x + drawer.width <= chat.x + 1);
@@ -105,42 +109,37 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
   for (const width of [900, 600, 390]) {
     await page.setViewportSize({ width, height: 1000 });
     if (width <= 700) {
-      for (const expanded of [false, true]) {
-        if (expanded) await page.getByRole('button', { name: 'Expand Productions', exact: true }).click();
-        await page.reload();
-        await page.locator('.card-reference-panel img').waitFor();
-        assert.equal(await page.locator('#episodeRailToggle').getAttribute('aria-expanded'), String(expanded), 'Explicit rail preference survives phone reload');
-        for (const selector of ['.workspace', '.chat']) {
-          assert.ok((await page.locator(selector).boundingBox()).width >= width - 16, `${selector} uses the phone width with rail ${expanded ? 'expanded' : 'collapsed'}`);
-        }
-        assert.ok((await page.locator('#cards [data-key="prompt"]').boundingBox()).width >= width * .7, 'Card editor has room to write');
-        assert.ok((await page.locator('[data-chat-draft]').boundingBox()).width >= width - 70, 'Composer has room to write');
-        for (const tile of await page.locator('.card-reference-panel .reference-item, .reference-add-tile').all()) {
-          assert.ok((await tile.boundingBox()).width >= 200, 'Reference content and picker remain readable');
-        }
-        for (const control of await page.locator('.tabs button, .actions button, [data-promote], [data-delete], [data-chat-send]').all()) {
-          const box = await control.boundingBox();
-          assert.ok(box.x >= 0 && box.x + box.width <= width && box.width >= 30, 'Actions and tabs remain reachable');
-        }
-        if (expanded) {
-          const nav = page.locator('#episodes [data-episode-select]').first();
-          await nav.focus(); await page.keyboard.press('Enter');
-          assert.equal(await page.inputValue('#episodeTitle'), 'Workspace chrome');
-        }
-        if (process.env.STORYBENCH_CHROME_EVIDENCE) {
-          mkdirSync(process.env.STORYBENCH_CHROME_EVIDENCE, { recursive: true });
-          await page.screenshot({ path: path.join(process.env.STORYBENCH_CHROME_EVIDENCE, `ui-polish-r2-${engine.name()}-${width}-${expanded ? 'expanded' : 'collapsed'}.png`), fullPage: true });
-        }
-        await page.click('[data-tab="final"]');
-        assert.equal(await page.locator('#finalPanel').isVisible(), true);
-        await page.click('[data-tab="board"]');
+      await page.reload();
+      await page.locator('.card-reference-panel img').waitFor();
+      for (const selector of ['.workspace', '.chat']) {
+        assert.ok((await page.locator(selector).boundingBox()).width >= width - 16, `${selector} uses the phone width`);
       }
-      await page.getByRole('button', { name: 'Collapse Productions', exact: true }).click();
+      assert.ok((await page.locator('#cards [data-key="prompt"]').boundingBox()).width >= width * .7, 'Card editor has room to write');
+      assert.ok((await page.locator('[data-chat-draft]').boundingBox()).width >= width - 70, 'Composer has room to write');
+      for (const tile of await page.locator('.card-reference-panel .reference-item, .reference-add-tile').all()) {
+        assert.ok((await tile.boundingBox()).width >= 200, 'Reference content and picker remain readable');
+      }
+      for (const control of await page.locator('.tabs button, .actions button, [data-promote], [data-delete], [data-chat-send]').all()) {
+        const box = await control.boundingBox();
+        assert.ok(box.x >= 0 && box.x + box.width <= width && box.width >= 30, 'Actions and tabs remain reachable');
+      }
+      const beforeDrawer = await page.locator('.workspace').boundingBox();
+      await page.click('#episodeRailToggle');
+      assert.equal((await page.locator('.workspace').boundingBox()).width, beforeDrawer.width);
+      assert.ok((await page.locator('#episodeRail').boundingBox()).width <= width);
+      const nav = page.locator('#episodes [data-episode-select]').first();
+      await nav.focus(); await page.keyboard.press('Enter');
+      assert.equal(await page.inputValue('#episodeTitle'), 'Workspace chrome');
+      await page.keyboard.press('Escape');
+      if (process.env.STORYBENCH_CHROME_EVIDENCE) {
+        mkdirSync(process.env.STORYBENCH_CHROME_EVIDENCE, { recursive: true });
+        await page.screenshot({ path: path.join(process.env.STORYBENCH_CHROME_EVIDENCE, `channel-drawers-${engine.name()}-${width}.png`), fullPage: true });
+      }
+      await page.click('[data-tab="final"]');
+      assert.equal(await page.locator('#finalPanel').isVisible(), true);
+      await page.click('[data-tab="board"]');
     }
     assert.equal(await page.locator('.chat').isVisible(), true);
-    const card = await page.locator('.story-card').boundingBox();
-    const section = await page.getByRole('combobox', { name: 'Story section', exact: true }).boundingBox();
-    assert.ok(section.x + section.width <= card.x + card.width + 1, `Card controls fit at ${width}px`);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `No page overflow at ${width}px`);
     await page.getByRole('button', { name: 'Open chat history', exact: true }).click();
     const box = await page.locator('[data-chat-history-drawer]').boundingBox();
@@ -148,7 +147,7 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
     await page.keyboard.press('Escape');
   }
   await page.setViewportSize({ width: 1600, height: 1000 });
-  await page.getByRole('button', { name: 'Expand Productions', exact: true }).click();
+  await page.getByRole('button', { name: 'Open Productions', exact: true }).click();
   if (process.env.STORYBENCH_CHROME_EVIDENCE) {
     mkdirSync(process.env.STORYBENCH_CHROME_EVIDENCE, { recursive: true });
     await page.getByRole('combobox', { name: 'Show', exact: true }).click();

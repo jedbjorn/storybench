@@ -21,6 +21,7 @@ test('deck workspace creates, edits, reopens and keeps video controls separate',
   const page=await browser.newPage({viewport:{width:1440,height:1000}});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(`http://127.0.0.1:${port}/episodes?channel=${video.channelId}`);
+  await page.click('#episodeRailToggle');
   await page.selectOption('#productionKind','deck');
   await page.click('#newEpisode');
   await page.waitForFunction(()=>document.querySelector('#addCard').textContent.includes('Add slide'));
@@ -59,12 +60,13 @@ test('deck workspace creates, edits, reopens and keeps video controls separate',
   }
   for (const width of [600, 390]) {
     await page.setViewportSize({ width, height: 1000 });
-    assert.ok((await page.locator('.workspace').boundingBox()).width >= width - 16, 'Expanded deck navigation does not squeeze slides');
+    assert.ok((await page.locator('.workspace').boundingBox()).width >= width - 16, 'Deck navigation does not squeeze slides');
     assert.ok((await page.locator('.deck-slide > label > [data-slide-field="body"]').boundingBox()).width >= width * .75, 'Slide text has room to edit');
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     if (process.env.STORYBENCH_DECK_EVIDENCE) await page.screenshot({ path: path.join(process.env.STORYBENCH_DECK_EVIDENCE, `ui-polish-r2-synthetic-deck-${width}.png`), fullPage: true });
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.click('#episodeRailToggle');
   await page.click(`#episodes [data-id="${video.id}"] [data-episode-select]`);
   assert.equal(await page.locator('#preview').isVisible(),true);
   assert.equal(await page.locator('#deckSlides').isVisible(),false);

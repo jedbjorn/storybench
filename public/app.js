@@ -98,7 +98,7 @@ function render() {
   $("#filteredEpisodeNotice").innerHTML = selectedHidden ? `Current production is in ${esc(episodeGroup)}. <button data-reveal-episode>Show it</button>` : "";
   $("#empty").hidden = !!episode;
   $("#editor").hidden = !episode;
-  if (!episode) return;
+  if (!episode) { $('#episodeTitle').value = ''; $('#episodeNotes').value = ''; return; }
   const deck = episode.kind === "deck";
   for (const selector of ['#preview', '#export', '#openGraphic', '[data-tab="drafts"]', '[data-tab="final"]']) {
     const control = $(selector); if (control) control.hidden = deck;
@@ -476,6 +476,7 @@ async function create() {
     body: JSON.stringify({ title: $("#productionKind").value === "deck" ? "Untitled deck" : "Untitled episode", kind: $("#productionKind").value, channelId }),
   });
   await load(e.id);
+  chrome.close({ focus: false });
 }
 $("#episodes").onclick = async (e) => {
   if (!e.target.closest("[data-episode-select]")) return;
@@ -488,6 +489,7 @@ $("#episodes").onclick = async (e) => {
     if (!$("#boardPanel").hidden) loadBoardContext().catch((error) => toast(error.message));
     await chatWorkspace.open();
     if (!$("#mediaPanel").hidden) libraryWorkspace.open().catch((error) => toast(error.message));
+    chrome.close({ focus: false });
   }
 };
 $("#episodes").onchange = async (event) => {

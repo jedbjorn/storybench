@@ -594,6 +594,18 @@ test("deleting a source channel preserves a reused destination copy and its prov
   assert.deepEqual(store.db.prepare("PRAGMA foreign_key_check").all(), []);
 });
 
+test("deletion refuses a retained legacy membership that still points at selected media", async (t) => {
+  const { store, a, b, library } = twoChannelRoot(t);
+  const source = store.createEpisode({ title: "Source", channelId: a.id });
+  const retained = store.createEpisode({ title: "Retained", channelId: b.id });
+  const item = await library.registerText({ episodeId: source.id, title: "Old notes", text: "keep" });
+  store.db.prepare("INSERT INTO episode_library(episode_id,asset_id,category,created_at) VALUES(?,?,?,?)")
+    .run(retained.id, item.assetId, "Reference", new Date().toISOString());
+  assert.throws(() => store.channelDeletion.preview([a.id]), (error) => error.statusCode === 409 && /retained production/.test(error.message));
+  assert.ok(store.getChannel(a.id));
+  assert.ok(store.getEpisode(retained.id));
+});
+
 test("--workspace refuses an initialized or adopted data root instead of silently adding a channel", async (t) => {
   const base = tempDir(t);
   const initialized = path.join(base, "initialized");

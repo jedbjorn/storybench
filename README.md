@@ -95,7 +95,11 @@ storybench channel current
 storybench channel use "Second channel"
 ```
 
-`channel use` changes where a later `open` begins. It does not restart the service, switch databases, cancel work or retarget an already-open episode. Running jobs keep the channel and episode captured when they were dispatched. An in-app channel picker and generic portable-folder import/export are deferred.
+`channel use` changes where a later `open` begins. It does not restart the service, switch databases, cancel work or retarget an already-open episode. Running jobs keep the channel and episode captured when they were dispatched.
+
+In the browser, click the **S** logo to open Channels. Create or open a channel there; cards are ordered by the most recently opened channel. **Select** enables **Rename** for one channel and **Delete** for one or several. Deletion shows the exact channels and production count before confirmation. It permanently removes their live productions, media, drafts and final outputs from the managed data root, including adopted production files. There is no undo or trash. Active jobs and agent turns must finish or stop before deletion; a failed cleanup stays pending and can be retried from the drawer. Existing backups, copies outside the managed root and provider records are outside this deletion boundary.
+
+The **Productions** control opens a separate left drawer. Both drawers cover the workspace without resizing it; chat stays on the right on desktop. Switching channels leaves the current production only after its pending edits pass the normal save checks. Opening a channel does not change the CLI default or a running job's destination. Generic portable-folder import/export remains deferred.
 
 On a fresh installation not already configured for another root, bring forward one existing prototype workspace by using the one-time adoption path instead of plain `init`:
 
@@ -221,7 +225,7 @@ Lifecycle failures do not implicitly create storage, switch channels, delete med
 
 - The repository is public and MIT-licensed. There are still no published packages, images, badges, `curl | sh` installer or release-hosting promises — install from a clone as described above.
 - Support is limited to a single local Linux creator account with Docker and `systemd --user`. There is no LAN binding, multi-user tenancy, remote host, app authentication or automatic login startup.
-- All channels share one SQLite database and one service. Portable self-contained channels, arbitrary workspace merging, generic channel import/export and channel deletion are not delivered.
+- All channels share one SQLite database and one service. Portable self-contained channels, arbitrary workspace merging and generic channel import/export are not delivered.
 - Codex and Claude Code are the supported production harnesses. Available models and effort controls depend on the installed harness and account; failed discovery or access is reported without substitution.
 - Agent tools and episode-rendered skills provide capabilities and orientation, not a guarantee of creative quality or a prescribed editorial workflow. Evaluation with the creator's real footage, including whether the output is good enough, remains pending after technical delivery.
 - Two host checks remain for the operator after delivery and are not covered by the automated evidence: that a rotated host Codex/Claude token is inherited by the next worker request, and that published Final output is validated on real footage.

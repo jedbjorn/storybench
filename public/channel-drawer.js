@@ -18,6 +18,7 @@ export function installChannelDrawer({ api, currentChannel, canLeave, navigateCh
     }).join('') || '<p>No channels yet. Create one to start.</p>';
   }
   async function refresh() {
+    $('#channelCards').textContent = 'Loading channels…';
     channels = (await api('/api/channels')).channels;
     selected = new Set([...selected].filter((id) => channels.some((channel) => channel.id === id)));
     const operations = await api('/api/channel-deletions');

@@ -62,6 +62,11 @@ export function createChannelDeletion(store, StoreError) {
     }
     const assets = db.prepare(`SELECT path,thumbnail_path FROM assets WHERE channel_id IN (${placeholders(ids)})`).all(...ids);
     for (const asset of assets) { addFile(asset.path); addFile(asset.thumbnail_path); }
+    for (const table of ["library_items", "episode_library"]) {
+      if (db.prepare(`SELECT 1 FROM ${table} l JOIN episodes e ON e.id=l.episode_id JOIN assets a ON a.id=l.asset_id
+        WHERE a.channel_id IN (${placeholders(ids)}) AND e.channel_id NOT IN (${placeholders(ids)}) LIMIT 1`).get(...ids, ...ids))
+        throw new StoreError("A retained production still uses media from a selected channel; remove that dependency first", 409);
+    }
     const jobs = db.prepare(`SELECT output_path,sidecar_paths FROM jobs WHERE episode_id IN (${episodeIds(ids)})`).all(...ids);
     for (const job of jobs) {
       addFile(job.output_path);
