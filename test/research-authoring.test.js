@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Store, RESEARCH_LIMITS } from '../src/store.js';
 import { createChatService } from '../src/chat.js';
-import { AUTHORING_TOOLS } from '../src/codex.js';
+import { AUTHORING_TOOLS, STORYBENCH_TOOLS } from '../src/codex.js';
 import { createV9ConversationPersistence } from '../src/runtime/conversation-persistence.js';
 import { mergeTools, defaultBootContextFor } from '../src/runtime/app-runtime.js';
 import { createScopedTools } from '../src/runtime/tools.js';
@@ -51,6 +51,45 @@ function fixture(t, { kind = 'video', stage = 'Scaffold', archived = false, cont
   };
 }
 const savedInPrompt = prompt => JSON.parse(/Complete saved production research \(JSON data\):\n([^\n]+)/.exec(prompt)[1]);
+
+test('deleted gallery items survive read/edit/save under the shared schema and all native adapters', async t => {
+  for (const harness of ['codex', 'claude', 'opencode']) await t.test(harness, async t => {
+    const f = fixture(t, { kind: 'deck' });
+    const asset = f.store.saveAsset({ name: 'gallery.png', hash: 'gallery-fixture', kind: 'image', path: 'media/gallery.png', metadata: {} });
+    const item = f.store.attachLibraryItem(f.p.id, asset.id, { category: 'B-roll' });
+    const other = f.store.createEpisode({ kind: 'deck' });
+    const foreign = f.store.attachLibraryItem(other.id, asset.id, { category: 'B-roll' });
+    await f.start();
+    const native = await f.native(t, harness);
+    assert.equal((await native.call('read_research')).failed, false);
+    const saved = await native.call('save_deck', { expectedRevision: f.store.getDeck(f.p.id).revision,
+      slides: [{ ...slide(), subnav: [{ id: 'detail', label: 'Detail', itemId: item.id }] }] });
+    assert.equal(saved.failed, false, saved.text);
+    f.store.deleteLibraryItem(f.p.id, item.id, item.revision, f.store.getDeck(f.p.id).revision);
+    const read = await native.call('read_deck');
+    assert.equal(read.failed, false, read.text);
+    const deck = JSON.parse(read.text);
+    assert.equal(deck.slides[0].subnav[0].itemId, null);
+    for (const definitions of [STORYBENCH_TOOLS, native.definitions]) {
+      const schema = definitions.find(tool => tool.name === 'save_deck').inputSchema;
+      assert.deepEqual(schema.properties.slides.items.properties.subnav.items.properties.itemId, { type: ['string', 'null'] });
+    }
+    deck.slides[0].title = 'Edited after Library deletion';
+    const edited = await native.call('save_deck', { expectedRevision: deck.revision, slides: deck.slides });
+    assert.equal(edited.failed, false, edited.text);
+    const current = f.store.getDeck(f.p.id);
+    // Saving normalizes an empty gallery reference to an absent itemId.
+    delete deck.slides[0].subnav[0].itemId;
+    assert.deepEqual(current.slides, deck.slides);
+    for (const invalidId of [item.id, foreign.id]) {
+      const invalid = structuredClone(current.slides);
+      invalid[0].subnav[0].itemId = invalidId;
+      const rejected = await native.call('save_deck', { expectedRevision: current.revision, slides: invalid });
+      assert.equal(rejected.failed, true, rejected.text);
+      assert.deepEqual(f.store.getDeck(f.p.id), current);
+    }
+  });
+});
 
 test('typed authoring matrix: full content, not metadata or an undelivered return, authorizes each request; stale context is refused across kinds/stages/archive and native adapters', async t => {
   const originalFetch = globalThis.fetch, fetched = []; globalThis.fetch = async (...args) => { fetched.push(args); throw new Error('No network allowed'); }; t.after(() => { globalThis.fetch = originalFetch; });

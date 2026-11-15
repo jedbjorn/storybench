@@ -244,7 +244,8 @@ export function parseSvg(bytes, { namespace = null, stages = null } = {}) {
       }
       for (const { node } of mapped) {
         if (mapped.some(other => other.node !== node && other.node.contains(node))) fail(`stage group ${node.id} cannot nest inside another mapped group`);
-        if (references.some(ref => !ref.accessibility && ref.node.localName === 'use' && (ids.get(ref.id).contains(node) || node.contains(ids.get(ref.id))))) fail(`stage group ${node.id} cannot be reused by use; map independent visible groups`);
+        // Internal uses reveal with this wrapper; external copies bypass its visibility.
+        if (references.some(ref => !ref.accessibility && ref.node.localName === 'use' && !node.contains(ref.node) && (ids.get(ref.id).contains(node) || node.contains(ids.get(ref.id))))) fail(`stage group ${node.id} cannot be reused by use; map independent visible groups`);
       }
     }
     if (namespace !== null) {

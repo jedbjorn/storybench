@@ -135,6 +135,25 @@ test('cross-channel SVG reuse and reopen preserve ownership; invalid builds reta
   await assert.rejects(library.reuseItem({ source: { episodeId: second.id, itemId: reused.item.id }, destination: { episodeId: first.id } }), /unsupported element script/);
 });
 
+test('staged SVG export keeps internal definitions and uses inside the same visibility wrapper', () => {
+  const input = Buffer.from(svg('<g id="art"><defs><path id="shape" d="M0 0L20 0L10 20Z"/></defs><use href="#shape"/></g>'));
+  const files = buildDeck({ title: 'Local definitions', slides: [{ id: 'local', title: 'Local geometry', layout: 'process',
+    vector: { type: 'image', src: 'assets/local.svg', alt: 'Triangle' },
+    stages: [{ id: 'reveal', title: 'Reveal', svgGroupIds: ['art'] }] }] }, { assets: { 'assets/local.svg': input } });
+  assert.deepEqual(files.get('assets/local.svg'), input);
+  const dom = new JSDOM(files.get('index.html'));
+  try {
+    const doc = dom.window.document, wrapper = doc.querySelector('[data-vector-step="0"]');
+    assert.ok(wrapper);
+    const use = wrapper.querySelector('use'), target = doc.getElementById(use.getAttribute('href').slice(1));
+    assert.ok(wrapper.contains(target));
+    assert.equal(target.parentElement.localName, 'defs');
+    assert.equal(target.getAttribute('d'), 'M0 0L20 0L10 20Z');
+    assert.notEqual(target.id, 'shape', 'local references are namespaced with their target');
+    assert.equal(doc.querySelectorAll('[data-vector-step]').length, 1);
+  } finally { dom.window.close(); }
+});
+
 test('staged SVG export preserves geometry and rejects ambiguous or definition-only mappings', () => {
   const stages = [{ id: 'reveal', title: 'Reveal', svgGroupIds: ['art'] }];
   const input = svg('<g id="art" transform="translate(10 20)" opacity="0.6"><path d="M0 0L20 0L10 20Z"/></g>');

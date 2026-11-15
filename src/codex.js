@@ -34,7 +34,7 @@ const deckSlide = object(['id', 'title', 'layout'], {
   stages: { type: 'array', items: object(['id', 'title'], { id: deckText, title: deckText, body: deckText,
     afterMs: { type: 'number', minimum: 0, maximum: 3600000 },
     svgGroupIds: { type: 'array', minItems: 1, uniqueItems: true, items: deckText, description: 'Registered SVG group IDs revealed by this stable stage. Required for each vector stage; groups cannot be mapped twice.' } }) },
-  subnav: { type: 'array', items: object(['id', 'label'], { id: deckText, label: deckText, itemId: deckText }) },
+  subnav: { type: 'array', items: object(['id', 'label'], { id: deckText, label: deckText, itemId: { type: ['string', 'null'] } }) },
 });
 export const AUTHORING_TOOLS = Object.freeze(['save_deck', 'build_deck', 'update_story', 'update_cards', 'update_storyboard', 'create_draft', 'create_final', 'create_graphic_recipe', 'update_graphic_recipe', 'render_graphic', 'apply_branding']);
 const toolSpecs = [
