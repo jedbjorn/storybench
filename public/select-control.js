@@ -22,6 +22,7 @@ export function installSelectControls(doc = document) {
     } else { field.removeAttribute('list'); field.dataset.selectList = listId; }
     trigger.classList.add('sb-select-trigger');
     const menu = doc.createElement('div'); menu.className = 'sb-select-menu'; menu.id = `sb-options-${++nextId}`;
+    if (field.hasAttribute('data-font')) { wrapper.classList.add('sb-font-select'); menu.classList.add('sb-font-menu'); }
     menu.setAttribute('role', 'listbox');
     trigger.setAttribute('role', 'combobox'); trigger.setAttribute('aria-haspopup', 'listbox');
     trigger.setAttribute('aria-controls', menu.id); trigger.setAttribute('aria-expanded', 'false');
@@ -34,6 +35,7 @@ export function installSelectControls(doc = document) {
         trigger.disabled = disabled;
         const label = field.selectedOptions[0]?.label || 'Choose…';
         if (trigger.textContent !== label) trigger.textContent = label;
+        trigger.style.fontFamily = field.selectedOptions[0]?.style.fontFamily || '';
       }
       const labelledBy = field.getAttribute('aria-labelledby');
       const label = field.getAttribute('aria-label') || [...(field.labels || [])].map((item) => [...item.childNodes]
@@ -71,6 +73,7 @@ export function installSelectControls(doc = document) {
         node.setAttribute('aria-selected', String(option.value === field.value));
         node.setAttribute('aria-disabled', String(option.disabled || option.parentElement?.disabled || false));
         node.textContent = editable ? `${option.label}${option.label !== option.value ? ` · ${option.value}` : ''}` : option.label;
+        node.style.fontFamily = option.style.fontFamily;
         node.dataset.index = i; return node;
       }));
       if (!control.options.length) { const empty = doc.createElement('div'); empty.className = 'sb-select-empty'; empty.textContent = editable ? 'Use the model ID you entered' : 'No options'; menu.append(empty); }

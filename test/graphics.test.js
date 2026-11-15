@@ -89,7 +89,7 @@ test('cancellation removes output and module temporary files while preserving so
   assert.deepEqual(await readFile(source), sourceBefore); assert.deepEqual((await readdir(root)).sort(), ['source.png']);
 });
 
-test('all six font families and their bold weights render distinct stills and motion', async (t) => {
+test('all catalogue font families and their bold weights render distinct stills and motion', async (t) => {
   const { fontCatalog } = await import('../src/fonts.js');
   const root = await workspace(t), hashes = [];
   for (const font of fontCatalog()) {
@@ -102,9 +102,9 @@ test('all six font families and their bold weights render distinct stills and mo
       hashes.push((await readFile(outputPath)).toString('base64'));
     }
   }
-  assert.equal(new Set(hashes).size, 12, 'families and weights must produce different pixels');
+  assert.equal(new Set(hashes).size, fontCatalog().length * 2, 'families and weights must produce different pixels');
   const clips = [];
-  for (const family of ['DejaVu Sans', 'Liberation Serif']) {
+  for (const family of ['DejaVu Sans', 'Kalam']) {
     const outputPath = join(root, `${family}.mp4`);
     await renderGraphic({ workspace: root, outputPath, recipe: { kind: 'motion', width: 400, height: 100, duration: 0.2, fps: 30, layers: [
       { kind: 'text', text: 'Storybench 123', x: 5, y: 60, fontSize: 38, fontFamily: family, fontWeight: 700 },

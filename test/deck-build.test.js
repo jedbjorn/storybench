@@ -19,6 +19,34 @@ async function terminal(decks,id,job) {
  for(let n=0;n<200;n++) { const value=decks.getJob(id,job.id); if(!['queued','running'].includes(value.state)) return value; await new Promise(r=>setTimeout(r,5)); }
  throw new Error('build timed out');
 }
+test('deck jobs snapshot channel font roles while queued and leave prior bundles unchanged after standards edits', async t => {
+ const { root, store, id } = await fixture(t), queue = new HeavyJobQueue(), decks = createDeckService({ store, queue });
+ t.after(() => { release?.(); return decks.close(); });
+ const channelId = store.getEpisode(id).channelId;
+ store.saveBrandStandards(channelId, 1, { colors: [], fonts: [null, 'Crimson Text', 'Space Mono'], stylePrompt: '' });
+ let release; const gate = new Promise(resolve => { release = resolve; });
+ queue.enqueue('hold', () => gate);
+ const queued = decks.enqueue({ episodeId: id, expectedRevision: 2 });
+ assert.equal(queued.state, 'queued');
+ assert.deepEqual(queued.snapshot.fonts, [null, 'Crimson Text', 'Space Mono']);
+ store.saveBrandStandards(channelId, 2, { colors: [], fonts: ['Poppins'], stylePrompt: '' });
+ release();
+ const first = await terminal(decks, id, queued); assert.equal(first.state, 'completed', first.error);
+ assert.deepEqual(first.snapshot.manifest.fonts, [null, 'Crimson Text', 'Space Mono']);
+ const base = path.dirname(path.join(root, first.outputPath)), css = await readFile(path.join(base, 'styles.css'), 'utf8');
+ assert.match(css, /--font-accent:"Crimson Text";--font-alternate:"Space Mono"/);
+ assert.doesNotMatch(css, /--font-base:|Poppins/);
+ const zip = await readFile(path.join(base, 'bundle.zip'));
+ assert.ok(zip.includes(Buffer.from('assets/font-crimsontext-regular.ttf')));
+ assert.ok(zip.includes(Buffer.from('assets/font-spacemono-LICENSE.txt')));
+ assert.ok(!zip.includes(Buffer.from('assets/font-poppins-regular.ttf')));
+ const second = await terminal(decks, id, decks.enqueue({ episodeId: id, expectedRevision: 2 }));
+ assert.equal(second.state, 'completed', second.error);
+ const nextCSS = await readFile(path.join(root, path.dirname(second.outputPath), 'styles.css'), 'utf8');
+ assert.match(nextCSS, /--font-base:"Poppins"/); assert.doesNotMatch(nextCSS, /Crimson Text|Space Mono/);
+ assert.equal(await readFile(path.join(base, 'styles.css'), 'utf8'), css);
+ assert.deepEqual(await readFile(path.join(base, 'bundle.zip')), zip);
+});
 test('saved revision publishes atomic portable files and ZIP; failures preserve previous success and cleanup excludes deck',async t=>{
  const {root,store,decks,id}=await fixture(t);
  assert.throws(()=>decks.enqueue({episodeId:id,expectedRevision:1}),/Stale/);

@@ -5,6 +5,25 @@ import { installSelectControls } from '../public/select-control.js';
 import { installWorkspaceChrome } from '../public/workspace-chrome.js';
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+test('font choices and selected trigger keep their typefaces through selection and clearing', async (t) => {
+  const dom = new JSDOM('<label>Base font<select name="font0" data-font="0"><option value="">No font selected</option><option style="font-family: Poppins">Poppins</option><option style="font-family: Kalam">Kalam</option><option disabled style="font-family: Missing">Missing — unavailable</option></select></label>');
+  const doc = dom.window.document, controls = installSelectControls(doc);
+  t.after(() => { controls.destroy(); dom.window.close(); });
+  const trigger = doc.querySelector('[role=combobox]');
+  trigger.click();
+  assert.equal(doc.querySelector('[role=option]:nth-child(2)').style.fontFamily, 'Poppins');
+  assert.equal(doc.querySelector('[role=option]:nth-child(3)').style.fontFamily, 'Kalam');
+  assert.equal(doc.querySelector('[role=option]:nth-child(4)').getAttribute('aria-disabled'), 'true');
+  doc.querySelector('[role=option]:nth-child(3)').click();
+  assert.equal(doc.querySelector('select').value, 'Kalam');
+  assert.equal(trigger.style.fontFamily, 'Kalam');
+  trigger.click();
+  trigger.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+  trigger.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  assert.equal(doc.querySelector('select').value, '');
+  assert.equal(trigger.style.fontFamily, '');
+});
+
 test('shared selects preserve forms and change handlers with accessible keyboard choices', async (t) => {
   const dom = new JSDOM('<form><label>Stage<select name="stage"><option>Scaffold</option><option disabled>Draft</option><option>Final</option></select></label><input id="next"></form>');
   const doc = dom.window.document, controls = installSelectControls(doc);

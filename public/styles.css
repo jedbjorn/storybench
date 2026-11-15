@@ -865,6 +865,7 @@ select.sb-select-native { position: absolute; width: 1px !important; height: 1px
 .sb-select-menu [aria-selected=true]::after { content: '✓'; position: absolute; right: 9px; }
 .sb-select-menu [role=option]:hover, .sb-select-menu .active { background: var(--pale); outline: 1px solid #b8ccc3; outline-offset: -1px; }
 .sb-select-menu [aria-disabled=true] { opacity: .45; cursor: default; }
+.sb-font-menu [role=option], .sb-font-select .sb-select-trigger { font-size: 19px; line-height: 1.5; font-weight: 400; }
 .sb-select-empty { padding: 8px; color: var(--muted); }
 label > .sb-select, .episode-filter .sb-select { width: 100%; }
 .card-primary > .sb-select { width: 100%; }

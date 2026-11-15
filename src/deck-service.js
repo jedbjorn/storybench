@@ -32,7 +32,8 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
     enqueue({ episodeId, expectedRevision, requestId = null }) {
       queue.assertOpen(); const deck = store.getDeck(episodeId);
       if (deck.revision !== expectedRevision) throw new StoreError('Stale deck revision; save/reload before building',409);
-      const snapshot = { title:deck.title, slides:store.validateDeckSlides(episodeId,deck.slides), story:deck.story, sourceRevision:deck.revision, library:store.listEpisodeLibrary(episodeId) };
+      const fonts = store.getBrandStandards(deck.channelId).fonts;
+      const snapshot = { title:deck.title, slides:store.validateDeckSlides(episodeId,deck.slides), story:deck.story, sourceRevision:deck.revision, fonts, library:store.listEpisodeLibrary(episodeId) };
       const job = store.saveJob({ episodeId, kind:'deck', state:'queued', revision:deck.revision, snapshot, outputClass:'deck_bundle', requestId });
       queue.enqueue(job.id, async signal => {
         let staging, published;
@@ -63,8 +64,8 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
             for (const entry of saved.subnav) slide.gallery.push({id:entry.id,label:entry.label,...(entry.itemId ? {media:await media(entry.itemId,saved.id)} : {})});
             slides.push(slide);
           }
-          const files = buildDeck({title:snapshot.title,slides},{assets});
-          const manifest = {sourceRevision:deck.revision,productionId:episodeId,files:[...files.keys(),'manifest.json']};
+          const files = buildDeck({title:snapshot.title,slides,fonts:snapshot.fonts},{assets});
+          const manifest = {sourceRevision:deck.revision,productionId:episodeId,fonts:snapshot.fonts,files:[...files.keys(),'manifest.json']};
           files.set('manifest.json',JSON.stringify(manifest,null,2));
           const parent = path.join(store.episodeDirectory(episodeId),'outputs','decks');
           await mkdir(parent,{recursive:true});

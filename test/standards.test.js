@@ -111,7 +111,7 @@ test('each turn receives current channel standards and font paths; in-flight con
   assert.deepEqual(contexts[1].brandStandards.fontRoles, { base: 'DejaVu Sans', accent: 'Liberation Serif', alternate: null });
   assert.match(prompts[0], /"colorRoles":\{"base":"#0055FF","accent":"#FFFFFF","background":null\}/);
   assert.match(prompts[0], /"fontRoles":\{"base":"DejaVu Sans","accent":"Liberation Serif","alternate":null\}/);
-  assert.equal(contexts[1].fonts.length, 6);
+  assert.equal(contexts[1].fonts.length, 26);
   assert.ok(contexts[1].fonts.every((font) => font.files.regular && font.files.bold));
 });
 

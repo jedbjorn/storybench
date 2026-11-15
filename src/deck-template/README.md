@@ -14,6 +14,7 @@ const files = buildDeck(exampleDeck, { assets: exampleAssets });
 Input fields:
 
 - `title`: nonempty plain text, used for page titles and the side rail.
+- `fonts`: optional array of up to three supported catalogue family names or null slots. Base styles body text and presenter notes; Accent styles headings; Alternate styles eyebrows and captions. Unset roles use Manrope. Both regular/bold files and licences for selected families are copied into the bundle; no installed font, server or network is needed. The app snapshots channel font roles when queuing a build. Existing exports are unchanged; rebuild to use new standards. Unsupported or missing font files fail the build visibly.
 - `slides`: nonempty ordered array. Each has a unique `id` matching `[A-Za-z][A-Za-z0-9_-]*`, a nonempty `title`, and a `layout` below.
 - Each slide optionally has plain-text `body`, `eyebrow`, `notes`, and finite nonnegative `targetMinutes` (default 0). Notes are visible only in Presenter but remain in exported HTML: they are not secret. Line breaks are preserved in body/notes.
 - `title` and `section` layouts provide large chapter headings; `statement` provides a focused message; `text-media` pairs copy and media; `columns` requires two or three `{title, body}` objects; `full-media` emphasizes a local image or demo video; `process` requires reveal stages. All are data-driven and responsive.
