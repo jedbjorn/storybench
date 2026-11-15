@@ -27,6 +27,7 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
     return job;
   };
   return {
+    hasActiveWork: () => Boolean(queue.active || queue.pending.length || queue.draining),
     getJob,
     enqueue({ episodeId, expectedRevision, requestId = null }) {
       queue.assertOpen(); const deck = store.getDeck(episodeId);

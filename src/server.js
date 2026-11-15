@@ -167,9 +167,32 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
   const eventStreams = new Set();
   let closing = false;
   let closePromise;
+  let activeMutations = 0;
+  let activeFileReads = 0;
+  const streamProjectFile = async (req, res, file, type) => {
+    activeFileReads++;
+    let released = false;
+    const release = () => { if (!released) { released = true; activeFileReads--; } };
+    res.once("close", release);
+    try { return await streamFile(req, res, file, type); }
+    catch (error) { release(); throw error; }
+  };
   const health = createHealth({ store, getState: () => (closing ? "draining" : "ready") });
+  const deletionBusyReason = () => {
+    if (activeMutations > 1) return "Another change is still in progress. Let it finish before deleting channels.";
+    if (activeFileReads) return "A production file is still being read. Let the download finish before deleting channels.";
+    if (chat.hasActiveWorkers() || store.db.prepare("SELECT 1 FROM conversations WHERE state IN ('queued','running','interrupting') LIMIT 1").get() ||
+      store.db.prepare("SELECT 1 FROM production_runs WHERE state IN ('starting','running') LIMIT 1").get())
+      return "An agent turn is active. Let it finish and its worker stop before deleting channels.";
+    if (renders.hasActiveWork() || decks.hasActiveWork() ||
+      store.db.prepare("SELECT 1 FROM jobs WHERE state IN ('queued','running','cancelling') LIMIT 1").get())
+      return "Production work is active. Let it finish or cancel it before deleting channels.";
+    return null;
+  };
 
   const server = http.createServer(async (req, res) => {
+    const mutating = !["GET", "HEAD"].includes(req.method);
+    if (mutating) activeMutations++;
     try {
       ensureLocal(req);
       if (closing && !["GET", "HEAD"].includes(req.method)) throw new StoreError("Application is shutting down", 503);
@@ -237,6 +260,22 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         return send(res, 200, { id: identity.id, schemaVersion: identity.schemaVersion, defaultChannelId: identity.defaultChannelId,
           channelCount: store.listChannels().length, pid: process.pid });
       }
+      if (parts[0] === "api" && parts[1] === "channel-deletions") {
+        if (parts.length === 2 && req.method === "GET") return send(res, 200, store.channelDeletion.list());
+        if (parts.length === 3 && parts[2] === "preview" && req.method === "POST")
+          return send(res, 200, store.channelDeletion.preview((await jsonBody(req))?.channelIds));
+        if (parts.length === 2 && req.method === "POST") {
+          const result = store.channelDeletion.accept(await jsonBody(req), deletionBusyReason);
+          return send(res, result.state === "completed" ? 200 : 202, result);
+        }
+        if (parts.length === 3 && req.method === "GET") return send(res, 200, store.channelDeletion.status(parts[2]));
+        if (parts.length === 4 && parts[3] === "retry" && req.method === "POST") {
+          const reason = deletionBusyReason();
+          if (reason) throw new StoreError(reason, 409);
+          const result = store.channelDeletion.finish(parts[2]);
+          return send(res, result.state === "completed" ? 200 : 202, result);
+        }
+      }
       if (parts[0] === "api" && parts[1] === "channels") {
         if (parts.length === 2 && req.method === "GET") return send(res, 200, listChannels(store));
         if (parts.length === 2 && req.method === "POST") return send(res, 201, createChannel(store, (await jsonBody(req)).name));
@@ -274,6 +313,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
       if (parts[0] === "api" && parts[1] === "episodes" && parts[2]) {
         const episodeId = parts[2];
         // Every episode-scoped route validates the caller's channel together with the episode ID.
+        if (!store.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
         if (requestedChannel) store.assertEpisodeChannel(episodeId, requestedChannel);
         if (parts.length === 3 && req.method === "GET") {
           const value = store.getEpisode(episodeId);
@@ -407,7 +447,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
             const actual = await realpath(contained(workspace, item.asset.path));
             const workspaceReal = await realpath(workspace);
             contained(workspaceReal, path.relative(workspaceReal, actual));
-            return await streamFile(req, res, actual, item.asset.metadata?.contentType);
+            return await streamProjectFile(req, res, actual, item.asset.metadata?.contentType);
           }
           if (parts[4] && parts[5] === "thumbnail" && parts.length === 6 && ["GET", "HEAD"].includes(req.method)) {
             const item = store.getLibraryItem(episodeId, parts[4]);
@@ -415,7 +455,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
             const actual = await realpath(contained(workspace, item.asset.thumbnailPath));
             const workspaceReal = await realpath(workspace);
             contained(workspaceReal, path.relative(workspaceReal, actual));
-            return await streamFile(req, res, actual);
+            return await streamProjectFile(req, res, actual);
           }
         }
         if (parts.length === 3 && req.method === "PUT") {
@@ -586,7 +626,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         res.setHeader('Content-Security-Policy', "sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'none'");
         res.setHeader('X-Content-Type-Options','nosniff');
         if (name === 'bundle.zip') res.setHeader('Content-Disposition','attachment; filename="deck-bundle.zip"');
-        return await streamFile(req,res,file);
+        return await streamProjectFile(req,res,file);
       }
       if (
         parts[0] === "api" &&
@@ -602,7 +642,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         const workspaceReal = await realpath(workspace);
         const actual = await realpath(contained(workspace, job.outputPath));
         contained(workspaceReal, path.relative(workspaceReal, actual));
-        return await streamFile(req, res, actual);
+        return await streamProjectFile(req, res, actual);
       }
       if (!["GET", "HEAD"].includes(req.method))
         throw new StoreError("Route not found", 404);
@@ -622,6 +662,8 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           ...(error.candidates ? { candidates: error.candidates } : {}),
         });
       else res.destroy();
+    } finally {
+      if (mutating) activeMutations--;
     }
   });
   const close = () =>

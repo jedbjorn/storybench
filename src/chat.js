@@ -25,7 +25,7 @@ function installSchema(db) {
     CREATE TABLE IF NOT EXISTS conversation_events(conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,sequence INTEGER NOT NULL,type TEXT NOT NULL,payload TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(conversation_id,sequence));
   `);
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chats'").get()) return;
-  for (const legacy of db.prepare("SELECT * FROM chats").all()) {
+  for (const legacy of db.prepare("SELECT chats.* FROM chats JOIN episodes e ON e.id=chats.episode_id JOIN channels c ON c.id=e.channel_id WHERE c.pending_delete_id IS NULL").all()) {
     if (db.prepare("SELECT 1 FROM conversations WHERE episode_id=?").get(legacy.episode_id)) continue;
     const id = newId();
     db.exec("BEGIN IMMEDIATE");
@@ -356,7 +356,10 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
         if (!assistantOutput && !toolActivity) restoreTypedDraft();
         setState(value, "error", { detail }); finishRun({ state: "failed", error: detail });
       } else if (aborted) finishRun({ state: "interrupted" });
-    } finally { if (active.get(value.episode_id) === activity) active.delete(value.episode_id); connection?.close(); }
+    } finally {
+      try { await connection?.close?.(); }
+      finally { if (active.get(value.episode_id) === activity) active.delete(value.episode_id); }
+    }
   }
 
   const send = async (episodeId, id, text, attachmentIds = []) => {
@@ -507,6 +510,7 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
     return project(episodeId, id);
   };
   return {
+    hasActiveWorkers: () => active.size > 0 || tasks.size > 0,
     list: (episodeId) => { episode(episodeId); return db.prepare("SELECT * FROM conversations WHERE episode_id=? ORDER BY updated_at DESC,created_at DESC,rowid DESC").all(episodeId).map((value) => ({ ...summary(value), ...(continuity ? { settings: continuity.persistence.getSettings(value.id) } : {}) })); }, create,
     updateSettings, busyReason,
     get: (episodeId, id) => project(episodeId, id || first(episodeId).id), update,

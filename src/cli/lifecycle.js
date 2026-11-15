@@ -200,7 +200,7 @@ export async function runRestart(context, { options }, configuredRoot) {
         hint: "Retry in a moment, or run `storybench restart --force` to restart anyway (interrupted work is not replayed)." });
     if (before.health) {
       const work = activeWork(before.health);
-      if (work.busy && !options.force) throw new CliError(`Storybench is busy: ${work.renders} render job(s) and ${work.agents} agent turn(s) are active across all channels`, {
+      if (work.busy && !options.force) throw new CliError(`Storybench is busy: ${work.renders} render job(s), ${work.agents} agent turn(s), and ${work.deletions} channel deletion(s) are active`, {
         hint: "Wait for them to finish, or run `storybench restart --force` to interrupt them (interrupted work is not replayed)." });
     }
     if (before.unit.active !== "inactive" && before.unit.active !== "unknown") {
@@ -268,7 +268,7 @@ export async function runStatus(context) {
     const served = status.health.release || {};
     lines.push(`Release served: ${served.manifestId ?? "(none)"} (version ${served.version ?? status.health.package?.version ?? "?"}, commit ${served.commit ?? "?"})`);
     const work = activeWork(status.health);
-    lines.push(`Activity: ${work.renders} render job(s), ${work.agents} agent turn(s) across all channels`);
+    lines.push(`Activity: ${work.renders} render job(s), ${work.agents} agent turn(s), ${work.deletions} channel deletion(s) across all channels`);
     lines.push(`Database: schema ${status.health.schema.current} (supported ${status.health.schema.supported.min}-${status.health.schema.supported.max})`);
   }
   lines.push(`Data root: configured ${config.dataRootId ?? "(unknown)"}${status.health ? `, served ${status.health.database?.id ?? "(unknown)"}` : ""}`);
