@@ -190,7 +190,7 @@ export function createChannelDeletion(store, StoreError) {
       if (!Array.isArray(channelIds) || JSON.stringify([...channelIds].sort()) !== existing.channel_ids || token !== existing.token)
         throw new StoreError("Deletion operation ID was already used for different channels", 409);
       if (existing.state === "pending") {
-        const reason = databaseBusyReason() || busyReason();
+        const reason = databaseBusyReason(operationId) || busyReason();
         if (reason) throw new StoreError(reason, 409);
       }
       return finish(operationId);
@@ -222,7 +222,9 @@ export function createChannelDeletion(store, StoreError) {
   function recover() {
     for (const { id } of db.prepare("SELECT id FROM channel_deletions WHERE state='pending' ORDER BY created_at,id").all()) finish(id);
   }
-  function databaseBusyReason() {
+  function databaseBusyReason(exceptOperationId = null) {
+    if (db.prepare("SELECT 1 FROM channel_deletions WHERE state='pending' AND id<>? LIMIT 1").get(exceptOperationId ?? ""))
+      return "Another channel deletion is pending. Finish or retry it before deleting more channels.";
     if (db.prepare("SELECT 1 FROM jobs WHERE state IN ('queued','running','cancelling') LIMIT 1").get())
       return "Production work is active. Let it finish or cancel it before deleting channels.";
     if (db.prepare("SELECT 1 FROM conversations WHERE state IN ('queued','running','interrupting') LIMIT 1").get() ||

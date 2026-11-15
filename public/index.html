@@ -9,7 +9,7 @@
   <body>
     <header>
       <div class="brand">
-        <span class="mark">S</span>
+        <button id="channelsToggle" class="mark" type="button" aria-label="Open Channels" aria-expanded="false" aria-controls="channelsDrawer">S</button>
         <div><strong>Storybench</strong><small>Local story studio</small></div>
       </div>
       <div id="channelName" class="pill channel-pill" aria-label="Current channel">…</div>
@@ -21,9 +21,19 @@
       </nav>
       <div id="saveState" class="pill" role="status">Ready</div>
     </header>
-    <main id="episodesPage">
-      <aside class="episode-rail">
-        <button id="episodeRailToggle" type="button" aria-controls="episodeRailContent" aria-expanded="true" aria-label="Collapse Productions">‹</button>
+    <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
+    <aside id="channelsDrawer" class="slide-drawer" role="dialog" aria-modal="true" aria-labelledby="channelsDrawerTitle" aria-hidden="true" inert>
+      <div class="drawer-heading"><button id="channelsBack" type="button">← Back</button><h2 id="channelsDrawerTitle">Channels</h2><button data-drawer-close type="button" aria-label="Close Channels">×</button></div>
+      <div id="channelBrowseActions" class="drawer-actions"><button id="newChannel" type="button" class="primary">＋ New channel</button><button id="selectChannels" type="button">Select</button></div>
+      <div id="channelSelectionActions" class="drawer-actions" hidden><span id="channelSelectionCount">0 selected</span><button id="renameChannel" type="button" disabled>Rename</button><button id="deleteChannels" type="button" class="danger" disabled>Delete</button><button id="doneChannels" type="button">Done</button></div>
+      <p id="channelActionError" class="error drawer-error" role="alert"></p>
+      <form id="channelNameForm" class="drawer-form" hidden><label><span id="channelNamePrompt">Channel name</span><input id="channelNameInput" maxlength="80" required></label><p id="channelNameError" class="error" role="alert"></p><div><button type="button" id="cancelChannelName">Cancel</button><button type="submit" class="primary">Save</button></div></form>
+      <div id="channelDeleteConfirm" class="drawer-form" hidden><h3>Delete channels permanently?</h3><p id="channelDeleteSummary"></p><div id="channelDeleteNames" class="channel-delete-names"></div><p>These channels and all their productions, media, drafts and final outputs will be permanently deleted. This cannot be undone.</p><p id="channelDeleteError" class="error" role="alert"></p><div><button id="cancelChannelDelete" type="button">Cancel</button><button id="confirmChannelDelete" type="button" class="danger">Delete</button></div></div>
+      <div id="channelDeletePending" class="drawer-form" hidden><p id="channelDeletePendingMessage" role="status"></p><button id="retryChannelDelete" type="button">Retry deletion</button></div>
+      <div id="channelCards" class="drawer-scroll"></div>
+    </aside>
+    <aside id="episodeRail" class="episode-rail slide-drawer" role="dialog" aria-modal="true" aria-labelledby="episodeRailTitle" aria-hidden="true" inert>
+        <div class="drawer-heading"><h2 id="episodeRailTitle">Productions</h2><button data-drawer-close type="button" aria-label="Close Productions">×</button></div>
         <div id="episodeRailContent">
         <div class="aside-head">
           <span>Productions</span><button id="newEpisode" class="icon" aria-label="Create a production" title="Create a production">＋</button>
@@ -37,11 +47,13 @@
           ><span>Media stays in your selected local folder.</span>
         </div>
         </div>
-      </aside>
+    </aside>
+    <main id="episodesPage">
       <section class="workspace">
+        <button id="episodeRailToggle" type="button" aria-label="Open Productions" aria-expanded="false" aria-controls="episodeRail">☰ Productions</button>
         <div id="empty" class="empty">
           <div class="empty-art">◫</div>
-          <h1>Shape your ideas into a story</h1>
+          <h1 tabindex="-1">Shape your ideas into a story</h1>
           <p>
             Create a video or deck, gather your media, and bring your story
             together.

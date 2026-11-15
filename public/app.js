@@ -1,6 +1,7 @@
 import { newSlide, deckBoardHTML, bindDeckBoard } from "/deck-workspace.js";
 import { installSelectControls } from "/select-control.js";
 import { installWorkspaceChrome } from "/workspace-chrome.js";
+import { installChannelDrawer } from "/channel-drawer.js";
 import { SettingsPages } from "/settings-pages.js";
 import { StoryEditor } from "/story-editor.js?v=round2-editor";
 import { LibraryWorkspace, episodeNavigatorHTML, uploadLibraryFile } from "/library-workspace.js";
@@ -11,7 +12,6 @@ import { formatBytes, jobsForOutputView, refreshJobStatus, releasePlayer, render
 import { cleanupRowsHTML, selectedTotal, toggleSelection } from "/draft-cleanup.js";
 
 installSelectControls();
-installWorkspaceChrome();
 
 const $ = (s) => document.querySelector(s);
 let state = { episodes: [], assets: [], jobs: [] },
@@ -26,7 +26,8 @@ let state = { episodes: [], assets: [], jobs: [] },
   boardItemsEpisode = null,
   cardImports = new Set(),
   collapsedCardIds = new Set(),
-  cardCollapseEpisode = null;
+  cardCollapseEpisode = null,
+  loadGeneration = 0;
 // The channel this view is showing. It is captured once (from ?channel= or the default at first load) and sent
 // with every request, so changing the installation default elsewhere never retargets this open view.
 let channelId = new URLSearchParams(location.search).get("channel") || null;
@@ -69,7 +70,9 @@ function showChannel(channel) {
   $("#channelName").title = channel ? `Channel ${channel.name} (${channel.id})` : "Create a channel to start";
 }
 async function load(select) {
+  const generation = ++loadGeneration, requestedId = channelId;
   const incoming = await api(stateUrl());
+  if (generation !== loadGeneration || requestedId !== channelId) return;
   showChannel(incoming.channel);
   if (dirty || saveInFlight) {
     state = { ...incoming, episodes: state.episodes };
@@ -85,6 +88,8 @@ async function load(select) {
   if (episode && !$("#boardPanel").hidden) await loadBoardContext();
 }
 function render() {
+  $('#newEpisode').disabled = !channelId;
+  $('#firstEpisode').textContent = channelId ? 'Create a production' : 'Create a channel';
   const filter = $("#episodeFilter").value;
   $("#episodes").innerHTML = episodeNavigatorHTML(state.episodes, filter, episode?.id);
   const episodeGroup = episode?.archivedAt ? "Archived" : episode?.state;
@@ -374,6 +379,7 @@ async function save(changes = {}) {
     return saveInFlight;
   }
   const target = episode.id,
+    targetChannel = channelId,
     revision = episode.revision,
     cards = structuredClone(episode.cards),
     referencePrompt = episode.referencePrompt ?? "",
@@ -397,6 +403,7 @@ async function save(changes = {}) {
           ...changes,
         }),
       });
+      if (channelId !== targetChannel) return updated;
       state.episodes = state.episodes.map((candidate) => candidate.id === target ? updated : candidate);
       if (episode?.id === target) {
         const localCards = episode.cards,
@@ -460,9 +467,9 @@ async function create() {
   if (!(await leaveStory())) return;
   await flushDraft();
   if (!channelId) {
-    const name = prompt("Name your first channel", "Main");
-    if (!name) return;
-    showChannel(await api("/api/channels", { method: "POST", body: JSON.stringify({ name }) }));
+    chrome.open('channels');
+    $('#newChannel').click();
+    return;
   }
   const e = await api("/api/episodes", {
     method: "POST",
@@ -777,7 +784,10 @@ setInterval(async () => {
     ) {
       await load(episode.id);
     } else await refreshJobs(episode.id);
-  } catch (error) { toast(error.message); }
+  } catch (error) {
+    if ([404, 410].includes(error.status)) await navigate(new URL('/episodes', location.href).href, null, { prepared: true, replace: true });
+    else toast(error.message);
+  }
 }, 1800);
 window.addEventListener("beforeunload", (event) => {
   if (storyEditor.isDirty() || dirty || saveInFlight || settingsPages.dirty || settingsPages.pending) event.preventDefault();
@@ -812,31 +822,86 @@ async function showPage(next) {
   await settingsPages.open(next);
   if (next === 'branding') await refreshBrandingTemplates();
 }
-async function navigate(target, popIndex = null) {
-  if (navigating) return;
+async function canLeaveContext() {
+  if (!(await settingsPages.canLeave()) || !(await leaveStory())) return false;
+  await flushDraft();
+  return true;
+}
+async function recordChannelOpen(id) {
+  if (id) await api(`/api/channels/${encodeURIComponent(id)}/open`, { method: 'POST', body: '{}' });
+}
+async function navigate(target, popIndex = null, { prepared = false, replace = false } = {}) {
+  if (navigating) return false;
   navigating = true;
   let accepted = false;
+  const oldChannel = channelId, oldEpisode = episode, oldState = state;
   try {
-    if (!(await settingsPages.canLeave()) || !(await leaveStory())) return;
-    await flushDraft();
-    if (popIndex == null) {
-      navigationIndex++;
-      history.pushState({ pageIndex: navigationIndex }, '', target);
-    } else navigationIndex = popIndex;
-    accepted = true; currentUrl = new URL(target);
-    const nextChannel = currentUrl.searchParams.get('channel') || channelId;
-    const nextEpisode = currentUrl.searchParams.get('episode');
+    if (!prepared && !(await canLeaveContext())) return false;
+    const nextUrl = new URL(target), nextChannel = nextUrl.searchParams.get('channel');
+    const nextEpisode = nextUrl.searchParams.get('episode');
     if (nextChannel !== channelId || nextEpisode !== (episode?.id || null)) {
       channelId = nextChannel; episode = null;
       await load(nextEpisode);
     }
+    if (nextChannel !== oldChannel) await recordChannelOpen(channelId);
+    if (channelId) nextUrl.searchParams.set('channel', channelId);
+    if (popIndex == null) {
+      if (replace) history.replaceState({ ...history.state, pageIndex: navigationIndex }, '', nextUrl);
+      else { navigationIndex++; history.pushState({ pageIndex: navigationIndex }, '', nextUrl); }
+    } else navigationIndex = popIndex;
+    accepted = true; currentUrl = new URL(location.href);
     await showPage(pageFor(currentUrl));
-  } catch (error) { toast(error.message); }
+    chrome.close({ focus: false });
+    if (nextChannel !== oldChannel) ($('#episodeTitle').offsetParent ? $('#episodeTitle') : $('#empty h1')).focus();
+    return true;
+  } catch (error) {
+    if ([404, 410].includes(error.status)) {
+      try {
+        channelId = null; episode = null; ++loadGeneration;
+        await load(null);
+        const fallback = new URL('/episodes', location.href);
+        if (channelId) fallback.searchParams.set('channel', channelId);
+        if (popIndex != null) navigationIndex = popIndex;
+        history.replaceState({ ...history.state, pageIndex: navigationIndex }, '', fallback);
+        currentUrl = fallback; accepted = true;
+        await showPage('episodes'); await recordChannelOpen(channelId);
+        chrome.close({ focus: false });
+        toast('That channel is unavailable. Showing an available channel.');
+        return true;
+      } catch { /* Restore the previous view below if fallback cannot load. */ }
+    }
+    channelId = oldChannel; episode = oldEpisode; state = oldState; ++loadGeneration; showChannel(oldState.channel); render();
+    toast(error.message);
+    return false;
+  }
   finally {
     if (!accepted && popIndex != null) { restoringHistory = true; history.go(navigationIndex - popIndex); }
     navigating = false;
   }
 }
+async function navigateChannel(id, { prepared = false, replace = false } = {}) {
+  if (id === channelId && !replace) {
+    await recordChannelOpen(id);
+    chrome.close({ focus: false });
+    ($('#episodeTitle').offsetParent ? $('#episodeTitle') : $('#empty h1')).focus();
+    return true;
+  }
+  const target = new URL('/episodes', location.href);
+  if (id) target.searchParams.set('channel', id);
+  return navigate(target.href, null, { prepared, replace });
+}
+const channelDrawer = installChannelDrawer({ api, currentChannel: () => channelId, canLeave: canLeaveContext,
+  navigateChannel,
+  afterDelete: async (result) => {
+    if (result.channelIds.includes(channelId)) await navigateChannel(result.fallbackChannelId, { prepared: true, replace: true });
+    else await load(episode?.id);
+  },
+  afterRename: (updated) => { if (updated.id === channelId) showChannel(updated); }, esc });
+const chrome = installWorkspaceChrome(document, {
+  onOpenChannels: () => { channelDrawer.reset(); channelDrawer.refresh().catch((error) => toast(error.message)); },
+  onCloseChannels: () => channelDrawer.reset(),
+  onEscape: () => channelDrawer.cancelTransient(),
+});
 document.querySelectorAll('[data-page]').forEach((link) => link.onclick = (event) => {
   if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
   event.preventDefault();
@@ -847,9 +912,17 @@ window.addEventListener('popstate', (event) => {
   if (restoringHistory) { restoringHistory = false; return; }
   navigate(location.href, event.state?.pageIndex ?? 0);
 });
-load(new URL(location.href).searchParams.get('episode')).then(async () => {
+load(new URL(location.href).searchParams.get('episode')).catch(async (error) => {
+  if (error.status !== 404 && error.status !== 410) throw error;
+  toast('This channel is unavailable. Showing an available channel.');
+  channelId = null; episode = null;
+  const next = new URL(location.href); next.searchParams.delete('channel'); next.searchParams.delete('episode');
+  history.replaceState(history.state, '', next);
+  await load(null);
+}).then(async () => {
   currentUrl = new URL(location.href);
   await showPage(page);
+  await recordChannelOpen(channelId);
 }).catch((error) => toast(error.message));
 
 $('#buildDeck').onclick = async () => {
