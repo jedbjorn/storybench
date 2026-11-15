@@ -233,6 +233,7 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
   }
 
   return { getRenderSnapshot, validateRender, enqueueRender, getJob, listJobs, cancelJob,
+    hasActiveWork: () => Boolean(worker.active || worker.pending.length || worker.draining),
     createGraphicRecipe, updateGraphicRecipe, enqueueGraphic, listGraphicRecipes: (episodeId) => store.listGraphicRecipes(episodeId),
     getGraphicRecipe: (episodeId, recipeId) => store.getGraphicRecipe(episodeId, recipeId), close: (reason) => worker.close(reason) };
 }

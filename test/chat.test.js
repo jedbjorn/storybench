@@ -61,6 +61,38 @@ test('chat persists deltas, resumes exact thread, and mutates through revisioned
   await chat.close(); store.close(); rmSync(root, { recursive: true, force: true });
 });
 
+test('failed worker teardown keeps the channel deletion gate active', async (t) => {
+  const root = workspace(), store = new Store(root), episode = store.createEpisode();
+  const factory = async (options) => ({
+    startThread: async () => 'thread',
+    startTurn: async () => {
+      queueMicrotask(() => options.onEvent({ method: 'turn/completed', params: { turn: { id: 'turn', status: 'completed' } } }));
+      return 'turn';
+    },
+    close: async () => ({ error: 'worker stop failed' }),
+  });
+  const chat = createChatService({ store, codexFactory: factory });
+  t.after(async () => { await chat.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
+  await chat.send(episode.id, 'Finish this turn');
+  await until(() => chat.workerStopFailure());
+  assert.equal(chat.workerStopFailure(), 'worker stop failed');
+  assert.equal(chat.hasActiveWorkers(), true);
+});
+
+test('pending channel cleanup blocks new cross-channel agent turns', async (t) => {
+  const root = workspace(), store = new Store(root);
+  const selected = store.getDefaultChannel(), survivor = store.createChannel('Survivor');
+  const episode = store.createEpisode({ title: 'Retained', channelId: survivor.id });
+  const chat = createChatService({ store, codexFactory: async () => { throw new Error('must not launch'); } });
+  t.after(async () => { await chat.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
+  const conversation = chat.create(episode.id);
+  store.afterChannelDeleteAccepted = () => { throw new Error('injected crash'); };
+  const preview = store.channelDeletion.preview([selected.id]);
+  assert.throws(() => store.channelDeletion.accept({ channelIds: [selected.id], token: preview.token,
+    operationId: 'delete_00000000-0000-4000-8000-000000000000' }), /injected crash/);
+  await assert.rejects(chat.send(episode.id, conversation.id, 'Read the other channel'), /Channel deletion is pending/);
+});
+
 test('interrupt targets exact turn and restart never replays an active prompt', async () => {
   const root = workspace(); const store = new Store(root); const episode = store.createEpisode();
   let options; let interrupted;

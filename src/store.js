@@ -12,12 +12,14 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { STARTER_STORY, storySectionHeadings } from "./story-markdown.js";
+import { createChannelDeletion } from "./services/channel-deletion.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix) => `${prefix}_${crypto.randomUUID()}`;
@@ -26,7 +28,7 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 16;
 export const DEFAULT_CHANNEL_NAME = "Main";
 // IDs become directory names, so they must be single safe path segments.
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
@@ -313,6 +315,7 @@ function graphicRecipeRow(row) {
 export class Store {
   constructor(workspace, {
     afterMigrationCommit, beforeStoryPublish, afterStoryRename, beforeGraphicMembership,
+    afterChannelDeleteAccepted, afterChannelDeleteFile,
     legacyWorkspace = true, firstChannelName = DEFAULT_CHANNEL_NAME, origin = null, startup = true,
   } = {}) {
     this.workspace = path.resolve(workspace);
@@ -321,6 +324,8 @@ export class Store {
     this.beforeStoryPublish = beforeStoryPublish;
     this.afterStoryRename = afterStoryRename;
     this.beforeGraphicMembership = beforeGraphicMembership;
+    this.afterChannelDeleteAccepted = afterChannelDeleteAccepted;
+    this.afterChannelDeleteFile = afterChannelDeleteFile;
     // A legacy single-workspace open keeps the prototype's root folders; an initialized data root only gets shared ones.
     const rootDirs = legacyWorkspace ? ["", "media", "cache", "exports", "imports", "branding/assets", "channels"] : ["", "cache", "imports", "channels"];
     mkdirSync(this.workspace, { recursive: true });
@@ -339,10 +344,13 @@ export class Store {
       this.db.exec("PRAGMA foreign_keys=ON");
       if (Number(this.db.prepare("PRAGMA foreign_keys").get().foreign_keys) !== 1)
         throw new StoreError("SQLite foreign-key enforcement could not be enabled", 500);
-      if (legacyWorkspace && !this.listChannels().length) this.createChannel(firstChannelName);
-      for (const channel of this.db.prepare("SELECT id FROM channels").all())
+      this.channelDeletion = createChannelDeletion(this, StoreError);
+      if (startup) this.channelDeletion.recover();
+      if (legacyWorkspace && !this.listChannels().length && !this.db.prepare("SELECT 1 FROM channel_deletions LIMIT 1").get())
+        this.createChannel(firstChannelName);
+      for (const channel of this.db.prepare("SELECT id FROM channels WHERE pending_delete_id IS NULL").all())
         this.ensureChannelDirectories(channel.id);
-      for (const episode of this.db.prepare("SELECT id FROM episodes").all())
+      for (const episode of this.db.prepare("SELECT e.id FROM episodes e JOIN channels c ON c.id=e.channel_id WHERE c.pending_delete_id IS NULL").all())
         this.ensureEpisodeDirectories(episode.id);
     } catch (error) {
       if (this.db.isOpen) this.db.close();
@@ -354,7 +362,7 @@ export class Store {
     this.reconcileProductionRuns();
     this.db
       .prepare(
-        "UPDATE jobs SET state='failed', error='Render interrupted by server restart', updated_at=? WHERE state IN ('queued','running','cancelling')",
+        "UPDATE jobs SET state='failed', error='Render interrupted by server restart', updated_at=? WHERE state IN ('queued','running','cancelling') AND episode_id IN (SELECT e.id FROM episodes e JOIN channels c ON c.id=e.channel_id WHERE c.pending_delete_id IS NULL)",
       )
       .run(now());
   }
@@ -400,6 +408,8 @@ export class Store {
     if (version < 12) this.migrateV12();
     if (version < 13) this.migrateV13();
     if (version < 14) this.migrateV14();
+    if (version < 15) this.migrateV15();
+    if (version < 16) this.migrateV16();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -418,6 +428,33 @@ export class Store {
       this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(14,?)").run(now());
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+  migrateV15() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (!this.columns("channels").has("opened_seq")) this.db.exec("ALTER TABLE channels ADD COLUMN opened_seq INTEGER");
+      if (!this.columns("channels").has("revision")) this.db.exec("ALTER TABLE channels ADD COLUMN revision INTEGER NOT NULL DEFAULT 1");
+      this.db.exec(`CREATE TABLE IF NOT EXISTS channel_open_clock(singleton INTEGER PRIMARY KEY CHECK(singleton=1), value INTEGER NOT NULL);
+        INSERT OR IGNORE INTO channel_open_clock(singleton,value) VALUES(1,0);
+        PRAGMA user_version=15;`);
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(15,?)").run(now());
+      this.db.exec("COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+  migrateV16() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (!this.columns("channels").has("pending_delete_id")) this.db.exec("ALTER TABLE channels ADD COLUMN pending_delete_id TEXT");
+      this.db.exec(`CREATE TABLE IF NOT EXISTS channel_deletions (
+        id TEXT PRIMARY KEY, channel_ids TEXT NOT NULL, token TEXT NOT NULL, manifest TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('pending','completed')), error TEXT,
+        fallback_channel_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+        CREATE INDEX IF NOT EXISTS channels_pending_delete ON channels(pending_delete_id);
+        PRAGMA user_version=16;`);
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(16,?)").run(now());
+      this.db.exec("COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
   requireProductionKind(episodeId, kind) {
     const production = this.getEpisode(episodeId);
@@ -1032,25 +1069,30 @@ export class Store {
       schemaVersion: Number(this.db.prepare("PRAGMA user_version").get().user_version) };
   }
   channelRow(row, defaultId = this.dataRootIdentity()?.defaultChannelId) {
-    return row && { id: row.id, name: row.name, isDefault: row.id === defaultId, createdAt: row.created_at, updatedAt: row.updated_at };
+    return row && { id: row.id, name: row.name, isDefault: row.id === defaultId, createdAt: row.created_at,
+      updatedAt: row.updated_at, openedSeq: row.opened_seq, revision: row.revision };
   }
   listChannels() {
     const defaultId = this.dataRootIdentity()?.defaultChannelId;
-    return this.db.prepare("SELECT * FROM channels ORDER BY created_at,id").all().map((row) => this.channelRow(row, defaultId));
+    return this.db.prepare("SELECT * FROM channels WHERE pending_delete_id IS NULL ORDER BY opened_seq IS NULL,opened_seq DESC,created_at DESC,id").all().map((row) => this.channelRow(row, defaultId));
   }
   getChannel(channelId) {
-    return this.channelRow(this.db.prepare("SELECT * FROM channels WHERE id=?").get(String(channelId ?? "")));
+    return this.channelRow(this.db.prepare("SELECT * FROM channels WHERE id=? AND pending_delete_id IS NULL").get(String(channelId ?? "")));
   }
   findChannel(nameOrId) {
     const value = String(nameOrId ?? "").trim();
     if (!value) return null;
     const byId = this.getChannel(value);
     if (byId) return byId;
-    return this.channelRow(this.db.prepare("SELECT * FROM channels WHERE name_key=?").get(channelNameKey(value.normalize("NFC").replace(/\s+/g, " "))));
+    return this.channelRow(this.db.prepare("SELECT * FROM channels WHERE name_key=? AND pending_delete_id IS NULL").get(channelNameKey(value.normalize("NFC").replace(/\s+/g, " "))));
   }
   requireChannel(channelId) {
     const channel = this.getChannel(channelId);
-    if (!channel) throw new StoreError(`Channel not found: ${channelId}`, 404);
+    if (!channel) {
+      if (this.db.prepare("SELECT 1 FROM channels WHERE id=? AND pending_delete_id IS NOT NULL").get(String(channelId ?? "")))
+        throw new StoreError("This channel is being deleted", 410);
+      throw new StoreError(`Channel not found: ${channelId}`, 404);
+    }
     return channel;
   }
   createChannel(name) {
@@ -1062,26 +1104,44 @@ export class Store {
     try {
       if (this.db.prepare("SELECT 1 FROM channels WHERE name_key=?").get(key))
         throw new StoreError(`A channel named "${displayName}" already exists`, 409);
+      this.ensureChannelDirectories(channelId);
       this.db.prepare("INSERT INTO channels(id,name,name_key,created_at,updated_at) VALUES(?,?,?,?,?)").run(channelId, displayName, key, stamp, stamp);
       // The first channel becomes the default navigation target.
       this.db.prepare("UPDATE data_root SET default_channel_id=?,updated_at=? WHERE singleton=1 AND default_channel_id IS NULL").run(channelId, stamp);
       this.db.exec("COMMIT");
-    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
-    this.ensureChannelDirectories(channelId);
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      rmSync(this.channelDirectory(channelId), { recursive: true, force: true });
+      throw error;
+    }
     return this.getChannel(channelId);
   }
-  renameChannel(channelId, name) {
-    this.requireChannel(channelId);
+  renameChannel(channelId, name, expectedRevision = null) {
+    const current = this.requireChannel(channelId);
+    if (expectedRevision !== null && expectedRevision !== current.revision)
+      throw new StoreError("Channel changed in another view. Reload before renaming.", 409, { current });
     const displayName = normalizeChannelName(name);
     const key = channelNameKey(displayName);
     this.db.exec("BEGIN IMMEDIATE");
     try {
       if (this.db.prepare("SELECT 1 FROM channels WHERE name_key=? AND id<>?").get(key, channelId))
         throw new StoreError(`A channel named "${displayName}" already exists`, 409);
-      this.db.prepare("UPDATE channels SET name=?,name_key=?,updated_at=? WHERE id=?").run(displayName, key, now(), channelId);
+      const changed = this.db.prepare("UPDATE channels SET name=?,name_key=?,updated_at=?,revision=revision+1 WHERE id=? AND revision=?")
+        .run(displayName, key, now(), channelId, current.revision);
+      if (!changed.changes) throw new StoreError("Channel changed in another view. Reload before renaming.", 409);
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
     return this.getChannel(channelId);
+  }
+  openChannel(channelId) {
+    this.requireChannel(channelId);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const seq = this.db.prepare("UPDATE channel_open_clock SET value=value+1 WHERE singleton=1 RETURNING value").get().value;
+      this.db.prepare("UPDATE channels SET opened_seq=? WHERE id=?").run(seq, channelId);
+      this.db.exec("COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+    return this.requireChannel(channelId);
   }
   getDefaultChannel() {
     const defaultId = this.dataRootIdentity()?.defaultChannelId;
@@ -1098,7 +1158,7 @@ export class Store {
   // installation has exactly one channel, so a mutable default never silently chooses a destination.
   resolveChannelId(channelId) {
     if (channelId != null && channelId !== "") return this.requireChannel(channelId).id;
-    const rows = this.db.prepare("SELECT id FROM channels ORDER BY created_at,id LIMIT 2").all();
+    const rows = this.db.prepare("SELECT id FROM channels WHERE pending_delete_id IS NULL ORDER BY created_at,id LIMIT 2").all();
     if (!rows.length) throw new StoreError("No channel exists yet; create a channel first", 409);
     if (rows.length > 1) throw new StoreError("channelId is required when several channels exist", 400);
     return rows[0].id;
@@ -1177,13 +1237,13 @@ export class Store {
   }
   listEpisodes({ channelId = null } = {}) {
     const rows = channelId
-      ? this.db.prepare("SELECT * FROM episodes WHERE channel_id=? ORDER BY updated_at DESC").all(channelId)
-      : this.db.prepare("SELECT * FROM episodes ORDER BY updated_at DESC").all();
+      ? this.db.prepare("SELECT e.* FROM episodes e JOIN channels c ON c.id=e.channel_id WHERE e.channel_id=? AND c.pending_delete_id IS NULL ORDER BY e.updated_at DESC").all(channelId)
+      : this.db.prepare("SELECT e.* FROM episodes e JOIN channels c ON c.id=e.channel_id WHERE c.pending_delete_id IS NULL ORDER BY e.updated_at DESC").all();
     return rows.map(episodeRow);
   }
   getEpisode(episodeId) {
     return episodeRow(
-      this.db.prepare("SELECT * FROM episodes WHERE id=?").get(episodeId),
+      this.db.prepare("SELECT e.* FROM episodes e JOIN channels c ON c.id=e.channel_id WHERE e.id=? AND c.pending_delete_id IS NULL").get(episodeId),
     );
   }
   createEpisode({ title = "Untitled episode", notes = "", channelId = null, kind = "video" } = {}) {
@@ -1569,8 +1629,8 @@ export class Store {
   }
   listBrandingTemplates({ channelId = null } = {}) {
     const rows = channelId
-      ? this.db.prepare("SELECT * FROM branding_templates WHERE channel_id=? ORDER BY created_at,id").all(channelId)
-      : this.db.prepare("SELECT * FROM branding_templates ORDER BY created_at,id").all();
+      ? this.db.prepare("SELECT b.* FROM branding_templates b JOIN channels c ON c.id=b.channel_id WHERE b.channel_id=? AND c.pending_delete_id IS NULL ORDER BY b.created_at,b.id").all(channelId)
+      : this.db.prepare("SELECT b.* FROM branding_templates b JOIN channels c ON c.id=b.channel_id WHERE c.pending_delete_id IS NULL ORDER BY b.created_at,b.id").all();
     return rows.map((row) => ({
       id: row.id, channelId: row.channel_id, name: row.name, role: row.role, sourceEpisodeId: row.source_episode_id,
       sourceCardId: row.source_card_id, card: parse(row.card_snapshot, {}), dependencies: parse(row.dependency_items, []),
@@ -1787,7 +1847,7 @@ export class Store {
   recoverPendingStories() {
     if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='stories'").get()) return [];
     const outcomes = [];
-    for (const row of this.db.prepare("SELECT episode_id FROM stories WHERE publication_pending=1").all()) {
+    for (const row of this.db.prepare("SELECT s.episode_id FROM stories s JOIN episodes e ON e.id=s.episode_id JOIN channels c ON c.id=e.channel_id WHERE s.publication_pending=1 AND c.pending_delete_id IS NULL").all()) {
       try {
         outcomes.push({ episodeId: row.episode_id, recovered: true, story: this.publishStory(row.episode_id) });
       } catch (error) {
@@ -1798,13 +1858,13 @@ export class Store {
   }
   listAssets({ channelId = null } = {}) {
     return (channelId
-      ? this.db.prepare("SELECT * FROM assets WHERE channel_id=? ORDER BY created_at DESC").all(channelId)
-      : this.db.prepare("SELECT * FROM assets ORDER BY created_at DESC").all()
+      ? this.db.prepare("SELECT a.* FROM assets a JOIN channels c ON c.id=a.channel_id WHERE a.channel_id=? AND c.pending_delete_id IS NULL ORDER BY a.created_at DESC").all(channelId)
+      : this.db.prepare("SELECT a.* FROM assets a JOIN channels c ON c.id=a.channel_id WHERE c.pending_delete_id IS NULL ORDER BY a.created_at DESC").all()
     ).map(assetRow);
   }
   getAsset(assetId) {
     return assetRow(
-      this.db.prepare("SELECT * FROM assets WHERE id=?").get(assetId),
+      this.db.prepare("SELECT a.* FROM assets a JOIN channels c ON c.id=a.channel_id WHERE a.id=? AND c.pending_delete_id IS NULL").get(assetId),
     );
   }
   // Content-hash deduplication is scoped to one channel: equal bytes in two channels are two assets.
@@ -1962,17 +2022,17 @@ export class Store {
   }
   // Jobs inherit channel ownership through their (immutable) episode relationship.
   listJobs(episodeId, { channelId = null } = {}) {
-    const select = "SELECT j.*,e.channel_id FROM jobs j LEFT JOIN episodes e ON e.id=j.episode_id";
+    const select = "SELECT j.*,e.channel_id FROM jobs j JOIN episodes e ON e.id=j.episode_id JOIN channels c ON c.id=e.channel_id";
     return (
       episodeId
-        ? this.db.prepare(`${select} WHERE j.episode_id=? ORDER BY j.created_at DESC`).all(episodeId)
+        ? this.db.prepare(`${select} WHERE j.episode_id=? AND c.pending_delete_id IS NULL ORDER BY j.created_at DESC`).all(episodeId)
         : channelId
-          ? this.db.prepare(`${select} WHERE e.channel_id=? ORDER BY j.created_at DESC`).all(channelId)
-          : this.db.prepare(`${select} ORDER BY j.created_at DESC`).all()
+          ? this.db.prepare(`${select} WHERE e.channel_id=? AND c.pending_delete_id IS NULL ORDER BY j.created_at DESC`).all(channelId)
+          : this.db.prepare(`${select} WHERE c.pending_delete_id IS NULL ORDER BY j.created_at DESC`).all()
     ).map(jobRow);
   }
   getJob(jobId) {
-    return jobRow(this.db.prepare("SELECT j.*,e.channel_id FROM jobs j LEFT JOIN episodes e ON e.id=j.episode_id WHERE j.id=?").get(jobId));
+    return jobRow(this.db.prepare("SELECT j.*,e.channel_id FROM jobs j JOIN episodes e ON e.id=j.episode_id JOIN channels c ON c.id=e.channel_id WHERE j.id=? AND c.pending_delete_id IS NULL").get(jobId));
   }
   designationHistory(outputId) {
     return this.db.prepare("SELECT * FROM output_designations WHERE job_id=? ORDER BY revision").all(outputId).map((row) => ({
@@ -2038,7 +2098,7 @@ export class Store {
   // gone is recorded as absent (no reclaimed bytes claimed); a file still present returns to 'present' for retry.
   reconcileOutputDeletions() {
     const outcomes = [];
-    for (const row of this.db.prepare("SELECT id,output_path FROM jobs WHERE deletion_state='deleting'").all()) {
+    for (const row of this.db.prepare("SELECT j.id,j.output_path FROM jobs j JOIN episodes e ON e.id=j.episode_id JOIN channels c ON c.id=e.channel_id WHERE j.deletion_state='deleting' AND c.pending_delete_id IS NULL").all()) {
       const file = row.output_path ? path.resolve(this.workspace, row.output_path) : null;
       const inside = file && file.startsWith(this.workspace + path.sep);
       if (inside && existsSync(file)) {
@@ -2388,9 +2448,10 @@ export class Store {
     this.db.prepare(`UPDATE production_runs SET state='interrupted',error=COALESCE(error,'Interrupted by an application restart'),finished_at=?,updated_at=?,
       final_ended_reason=CASE WHEN final_intent='active' THEN 'restart' ELSE final_ended_reason END,
       final_intent=CASE WHEN final_intent='active' THEN 'ended' ELSE final_intent END
-      WHERE state IN ('starting','running')`).run(stamp, stamp);
+      WHERE state IN ('starting','running') AND episode_id IN (SELECT e.id FROM episodes e JOIN channels c ON c.id=e.channel_id WHERE c.pending_delete_id IS NULL)`).run(stamp, stamp);
   }
   saveJob(job) {
+    if (!this.getEpisode(job.episodeId)) throw new StoreError("Production not found or unavailable", 404);
     const old = job.id && this.getJob(job.id);
     if (old?.state === "completed") throw new StoreError("Completed job records are immutable", 409);
     // A new job may be created for a live request only; its episode must match (the trigger enforces it too).

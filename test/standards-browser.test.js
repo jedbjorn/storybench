@@ -156,9 +156,11 @@ for (const browserType of [chromium, firefox]) test(`${browserType.name()}: Bran
   assert.equal(app.store.getEpisode(episode.id).cards[0].order, 1);
 
   const episodeState = `[data-id="${episode.id}"] [data-episode-state-select]`;
+  await page.locator('#episodeRailToggle').click();
   async function moveEpisode(nextState) {
     const previous = await page.locator(episodeState).elementHandle();
-    await page.selectOption(episodeState, nextState);
+    await page.locator(`[data-id="${episode.id}"] [role="combobox"]`).click();
+    await page.getByRole('option', { name: nextState, exact: true }).click();
     await new Promise((resolve, reject) => {
       const deadline = Date.now() + 5000;
       const check = () => {

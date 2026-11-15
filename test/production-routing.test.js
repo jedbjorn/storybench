@@ -198,6 +198,7 @@ test("typed Final declaration is gated by request identity, not by a phrase reco
   assert.deepEqual({ intent: store.getProductionRun(run.id).finalIntent, reason: store.getProductionRun(run.id).finalEndedReason }, { intent: "ended", reason: "failed" });
   assert.equal(store.getJob("job_final_partial").state, "completed", "useful partial assets survive terminal failure");
 
+  await until(() => !chat.busyReason(episode.id));
   await chat.send(episode.id, conversation.id, "This text is deliberately not classified by the server.");
   await until(() => calls.length === 2 && chat.get(episode.id, conversation.id).state === "running");
   const identityOnly = calls.at(-1), identityRun = store.getProductionRun(identityOnly.requestId);
@@ -215,6 +216,7 @@ test("a typed request that failed before declaration can bind Final intent in it
   originalCall.onEvent({ method: "turn/completed", params: { turn: { id: chat.get(episode.id, conversation.id).activeTurnId, status: "failed", error: "provider failed before tools" } } });
   await until(() => store.getProductionRun(original.id).state === "failed");
 
+  await until(() => !chat.busyReason(episode.id));
   const retried = await chat.retry(episode.id, conversation.id, original.id, { clientRequestId: crypto.randomUUID() });
   await until(() => calls.length === 2 && chat.get(episode.id, conversation.id).state === "running");
   const retryCall = calls[1], successor = store.getProductionRun(retried.requestResult.run.id);

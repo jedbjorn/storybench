@@ -54,6 +54,7 @@ test("the chat selector shows availability, per-model efforts, applies a change 
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${PORT}/?channel=${channel.id}`);
+  await page.click('#episodeRailToggle');
   await page.click(`#episodes [data-id="${episode.id}"] [data-episode-select]`);
   await page.waitForSelector("[data-chat-selection]");
   assert.equal((await page.textContent("[data-chat-selection]")).trim(), "Codex · default model");

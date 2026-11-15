@@ -210,7 +210,7 @@ test("restart refuses while any channel is busy unless forced, and verifies the 
   s.system.health.agents = 2;
   const refused = await s.run(["restart"]);
   assert.equal(refused.code, 1);
-  assert.match(refused.stderr, /busy: 1 render job\(s\) and 2 agent turn\(s\) are active across all channels[\s\S]*--force/);
+  assert.match(refused.stderr, /busy: 1 render job\(s\), 2 agent turn\(s\), and 0 channel deletion\(s\) are active[\s\S]*--force/);
   assert.equal(s.system.calls.filter(([name]) => name === "stop").length, 0, "nothing was stopped");
   const forced = await s.run(["restart", "--force"]);
   assert.equal(forced.code, 0, forced.stderr);
@@ -230,7 +230,7 @@ test("status reports state, URL, release, identities, process, containers and de
   status = await s.run(["status"]);
   for (const line of [/^Status: healthy$/m, /^Unit: storybench-test-life\.service \(loaded, active\/running\)$/m, /^Process: host PID 4242/m, /^Containers: app cccccccccccc$/m,
     new RegExp(`^URL: http://127\\.0\\.0\\.1:${s.port}/\\?channel=channel_default$`, "m"), new RegExp(`^Release expected: ${release.id}`, "m"), new RegExp(`^Release served: ${release.id}`, "m"),
-    /^Activity: 0 render job\(s\), 0 agent turn\(s\) across all channels$/m, new RegExp(`^Data root: configured ${s.config.dataRootId}, served ${s.config.dataRootId}$`, "m"), /^Default channel: Alpha \(channel_default\)$/m])
+    /^Activity: 0 render job\(s\), 0 agent turn\(s\), 0 channel deletion\(s\) across all channels$/m, new RegExp(`^Data root: configured ${s.config.dataRootId}, served ${s.config.dataRootId}$`, "m"), /^Default channel: Alpha \(channel_default\)$/m])
     assert.match(status.stdout, line);
   s.system.health.databaseId = "root_replaced";
   status = await s.run(["status"]);

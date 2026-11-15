@@ -2,16 +2,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { Readable } from "node:stream";
 import os from "node:os";
 import path from "node:path";
 import { Store, SCHEMA_VERSION } from "../src/store.js";
 import { createApp } from "../src/server.js";
+import { createHealth } from "../src/runtime/health.js";
+import { activeWork } from "../src/cli/service.js";
 import { createLibraryService } from "../src/library.js";
 import { adoptWorkspace, initDataRoot, inspectDataRoot, openDataRoot } from "../src/services/data-root.js";
-import { createChannel, getDefaultChannel, listChannels, renameChannel, useChannel } from "../src/services/channels.js";
+import { createChannel, getDefaultChannel, listChannels, openChannel, renameChannel, useChannel } from "../src/services/channels.js";
 
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 function tempDir(t, prefix = "storybench-channels-") {
@@ -52,12 +54,30 @@ test("channel records: first is default, names are unique case-insensitively, re
   assert.equal(useChannel(root, "travel").id, travel.id);
   const listed = listChannels(root);
   assert.equal(listed.defaultChannelId, travel.id);
-  assert.deepEqual(listed.channels.map((channel) => channel.name), ["Cooking", "Travel"]);
+  assert.deepEqual(listed.channels.map((channel) => channel.name), ["Travel", "Cooking"]);
   const renamed = renameChannel(root, cooking.id, "Kitchen");
   assert.equal(renamed.id, cooking.id);
+  assert.equal(renamed.revision, cooking.revision + 1);
   assert.ok(existsSync(path.join(root, "channels", cooking.id, "media")), "rename keeps the ID-named directory");
   assert.throws(() => useChannel(root, "Cooking"), (error) => error.statusCode === 404);
   assert.throws(() => renameChannel(root, travel.id, "kitchen"), (error) => error.statusCode === 409);
+});
+
+test("channel opens persist newest-first order without changing the installation default", (t) => {
+  const root = path.join(tempDir(t), "root");
+  initDataRoot(root);
+  const alpha = createChannel(root, "Alpha"), beta = createChannel(root, "Beta"), gamma = createChannel(root, "Gamma");
+  assert.deepEqual(listChannels(root).channels.map(({ id }) => id), [gamma.id, beta.id, alpha.id]);
+  openChannel(root, alpha.id);
+  openChannel(root, beta.id);
+  openChannel(root, alpha.id);
+  assert.deepEqual(listChannels(root).channels.map(({ id }) => id), [alpha.id, beta.id, gamma.id]);
+  assert.equal(getDefaultChannel(root).id, alpha.id);
+  assert.throws(() => renameChannel(root, alpha.id, "Stale", alpha.revision - 1), (error) => error.statusCode === 409);
+  const openedSeq = listChannels(root).channels[0].openedSeq;
+  const renamed = renameChannel(root, alpha.id, "New Alpha", alpha.revision);
+  assert.equal(renamed.openedSeq, openedSeq);
+  assert.equal(listChannels(root).channels[0].id, alpha.id);
 });
 
 test("two channels keep separate libraries for same-named, same-byte media and dedup only within a channel", async (t) => {
@@ -149,6 +169,14 @@ test("wrong-channel and mismatched IDs fail at shared operations and in the data
   assert.equal((await fetch(`${base}/api/state?channel=channel_missing`)).status, 404);
   const created = await fetch(`${base}/api/channels/${b.id}/episodes`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Via route" }) });
   assert.equal((await created.json()).channelId, b.id);
+  const opened = await fetch(`${base}/api/channels/${b.id}/open`, { method: "POST" });
+  assert.equal(opened.status, 200);
+  assert.equal((await opened.json()).openedSeq, 1);
+  const rename = (expectedRevision) => fetch(`${base}/api/channels/${b.id}`, { method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "Renamed Beta", expectedRevision }) });
+  assert.equal((await rename(b.revision - 1)).status, 409);
+  assert.equal((await rename(b.revision)).status, 200);
+  assert.equal((await rename(b.revision)).status, 409);
   const ambiguous = await fetch(`${base}/api/episodes`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   assert.equal(ambiguous.status, 400);
 });
@@ -280,6 +308,213 @@ test("legacy migration into the first channel is repeatable and preserves IDs, p
   assert.equal(store.listChannels().length, 1);
 });
 
+test("deleting an adopted channel removes its recorded legacy files and preserves another channel", (t) => {
+  const root = tempDir(t);
+  legacyWorkspace(root);
+  let store = new Store(root);
+  const originalRoot = store.dataRootIdentity().id;
+  const selected = store.getDefaultChannel(), survivor = store.createChannel("Survivor");
+  const survivorEpisode = store.createEpisode({ title: "Keep", channelId: survivor.id });
+  const preview = store.channelDeletion.preview([selected.id]);
+  assert.equal(preview.productionCount, 2);
+  const result = store.channelDeletion.accept({ channelIds: [selected.id], token: preview.token, operationId: `delete_${randomUUID()}` });
+  assert.equal(result.state, "completed", result.error);
+  assert.equal(store.getDefaultChannel().id, survivor.id);
+  assert.deepEqual(store.listEpisodes().map((episode) => episode.id), [survivorEpisode.id]);
+  assert.equal(store.dataRootIdentity().id, originalRoot);
+  assert.deepEqual(store.db.prepare("PRAGMA foreign_key_check").all(), []);
+  for (const relative of [`channels/${selected.id}`, "episodes/episode-a", "episodes/episode-b", `media/${sha("bytes-v")}`, `media/${sha("bytes-i")}`, "exports/old.mp4"])
+    assert.equal(existsSync(path.join(root, relative)), false, `${relative} removed`);
+  assert.equal(existsSync(path.join(root, "storybench.pre-v6.sqlite")), true, "metadata backup remains");
+  assert.equal(existsSync(store.episodeDirectory(survivorEpisode.id)), true);
+  store.close();
+  store = new Store(root);
+  t.after(() => store.close());
+  assert.deepEqual(store.listChannels().map((channel) => channel.id), [survivor.id]);
+  assert.equal(existsSync(path.join(root, "episodes", "episode-a")), false, "startup does not recreate deleted data");
+});
+
+test("bulk deletion rejects stale and busy batches, then resumes partial cleanup after restart", (t) => {
+  const root = tempDir(t);
+  let store = new Store(root, { legacyWorkspace: false });
+  const a = store.createChannel("A"), b = store.createChannel("B"), keep = store.createChannel("Keep");
+  store.createEpisode({ title: "A", channelId: a.id });
+  store.createEpisode({ title: "B", channelId: b.id });
+  const kept = store.createEpisode({ title: "Keep", channelId: keep.id });
+  writeFileSync(path.join(store.channelMediaDirectory(a.id), "a.txt"), "owned A");
+  writeFileSync(path.join(store.channelMediaDirectory(b.id), "b.txt"), "owned B");
+  const old = store.channelDeletion.preview([a.id, b.id]);
+  store.renameChannel(a.id, "Renamed A", a.revision);
+  const operationId = `delete_${randomUUID()}`;
+  assert.throws(() => store.channelDeletion.accept({ channelIds: [a.id, b.id], token: old.token, operationId }), /Review them again/);
+  assert.deepEqual(store.listChannels().length, 3);
+  const preview = store.channelDeletion.preview([a.id, b.id]);
+  assert.throws(() => store.channelDeletion.accept({ channelIds: [a.id, b.id], token: preview.token, operationId }, () => "Busy"), /Busy/);
+  assert.deepEqual(store.listChannels().length, 3);
+  let injected = false;
+  store.afterChannelDeleteFile = () => { if (!injected) { injected = true; throw new Error("injected file interruption"); } };
+  const pending = store.channelDeletion.accept({ channelIds: [a.id, b.id], token: preview.token, operationId });
+  assert.equal(pending.state, "pending");
+  assert.match(pending.error, /injected file interruption/);
+  assert.deepEqual(store.listChannels().map((channel) => channel.id), [keep.id]);
+  assert.deepEqual(store.listEpisodes().map((episode) => episode.id), [kept.id]);
+  store.close();
+  store = new Store(root, { legacyWorkspace: false });
+  t.after(() => store.close());
+  assert.equal(store.channelDeletion.status(operationId).state, "completed");
+  assert.deepEqual(store.listChannels().map((channel) => channel.id), [keep.id]);
+  assert.deepEqual(store.db.prepare("PRAGMA foreign_key_check").all(), []);
+  assert.equal(existsSync(path.join(root, "channels", a.id)), false);
+  assert.equal(existsSync(path.join(root, "channels", b.id)), false);
+  assert.equal(existsSync(store.episodeDirectory(kept.id)), true);
+});
+
+test("a crash immediately after durable acceptance resumes the same deletion on startup", (t) => {
+  const root = tempDir(t);
+  let store = new Store(root, { legacyWorkspace: false, afterChannelDeleteAccepted: () => { throw new Error("injected crash"); } });
+  const channel = store.createChannel("Crash fixture");
+  const episode = store.createEpisode({ title: "Delete after restart", channelId: channel.id });
+  const reviewed = store.channelDeletion.preview([channel.id]);
+  const operationId = `delete_${randomUUID()}`;
+  assert.throws(() => store.channelDeletion.accept({ channelIds: [channel.id], token: reviewed.token, operationId }), /injected crash/);
+  assert.equal(store.channelDeletion.status(operationId).state, "pending");
+  const health = createHealth({ store }).snapshot();
+  assert.equal(health.activity.deletions.pending, 1);
+  assert.equal(activeWork(health).busy, true, "lifecycle operations see a pending deletion");
+  assert.ok(!store.getEpisode(episode.id), "accepted channel is unavailable before file cleanup");
+  assert.equal(existsSync(path.join(root, "channels", channel.id)), true);
+  store.close();
+  store = new Store(root, { legacyWorkspace: false });
+  t.after(() => store.close());
+  assert.equal(store.channelDeletion.status(operationId).state, "completed");
+  assert.equal(existsSync(path.join(root, "channels", channel.id)), false);
+  assert.deepEqual(store.listChannels(), []);
+});
+
+test("channel deletion refuses shared retained paths and symbolic links before changing data", (t) => {
+  const { root, store, a, b } = twoChannelRoot(t);
+  const owned = `channels/${a.id}/media/shared.txt`;
+  writeFileSync(path.join(root, owned), "shared");
+  store.saveAsset({ channelId: b.id, name: "shared.txt", hash: "shared-hash", kind: "reference", path: owned, metadata: {} });
+  assert.throws(() => store.channelDeletion.preview([a.id]), /retained production still uses/);
+  assert.equal(store.listChannels().length, 2);
+  store.db.prepare("DELETE FROM assets WHERE channel_id=?").run(b.id);
+  symlinkSync(path.join(root, "storybench.sqlite"), path.join(root, "channels", a.id, "media", "unsafe"));
+  assert.throws(() => store.channelDeletion.preview([a.id]), /symbolic link/);
+  assert.equal(readFileSync(path.join(root, owned), "utf8"), "shared");
+  assert.equal(store.listChannels().length, 2);
+});
+
+test("deletion refuses selected media paths inside a surviving channel or adopted production", (t) => {
+  const { root, store, a, b } = twoChannelRoot(t);
+  const survivor = store.createEpisode({ title: "Survivor", channelId: b.id });
+  const story = path.join(store.episodeDirectory(survivor.id), "story.md");
+  writeFileSync(story, "keep survivor story");
+  store.saveAsset({ channelId: a.id, name: "misowned story", hash: "misowned-story", kind: "reference",
+    path: path.relative(root, story), metadata: {} });
+  assert.throws(() => store.channelDeletion.preview([a.id]), /retained channel or production owns/);
+  assert.equal(readFileSync(story, "utf8"), "keep survivor story");
+
+  const adoptedRoot = tempDir(t);
+  legacyWorkspace(adoptedRoot);
+  const adopted = new Store(adoptedRoot);
+  t.after(() => adopted.close());
+  const selected = adopted.createChannel("Selected");
+  const adoptedStory = path.join(adopted.episodeDirectory("episode-a"), "story.md");
+  writeFileSync(adoptedStory, "keep adopted story");
+  adopted.saveAsset({ channelId: selected.id, name: "misowned adopted story", hash: "misowned-adopted", kind: "reference",
+    path: path.relative(adoptedRoot, adoptedStory), metadata: {} });
+  assert.throws(() => adopted.channelDeletion.preview([selected.id]), /retained channel or production owns/);
+  assert.equal(readFileSync(adoptedStory, "utf8"), "keep adopted story");
+});
+
+test("offline opens leave pending deletion untouched; startup waits for active work", (t) => {
+  const root = path.join(tempDir(t), "data");
+  initDataRoot(root);
+  let store = openDataRoot(root);
+  const selected = store.createChannel("Selected"), survivor = store.createChannel("Survivor");
+  store.createEpisode({ title: "Selected work", channelId: selected.id });
+  const kept = store.createEpisode({ title: "Active work", channelId: survivor.id });
+  store.afterChannelDeleteAccepted = () => { throw new Error("injected crash"); };
+  const preview = store.channelDeletion.preview([selected.id]), operationId = `delete_${randomUUID()}`;
+  assert.throws(() => store.channelDeletion.accept({ channelIds: [selected.id], token: preview.token, operationId }), /injected crash/);
+  store.db.prepare("INSERT INTO conversations(id,episode_id,name,state,created_at,updated_at) VALUES(?,?,?,'running',?,?)")
+    .run(`conversation_${randomUUID()}`, kept.id, "Live", new Date().toISOString(), new Date().toISOString());
+  store.close();
+  assert.equal(initDataRoot(root).created, false);
+  store = openDataRoot(root, { startup: true });
+  t.after(() => store.close());
+  assert.equal(store.channelDeletion.status(operationId).state, "pending");
+  assert.equal(existsSync(path.join(root, "channels", selected.id)), true);
+  store.db.prepare("UPDATE conversations SET state='idle' WHERE episode_id=?").run(kept.id);
+  store.channelDeletion.recover();
+  assert.equal(store.channelDeletion.status(operationId).state, "completed");
+});
+
+test("pending channels reject branding role writes through the shared store", (t) => {
+  const { store, a } = twoChannelRoot(t);
+  let episode = store.createEpisode({ title: "Brand source", channelId: a.id });
+  episode = store.updateEpisode(episode.id, episode.revision, { cards: [{ id: "intro", title: "Intro", type: "Video", prompt: "" }] });
+  const template = store.promoteCard(episode.id, "intro", { name: "Opening" });
+  store.afterChannelDeleteAccepted = () => { throw new Error("injected crash"); };
+  const preview = store.channelDeletion.preview([a.id]);
+  assert.throws(() => store.channelDeletion.accept({ channelIds: [a.id], token: preview.token, operationId: `delete_${randomUUID()}` }), /injected crash/);
+  assert.throws(() => store.setBrandingRole(template.id, "outro"), (error) => error.statusCode === 404);
+  assert.equal(store.db.prepare("SELECT role FROM branding_templates WHERE id=?").get(template.id).role, null);
+});
+
+test("deleting the last prototype channel stays empty after restart", (t) => {
+  const root = tempDir(t);
+  let store = new Store(root);
+  const only = store.getDefaultChannel();
+  const reviewed = store.channelDeletion.preview([only.id]);
+  assert.equal(store.channelDeletion.accept({ channelIds: [only.id], token: reviewed.token, operationId: `delete_${randomUUID()}` }).state, "completed");
+  store.close();
+  store = new Store(root);
+  t.after(() => store.close());
+  assert.deepEqual(store.listChannels(), []);
+  assert.equal(store.getDefaultChannel(), null);
+  assert.equal(store.createChannel("Fresh").isDefault, true);
+});
+
+test("deletion API refuses active work and removes conversation and job history after it ends", async (t) => {
+  const root = path.join(tempDir(t), "root");
+  const app = await createApp({ workspace: root });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => app.close());
+  const store = app.store, channel = store.getDefaultChannel();
+  const episode = store.createEpisode({ title: "History", channelId: channel.id });
+  const conversation = app.chat.create(episode.id);
+  store.addConversationMessage({ conversationId: conversation.id, role: "user", text: "Remember this", state: "completed" });
+  const run = store.createProductionRun({ conversationId: conversation.id, harness: "codex" }).run;
+  store.updateProductionRun(run.id, { state: "completed" });
+  const job = store.saveJob({ episodeId: episode.id, kind: "render", state: "queued", revision: episode.revision });
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const post = async (url, body) => {
+    const response = await fetch(base + url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    return { status: response.status, body: await response.json() };
+  };
+  const preview = (await post("/api/channel-deletions/preview", { channelIds: [channel.id] })).body;
+  const operationId = `delete_${randomUUID()}`;
+  const request = { channelIds: [channel.id], token: preview.token, operationId };
+  assert.equal((await post("/api/channel-deletions", request)).status, 409);
+  assert.equal(store.listChannels().length, 1);
+  store.saveJob({ ...job, state: "failed", error: "stopped" });
+  request.token = (await post("/api/channel-deletions/preview", { channelIds: [channel.id] })).body.token;
+  const workerCheck = app.chat.hasActiveWorkers;
+  app.chat.hasActiveWorkers = () => true;
+  assert.equal((await post("/api/channel-deletions", request)).status, 409, "worker teardown blocks deletion even after database work ends");
+  app.chat.hasActiveWorkers = workerCheck;
+  const deleted = await post("/api/channel-deletions", request);
+  assert.equal(deleted.status, 200, deleted.body.error);
+  assert.equal(deleted.body.state, "completed");
+  assert.equal((await post("/api/channel-deletions", request)).body.state, "completed", "lost response retry is idempotent");
+  for (const table of ["channels", "episodes", "jobs", "conversations", "conversation_messages", "conversation_events", "production_runs"])
+    assert.equal(store.db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n, 0, `${table} purged`);
+  assert.deepEqual(store.db.prepare("PRAGMA foreign_key_check").all(), []);
+  assert.equal((await fetch(`${base}/api/episodes/${episode.id}`)).status, 404, "stale unscoped write target is unavailable");
+});
+
 test("init and adopt are explicit, refuse conflicting state and never duplicate", (t) => {
   const base = tempDir(t);
   assert.throws(() => initDataRoot("relative/root"), /absolute/);
@@ -397,6 +632,36 @@ test("cross-channel reuse registers in the destination with provenance and keeps
   await assert.rejects(library.reuseItem({ source: { episodeId: destination.id, itemId: sourceItem.id }, destination: { episodeId: second.id } }), (error) => error.statusCode === 404);
   assert.equal(JSON.stringify([store.getLibraryItem(source.id, sourceItem.id), store.getAsset(sourceItem.assetId), store.getLibraryItem(source.id, reference.id)]), sourceSnapshot);
   assert.equal(sha(readFileSync(path.join(root, sourceItem.asset.path))), sourceHash);
+});
+
+test("deleting a source channel preserves a reused destination copy and its provenance", async (t) => {
+  const { root, store, a, b, library } = twoChannelRoot(t);
+  const source = store.createEpisode({ title: "Source", channelId: a.id });
+  const destination = store.createEpisode({ title: "Destination", channelId: b.id });
+  const item = await library.registerText({ episodeId: source.id, title: "Notes", text: "retained destination text" });
+  const reused = await library.reuseItem({ source: { episodeId: source.id, itemId: item.id }, destination: { episodeId: destination.id } });
+  const destinationPath = path.join(root, reused.item.asset.path);
+  const sourcePath = path.join(root, item.asset.path);
+  const reviewed = store.channelDeletion.preview([a.id]);
+  const deleted = store.channelDeletion.accept({ channelIds: [a.id], token: reviewed.token, operationId: `delete_${randomUUID()}` });
+  assert.equal(deleted.state, "completed", deleted.error);
+  assert.equal(existsSync(sourcePath), false);
+  assert.equal(readFileSync(destinationPath, "utf8"), "retained destination text");
+  const retained = store.getLibraryItem(destination.id, reused.item.id);
+  assert.equal(retained.provenance.reusedFrom.channelId, a.id);
+  assert.deepEqual(store.db.prepare("PRAGMA foreign_key_check").all(), []);
+});
+
+test("deletion refuses a retained legacy membership that still points at selected media", async (t) => {
+  const { store, a, b, library } = twoChannelRoot(t);
+  const source = store.createEpisode({ title: "Source", channelId: a.id });
+  const retained = store.createEpisode({ title: "Retained", channelId: b.id });
+  const item = await library.registerText({ episodeId: source.id, title: "Old notes", text: "keep" });
+  store.db.prepare("INSERT INTO episode_library(episode_id,asset_id,category,created_at) VALUES(?,?,?,?)")
+    .run(retained.id, item.assetId, "Reference", new Date().toISOString());
+  assert.throws(() => store.channelDeletion.preview([a.id]), (error) => error.statusCode === 409 && /retained production/.test(error.message));
+  assert.ok(store.getChannel(a.id));
+  assert.ok(store.getEpisode(retained.id));
 });
 
 test("--workspace refuses an initialized or adopted data root instead of silently adding a channel", async (t) => {

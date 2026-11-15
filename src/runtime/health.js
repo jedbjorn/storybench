@@ -53,6 +53,9 @@ export function createHealth({ store, getState = () => "ready", release = releas
           agents: {
             active: count(db, "SELECT COUNT(*) n FROM conversations WHERE state IN ('queued','running','interrupting')"),
           },
+          deletions: {
+            pending: count(db, "SELECT COUNT(*) n FROM channel_deletions WHERE state='pending'"),
+          },
         },
         checkedAt: new Date().toISOString(),
       };

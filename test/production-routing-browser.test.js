@@ -37,6 +37,7 @@ test("card, graphic, Draft and Final shortcuts ask the selected assistant and ne
   const renderRequests = [];
   page.on("request", (request) => { if (/\/api\/episodes\/[^/]+\/(?:render|graphics\/[^/]+\/render)$/.test(new URL(request.url()).pathname)) renderRequests.push(request.url()); });
   await page.goto(`http://127.0.0.1:${port}/?channel=${channel.id}`);
+  await page.click('#episodeRailToggle');
   await page.click(`#episodes [data-id="${episode.id}"] [data-episode-select]`);
   await page.waitForSelector("[data-chat-draft]");
   const waitMessages = (count) => page.waitForFunction((expected) => document.querySelectorAll(".chat-user").length === expected, count);

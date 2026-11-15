@@ -25,12 +25,16 @@ export function useChannel(target, nameOrId) {
 }
 
 // Display names change; channel IDs and directories do not.
-export function renameChannel(target, nameOrId, name) {
+export function renameChannel(target, nameOrId, name, expectedRevision = null) {
   return run(target, (store) => {
     const channel = store.findChannel(nameOrId);
     if (!channel) return store.requireChannel(nameOrId);
-    return store.renameChannel(channel.id, name);
+    return store.renameChannel(channel.id, name, expectedRevision);
   });
+}
+
+export function openChannel(target, channelId) {
+  return run(target, (store) => store.openChannel(channelId));
 }
 
 export function createChannelEpisode(target, channelId, { title, notes } = {}) {

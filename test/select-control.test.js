@@ -38,11 +38,21 @@ test('editable model combobox filters suggestions and preserves exact unlisted I
   assert.equal(input.value, 'exact-custom-model'); assert.equal(input.hasAttribute('list'), false);
 });
 
-test('Productions collapse preference survives reload and exposes a labelled reopen control', () => {
-  const dom = new JSDOM('<main id="episodesPage"><button id="episodeRailToggle"></button></main>', { url: 'http://localhost' });
-  installWorkspaceChrome(dom.window.document);
-  const toggle = dom.window.document.querySelector('button'); toggle.click();
-  assert.equal(dom.window.localStorage.getItem('storybench.episodesCollapsed'), 'true');
-  assert.equal(toggle.getAttribute('aria-label'), 'Expand Productions');
-  assert.equal(toggle.getAttribute('aria-expanded'), 'false'); dom.window.close();
+test('left drawers are mutually exclusive and do not restore the old rail preference', () => {
+  const dom = new JSDOM('<button id="channelsToggle"></button><button id="episodeRailToggle"></button><div id="drawerBackdrop"></div><aside id="channelsDrawer"><button id="channelsBack"></button><button data-drawer-close></button></aside><aside id="episodeRail"><button data-drawer-close></button></aside><main id="episodesPage"></main>', { url: 'http://localhost' });
+  const doc = dom.window.document;
+  dom.window.localStorage.setItem('storybench.episodesCollapsed', 'false');
+  installWorkspaceChrome(doc);
+  assert.equal(doc.querySelector('#episodeRailToggle').getAttribute('aria-expanded'), 'false');
+  doc.querySelector('#episodeRailToggle').click();
+  assert.equal(doc.querySelector('#episodeRail').getAttribute('aria-hidden'), 'false');
+  doc.querySelector('#channelsToggle').click();
+  assert.equal(doc.querySelector('#episodeRail').getAttribute('aria-hidden'), 'true');
+  assert.equal(doc.querySelector('#channelsDrawer').getAttribute('aria-hidden'), 'false');
+  doc.querySelector('#channelsBack').click();
+  assert.equal(doc.querySelector('#episodeRail').getAttribute('aria-hidden'), 'false');
+  doc.querySelector('#drawerBackdrop').click();
+  assert.equal(doc.querySelector('#episodeRail').getAttribute('aria-hidden'), 'true');
+  assert.equal(dom.window.localStorage.getItem('storybench.episodesCollapsed'), 'false');
+  dom.window.close();
 });
