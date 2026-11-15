@@ -78,7 +78,8 @@ export async function smokeBrowser() {
         const shot=await inspect({});const image=shot.content.find(c=>c.type==='image');assert.equal(image.mimeType,'image/png');
         const png=Buffer.from(image.data,'base64');assert.equal(png.subarray(0,8).toString('hex'),'89504e470d0a1a0a');assert.ok(png.length>5000);
         await writeFile(path.join(root,'screenshot.png'),png);
-        runChecked('python3',['-c','from PIL import Image; import sys; i=Image.open(sys.argv[1]); i.load(); assert i.size == (1280,720)',path.join(root,'screenshot.png')]);
+        assert.equal(png.readUInt32BE(16),1280);assert.equal(png.readUInt32BE(20),720);
+        runChecked('ffmpeg',['-v','error','-i',path.join(root,'screenshot.png'),'-f','null','-']);
         assert.ok(!shot.data.screenshots[0].state.text.includes('Private presenter notes'));
         await act({action:'click',selector:'#presenter-open'});
         await act({action:'wait',milliseconds:150});
