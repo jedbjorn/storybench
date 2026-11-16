@@ -1,3 +1,5 @@
+import { previewMetadata } from './preview.js';
+import { projectContentType, downloadDisposition } from './project-files.js';
 import { createDeckService } from './deck-service.js';
 import { controlRequest } from './runtime/channel.js';
 import { FONTS, fontPath, fontCatalog } from './fonts.js';
@@ -34,6 +36,11 @@ const mime = {
   ".jpeg": "image/jpeg",
   ".mp4": "video/mp4",
   ".webm": "video/webm",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".mov": "video/quicktime",
+  ".m4v": "video/x-m4v",
+  ".xhtml": "application/xhtml+xml",
   ".wav": "audio/wav",
   ".mp3": "audio/mpeg",
 };
@@ -104,7 +111,7 @@ function contained(base, relative) {
     throw new StoreError("Invalid registered file path", 403);
   return value;
 }
-async function streamFile(req, res, file, contentType) {
+async function streamFile(req, res, file, contentType, status = 200) {
   const info = await stat(file);
   if (!info.isFile()) throw new StoreError("File not found", 404);
   const range = req.headers.range;
@@ -123,7 +130,7 @@ async function streamFile(req, res, file, contentType) {
     stream.pipe(res);
   };
   if (!range) {
-    res.writeHead(200, { ...headers, "content-length": info.size });
+    res.writeHead(status, { ...headers, "content-length": info.size });
     if (req.method === "HEAD") return res.end();
     return pipe();
   }
@@ -174,7 +181,13 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
   let closePromise;
   let activeMutations = 0;
   let activeFileReads = 0;
-  const streamProjectFile = async (req, res, file, type) => {
+  const streamProjectFile = async (req, res, file, asset = {}, label) => {
+    const type = projectContentType(asset, file);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    if (!res.hasHeader('Content-Disposition')) res.setHeader('Content-Disposition',
+      downloadDisposition(new URL(req.url, 'http://localhost').searchParams.get('download') === '1', label || asset.name, asset.name || file));
+    if (/^(image\/svg\+xml|text\/html|application\/xhtml\+xml)$/.test(type) && !res.hasHeader('Content-Security-Policy'))
+      res.setHeader('Content-Security-Policy', 'sandbox');
     activeFileReads++;
     let released = false;
     const release = () => { if (!released) { released = true; activeFileReads--; } };
@@ -208,6 +221,18 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
       // default is only a fallback for navigation entry; it never retargets an explicitly scoped request.
       const requestedChannel = url.searchParams.get("channel") || String(req.headers["x-storybench-channel"] || "") || null;
       const viewChannel = () => requestedChannel ? store.requireChannel(requestedChannel) : store.getDefaultChannel();
+      if (['GET', 'HEAD'].includes(req.method) && (parts[0] === 'preview' || (parts[0] === 'api' && parts[1] === 'preview'))) {
+        const page = parts[0] === 'preview';
+        let status = 200;
+        try {
+          const metadata = await previewMetadata(store, workspace, parts.slice(page ? 1 : 2), requestedChannel);
+          if (!page) return send(res, 200, metadata);
+        } catch (error) {
+          if (!page || ![404, 410].includes(error.statusCode)) throw error;
+          status = error.statusCode;
+        }
+        return await streamFile(req, res, path.join(publicDir, 'preview.html'), undefined, status);
+      }
       if (req.method === "GET" && url.pathname === "/api/health") return send(res, closing ? 503 : 200, health.snapshot());
       if (parts[0] === 'api' && parts[1] === 'providers') {
         if (!runtimeControl) throw new StoreError('Providers need the Storybench host runtime', 409);
@@ -469,7 +494,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
             const actual = await realpath(contained(workspace, item.asset.path));
             const workspaceReal = await realpath(workspace);
             contained(workspaceReal, path.relative(workspaceReal, actual));
-            return await streamProjectFile(req, res, actual, item.asset.metadata?.contentType);
+            return await streamProjectFile(req, res, actual, item.asset, item.label);
           }
           if (parts[4] && parts[5] === "thumbnail" && parts.length === 6 && ["GET", "HEAD"].includes(req.method)) {
             const item = store.getLibraryItem(episodeId, parts[4]);
@@ -618,20 +643,18 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         ["file", "thumbnail"].includes(parts[3])
       ) {
         const asset = store.getAsset(parts[2]);
-        if (!asset) throw new StoreError("Asset not found", 404);
+        if (!asset || (requestedChannel && asset.channelId !== requestedChannel)) throw new StoreError("Asset not found", 404);
         const rel = parts[3] === "file" ? asset.path : asset.thumbnailPath;
         if (!rel) throw new StoreError("Thumbnail unavailable", 404);
         const file = contained(workspace, rel);
         const actual = await realpath(file);
         const workspaceReal = await realpath(workspace);
         contained(workspaceReal, path.relative(workspaceReal, actual));
-        const sourceType =
-          asset.metadata?.contentType || mime[path.extname(asset.metadata?.originPath || "").toLowerCase()];
         return await streamProjectFile(
           req,
           res,
           actual,
-          parts[3] === "file" ? sourceType : undefined,
+          parts[3] === "file" ? asset : undefined,
         );
       }
       if (parts[0] === 'api' && parts[1] === 'jobs' && parts[2] && parts[3] === 'deck' && ['GET','HEAD'].includes(req.method)) {
@@ -650,7 +673,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         // Sandboxed previews have an opaque origin; bundled fonts need anonymous CORS.
         if (path.extname(name) === '.ttf') res.setHeader('Access-Control-Allow-Origin', '*');
         if (name === 'bundle.zip') res.setHeader('Content-Disposition','attachment; filename="deck-bundle.zip"');
-        return await streamProjectFile(req,res,file);
+        return await streamProjectFile(req,res,file, { metadata: { contentType: mime[path.extname(file)] } });
       }
       if (
         parts[0] === "api" &&
@@ -659,6 +682,8 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         parts[3] === "file"
       ) {
         const job = store.getJob(parts[2]);
+        if (job && requestedChannel && store.getEpisode(job.episodeId)?.channelId !== requestedChannel)
+          throw new StoreError("Completed artifact not found", 404);
         if (job && job.deletionState !== "present")
           throw new StoreError(job.deletionState === "deleted" ? "This output was deleted" : "This output is being deleted", 410);
         if (!job || job.state !== "completed" || !job.outputPath)
