@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Storybench Preview</title>
+  <link rel="stylesheet" href="/preview.css">
+  <script type="module" src="/preview.js"></script>
+</head>
+<body>
+  <header>
+    <div class="identity"><small id="production">Storybench Preview</small><h1 id="label">Loading preview…</h1><p id="details"></p></div>
+    <nav aria-label="Preview actions"><button id="actual-size" type="button" aria-pressed="false" hidden>Actual size</button><a id="download" hidden>Download</a></nav>
+  </header>
+  <p id="newer" role="status" hidden>Newer version available — <a id="latest">View latest</a></p>
+  <main id="viewer" aria-label="Media preview"></main>
+  <p id="message" role="status"></p>
+</body>
+</html>

@@ -1,3 +1,4 @@
+import { libraryOpenUrl, withChannel } from "./preview-links.js";
 const categories = ["Reference", "B-roll", "Narration", "Graphics"];
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
 
@@ -117,12 +118,15 @@ export class LibraryWorkspace {
   }
   card(item) {
     const base = `/api/episodes/${encodeURIComponent(item.episodeId)}/library/${encodeURIComponent(item.id)}`;
+    const channelId = item.asset.channelId || this.getEpisode()?.channelId;
+    const file = withChannel(`${base}/file`, channelId);
+    const open = libraryOpenUrl(item, channelId);
     let preview = '<div class="library-file-icon">◇</div>';
     if (item.asset.kind === "image") preview = `<img src="${base}/file" alt="">`;
     else if (item.asset.kind === "video") preview = `<video src="${base}/file" preload="metadata" muted></video>`;
     else if (item.asset.kind === "audio") preview = `<audio src="${base}/file" controls preload="metadata"></audio>`;
     const extraction = item.category === "Reference" ? `<span class="extraction ${item.extractionStatus}">${esc(item.extractionStatus)}</span>` : "";
-    return `<article class="asset library-item" draggable="true" data-library-item="${item.id}">${preview}<div><b>${esc(item.label)}</b><span>${esc(item.asset.kind)} ${extraction}</span><div class="library-card-actions"><a href="${base}/file" target="_blank">Open</a><div><button data-library-edit="${item.id}">Edit</button><button data-library-delete="${item.id}" aria-label="Delete ${esc(item.label)} from library">Delete</button></div></div></div></article>`;
+    return `<article class="asset library-item" draggable="true" data-library-item="${item.id}">${preview}<div><b>${esc(item.label)}</b><span>${esc(item.asset.kind)} ${extraction}</span><div class="library-card-actions"><a href="${esc(open)}" target="${open.startsWith('/preview/') ? 'storybench-preview' : '_blank'}">Open</a> <a href="${esc(file)}${file.includes('?') ? '&amp;' : '?'}download=1">Download</a><div><button data-library-edit="${item.id}">Edit</button><button data-library-delete="${item.id}" aria-label="Delete ${esc(item.label)} from library">Delete</button></div></div></div></article>`;
   }
   queueFiles(files) {
     if (!files.length) return;

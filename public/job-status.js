@@ -1,3 +1,4 @@
+import { previewUrl, withChannel } from "./preview-links.js";
 export async function refreshJobStatus(api, getCurrentState, url = "/api/state") {
   const incoming = await api(url);
   return { ...getCurrentState(), jobs: incoming.jobs };
@@ -70,8 +71,11 @@ function updateJobRow(element, job) {
     if (completedOutput && designationOf(job) === "draft")
       actions.append(button("Delete", { deleteOutput: job.id, revision: String(job.recordRevision ?? 1) }));
     if (job.state === "completed" && !isDeleted(job)) {
-      const link = element.ownerDocument.createElement("a"); link.href = source; link.target = "_blank";
+      const link = element.ownerDocument.createElement("a"); link.href = previewUrl('output', job.id, job.channelId); link.target = "storybench-preview";
       const open = element.ownerDocument.createElement("button"); open.textContent = "Open"; link.append(open); actions.append(link);
+      const download = element.ownerDocument.createElement("a");
+      download.href = withChannel(`${source}?download=1`, job.channelId); download.textContent = "Download";
+      actions.append(download);
     }
     actions.dataset.actionKey = actionKey;
   }

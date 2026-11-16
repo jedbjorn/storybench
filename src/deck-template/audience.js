@@ -154,7 +154,7 @@
   });
   document.addEventListener('keydown', (event) => {
     if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])')) return;
-    const name = { ArrowUp: 'previous', ArrowDown: 'next', ArrowLeft: 'sub-previous', ArrowRight: 'sub-next', Home: 'first', End: 'last' }[event.key];
+    const name = { ArrowUp: 'previous', ArrowDown: 'next', ArrowLeft: steps().length ? 'sub-previous' : 'previous', ArrowRight: steps().length ? 'sub-next' : 'next', Home: 'first', End: 'last' }[event.key];
     if (name) { event.preventDefault(); command(name); }
     else if (event.key.toLowerCase() === 'n') { event.preventDefault(); openPresenter(); }
   });

@@ -33,7 +33,7 @@ function pinnedItem(item) {
   };
 }
 
-export function createRenderService({ workspace, store, renderGraphic, validateGraphicRecipe, renderCompositionImpl = renderComposition }) {
+export function createRenderService({ workspace, store, renderGraphic, validateGraphicRecipe, renderCompositionImpl = renderComposition, onChange = () => {} }) {
   const root = path.resolve(workspace);
   const worker = new HeavyJobQueue();
 
@@ -102,6 +102,8 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
         if (job.outputClass === "final" && completedPath) await rm(completedPath, { force: true }).catch(() => {});
         const latest = store.getJob(job.id);
         if (latest && latest.state !== "completed") store.saveJob({ ...latest, state: cancelled ? "cancelled" : "failed", error: cancelled ? signal.reason?.message || "Job cancelled" : error.message, outputPath: null });
+      } finally {
+        onChange(job.episodeId);
       }
     }, (reason) => store.saveJob({ ...job, state: "cancelled", error: reason, outputPath: null }),
     (error) => store.saveJob({ ...job, state: "failed", error: error.message || String(error), outputPath: null }));
