@@ -706,7 +706,8 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         const actual = await realpath(contained(workspace, job.outputPath));
         contained(workspaceReal, path.relative(workspaceReal, actual));
         const asset = job.snapshot?.assetId ? store.getAsset(job.snapshot.assetId) : undefined;
-        return await streamProjectFile(req, res, actual, asset);
+        const label = job.outputClass === 'graphic' ? asset?.name : `${job.outputClass === 'final' ? 'Final' : 'Draft'} — ${job.createdAt}`;
+        return await streamProjectFile(req, res, actual, asset, label);
       }
       if (!["GET", "HEAD"].includes(req.method))
         throw new StoreError("Route not found", 404);

@@ -57,7 +57,8 @@ test('project files resolve media types, download safe names and sandbox active 
   assert.match(response.headers.get('content-disposition'), /^inline;/);
   assert.equal(await response.text(), '2345');
   const download = await fetch(`${route}&download=1`, { method: 'HEAD' });
-  assert.match(download.headers.get('content-disposition'), /^attachment; filename="draft.mp4"/);
+  assert.match(download.headers.get('content-disposition'), /^attachment;/);
+  assert.match(download.headers.get('content-disposition'), /filename\*=UTF-8''Draft%20%E2%80%94%20.*\.mp4$/);
   assert.equal((await fetch(`${base}/api/jobs/preview_draft/file?channel=${other.id}`)).status, 404);
   const invalidRange = await fetch(route, { headers: { range: 'bytes=100-200' } });
   assert.equal(invalidRange.status, 416);
