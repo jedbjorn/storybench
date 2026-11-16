@@ -13,16 +13,26 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: paste, drop an
   t.after(() => browser.close());
   const workspace = await mkdtemp(path.join(tmpdir(), 'sb-preview-chat-'));
   const received = [];
+  let stage = 'setup', lastEpisode;
   const codexFactory = async options => ({
-    async startThread() { return 'preview-thread'; }, async resumeThread(id) { return id; }, close() {},
+    async startThread() { return `preview-thread-${crypto.randomUUID()}`; }, async resumeThread(id) { return id; }, close() {},
     async startTurn(_id, prompt, images) {
       received.push({ prompt, images });
-      queueMicrotask(() => options.onEvent({ method: 'turn/completed', params: { turn: { id: 'preview-turn', status: 'completed' } } }));
-      return 'preview-turn';
+      const id = `preview-turn-${received.length}`;
+      queueMicrotask(() => options.onEvent({ method: 'turn/completed', params: { turn: { id, status: 'completed' } } }));
+      return id;
     },
   });
   const app = await createApp({ workspace, chatOptions: { codexFactory } });
-  t.after(async () => { await app.close(); await rm(workspace, { recursive: true, force: true }); });
+  t.after(async () => {
+    if (lastEpisode) t.diagnostic(JSON.stringify({ stage, received: received.length,
+      conversations: app.chat.list(lastEpisode.id).map(chat => {
+        const value = app.chat.get(lastEpisode.id, chat.id);
+        return { state: value.state, error: value.error, draftAttachments: value.draftAttachments?.map(item => item.itemId),
+          messages: value.messages.map(message => ({ state: message.state, text: message.text, attachments: message.attachments?.map(item => item.itemId) })) };
+      }) }));
+    await app.close(); await rm(workspace, { recursive: true, force: true });
+  });
   const port = await listenInRange(app.server);
   const base = `http://127.0.0.1:${port}`;
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
@@ -32,11 +42,14 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: paste, drop an
   let preview;
   for (const kind of ['video', 'deck']) {
     const episode = app.store.createEpisode({ title: `${kind} image loop`, kind });
+    lastEpisode = episode;
     await page.goto(`${base}/?channel=${episode.channelId}&episode=${episode.id}`);
     await page.locator('[data-chat-messages]').filter({ hasText: `this ${kind === 'deck' ? 'deck' : 'episode'}` }).waitFor();
     let sent = 0;
     for (const method of ['paste', 'drop', 'paperclip']) {
       const name = `${kind}-${method}.png`;
+      stage = name;
+      await page.locator('[data-chat-attachments] .chat-attachment').waitFor({ state: 'detached' });
       if (method === 'paperclip') {
         const chooser = page.waitForEvent('filechooser');
         await page.click('[data-chat-attach]');
@@ -48,16 +61,29 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: paste, drop an
           const event = method === 'paste'
             ? new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true })
             : new DragEvent('drop', { dataTransfer: transfer, bubbles: true, cancelable: true });
+          // Firefox drops synthetic ClipboardEvent data; match the existing workspace-chrome fixture.
+          if (method === 'paste' && !event.clipboardData?.items.length) Object.defineProperty(event, 'clipboardData', { value: transfer });
           document.querySelector(method === 'paste' ? '[data-chat-draft]' : '.chat-composer').dispatchEvent(event);
         }, { method, name, bytes: [...previewPNG] });
       }
       await page.locator('[data-chat-attachments] .chat-attachment img').waitFor();
       await page.waitForFunction(() => document.querySelector('[data-chat-attachments] img')?.naturalWidth > 0);
       const attachmentId = await page.locator('[data-chat-remove-image]').getAttribute('data-chat-remove-image');
+      const response = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/messages'));
       const request = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/messages'));
       await page.fill('[data-chat-draft]', `Inspect ${name}`);
       await page.click('[data-chat-send]');
       assert.deepEqual((await request).postDataJSON().attachmentIds, [attachmentId]);
+      const posted = await response;
+      assert.equal(posted.status(), 202, await posted.text());
+      const conversation = await posted.json();
+      await page.waitForFunction(async ({ episodeId, id }) => {
+        const chat = await (await fetch(`/api/episodes/${episodeId}/chats/${id}`)).json();
+        return ['idle', 'error', 'interrupted'].includes(chat.state);
+      }, { episodeId: episode.id, id: conversation.id });
+      const settled = app.chat.get(episode.id, conversation.id);
+      assert.equal(settled.state, 'idle', settled.error);
+      await page.locator('[data-chat-attachments] .chat-attachment').waitFor({ state: 'detached' });
       const link = page.locator('.chat-image-link').nth(sent++);
       await link.waitFor();
       assert.equal(await link.getAttribute('target'), 'storybench-preview');
