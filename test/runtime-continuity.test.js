@@ -266,7 +266,10 @@ test("Claude stream-json is normalized into the chat's turn/text/tool/completion
   await resumedStart;
   assert.deepEqual(launches[1], { harness: "claude", model: "opus", resume: threadId });
   await resumed.interrupt();
-  assert.match(child.stdin.read()?.toString() ?? "", /"subtype":"interrupt"/);
+  // Drain every buffered write: newer Node returns one chunk per read(), so a single read sees only the prompt.
+  const written = [];
+  for (let chunk; (chunk = child.stdin.read()) !== null;) written.push(chunk);
+  assert.match(Buffer.concat(written).toString(), /"subtype":"interrupt"/);
   write({ type: "result", subtype: "error_during_execution", is_error: true, result: "interrupted" });
   await delay(10);
   assert.equal(events.at(-1).params.turn.status, "interrupted");
