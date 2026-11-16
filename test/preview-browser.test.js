@@ -132,6 +132,8 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: workspace Open
   await workspacePage.locator('#deckJobs a').filter({ hasText: 'Open preview' }).last().click();
   await page.waitForURL(`${base}/preview/deck/${build.id}${scope}`);
   assert.equal(context.pages().length, 2);
+  await page.locator('#newer').waitFor({ state: 'visible' });
+  await page.frameLocator('#viewer iframe').locator('article.slide:not([hidden])').waitFor();
   if (process.env.STORYBENCH_EVIDENCE_DIR) {
     await mkdir(process.env.STORYBENCH_EVIDENCE_DIR, { recursive: true });
     await page.screenshot({ path: path.join(process.env.STORYBENCH_EVIDENCE_DIR, `preview-deck-${engine.name()}.png`) });
@@ -146,4 +148,17 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: workspace Open
   assert.equal((await page.goto(`${base}/preview/output/preview_draft${scope}`)).status(), 404);
   await page.locator('#message').filter({ hasText: 'no longer available' }).waitFor();
   assert.deepEqual(downloads, []);
+
+  const deletedFile = path.join(app.store.episodeOutputDirectory(last.episode.id, 'drafts'), 'deleted.mp4');
+  await writeFile(deletedFile, await readFile(path.join(folder, 'video.mp4')));
+  const deleted = app.store.saveJob({ id: 'preview_deleted', episodeId: last.episode.id, kind: 'draft', outputClass: 'draft',
+    state: 'completed', progress: 1, revision: 1, outputPath: path.relative(workspace, deletedFile), snapshot: {}, createdAt: new Date().toISOString() });
+  const deletion = await fetch(`${base}/api/episodes/${last.episode.id}/outputs/delete${scope}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ outputs: [{ id: deleted.id, expectedRevision: deleted.recordRevision }] }),
+  });
+  assert.equal(deletion.status, 200, await deletion.text());
+  assert.equal((await page.goto(`${base}/preview/output/${deleted.id}${scope}`)).status(), 410);
+  await page.locator('#message').filter({ hasText: 'no longer available' }).waitFor();
+  assert.equal(await page.locator('#viewer video').count(), 0);
 });
