@@ -106,7 +106,11 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: workspace Open
     { id: 'two', title: 'Second slide', body: 'Second', layout: 'statement' },
   ]);
   const build = app.decks.enqueue({ episodeId: deck.id, expectedRevision: 2 });
-  await page.waitForFunction(async ({ base, id, channel }) => (await (await fetch(`${base}/api/state?channel=${channel}`)).json()).jobs.some(job => job.id === id && job.state === 'completed'), { base, id: build.id, channel: deck.channelId });
+  for (let attempt = 0; attempt < 400; attempt++) {
+    if (!['queued', 'running'].includes(app.store.getJob(build.id).state)) break;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  assert.equal(app.store.getJob(build.id).state, 'completed', app.store.getJob(build.id).error || 'Deck build did not finish');
   await workspacePage.goto(`${base}/?channel=${deck.channelId}&episode=${deck.id}`);
   assert.equal(await workspacePage.locator('#deckPreview').count(), 0);
   await workspacePage.locator('#deckJobs a').filter({ hasText: 'Open preview' }).click();

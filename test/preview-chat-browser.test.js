@@ -77,12 +77,12 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: paste, drop an
       const posted = await response;
       assert.equal(posted.status(), 202, await posted.text());
       const conversation = await posted.json();
-      await page.waitForFunction(async ({ episodeId, id }) => {
-        const chat = await (await fetch(`/api/episodes/${episodeId}/chats/${id}`)).json();
-        return ['idle', 'error', 'interrupted'].includes(chat.state);
-      }, { episodeId: episode.id, id: conversation.id });
+      for (let attempt = 0; attempt < 400; attempt++) {
+        if (['idle', 'error', 'interrupted'].includes(app.chat.get(episode.id, conversation.id).state)) break;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
       const settled = app.chat.get(episode.id, conversation.id);
-      assert.equal(settled.state, 'idle', settled.error);
+      assert.equal(settled.state, 'idle', settled.error || `Chat did not settle at ${stage}`);
       await page.locator('[data-chat-attachments] .chat-attachment').waitFor({ state: 'detached' });
       const link = page.locator('.chat-image-link').nth(sent++);
       await link.waitFor();
