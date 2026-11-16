@@ -3,8 +3,10 @@ import { formatBytes } from './job-status.js';
 const $ = selector => document.querySelector(selector);
 const metadataUrl = `/api${location.pathname}${location.search}`;
 let current;
+let events;
 
 function unavailable(message = 'This item is no longer available.') {
+  events?.close();
   $('#viewer').replaceChildren();
   $('#download').hidden = true;
   $('#actual-size').hidden = true;
@@ -13,6 +15,32 @@ function unavailable(message = 'This item is no longer available.') {
   $('#details').textContent = '';
   $('#message').textContent = message;
   document.title = 'Storybench Preview — Unavailable';
+}
+
+function newer(metadata) {
+  $('#newer').hidden = !metadata.latestUrl;
+  if (metadata.latestUrl) $('#latest').href = metadata.latestUrl;
+}
+
+function watchChanges() {
+  events = new EventSource(`/api/episodes/${encodeURIComponent(current.episodeId)}/events?channel=${encodeURIComponent(current.channelId)}`);
+  let refreshing = false, changed = false;
+  events.onmessage = async () => {
+    changed = true;
+    if (refreshing) return;
+    refreshing = true;
+    try {
+      do {
+        changed = false;
+        const response = await fetch(metadataUrl);
+        if ([404, 410].includes(response.status)) return unavailable();
+        if (response.ok) newer(await response.json());
+      } while (changed);
+    } catch {
+      // Keep the pinned media on a transient disconnect; the next change/reconnect retries.
+    } finally { refreshing = false; }
+  };
+  window.addEventListener('pagehide', () => events.close(), { once: true });
 }
 
 function details() {
@@ -52,6 +80,8 @@ async function open() {
   $('#viewer').className = current.kind;
   $('#viewer').replaceChildren(media);
   details();
+  newer(current);
+  watchChanges();
 }
 
 $('#actual-size').onclick = () => {

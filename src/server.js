@@ -165,7 +165,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
   const notify = (episodeId) => listeners.get(episodeId)?.forEach((fn) => fn());
   const library = createLibraryService({ workspace, store });
   const decks = createDeckService({store,onChange:notify});
-  const renders = createRenderService({ workspace, store, renderGraphic, validateGraphicRecipe, ...renderOptions });
+  const renders = createRenderService({ workspace, store, renderGraphic, validateGraphicRecipe, ...renderOptions, onChange: notify });
   // In the Docker app container the host lifecycle entry point provides a private control
   // socket; Codex turns then run in request-scoped workers instead of in-process.
   const runtimeControl = process.env.STORYBENCH_RUNTIME_CONTROL;
@@ -362,6 +362,20 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         // Every episode-scoped route validates the caller's channel together with the episode ID.
         if (!store.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
         if (requestedChannel) store.assertEpisodeChannel(episodeId, requestedChannel);
+        if (parts[3] === 'events' && parts.length === 4 && req.method === 'GET') {
+          res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+          eventStreams.add(res);
+          const emit = () => res.write(`data: ${JSON.stringify({ episodeId })}\n\n`);
+          const subscribers = listeners.get(episodeId) || new Set();
+          subscribers.add(emit); listeners.set(episodeId, subscribers);
+          emit();
+          const keep = setInterval(() => res.write(': keepalive\n\n'), 20000);
+          req.on('close', () => {
+            clearInterval(keep); eventStreams.delete(res); subscribers.delete(emit);
+            if (!subscribers.size) listeners.delete(episodeId);
+          });
+          return;
+        }
         if (parts.length === 3 && req.method === "GET") {
           const value = store.getEpisode(episodeId);
           if (!value) throw new StoreError("Episode not found", 404);
@@ -691,7 +705,8 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         const workspaceReal = await realpath(workspace);
         const actual = await realpath(contained(workspace, job.outputPath));
         contained(workspaceReal, path.relative(workspaceReal, actual));
-        return await streamProjectFile(req, res, actual);
+        const asset = job.snapshot?.assetId ? store.getAsset(job.snapshot.assetId) : undefined;
+        return await streamProjectFile(req, res, actual, asset);
       }
       if (!["GET", "HEAD"].includes(req.method))
         throw new StoreError("Route not found", 404);

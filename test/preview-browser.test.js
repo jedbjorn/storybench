@@ -8,7 +8,7 @@ import { createApp } from '../src/server.js';
 import { listenInRange } from '../test-support/loopback-port.js';
 import { previewFixtures } from '../test-support/preview-fixtures.js';
 
-for (const engine of [chromium, firefox]) test(`${engine.name()}: Preview routes render media, sandbox SVG and handle unavailable artifacts`, { timeout: 90_000 }, async t => {
+for (const engine of [chromium, firefox]) test(`${engine.name()}: workspace Open reuses Preview, reports new versions and isolates active content`, { timeout: 90_000 }, async t => {
   // Required seats: launch failure is a test failure, never a skip.
   const browser = await engine.launch(engine === chromium ? { channel: 'chromium' } : {});
   t.after(() => browser.close());
@@ -20,9 +20,10 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: Preview routes
   const folder = path.join(workspace, 'fixtures');
   const cases = previewFixtures(folder);
   const context = await browser.newContext();
-  const page = await context.newPage();
   const downloads = [];
-  page.on('download', download => downloads.push(download.url()));
+  context.on('page', opened => opened.on('download', download => downloads.push(download.url())));
+  const workspacePage = await context.newPage();
+  let page;
   let last;
   for (const [name, type] of cases) {
     const channel = app.store.createChannel(`${name} ${type || 'empty type'}`);
@@ -33,7 +34,14 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: Preview routes
     assert.equal(upload.status, 201, await upload.clone().text());
     const item = await upload.json();
     const url = `${base}/preview/library/${episode.id}/${item.id}?channel=${channel.id}`;
-    assert.equal((await page.goto(url)).status(), 200);
+    await workspacePage.goto(`${base}/?channel=${channel.id}&episode=${episode.id}#media`);
+    const open = workspacePage.locator(`[data-library-item="${item.id}"] a`).filter({ hasText: /^Open$/ });
+    assert.equal(await open.getAttribute('target'), 'storybench-preview');
+    assert.equal(await open.getAttribute('rel'), null);
+    if (!page) [page] = await Promise.all([context.waitForEvent('page'), open.click()]);
+    else await open.click();
+    await page.waitForURL(url);
+    assert.equal(context.pages().length, 2, 'Every Open reuses one Preview tab');
     await page.waitForFunction(() => document.title.startsWith('Storybench Preview — '));
     assert.equal(await page.locator('#production').textContent(), episode.title);
     assert.equal(await page.locator('#download').isVisible(), true);
@@ -60,19 +68,37 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: Preview routes
   const asset = app.store.saveAsset({ channelId: last.episode.channelId, name: 'scripted.svg', hash: 'scripted-svg', kind: 'image', path: 'scripted.svg', metadata: { contentType: 'image/svg+xml' } });
   const item = app.store.attachLibraryItem(last.episode.id, asset.id, { category: 'Reference', label: 'Scripted SVG' });
   const scope = `?channel=${last.episode.channelId}`;
-  await page.goto(`${base}/api/episodes/${last.episode.id}/library/${item.id}/file${scope}`);
-  assert.equal(await page.locator('svg').getAttribute('data-script-ran'), null);
+  const raw = await context.newPage();
+  await raw.goto(`${base}/api/episodes/${last.episode.id}/library/${item.id}/file${scope}`);
+  assert.equal(await raw.locator('svg').getAttribute('data-script-ran'), null);
+  await raw.close();
   await page.goto(`${base}/preview/library/${last.episode.id}/${item.id}${scope}`);
   await page.waitForFunction(() => document.querySelector('#viewer img')?.naturalWidth === 80);
   assert.equal(await page.evaluate(() => localStorage.getItem('svg-ran')), null);
 
   const file = path.join(workspace, 'draft.mp4');
   await writeFile(file, await readFile(path.join(folder, 'video.mp4')));
+  const story = app.store.saveStory(last.episode.id, 1, '# Sections\n\n## Main');
+  app.store.updateEpisode(last.episode.id, app.store.getEpisode(last.episode.id).revision, { cards: [
+    { id: 'visual', title: 'Visual', type: 'Video', sectionId: story.sections[0].id, itemId: last.item.id, in: 0, out: 1 },
+  ] });
   for (const kind of ['draft', 'final']) {
     const job = app.store.saveJob({ id: `preview_${kind}`, episodeId: last.episode.id, kind, outputClass: kind,
       state: 'completed', progress: 1, revision: 1, outputPath: 'draft.mp4', snapshot: {}, createdAt: new Date().toISOString() });
-    await page.goto(`${base}/preview/output/${job.id}${scope}`);
+    await workspacePage.goto(`${base}/?channel=${last.episode.channelId}&episode=${last.episode.id}#${kind === 'draft' ? 'drafts' : 'final'}`);
+    await workspacePage.locator(`[data-job-id="${job.id}"] a`).filter({ hasText: /^Open$/ }).click();
+    const pinned = `${base}/preview/output/${job.id}${scope}`;
+    await page.waitForURL(pinned);
     await page.waitForFunction(() => document.querySelector('#viewer video')?.duration > 0);
+    const snapshot = app.renders.getRenderSnapshot(last.episode.id);
+    const next = app.renders.enqueueRender({ episodeId: last.episode.id, outputClass: 'draft', expectedRenderRevision: snapshot.renderRevision });
+    await page.locator('#newer').waitFor({ state: 'visible' });
+    assert.equal(page.url(), pinned, 'A new output does not replace the pinned preview');
+    assert.equal(app.store.getJob(next.id).state, 'completed');
+    await page.click('#latest');
+    await page.waitForURL(`${base}/preview/output/${next.id}${scope}`);
+    assert.equal(context.pages().length, 2);
+
   }
   const deck = app.store.createEpisode({ title: 'Preview deck', kind: 'deck', channelId: last.episode.channelId });
   app.store.saveDeck(deck.id, 1, [
@@ -81,13 +107,31 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: Preview routes
   ]);
   const build = app.decks.enqueue({ episodeId: deck.id, expectedRevision: 2 });
   await page.waitForFunction(async ({ base, id, channel }) => (await (await fetch(`${base}/api/state?channel=${channel}`)).json()).jobs.some(job => job.id === id && job.state === 'completed'), { base, id: build.id, channel: deck.channelId });
-  await page.goto(`${base}/preview/deck/${build.id}${scope}`);
+  await workspacePage.goto(`${base}/?channel=${deck.channelId}&episode=${deck.id}`);
+  assert.equal(await workspacePage.locator('#deckPreview').count(), 0);
+  await workspacePage.locator('#deckJobs a').filter({ hasText: 'Open preview' }).click();
+  await page.waitForURL(`${base}/preview/deck/${build.id}${scope}`);
   const frame = page.frameLocator('#viewer iframe');
   await frame.locator('body').waitFor();
   assert.equal(await page.locator('iframe').getAttribute('sandbox'), 'allow-scripts');
   await frame.locator('body').click();
   await page.keyboard.press('ArrowRight');
   await frame.locator('article.slide').filter({ hasText: 'Second slide' }).waitFor({ state: 'visible' });
+  const pinned = page.url();
+  const secondBuild = await (await fetch(`${base}/api/episodes/${deck.id}/deck-build${scope}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ expectedRevision: 2 }),
+  })).json();
+  await page.locator('#newer').waitFor({ state: 'visible' });
+  assert.equal(page.url(), pinned);
+  assert.equal(app.store.getJob(secondBuild.id).state, 'completed');
+  await page.click('#latest');
+  await page.waitForURL(`${base}/preview/deck/${secondBuild.id}${scope}`);
+  await page.frameLocator('#viewer iframe').locator('article.slide:not([hidden])').waitFor();
+  assert.equal(context.pages().length, 2);
+  // Reopening from the workspace still addresses the same named browser tab.
+  await workspacePage.locator('#deckJobs a').filter({ hasText: 'Open preview' }).last().click();
+  await page.waitForURL(`${base}/preview/deck/${build.id}${scope}`);
+  assert.equal(context.pages().length, 2);
   if (process.env.STORYBENCH_EVIDENCE_DIR) {
     await mkdir(process.env.STORYBENCH_EVIDENCE_DIR, { recursive: true });
     await page.screenshot({ path: path.join(process.env.STORYBENCH_EVIDENCE_DIR, `preview-deck-${engine.name()}.png`) });

@@ -1,3 +1,4 @@
+import { previewUrl, withChannel } from "/preview-links.js";
 import { newSlide, deckBoardHTML, bindDeckBoard } from "/deck-workspace.js";
 import { installSelectControls } from "/select-control.js";
 import { installWorkspaceChrome } from "/workspace-chrome.js";
@@ -114,7 +115,7 @@ function render() {
     document.querySelectorAll('.tabs > button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'board'));
   }
   $("#boardPanel h2").textContent = deck ? "Slides" : "Story cards";
-  $("#boardPanel .panel-heading p").textContent = deck ? "Compose slides, notes and reveals. Build a portable deck, preview it here and download the ZIP." : "Each card becomes one scene in the finished video.";
+  $("#boardPanel .panel-heading p").textContent = deck ? "Compose slides, notes and reveals. Build a portable deck, open it in Preview and download the ZIP." : "Each card becomes one scene in the finished video.";
   $('[data-tab="board"]').textContent = deck ? "Slides" : "Storyboard";
   $("#episodeTitle").setAttribute('aria-label', deck ? 'Deck title' : 'Episode title');
   $("#mediaPanel h2").textContent = deck ? 'Deck library' : 'Episode library';
@@ -132,7 +133,7 @@ function render() {
 function renderJobs() {
   if (!episode) return;
   if (episode.kind === "deck") {
-    $('#deckJobs').innerHTML = state.jobs.filter(job => job.episodeId === episode.id && job.kind === 'deck').map(job => `<article><strong>${esc(job.state)}</strong> · revision ${esc(job.revision)} · ${Math.round(job.progress * 100)}% ${job.error ? `<p role="alert">${esc(job.error)}</p>` : ''}${job.state === 'completed' ? `<button data-deck-preview="${esc(job.id)}">Open preview</button> <a href="/api/jobs/${encodeURIComponent(job.id)}/deck/bundle.zip" download>Download bundle (ZIP)</a>` : ['queued','running'].includes(job.state) ? `<button data-deck-cancel="${esc(job.id)}">Cancel build</button>` : ''}</article>`).join('');
+    $('#deckJobs').innerHTML = state.jobs.filter(job => job.episodeId === episode.id && job.kind === 'deck').map(job => `<article><strong>${esc(job.state)}</strong> · revision ${esc(job.revision)} · ${Math.round(job.progress * 100)}% ${job.error ? `<p role="alert">${esc(job.error)}</p>` : ''}${job.state === 'completed' ? `<a href="${esc(previewUrl('deck', job.id, channelId))}" target="storybench-preview">Open preview</a> <a href="${esc(withChannel(`/api/jobs/${encodeURIComponent(job.id)}/deck/bundle.zip`, channelId))}" download>Download bundle (ZIP)</a>` : ['queued','running'].includes(job.state) ? `<button data-deck-cancel="${esc(job.id)}">Cancel build</button>` : ''}</article>`).join('');
     $("#draftJobs").innerHTML = ""; $("#finalJobs").innerHTML = ""; return;
   }
   const episodeJobs = state.jobs.filter((job) => job.episodeId === episode.id);
@@ -980,7 +981,6 @@ $('#buildDeck').onclick = async () => {
   } catch (error) { $('#deckBuildError').textContent = error.message; }
 };
 $('#deckJobs').onclick = async event => {
-  const preview = event.target.dataset.deckPreview, cancel = event.target.dataset.deckCancel;
-  if (preview) { const frame = $('#deckPreview'); frame.src = `/api/jobs/${encodeURIComponent(preview)}/deck/index.html`; frame.hidden = false; }
+  const cancel = event.target.dataset.deckCancel;
   if (cancel) try { await api(`/api/episodes/${episode.id}/jobs/${cancel}/cancel`,{method:'POST',body:'{}'}); await refreshJobs(); } catch (error) { toast(error.message); }
 };
