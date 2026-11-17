@@ -87,6 +87,7 @@
     if (next !== index) {
       cancel(); pauseVideos(); index = next; resetStages();
       document.getElementById('presentation').focus({ preventScroll: true });
+      document.getElementById('presentation').scrollTop = 0;
     }
     slides.forEach((slide, i) => { slide.hidden = i !== index; });
     links.forEach((button, i) => { if (i === index) button.setAttribute('aria-current', 'step'); else button.removeAttribute('aria-current'); });
