@@ -29827,10 +29827,17 @@ function createChatRenderer() {
     while (open >= 0 && tokens[open].type !== "link_open") open -= 1;
     return tokens[open]?.meta?.allowed ? "</a>" : "";
   };
+  const insideLink = (tokens, index) => {
+    for (let at = index - 1; at >= 0; at -= 1) {
+      if (tokens[at].type === "link_close") return false;
+      if (tokens[at].type === "link_open") return true;
+    }
+    return false;
+  };
   renderer.renderer.rules.image = (tokens, index, options, env, self) => {
     const token = tokens[index], src = token.attrGet("src");
     const alt = escapeHtml2(self.renderInlineAsText(token.children || [], options, env) || "image");
-    return chatLinkAllowed(src) ? `${anchor(src)}${alt}</a>` : alt;
+    return chatLinkAllowed(src) && !insideLink(tokens, index) ? `${anchor(src)}${alt}</a>` : alt;
   };
   renderer.renderer.rules.table_open = () => '<div class="chat-table"><table>\n';
   renderer.renderer.rules.table_close = () => "</table></div>\n";
