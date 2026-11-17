@@ -33,6 +33,9 @@ function typography(files, families = [], svgFonts = []) {
   return css + (roles ? `:root{${roles}}\n` : '');
 }
 
+// Bundles built with this runtime report their viewed position when framed (README).
+export const DECK_STATE_REPORTING = 1;
+
 /** Bundle assembly reads only packaged fonts/runtime files and supplied media bytes. */
 export function buildDeck(input, { assets = {} } = {}) {
   if (!input || typeof input !== 'object') throw new Error('Deck input required');

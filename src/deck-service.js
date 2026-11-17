@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { constants } from 'node:fs';
 import { mkdir, open, realpath, writeFile, rename, rm } from 'node:fs/promises';
-import { buildDeck } from './deck-template/build.js';
+import { buildDeck, DECK_STATE_REPORTING } from './deck-template/build.js';
 import { HeavyJobQueue } from './job-runner.js';
 import { StoreError } from './store.js';
 import { createHash } from 'node:crypto';
@@ -77,7 +77,7 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
             slides.push(slide);
           }
           const files = buildDeck({title:snapshot.title,slides,fonts:snapshot.fonts},{assets});
-          const manifest = {sourceRevision:deck.revision,productionId:episodeId,fonts:snapshot.fonts,assets:Object.values(provenance),files:[...files.keys(),'manifest.json']};
+          const manifest = {sourceRevision:deck.revision,productionId:episodeId,stateReporting:DECK_STATE_REPORTING,fonts:snapshot.fonts,assets:Object.values(provenance),files:[...files.keys(),'manifest.json']};
           files.set('manifest.json',JSON.stringify(manifest,null,2));
           const parent = path.join(store.episodeDirectory(episodeId),'outputs','decks');
           await mkdir(parent,{recursive:true});

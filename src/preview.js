@@ -2,6 +2,9 @@ import path from 'node:path';
 import { realpath, stat } from 'node:fs/promises';
 import { StoreError } from './store.js';
 import { projectContentType } from './project-files.js';
+import { reportsState, CAPTURE_REBUILD } from './deck-capture.js';
+import { getDeckReadiness } from './runtime/deck-readiness.js';
+import { releaseFromEnv } from './runtime/health.js';
 
 // Metadata never exposes disk paths. Every lookup is pinned to the URL's channel.
 export async function previewMetadata(store, workspace, parts, channelId) {
@@ -50,7 +53,13 @@ export async function previewMetadata(store, workspace, parts, channelId) {
     ? store.listJobs(episode.id).find(candidate => candidate.state === 'completed' && candidate.deletionState === 'present'
       && candidate.outputPath && candidate.createdAt > job.createdAt
       && (source === 'deck' ? candidate.kind === 'deck' : assembled.includes(candidate.outputClass))) : null;
-  return { source, episodeId: episode.id, channelId, production: episode.title, label, kind, contentType,
+  // Deck Markup needs the pinned build's slide IDs (to trust frame state messages) and
+  // whether server capture can serve it: an older runtime or an unready browser cannot.
+  const browser = source === 'deck' && getDeckReadiness(releaseFromEnv()).browser;
+  const deck = source === 'deck' ? { slideIds: job.snapshot.slides.map(slide => slide.id),
+    capture: !reportsState(job) ? { available: false, reason: CAPTURE_REBUILD }
+      : browser.state !== 'ready' ? { available: false, reason: browser.reason } : { available: true, reason: null } } : undefined;
+  return { source, episodeId: episode.id, channelId, production: episode.title, label, kind, contentType, deck,
     bytes: info.size, width: asset?.width ?? null, height: asset?.height ?? null, duration: asset?.duration ?? null,
     latestUrl: latest ? `/preview/${source}/${encodeURIComponent(latest.id)}${scope}` : null,
     mediaUrl: media + scope,

@@ -1,6 +1,7 @@
 import { previewMetadata } from './preview.js';
 import { projectContentType, downloadDisposition } from './project-files.js';
 import { createDeckService } from './deck-service.js';
+import { createDeckCapture, reportsState, validateCaptureState, CAPTURE_REBUILD } from './deck-capture.js';
 import { controlRequest } from './runtime/channel.js';
 import { FONTS, fontPath, fontCatalog } from './fonts.js';
 import { validateSelection } from './runtime/conversation-runtime.js';
@@ -165,6 +166,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
   const notify = (episodeId) => listeners.get(episodeId)?.forEach((fn) => fn());
   const library = createLibraryService({ workspace, store });
   const decks = createDeckService({store,onChange:notify});
+  const deckCapture = createDeckCapture({ store });
   const renders = createRenderService({ workspace, store, renderGraphic, validateGraphicRecipe, ...renderOptions, onChange: notify });
   // In the Docker app container the host lifecycle entry point provides a private control
   // socket; Codex turns then run in request-scoped workers instead of in-process.
@@ -232,6 +234,15 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           status = error.statusCode;
         }
         return await streamFile(req, res, path.join(publicDir, 'preview.html'), undefined, status);
+      }
+      if (req.method === 'POST' && parts.length === 5 && parts[0] === 'api' && parts[1] === 'preview' && parts[2] === 'deck' && parts[4] === 'capture') {
+        // Same channel, deletion and completed-build checks as the Preview page itself.
+        await previewMetadata(store, workspace, ['deck', parts[3]], requestedChannel);
+        const job = store.getJob(parts[3]);
+        if (!reportsState(job)) throw new StoreError(CAPTURE_REBUILD, 409);
+        const png = await deckCapture.capture(job, validateCaptureState(job, await jsonBody(req)));
+        res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'content-length': png.length });
+        return res.end(png);
       }
       if (req.method === "GET" && url.pathname === "/api/health") return send(res, closing ? 503 : 200, health.snapshot());
       if (parts[0] === 'api' && parts[1] === 'providers') {

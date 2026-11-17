@@ -1,6 +1,7 @@
 // Content-free, versioned evidence contract shared by host and app. No browser imports.
 export const DECK_CHECK_VERSION = 1;
-export const DECK_TEMPLATE_VERSION = 'staged-svg-1';
+// staged-svg-2: the audience runtime reports its viewed position to an embedding frame.
+export const DECK_TEMPLATE_VERSION = 'staged-svg-2';
 export const DECK_PROFILE = 'storybench-svg-1';
 const routes = ['codex', 'claude', 'opencode'];
 const requiredSvg = ['parser', 'nativeRasterInspection', 'invalidRejected'];
