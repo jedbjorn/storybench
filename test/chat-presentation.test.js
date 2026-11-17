@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { ChatWorkspace } from '../public/chat-workspace.js';
+import { createChatRenderer } from '../src/story-editor.js';
 
 async function fixture(t, { animated = false } = {}) {
   const dom = new JSDOM('<main class="chat"></main>');
@@ -33,7 +34,7 @@ async function fixture(t, { animated = false } = {}) {
     if (url.endsWith('/chats')) return structuredClone(chats);
     return structuredClone(chats.find(chat => url.endsWith(chat.id)) ?? {});
   };
-  const workspace = new ChatWorkspace({ root, api, getEpisode: () => episode });
+  const workspace = new ChatWorkspace({ root, api, getEpisode: () => episode, renderMarkdown: createChatRenderer() });
   t.after(() => { workspace.close(); dom.window.close(); });
   await workspace.open();
   clearInterval(workspace.pollTimer);

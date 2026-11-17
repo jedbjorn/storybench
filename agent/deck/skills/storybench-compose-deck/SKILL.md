@@ -71,7 +71,7 @@ viewport detail. An audience contact sheet accepts at most six saved slide IDs;
 its cell order matches the input and each cell has a full-resolution artifact.
 
 The session is bound to the current request and production, one immutable build,
-and a ten-minute lifetime. Close before opening another build. Screenshots,
+and a fifteen-minute lifetime. Close before opening another build. Screenshots,
 mechanical diagnostics, attempted coverage and delivery receipts persist beneath
 the build's managed QA artifacts. Closing/cancellation does not mean QA passed.
 A check's pass covers its observed state only; missing playback, unopened Presenter,

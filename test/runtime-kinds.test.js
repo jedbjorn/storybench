@@ -200,3 +200,24 @@ test('create and edit deck turns render the mandatory correction loop on all har
     assert.match(skill,/save_deck\(\{expectedRevision:current\.revision, slides:current\.slides\}\)/);
   }
 });
+
+test('rendered boots say how replies display, and every deck QA statement says fifteen minutes', async (t) => {
+  const tenMinutes = /\b(ten|10)[- ]?min/i;
+  for (const kind of ['video', 'deck']) {
+    const episodeDir = await temp(t);
+    const store = { workspace: episodeDir, episodeLocation: () => ({ directory: episodeDir, channelId: 'channel-one', legacy: true }),
+      getEpisode: () => ({ title: 'Demo', revision: 1 }), episodeOutputDirectory: () => path.join(episodeDir, 'outputs/drafts') };
+    const context = defaultBootContextFor(store, { episodeId: 'e', harness: 'codex' })({ served: ['get_context'] });
+    context.paths.episode = episodeDir; context.paths.work = path.join(episodeDir, 'work');
+    await renderEpisodeBoot({ episodeDir, context, templates: await loadTemplates(undefined, kind), kind });
+    for (const file of ['AGENTS.md', 'CLAUDE.md']) {
+      const boot = await readFile(path.join(episodeDir, file), 'utf8');
+      assert.match(boot, /Chat replies are shown to the creator as Markdown; images and raw HTML in a reply are not displayed\./, `${kind} ${file}`);
+      assert.doesNotMatch(boot, tenMinutes, `${kind} ${file}`);
+    }
+  }
+  const skill = await readFile(new URL('../agent/deck/skills/storybench-compose-deck/SKILL.md', import.meta.url), 'utf8');
+  const guide = await readFile(new URL('../docs/deck-authoring.md', import.meta.url), 'utf8');
+  assert.match(skill, /fifteen-minute lifetime/); assert.match(guide, /fifteen minutes/);
+  for (const text of [skill, guide]) assert.doesNotMatch(text, tenMinutes);
+});

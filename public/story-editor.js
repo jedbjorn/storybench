@@ -29810,6 +29810,32 @@ function createStoryRenderer() {
   };
   return (source) => renderer.render(String(source || "").replace(sectionMarker, ""));
 }
+var chatLinkAllowed = (href) => /^(https?:|mailto:)/i.test(href || "");
+function createChatRenderer() {
+  const renderer = new MarkdownItCallable({ html: false, linkify: true, breaks: true, typographer: false });
+  renderer.linkify.set({ fuzzyLink: false, fuzzyEmail: false, fuzzyIP: false }).add("//", null).add("ftp:", null);
+  renderer.validateLink = () => true;
+  const { escapeHtml: escapeHtml2 } = renderer.utils;
+  const anchor = (href) => `<a href="${escapeHtml2(href)}" target="_blank" rel="noreferrer noopener">`;
+  renderer.renderer.rules.link_open = (tokens, index) => {
+    const href = tokens[index].attrGet("href");
+    tokens[index].meta = { allowed: chatLinkAllowed(href) };
+    return tokens[index].meta.allowed ? anchor(href) : "";
+  };
+  renderer.renderer.rules.link_close = (tokens, index) => {
+    let open = index;
+    while (open >= 0 && tokens[open].type !== "link_open") open -= 1;
+    return tokens[open]?.meta?.allowed ? "</a>" : "";
+  };
+  renderer.renderer.rules.image = (tokens, index, options, env, self) => {
+    const token = tokens[index], src = token.attrGet("src");
+    const alt = escapeHtml2(self.renderInlineAsText(token.children || [], options, env) || "image");
+    return chatLinkAllowed(src) ? `${anchor(src)}${alt}</a>` : alt;
+  };
+  renderer.renderer.rules.table_open = () => '<div class="chat-table"><table>\n';
+  renderer.renderer.rules.table_close = () => "</table></div>\n";
+  return (source) => renderer.render(String(source ?? ""));
+}
 var StoryEditor = class {
   constructor({ root, api, setStatus, toast, onSaved = () => {
   } }) {
@@ -30086,6 +30112,7 @@ function escapeText(value) {
 export {
   STARTER_STORY,
   StoryEditor,
+  createChatRenderer,
   createStoryRenderer,
   isStorySaveShortcut,
   mappingChangeSummary,
