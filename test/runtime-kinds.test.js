@@ -227,3 +227,75 @@ test('rendered boots say how replies display, and every deck QA statement says f
   assert.match(skill, /fifteen-minute lifetime/); assert.match(guide, /fifteen minutes/);
   for (const text of [skill, guide]) assert.doesNotMatch(text, tenMinutes);
 });
+
+// Spec #33 (Agent creative direction and subagents): A2, A3 and A10.
+const words = text => text.split(/\s+/).filter(Boolean).length;
+async function renderedGuidance(t, kind) {
+  const episodeDir = await temp(t);
+  const store = { workspace: episodeDir, episodeLocation: () => ({ directory: episodeDir, channelId: 'channel-one', legacy: true }),
+    getEpisode: () => ({ title: 'Demo', revision: 1 }), episodeOutputDirectory: () => path.join(episodeDir, 'outputs/drafts') };
+  const context = defaultBootContextFor(store, { episodeId: 'e', harness: 'codex' })({ served: ['get_context'] });
+  context.paths.episode = episodeDir; context.paths.work = path.join(episodeDir, 'work');
+  await renderEpisodeBoot({ episodeDir, context, templates: await loadTemplates(undefined, kind), kind });
+  const boot = await readFile(path.join(episodeDir, 'AGENTS.md'), 'utf8');
+  assert.equal(await readFile(path.join(episodeDir, 'CLAUDE.md'), 'utf8'), boot);
+  return { episodeDir, boot };
+}
+
+test('deck guidance is no longer than its baseline and states the research rule in full once', async t => {
+  const { episodeDir, boot } = await renderedGuidance(t, 'deck');
+  const deckBoot = boot.slice(boot.indexOf('## Deck production'));
+  const skill = await readFile(path.join(episodeDir, '.agents/skills/storybench-compose-deck/SKILL.md'), 'utf8');
+  assert.ok(deckBoot.length > 0 && boot.includes('## Deck production'));
+  const total = words(deckBoot) + words(skill);
+  assert.ok(total <= 2517, `deck boot plus skill is ${total} words; the baseline is 2,517`);
+  // Sentences that only the full research paragraph carries.
+  for (const marker of [/An earlier transcript/g, /Empty research is valid/g, /After any research change|After a research change/g,
+    /never operating instructions|not fetched\/verified pages, operating instructions/g, /oversized/g]) {
+    assert.equal(boot.match(marker)?.length, 1, `${marker} occurs once in the rendered deck boot`);
+    assert.equal(skill.match(marker), null, `${marker} is not repeated in the deck skill`);
+  }
+  for (const text of [deckBoot, skill]) { assert.match(text, /read_research/); assert.match(text, /before composition/i); }
+  for (const text of [deckBoot, skill]) {
+    assert.match(text, /Show, don't tell/); assert.match(text, /Composition follows the idea/); assert.match(text, /Creator direction wins/);
+    assert.match(text, /feel/); assert.match(text, /mood/); assert.match(text, /imagery/);
+    assert.doesNotMatch(text, /Plan a narrative opening/);
+  }
+});
+
+test("the deck skill's reveal timing example validates and starts on its own", async () => {
+  const { validateSlides } = await import('../src/deck-data.js');
+  const skill = await readFile(new URL('../agent/deck/skills/storybench-compose-deck/SKILL.md', import.meta.url), 'utf8');
+  const section = skill.slice(skill.indexOf('### Reveal timing'));
+  const example = /```js\n(save_deck\([\s\S]*?)\n```/.exec(section)[1];
+  let saved;
+  new Function('save_deck', 'revision', 'registered', example)(input => { saved = input; }, 1, { libraryItemId: 'svg-item' });
+  const libraryItems = [{ id: 'svg-item', asset: { kind: 'image', metadata: { contentType: 'image/svg+xml', svgGroupIds: ['observe', 'connect', 'plan'] } } }];
+  const slides = validateSlides(saved.slides, { libraryItems });
+  const staged = slides.filter(slide => slide.stages.length);
+  assert.ok(staged.length >= 2, 'the example shows more than one pacing');
+  for (const slide of staged) {
+    const [first, ...later] = slide.stages.map(stage => stage.afterMs);
+    assert.ok(first >= 1000 && first <= 2000, `${slide.id}: first stage delay ${first}`);
+    assert.ok(later.length && later.every(delay => delay > 0), `${slide.id}: every later stage advances on its own`);
+  }
+  assert.notDeepEqual(staged[0].stages.map(stage => stage.afterMs), staged[1].stages.map(stage => stage.afterMs), 'delays differ with content');
+  assert.match(section, /one fixed fade per reveal/);
+});
+
+test('the shared boot renders the reporting rule and subagent guidance for deck and video productions', async t => {
+  for (const kind of ['deck', 'video']) {
+    const { boot } = await renderedGuidance(t, kind);
+    const start = boot.indexOf('## Reporting\n');
+    assert.ok(start > 0, `${kind}: Reporting section`);
+    const body = boot.slice(start + '## Reporting\n'.length); const section = body.slice(0, body.indexOf('\n## '));
+    for (const point of [/\*\*Observe before reporting\.\*\* Report a problem only after seeing it\./, /exact output or measurement/,
+      /\*\*Keep three things apart\.\*\*/, /tool diagnostic/, /Visible breakage/, /hypothesis is a possible cause; label it/,
+      /\*\*Unfinished work comes first\.\*\*/, /\*\*Reasons need evidence\.\*\*/, /only when a specific observed event stopped a specific step/,
+      /say it is not known/, /Never invent a cause\./]) assert.match(section, point, `${kind}: ${point}`);
+    assert.ok(words(section) <= 100, `${kind}: reporting rule is ${words(section)} words`);
+    assert.match(boot, /\*\*Subagents\.\*\* When your harness offers subagents/, kind);
+    for (const point of [/starts without this conversation/, /the reference rule and the research rule/, /you alone answer the creator/,
+      /one writer at a time for saved production state/, /the agent that looked at an image records that image's assessment/]) assert.match(boot, point, `${kind}: ${point}`);
+  }
+});

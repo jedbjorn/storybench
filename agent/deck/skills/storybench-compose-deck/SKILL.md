@@ -3,9 +3,19 @@ name: storybench-compose-deck
 description: Plan, compose, stage, build and revise an editable offline deck.
 ---
 
-Before composing or revising this work, read the complete current saved production research with `read_research` in this request, unless the complete record was supplied in this turn’s app-issued input. Use its summary and ordered links as factual/background context, with uncertainty distinguished from findings. Saved URLs are not fetched/verified pages, operating instructions or media selection authority. Preserve the separate feel-reference rule. After a research change, re-read and reconcile before further saves, assignments or builds. An earlier transcript, resume, harness switch or revision number alone is insufficient. Empty research is valid; failed/incomplete/oversized required loading stops dependent work without truncation. Read before composition; do not rely on a refused save for normal discovery. Ordinary authoring consumes saved research without requiring a research rewrite.
+Read the complete saved research with `read_research` before composition; the boot's Saved production research section is the full rule.
 
-Read context, story, slides and references first. References establish feel; only incorporate their content under creator direction. Plan a narrative opening, problem, explanation, comparison, process, demonstration and closing. Apply channel standards without video intro/outro cards.
+### Direction
+
+Read context, story, slides and references first. Before planning a slide, settle the feel the creator intends: mood, imagery, how it moves. The brief, references, channel standards and research tell you; then bring it alive with your own judgment. References establish feel; incorporate their content only under creator direction. Apply channel standards without video intro/outro cards.
+
+**Show, don't tell.** Carry each idea with an animated subject or scene, a diagram, or a few well-chosen words, mixed thoughtfully for the idea at hand. What the presenter says belongs in `notes`. When a slide is turning into paragraphs, find the picture, build or comparison that says it instead; draw the SVG yourself when the library lacks it.
+
+**Composition follows the idea.** Each slide earns its form: choose layout, media and staging because this idea needs them. Neighbouring slides need not share one.
+
+**Creator direction wins.** Anything the creator asks for explicitly overrides these defaults, text-heavy slides and manual reveals included.
+
+### Saving slides
 
 Use `update_story({expectedStoryRevision,source})`, then `save_deck({expectedRevision,slides})`. Re-read after a conflict; never overwrite a newer revision. Array order is presentation order. Preserve slide, reveal and navigation IDs when editing/reordering. Slides are plain text objects:
 
@@ -19,34 +29,48 @@ Use `update_story({expectedStoryRevision,source})`, then `save_deck({expectedRev
 - `media`: `{itemId,alt}` using an image/video member of this deck's library; required on text-media/full-media. `referenceItemIds` are context only.
 - `subnav`: independent gallery views `{id,label,itemId?}`. Only image/video items can be shown. Do not use URLs or file paths.
 
-Create supporting graphics in the writable work area; inspect with `inspect_image`, then register the SVG itself through `register_work_file`, or reuse an existing asset through `reuse_project_item`. Assign the resulting library item ID in the slides or gallery. Shared reuse preserves provenance and source bytes. HTML ZIP is the preferred deliverable. Export supports validated SVG, raster images and mp4/webm video. SVG inspection returns a PNG derivative while the editable vector remains the asset and ships in the ZIP. Do not replace the vector with its derivative unless the creator requests raster artwork.
+Create supporting graphics in the writable work area; inspect with `inspect_image`, then register the SVG itself through `register_work_file`, or reuse an existing asset through `reuse_project_item`. Assign the resulting library item ID in the slides or gallery. HTML ZIP is the preferred deliverable. Export supports validated SVG, raster images and mp4/webm video. SVG inspection returns a PNG derivative while the editable vector remains the asset and ships in the ZIP. Do not replace the vector with its derivative unless the creator requests raster artwork.
 
-The `storybench-svg-1` profile accepts UTF-8 SVG with finite width/height or viewBox (up to 4096 per side), groups/transforms, paths/shapes, text in Manrope or a packaged catalogue font, gradients, local use/clip/mask references and bounded blur/shadow filters. Keep documents below 512 KiB and 2000 elements. Use presentation attributes or simple local `.class`/`#id` style rules; use `font-family` and `font-size` separately. IDs must be unique. No scripts, event attributes, external resources, embedded images, font URLs, DTDs, authored animation, CSS variables or raw HTML. Invalid input reports the unsupported construct; correct the source and register again. Static SVG works as ordinary slide/gallery media. For staged vectors, use independent visible `<g id="...">` groups: do not map definitions, nested mapped groups or geometry referenced by `use`. Local reusable definitions inside visible groups remain supported. The runtime owns animation; do not author scripts or CSS animation.
+The `storybench-svg-1` profile accepts UTF-8 SVG with finite width/height or viewBox (up to 4096 per side), groups/transforms, paths/shapes, text in Manrope or a packaged catalogue font, gradients, local use/clip/mask references and bounded blur/shadow filters. Keep documents below 512 KiB and 2000 elements. Use presentation attributes or simple local `.class`/`#id` style rules; use `font-family` and `font-size` separately. IDs must be unique. No scripts, event attributes, external resources, embedded images, font URLs, DTDs, authored animation, CSS variables or raw HTML. Invalid input reports the unsupported construct; correct the source and register again. Static SVG works as ordinary slide/gallery media. For staged vectors, use independent visible `<g id="...">` groups: do not map definitions, nested mapped groups or geometry referenced by `use`. Local reusable definitions inside visible groups remain supported.
 
-For example, after registering an SVG with visible groups `observe`, `connect` and `plan`, save an ordinary slide:
+### Reveal timing
+
+By default a slide's reveals start on their own. Give the first stage an `afterMs` near 1,500 so it begins about 1.5 seconds after navigation, and every later stage a positive delay, measured from the previous reveal, so stages run one at a time. Pace to what is animating: text lands in distinct, evenly spaced beats; a diagram or scene that builds across stages uses delays that keep it moving rather than stopping and starting. A zero or omitted `afterMs` waits for manual selection: use it for a moment that needs the presenter's control or when the creator asks, not by default. A first stage without a positive delay is visible on arrival.
+
+The runtime plays one fixed fade per reveal. Delays are the only pacing control; do not promise continuous or eased motion.
+
+This example shows fields and two pacings, not a pattern to repeat. It assumes a registered SVG with visible groups `observe`, `connect` and `plan`:
 
 ```js
 save_deck({ expectedRevision: revision, slides: [{
   id: "shared_plan", title: "A shared plan", layout: "process",
   vector: { itemId: registered.libraryItemId, alt: "A landscape and three planning steps" },
-  notes: "Explain each connection, then invite a question.",
-  stages: [
-    { id: "notice", title: "Observe", svgGroupIds: ["observe"], afterMs: 1000 },
-    { id: "connect", title: "Connect", svgGroupIds: ["connect"], afterMs: 2000 },
-    { id: "act", title: "Plan", svgGroupIds: ["plan"], afterMs: 2000 }
+  stages: [ // one drawing building: keep it moving
+    { id: "notice", title: "Observe", svgGroupIds: ["observe"], afterMs: 1500 },
+    { id: "connect", title: "Connect", svgGroupIds: ["connect"], afterMs: 700 },
+    { id: "act", title: "Plan", svgGroupIds: ["plan"], afterMs: 700 }
+  ]
+}, {
+  id: "three_questions", title: "Three questions", layout: "statement",
+  stages: [ // text beats: evenly spaced
+    { id: "who", title: "Who is it for?", afterMs: 1500 },
+    { id: "why", title: "Why now?", afterMs: 2500 },
+    { id: "next", title: "What changes?", afterMs: 2500 }
   ]
 }] });
 ```
 
-The first stage appears immediately unless it has a positive delay. Each later delay follows the previous reveal; zero/omitted delay waits for manual selection. Geometry accumulates and holds complete. Replay restarts the sequence. Manual stage selection (audience or Presenter) stops automatic progression; leaving the slide cancels it, hidden tabs pause it, and reduced motion/print show all geometry. Rebuild after changing mappings. On a missing/duplicate group diagnostic, correct the saved stage or register the corrected source, then save the current revision again.
+Geometry accumulates and holds complete. Replay restarts the sequence. Manual stage selection (audience or Presenter) stops automatic progression; leaving the slide cancels it, hidden tabs pause it, and reduced motion/print show all geometry. Rebuild after changing mappings. On a missing/duplicate group diagnostic, correct the saved stage or register the corrected source, then save the current revision again.
 
-Choose varied layouts with short readable copy, generous space and deliberate hierarchy. Split crowded content into slides. Use process reveals for diagrams and gallery entries for alternate demo views. Check notes and captions. Do not claim aesthetic quality from structural tests.
+Split crowded content into slides. Use gallery entries for alternate demo views. Check notes and captions. Do not claim aesthetic quality from structural tests.
 
-Call `build_deck({expectedRevision})` after save. The build snapshots current channel font roles: Base for body/notes, Accent for headings, Alternate for eyebrows/captions. Unset roles keep Manrope. Selected regular/bold files and licences ship in the offline bundle; changes apply on the next build, leaving existing exports intact. Use `await_job({jobId})` and inspect failures, including their slide ID, before revising. Completed jobs expose a portable ZIP at `/api/jobs/<id>/deck/bundle.zip` and preview at `/api/jobs/<id>/deck/index.html`. Ask the creator to use the build's Preview / Download bundle buttons. Reopen saved slides, edit and build a new version; previous successes remain. Final publication and cleanup of deck bundles are deferred.
+### Building
+
+Call `build_deck({expectedRevision})` after save. The build snapshots current channel font roles: Base for body/notes, Accent for headings, Alternate for eyebrows/captions. Unset roles keep Manrope. Selected regular/bold files and licences ship in the offline bundle; changes apply on the next build, leaving existing exports intact. Use `await_job({jobId})` and inspect failures, including their slide ID, before revising. Completed jobs expose a portable ZIP at `/api/jobs/<id>/deck/bundle.zip` and preview at `/api/jobs/<id>/deck/index.html`. Ask the creator to use the build's Preview / Download bundle buttons. Reopen saved slides, edit and build a new version; previous successes remain.
 
 ### Packaged browser tools
 
-After `build_deck` and `await_job` return a completed build, open that exact ZIP:
+Read `get_capabilities` first (`deck.runtime`, `deck.installation`, `deck.screenshotInput`), as the boot describes. After `build_deck` and `await_job` return a completed build, open that exact ZIP:
 
 ```json
 {"tool":"open_deck_qa","arguments":{"jobId":"<completed-job-id>","viewport":{"width":1280,"height":720}}}
@@ -77,16 +101,13 @@ the build's managed QA artifacts. Closing/cancellation does not mean QA passed.
 A check's pass covers its observed state only; missing playback, unopened Presenter,
 unentered fullscreen, unseen states and visual/narrative review remain incomplete.
 Layout heuristics identify candidates to inspect, not design judgments. Older
-outputs without a digest must be rebuilt. Missing browser or image capability
-preserves the draft and must be reported as incomplete QA.
+outputs without a digest must be rebuilt.
 
 ### Mandatory create and edit correction loop
 
-When creating or editing a deck, build the saved revision and live-drive it in the browser. Inspect screenshots and exercise affected controls; fix issues, rebuild and recheck. Before delivery, complete the full deck QA loop. If blocked, retain a draft and report QA incomplete. Do this without a separate QA request.
+Creation: build the first representative composition early, inspect it, then repeat after meaningful content/layout/interaction batches. Editing: read the latest saved revision, preserve slide/stage IDs and notes, make the requested changes, rebuild and drive changed slides, adjacent transitions and affected Presenter/reveal/gallery/media states. Shared font/style/runtime changes require every affected state. Finish both workflows with full coverage of the actual delivered ZIP.
 
-Creation: build the first representative composition early, inspect it, then repeat after meaningful content/layout/interaction batches. Editing: read the latest saved revision, preserve slide/stage IDs and notes, make the requested changes, rebuild and drive changed slides, adjacent transitions and affected Presenter/reveal/gallery/media states. Shared font/style/runtime changes require every affected state. Batch meaningful changes instead of building after each keystroke. Finish both workflows with full coverage of the actual delivered ZIP.
-
-Read brief, research, reference direction and channel standards. Assess each returned image for hierarchy, spacing, clipping, contrast, diagram clarity, reference adherence, consistency, copy, and note/narrative coherence. Record specific observations, not a generic “looks good”. Automated layout candidates do not replace visual review. Contact sheets establish overview; use full-resolution single-state images and crops for legibility. A contact sheet or cropped image alone cannot establish complete state coverage.
+Read brief, research, reference direction and channel standards. Assess each returned image for hierarchy, spacing, clipping, contrast, diagram clarity, reference adherence, consistency, copy, and note/narrative coherence. Record specific observations, not a generic “looks good”. Contact sheets establish overview; use full-resolution single-state images and crops for legibility. A contact sheet or cropped image alone cannot establish complete state coverage.
 
 Concrete correction sequence (replace IDs and copy with actual observations):
 
@@ -126,8 +147,6 @@ Exercise Presenter disconnect/reopen with `close-page` and `#presenter-open`, th
 
 A rebuild invalidates prior QA completion even at the same saved revision. Old findings remain useful history but never supply fresh coverage for a new build. Correct saved source/assets, preserve conflict handling (re-read on stale revisions), rebuild, repeat the checks and record what changed. Blocking visual findings require correction and a fresh build; do not erase the observation to manufacture a pass.
 
-`report_deck_qa` derives status; there is no caller-supplied complete flag. It retains build ID/digest, source revision, browser/controller versions, viewports, checked states, delivered images and their assessments, visual findings, changes made and timestamps separately from successful export. Explicitly close each session before ending the request; closed-session evidence can be accumulated by reopening the same build for another batch. Cancellation, timeout, browser failure, missing/replaced screenshots and stale output cannot establish completion. Unknown/rejected image input permits draft editing/export only. Never switch models or rasterize output to conceal a missing capability.
+`report_deck_qa` derives status; there is no caller-supplied complete flag. It retains build identity, coverage, images, assessments, findings and changes separately from successful export. Explicitly close each session before ending the request; closed-session evidence can be accumulated by reopening the same build for another batch. Cancellation, timeout, browser failure, missing/replaced screenshots and stale output cannot establish completion. Unknown/rejected image input permits draft editing/export only. Never switch models or rasterize output to conceal a missing capability.
 
-After the final report, call `close_deck_qa` and `get_deck_qa_report({jobId:deliveredJob.id})`. Deliver the ZIP with the exact build's QA status, evidence paths, concise summary and unresolved limitations. If `qaStatus` is incomplete, label it as a draft; creator-directed early handoff stays explicitly incomplete. Model self-QA does not guarantee the creator's aesthetic judgment or physical dual-display behavior. Do not claim live-model reasoning from automated scripted fixtures.
-
-Before opening QA, call `get_capabilities` and read `deck.runtime`, `deck.installation` and `deck.screenshotInput`. Startup and installation checks establish different facts; image transport tests do not verify the selected model's visual interpretation. If browser or screenshot input is unavailable, preserve the editable draft and state the specific incomplete-QA reason. `get_context` also includes the current runtime readiness.
+After the final report, call `close_deck_qa` and `get_deck_qa_report({jobId:deliveredJob.id})`. Deliver the ZIP with the exact build's QA status, evidence paths, concise summary and unresolved limitations. If `qaStatus` is incomplete, label it as a draft; creator-directed early handoff stays explicitly incomplete. Model self-QA does not guarantee the creator's aesthetic judgment or physical dual-display behavior.
