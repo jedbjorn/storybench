@@ -58,7 +58,12 @@ test('builds record state reporting; Preview metadata and the server refuse olde
   const job = await f.build();
   assert.equal(job.snapshot.manifest.stateReporting, 1);
   const metadata = await (await fetch(`${f.base}/api/preview/deck/${job.id}${f.channel}`)).json();
-  assert.deepEqual(metadata.deck.slideIds, ['opening', 'stages', 'gallery']);
+  assert.equal(metadata.deck.revision, job.revision);
+  assert.deepEqual(metadata.deck.slides, [
+    { id: 'opening', title: 'Opening title', stages: [], views: [] },
+    { id: 'stages', title: 'Observe, connect, plan', stages: ['observe', 'connect', 'plan'], views: [] },
+    { id: 'gallery', title: 'Compare views', stages: [], views: ['First', 'Second'] },
+  ]);
   assert.equal(typeof metadata.deck.capture.available, 'boolean');
   if (!metadata.deck.capture.available) assert.ok(metadata.deck.capture.reason);
   assert.equal(JSON.stringify(metadata.deck).includes('Private presenter notes'), false);

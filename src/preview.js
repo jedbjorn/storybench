@@ -58,10 +58,13 @@ export async function previewTarget(store, workspace, parts, channelId) {
     ? store.listJobs(episode.id).find(candidate => candidate.state === 'completed' && candidate.deletionState === 'present'
       && candidate.outputPath && candidate.createdAt > job.createdAt
       && (source === 'deck' ? candidate.kind === 'deck' : assembled.includes(candidate.outputClass))) : null;
-  // Deck Markup needs the pinned build's slide IDs (to trust frame state messages) and
-  // whether server capture can serve it: an older runtime or an unready browser cannot.
+  // Deck Markup needs the pinned build's slides (to trust frame state messages and to write the
+  // context line from labels the creator already sees; never notes or body text) and whether
+  // server capture can serve it: an older runtime or an unready browser cannot.
   const browser = source === 'deck' && getDeckReadiness(releaseFromEnv()).browser;
-  const deck = source === 'deck' ? { slideIds: job.snapshot.slides.map(slide => slide.id),
+  const deck = source === 'deck' ? { revision: job.revision,
+    slides: job.snapshot.slides.map(slide => ({ id: slide.id, title: slide.title,
+      stages: (slide.stages ?? []).map(stage => stage.title), views: (slide.subnav ?? []).map(view => view.label) })),
     capture: !reportsState(job) ? { available: false, reason: CAPTURE_REBUILD }
       : browser.state !== 'ready' ? { available: false, reason: browser.reason } : { available: true, reason: null } } : undefined;
   const metadata = { source, episodeId: episode.id, channelId, production: episode.title, label, kind, contentType, deck,

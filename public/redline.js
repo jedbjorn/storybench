@@ -17,11 +17,17 @@ export function timecode(seconds) {
   return `${Math.floor(tenths / 600)}:${((tenths % 600) / 10).toFixed(1).padStart(4, '0')}`;
 }
 
-// Image, SVG and video previews; a deck lane supplies its own line and position.
-export function contextLine(metadata, seconds) {
+// `shown` is the deck state the Preview page trusted (slideId, index, stage and gallery of the pinned build) and the frame size.
+export function contextLine(metadata, seconds, shown) {
   const at = Number.isFinite(seconds) ? ` at ${timecode(seconds)}` : '';
   const newer = metadata.latestUrl ? ' A newer version exists.' : '';
   if (metadata.source === 'library') return `Redline on library item “${metadata.label}” (${metadata.itemId})${at}.${newer}`;
+  if (metadata.kind === 'deck') {
+    const slide = metadata.deck.slides[shown.index];
+    const reveal = shown.stage === null ? '' : `, reveal ${shown.stage + 1} of ${slide.stages.length} “${slide.stages[shown.stage]}”`;
+    const view = shown.gallery === null ? '' : `, view “${slide.views[shown.gallery]}”`;
+    return `Redline on deck build ${metadata.jobId} (revision ${metadata.deck.revision}), slide ${shown.index + 1} “${slide.title}” (${slide.id})${reveal}${view}.${newer}`;
+  }
   const output = metadata.outputClass === 'final' ? 'Final' : ['draft', 'legacy_draft'].includes(metadata.outputClass) ? 'Draft' : 'Graphic';
   return `Redline on ${output} output ${metadata.jobId}${at}.${newer}`;
 }
@@ -69,9 +75,18 @@ async function videoFrame(video) {
   return { canvas: draw(video, fitted(video.videoWidth, video.videoHeight)), seconds: video.currentTime };
 }
 
+// A deck frame has an opaque origin, so the server renders the shown state at the frame's size.
+async function deckCapture(metadata, { slideId, stage, gallery, width, height }) {
+  const response = await fetch(withChannel(`/api/preview/deck/${encodeURIComponent(metadata.jobId)}/capture`, metadata.channelId), {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ slideId, stage, gallery, width, height }) });
+  if (!response.ok) throw new MarkupRefused((await response.json().catch(() => ({}))).error || 'This slide cannot be marked up.');
+  return response.blob();
+}
+
 // One still of what the creator sees. A GIF decodes to its first frame through createImageBitmap.
-export async function captureBase(metadata, media, pinnedPath) {
+export async function captureBase(metadata, media, pinnedPath, shown) {
   try {
+    if (metadata.kind === 'deck') return { canvas: await bitmapBase(await deckCapture(metadata, shown)) };
     if (metadata.kind === 'video') return await videoFrame(media);
     const blob = await fetchBlob(metadata.mediaUrl);
     if (metadata.contentType !== 'image/svg+xml') return { canvas: await bitmapBase(blob) };

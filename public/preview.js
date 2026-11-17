@@ -4,6 +4,7 @@ const $ = selector => document.querySelector(selector);
 const metadataUrl = `/api${location.pathname}${location.search}`;
 let current;
 let events;
+let shown = null; // The deck state last reported by the pinned deck's own frame.
 
 function unavailable(message = 'This item is no longer available.') {
   events?.close();
@@ -45,6 +46,29 @@ function watchChanges() {
   window.addEventListener('pagehide', () => events.close(), { once: true });
 }
 
+// The deck frame's state message is a claim: accept it only from the frame itself and only for a slide,
+// reveal stage and gallery view of the pinned build (the server validates the capture request again).
+function watchDeck(frame) {
+  const markup = $('#markup'), { capture, slides } = current.deck;
+  markup.hidden = false;
+  markup.disabled = true;
+  if (!capture.available) {
+    markup.title = capture.reason;
+    $('#message').textContent = capture.reason;
+    return;
+  }
+  const within = (value, count) => count ? Number.isInteger(value) && value >= 0 && value < count : value === null;
+  window.addEventListener('message', ({ source, data }) => {
+    if (source !== frame.contentWindow || data?.type !== 'storybench-deck-state' || data.version !== 1) return;
+    const slide = slides[data.index];
+    if (slide?.id !== data.slideId || !within(data.stage, slide.stages.length) || !within(data.gallery, slide.views.length)) return;
+    const first = !shown;
+    shown = { slideId: slide.id, index: data.index, stage: data.stage, gallery: data.gallery };
+    if (first) markup.disabled = false;
+  });
+  frame.addEventListener('load', () => frame.contentWindow.postMessage({ type: 'storybench-deck-state-request' }, '*'));
+}
+
 function details() {
   const { contentType, kind, bytes, width, height, duration } = current;
   $('#details').textContent = [kind === 'deck' ? 'Deck' : contentType, formatBytes(bytes),
@@ -65,6 +89,7 @@ async function open() {
   if (current.kind === 'deck') {
     media.title = current.label;
     media.setAttribute('sandbox', 'allow-scripts');
+    watchDeck(media);
   } else if (current.kind === 'image') {
     media.alt = current.label;
     $('#actual-size').hidden = false;
@@ -92,18 +117,21 @@ $('#actual-size').onclick = () => {
   $('#actual-size').setAttribute('aria-pressed', String(actual));
   $('#actual-size').textContent = actual ? 'Fit to window' : 'Actual size';
 };
-// Markup (image, SVG and video; decks join in a later lane). The popup module and Painterro load on first use.
+// Markup. The popup module and Painterro load on first use. A deck is captured by the server in the state
+// its frame reported; the frame itself is left alone, so the preview stays on that slide after exit.
 $('#markup').onclick = async () => {
-  const button = $('#markup'), media = $('#viewer > img, #viewer > video');
-  if (button.disabled || !media || current.kind === 'deck') return;
+  const button = $('#markup'), media = $('#viewer > img, #viewer > video, #viewer > iframe');
+  if (button.disabled || !media || (current.kind === 'deck' && !shown)) return;
+  // The frame's size as the creator sees it now, before the status line below can change the layout.
+  const deck = current.kind === 'deck' ? { ...shown, width: media.clientWidth, height: media.clientHeight } : null;
   button.disabled = true;
   $('#message').textContent = '';
   try {
     const redline = await import('./redline.js');
-    const { canvas, seconds } = await redline.captureBase(current, media, location.pathname);
+    const { canvas, seconds } = await redline.captureBase(current, media, location.pathname, deck);
     redline.openRedline({ metadata: current, pinnedPath: location.pathname, canvas,
-      context: redline.contextLine(current, seconds),
-      position: Number.isFinite(seconds) ? `at ${redline.timecode(seconds)}` : '',
+      context: redline.contextLine(current, seconds, deck),
+      position: deck ? `slide ${deck.index + 1}` : Number.isFinite(seconds) ? `at ${redline.timecode(seconds)}` : '',
       onSent: ({ name }) => { $('#message').textContent = `Redline sent to “${name}”.`; },
       onClosed: () => { button.disabled = false; button.focus(); } });
   } catch (error) {
