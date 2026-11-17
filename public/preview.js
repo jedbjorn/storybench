@@ -10,6 +10,7 @@ function unavailable(message = 'This item is no longer available.') {
   $('#viewer').replaceChildren();
   $('#download').hidden = true;
   $('#actual-size').hidden = true;
+  $('#markup').hidden = true;
   $('#newer').hidden = true;
   $('#label').textContent = 'Preview unavailable';
   $('#details').textContent = '';
@@ -18,6 +19,7 @@ function unavailable(message = 'This item is no longer available.') {
 }
 
 function newer(metadata) {
+  current.latestUrl = metadata.latestUrl;
   $('#newer').hidden = !metadata.latestUrl;
   if (metadata.latestUrl) $('#latest').href = metadata.latestUrl;
 }
@@ -66,12 +68,13 @@ async function open() {
   } else if (current.kind === 'image') {
     media.alt = current.label;
     $('#actual-size').hidden = false;
-    media.onload = () => { current.width = media.naturalWidth; current.height = media.naturalHeight; details(); };
+    media.onload = () => { current.width = media.naturalWidth; current.height = media.naturalHeight; details(); $('#markup').hidden = false; };
   } else {
     media.controls = true;
-    media.onloadedmetadata = () => { current.width = media.videoWidth; current.height = media.videoHeight; current.duration = media.duration; details(); };
+    media.onloadedmetadata = () => { current.width = media.videoWidth; current.height = media.videoHeight; current.duration = media.duration; details(); $('#markup').hidden = false; };
   }
   media.onerror = async () => {
+    $('#markup').hidden = true;
     const response = await fetch(metadataUrl);
     if ([404, 410].includes(response.status)) unavailable();
     else $('#message').textContent = 'This browser cannot display this media. You can still download it.';
@@ -88,5 +91,24 @@ $('#actual-size').onclick = () => {
   const actual = $('#viewer').classList.toggle('actual');
   $('#actual-size').setAttribute('aria-pressed', String(actual));
   $('#actual-size').textContent = actual ? 'Fit to window' : 'Actual size';
+};
+// Markup (image, SVG and video; decks join in a later lane). The popup module and Painterro load on first use.
+$('#markup').onclick = async () => {
+  const button = $('#markup'), media = $('#viewer > img, #viewer > video');
+  if (button.disabled || !media || current.kind === 'deck') return;
+  button.disabled = true;
+  $('#message').textContent = '';
+  try {
+    const redline = await import('./redline.js');
+    const { canvas, seconds } = await redline.captureBase(current, media, location.pathname);
+    redline.openRedline({ metadata: current, pinnedPath: location.pathname, canvas,
+      context: redline.contextLine(current, seconds),
+      position: Number.isFinite(seconds) ? `at ${redline.timecode(seconds)}` : '',
+      onSent: ({ name }) => { $('#message').textContent = `Redline sent to “${name}”.`; },
+      onClosed: () => { button.disabled = false; button.focus(); } });
+  } catch (error) {
+    button.disabled = false;
+    $('#message').textContent = error?.name === 'MarkupRefused' ? error.message : 'This asset cannot be marked up.';
+  }
 };
 open().catch(() => unavailable('Could not load this preview. Reload to try again.'));

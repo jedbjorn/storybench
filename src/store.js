@@ -1595,6 +1595,11 @@ export class Store {
       FROM library_items l JOIN assets a ON a.id=l.asset_id WHERE l.episode_id=? AND l.id=?`).get(episodeId, itemId);
     return libraryItemRow(row);
   }
+  findLibraryItemByAsset(episodeId, assetId, sourceKind) {
+    const row = this.db.prepare("SELECT id FROM library_items WHERE episode_id=? AND asset_id=? AND source_kind=? ORDER BY created_at,id LIMIT 1")
+      .get(episodeId, assetId, sourceKind);
+    return row ? this.getLibraryItem(episodeId, row.id) : null;
+  }
   // Explicit creator direction to edit or directly use a specific reference item. It must cite a creator (user)
   // message in one of this episode's conversations; migration, category changes, attachments and model output
   // never create one. Callers attach the returned record to the request/result provenance.

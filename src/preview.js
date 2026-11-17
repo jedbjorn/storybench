@@ -8,6 +8,11 @@ import { releaseFromEnv } from './runtime/health.js';
 
 // Metadata never exposes disk paths. Every lookup is pinned to the URL's channel.
 export async function previewMetadata(store, workspace, parts, channelId) {
+  return (await previewTarget(store, workspace, parts, channelId)).metadata;
+}
+
+// The pinned asset with its resolved file, for server-side work on exactly what Preview shows.
+export async function previewTarget(store, workspace, parts, channelId) {
   const [source, id, itemId] = parts;
   const unavailable = () => { throw new StoreError('This item is no longer available.', 404); };
   if (!channelId || !['library', 'output', 'deck'].includes(source)) unavailable();
@@ -59,9 +64,11 @@ export async function previewMetadata(store, workspace, parts, channelId) {
   const deck = source === 'deck' ? { slideIds: job.snapshot.slides.map(slide => slide.id),
     capture: !reportsState(job) ? { available: false, reason: CAPTURE_REBUILD }
       : browser.state !== 'ready' ? { available: false, reason: browser.reason } : { available: true, reason: null } } : undefined;
-  return { source, episodeId: episode.id, channelId, production: episode.title, label, kind, contentType, deck,
+  const metadata = { source, episodeId: episode.id, channelId, production: episode.title, label, kind, contentType, deck,
+    ...(source === 'library' ? { itemId } : { jobId: id, outputClass: job.outputClass }),
     bytes: info.size, width: asset?.width ?? null, height: asset?.height ?? null, duration: asset?.duration ?? null,
     latestUrl: latest ? `/preview/${source}/${encodeURIComponent(latest.id)}${scope}` : null,
     mediaUrl: media + scope,
     downloadUrl: (source === 'deck' ? `/api/jobs/${encodeURIComponent(id)}/deck/bundle.zip` : media) + scope + '&download=1' };
+  return { metadata, file: actual };
 }

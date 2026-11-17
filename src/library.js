@@ -210,6 +210,34 @@ export function createLibraryService({ workspace, store, fetchImpl = null, dnsLo
       } finally { await rm(temporary, { force: true }); }
     });
   }
+  // Only the Preview redline popup reaches this, so it alone sets the redline mark (source kind "redline").
+  // Identical bytes return the episode's existing redline record: a retried Send never duplicates it.
+  async function registerRedline({ episodeId, readable, label, signal }) {
+    return serialized(async () => {
+      const target = destination(episodeId);
+      const temporaryDir = path.join(workspace, "imports");
+      await mkdir(temporaryDir, { recursive: true });
+      const temporary = path.join(temporaryDir, `.redline-${crypto.randomUUID()}.tmp`);
+      try {
+        const bytes = await writeIncoming(readable, temporary, REFERENCE_BYTES, signal);
+        const png = (await readFile(temporary)).subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+        const probe = png ? await probeMedia(temporary, { signal }).catch((error) => { if (error.name === "AbortError") throw error; return null; }) : null;
+        if (probe?.kind !== "image") throw new StoreError("A redline must be a PNG image", 422);
+        const imported = await importMedia({ workspace, sourcePath: temporary, mediaDirectory: target.mediaDirectory });
+        imported.name = "redline.png";
+        imported.channelId = target.channelId;
+        imported.metadata = { ...imported.metadata, contentType: "image/png", importedForCategory: "Reference" };
+        const existing = store.getAssetByHash(imported.hash, target.channelId);
+        const asset = existing?.kind === "reference" ? store.repairReferenceAssetAsMedia(existing.id, imported) : store.saveAsset(imported);
+        if (existing?.kind !== "reference") await keepExisting(imported, asset);
+        const prior = store.findLibraryItemByAsset(episodeId, asset.id, "redline");
+        if (prior) return { item: prior, created: false };
+        const item = store.attachLibraryItem(episodeId, asset.id, { category: "Reference", label, sourceKind: "redline",
+          provenance: { fileName: imported.name, contentType: "image/png", bytes, format: "image" } });
+        return { item, created: true };
+      } finally { await rm(temporary, { force: true }); }
+    });
+  }
   async function registerText({ episodeId, title, text, sectionId }) {
     return serialized(async () => {
       const target = destination(episodeId);
@@ -375,5 +403,5 @@ export function createLibraryService({ workspace, store, fetchImpl = null, dnsLo
         alreadyPresent: Boolean(already), appliedToCard, applyNote };
     });
   }
-  return { registerFile, registerText, registerUrl, reuseItem };
+  return { registerFile, registerRedline, registerText, registerUrl, reuseItem };
 }
