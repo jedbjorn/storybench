@@ -143,9 +143,16 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: workspace Open
   const deckFrame = frame.frameLocator('#viewer iframe');
   await deckFrame.locator('body').waitFor();
   assert.equal(await frame.locator('#viewer iframe').getAttribute('sandbox'), 'allow-scripts');
-  await deckFrame.locator('body').click();
-  await workspacePage.keyboard.press('ArrowRight');
-  await deckFrame.locator('article.slide').filter({ hasText: 'Second slide' }).waitFor({ state: 'visible' });
+  // The standalone tab opened above took focus; keys reach a nested frame only in the focused tab. Press again
+  // until the deck's script is listening (two slides, so a repeat stays on the second).
+  await workspacePage.bringToFront();
+  const second = deckFrame.locator('article.slide').filter({ hasText: 'Second slide' });
+  for (let attempt = 0; attempt < 10 && !(await second.isVisible()); attempt++) {
+    await deckFrame.locator('body').click();
+    await workspacePage.keyboard.press('ArrowRight');
+    await second.waitFor({ state: 'visible', timeout: 1000 }).catch(() => {});
+  }
+  await second.waitFor({ state: 'visible' });
   const pinned = frame.url();
   const secondBuild = await (await fetch(`${base}/api/episodes/${deck.id}/deck-build${scope}`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ expectedRevision: 2 }),
