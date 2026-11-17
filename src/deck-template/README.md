@@ -1,4 +1,4 @@
-# Offline deck builder contract (v1)
+# Offline deck builder contract (v2)
 
 `buildDeck(input, { assets })` from `build.js` returns a `Map<relativePath, string | Buffer>` containing `index.html`, `presenter.html`, classic runtime scripts, CSS and referenced assets. Write entries unchanged into an empty export directory; open index.html from disk. No server, module loader, network, account or installed font is needed. Keep the bundle together when sharing. Manrope is redistributed unmodified with its OFL copyright and license in assets/Manrope-OFL.txt.
 
@@ -27,6 +27,8 @@ Input fields:
 The synthetic example demonstrates every layout and optional field family. Its synthetic geometric image can be replaced with local media by supplying different bytes. It is a contract demonstration, not the companion production authoring demo.
 
 Up/Down and Previous/Next change slides; Left/Right select reveal stages; Home/End select endpoints; N opens Presenter. Side navigation exposes the current slide. Inputs and editable elements retain their keyboard behavior. Manual reveal/media controls cancel automatic reveal for that visit; hidden tabs pause timing and playback. Returning resumes the remaining reveal delay. Replay in either window restarts the sequence; complete diagrams hold without looping. Slide changes stop outgoing media. Print exposes all slides and final staged content; reduced motion exposes all staged content and disables automatic timing. Failed playback leaves native controls available. Fullscreen and popup failures provide retry guidance.
+
+When the audience page runs inside a frame, it posts `{type: 'storybench-deck-state', version: 1, slideId, index, stage, gallery}` to the embedding page on every change, and again when the parent window posts `{type: 'storybench-deck-state-request'}`. `stage` and `gallery` are the reveal stage and gallery view indexes, or null when the slide has none. The message carries no titles, notes or slide content; opened standalone (no parent frame), the page posts nothing. Builds with this runtime record `stateReporting: 1` in `manifest.json`; Storybench treats builds without it as unable to report their viewed slide.
 
 Presenter uses unpredictable per-opening channels and checks the actual source window, supporting opaque file origins. It displays current/next titles, notes, target minutes, slide/stage selectors and video controls. Heartbeats report lost connections; reopen from the audience to recover. All authored text is escaped on export and presenter messages use textContent. The runtime has no raw HTML authoring mode.
 

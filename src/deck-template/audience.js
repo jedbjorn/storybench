@@ -22,8 +22,22 @@
       targetMinutes: Number(slides[index].dataset.minutes),
       video: video() ? { paused: video().paused } : null };
   }
+  // Framed (Storybench Preview, or any page embedding an export): report the viewed
+  // position only, never titles, notes or content. Standalone pages post nothing.
+  const framed = window.parent !== window;
+  let reported = '';
+  function report(always = false) {
+    if (!framed) return;
+    const view = slides[index].querySelector('[data-gallery-view]:not([hidden])');
+    const message = { type: 'storybench-deck-state', version: 1, slideId: slides[index].id, index,
+      stage: steps().length ? stage : null, gallery: view ? Number(view.dataset.galleryView) : null };
+    const key = JSON.stringify(message);
+    if (!always && key === reported) return;
+    reported = key; window.parent.postMessage(message, '*');
+  }
   function publish() {
     if (popup && !popup.closed) popup.postMessage({ type: 'deck-state', channel, state: state() }, '*');
+    report();
   }
   function paintStage() {
     const pending = i => String((opening || i > stage) && !reduced.matches && !printing);
@@ -112,7 +126,9 @@
   }
   window.addEventListener('message', (event) => {
     const data = event.data;
-    if (!popup || event.source !== popup || !data || typeof data !== 'object' || data.channel !== channel) return;
+    if (!data || typeof data !== 'object') return;
+    if (framed && event.source === window.parent && data.type === 'storybench-deck-state-request') { report(true); return; }
+    if (!popup || event.source !== popup || data.channel !== channel) return;
     if (data.type === 'deck-ready' || data.type === 'deck-ping') { lastSeen = Date.now(); publish(); }
     else if (data.type === 'deck-command' && typeof data.command === 'string') command(data.command, data.index);
   });
