@@ -4,7 +4,7 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import path from "node:path";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, rmSync } from "node:fs";
 import { copyFile, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
@@ -238,26 +238,23 @@ export function createLibraryService({ workspace, store, fetchImpl = null, dnsLo
       } finally { await rm(temporary, { force: true }); }
     });
   }
-  // A new chat removes the production's redline images: file from disk, then record. In-use redlines become
-  // ordinary items; keepItemIds (a running turn's attachments) wait for the next removal; a file whose asset
-  // something else depends on stays on disk. A file that cannot be deleted keeps its record for the next removal.
+  // A new chat removes the production's redline images: file from disk, then record, atomically with the use check
+  // (store.deleteRedlineItem). In-use redlines become ordinary items; keepItemIds (a running turn's attachments) wait
+  // for the next removal; a file whose asset something else depends on stays on disk. A file that cannot be deleted
+  // keeps its record for the next removal.
   async function removeRedlines(episodeId, { keepItemIds = [] } = {}) {
     return serialized(async () => {
       const keep = new Set(keepItemIds), result = { removed: [], kept: [], failed: [] };
       for (const item of store.listRedlineItems(episodeId)) {
         if (keep.has(item.id)) continue;
-        if (store.libraryItemInUse(episodeId, item.id)) { store.releaseRedline(episodeId, item.id); result.kept.push(item.id); continue; }
-        const shared = store.assetSharedBeyond(item.assetId, item.id);
-        if (!shared) {
-          try { await rm(managedPath(item.asset.path), { force: true }); }
-          catch (error) { result.failed.push({ itemId: item.id, error: error.message }); continue; }
-        }
-        const outcome = store.deleteRedlineItem(episodeId, item.id, { dropAsset: !shared });
+        // Synchronous unlink: an await here would let a card, slide or reference update start using the redline.
+        const { outcome, error } = store.deleteRedlineItem(episodeId, item.id, () => rmSync(managedPath(item.asset.path), { force: true }));
         if (outcome === "kept") result.kept.push(item.id);
+        if (outcome === "failed") result.failed.push({ itemId: item.id, error: error.message });
         if (outcome !== "removed") continue;
         result.removed.push(item.id);
         // Derived caches are keyed by content hash and shared across channels: drop them only with the last asset.
-        if (!shared && !store.db.prepare("SELECT 1 FROM assets WHERE hash=? LIMIT 1").get(item.asset.hash))
+        if (!store.db.prepare("SELECT 1 FROM assets WHERE hash=? LIMIT 1").get(item.asset.hash))
           for (const cache of [item.asset.thumbnailPath, `cache/${item.asset.hash}-probe-v1.json`].filter(Boolean))
             await rm(managedPath(cache), { force: true }).catch(() => {});
       }

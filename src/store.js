@@ -1626,18 +1626,24 @@ export class Store {
     this.db.prepare("UPDATE library_items SET source_kind='file',revision=revision+1,updated_at=? WHERE id=? AND episode_id=? AND source_kind='redline'")
       .run(now(), itemId, episodeId);
   }
-  // Deletes the redline record (and its asset row when dropAsset) without touching cards, history or the production
-  // revision. Re-checks use inside the transaction; a redline that became used meanwhile is released instead.
-  deleteRedlineItem(episodeId, itemId, { dropAsset = false } = {}) {
+  // Deletes the redline record and, unless something else depends on its asset, the file (via removeFile) and the
+  // asset row, without touching cards, history or the production revision. The use check, the file removal and the
+  // record deletion run in one synchronous transaction, so nothing can start using the redline between them: a
+  // redline in use is released instead, and a file that cannot be removed rolls back and keeps its record.
+  deleteRedlineItem(episodeId, itemId, removeFile) {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const row = this.db.prepare("SELECT asset_id FROM library_items WHERE id=? AND episode_id=? AND source_kind='redline'").get(itemId, episodeId);
-      if (!row) { this.db.exec("COMMIT"); return "absent"; }
-      if (this.libraryItemInUse(episodeId, itemId)) { this.releaseRedline(episodeId, itemId); this.db.exec("COMMIT"); return "kept"; }
+      if (!row) { this.db.exec("COMMIT"); return { outcome: "absent" }; }
+      if (this.libraryItemInUse(episodeId, itemId)) { this.releaseRedline(episodeId, itemId); this.db.exec("COMMIT"); return { outcome: "kept" }; }
+      const shared = this.assetSharedBeyond(row.asset_id, itemId);
+      if (!shared) {
+        try { removeFile(); } catch (error) { this.db.exec("ROLLBACK"); return { outcome: "failed", error }; }
+      }
       this.db.prepare("DELETE FROM library_items WHERE id=?").run(itemId);
-      if (dropAsset && !this.assetSharedBeyond(row.asset_id, itemId)) this.db.prepare("DELETE FROM assets WHERE id=?").run(row.asset_id);
+      if (!shared) this.db.prepare("DELETE FROM assets WHERE id=?").run(row.asset_id);
       this.db.exec("COMMIT");
-      return "removed";
+      return { outcome: "removed" };
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
   // Explicit creator direction to edit or directly use a specific reference item. It must cite a creator (user)

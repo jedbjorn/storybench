@@ -172,3 +172,38 @@ test('library removal reaches open workspace tabs through the production event s
   do event = await next(); while (!event.libraryRemoved);
   assert.deepEqual(event, { episodeId: episode.id, libraryRemoved: [mark.id] });
 });
+
+// A redline that becomes in use while removal runs is kept with its bytes: the use check, the unlink and the record
+// deletion are one step, so a card, slide or reference update cannot land between the check and the unlink.
+test('a redline that becomes in use during removal keeps its file as an ordinary item', async t => {
+  const workspace = await mkdtemp(path.join(tmpdir(), 'sb-redline-race-'));
+  const app = await createApp({ workspace });
+  await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await app.close(); await rm(workspace, { recursive: true, force: true }); });
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const folder = path.join(workspace, 'fixtures');
+  await mkdir(folder, { recursive: true });
+  const { store } = app;
+  const episode = store.createEpisode({ title: 'Race' });
+  const scope = `?channel=${episode.channelId}`;
+  const source = await (await fetch(`${base}/api/episodes/${episode.id}/library/files${scope}`, { method: 'POST', headers: { 'x-file-name': 'white.png', 'content-type': 'image/png' }, body: await colourPNG(folder, 'white') })).json();
+  const mark = await (await fetch(`${base}/api/preview/library/${episode.id}/${source.id}/redline${scope}`, { method: 'POST', headers: { 'content-type': 'image/png' }, body: await colourPNG(folder, 'red') })).json();
+  assert.equal(mark.sourceKind, 'redline');
+  // The latest point removal yields before deleting: use lands after removal began and before the record goes.
+  const original = store.deleteRedlineItem.bind(store);
+  let injected = false;
+  store.deleteRedlineItem = (episodeId, itemId, removeFile) => {
+    if (itemId === mark.id && !injected) {
+      injected = true;
+      store.updateEpisode(episodeId, store.getEpisode(episodeId).revision, { referenceItemIds: [itemId] });
+    }
+    return original(episodeId, itemId, removeFile);
+  };
+  assert.equal((await fetch(`${base}/api/episodes/${episode.id}/chats${scope}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 201);
+  assert.ok(injected, 'The interleaving was exercised');
+  const kept = store.getLibraryItem(episode.id, mark.id);
+  assert.equal(kept.sourceKind, 'file', 'The redline is kept as an ordinary item');
+  assert.deepEqual(store.getEpisode(episode.id).referenceItemIds, [mark.id]);
+  assert.ok(existsSync(path.join(workspace, kept.asset.path)), 'Its bytes stay on disk');
+  assert.equal((await fetch(`${base}/api/episodes/${episode.id}/library/${mark.id}/file${scope}`)).status, 200, 'The file is still served');
+});
