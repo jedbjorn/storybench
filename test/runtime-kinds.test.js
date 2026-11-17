@@ -102,6 +102,12 @@ test('kind templates isolate guidance, clean owned files in every native root, a
   }
   const boot = await readFile(path.join(episodeDir, 'AGENTS.md'), 'utf8');
   assert.match(boot, /staged SVG illustrations/);
+  // The shared redline skill and boot passage reach deck requests as they reach video requests.
+  for (const templates of [video, deck]) assert.ok(templates.skills.some(({ name }) => name === 'storybench-redline'));
+  for (const root of ['.agents', '.claude', '.opencode'])
+    assert.match(await readFile(path.join(episodeDir, root, 'skills/storybench-redline/SKILL.md'), 'utf8'), /\*\*What I see\*\*[\s\S]*\*\*Hold\.\*\* Make no change in this turn/);
+  assert.match(boot, /begins with `Redline on` is a redline/);
+  assert.ok(boot.includes('.claude/skills/storybench-redline/SKILL.md'), 'the deck boot indexes the redline skill');
   assert.match(boot, /tools served to this request: get_context/);
   assert.doesNotMatch(boot, /create_final|create_draft|update_cards|storybench-finish-video/);
 });

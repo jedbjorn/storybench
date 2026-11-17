@@ -110,6 +110,14 @@ export class LibraryWorkspace {
     this.items = items;
     this.render();
   }
+  // Items removed on the server (redline images when a new chat starts) leave the open panel without a reload.
+  drop(episodeId, itemIds) {
+    if (this.getEpisode()?.id !== episodeId || !this.items?.length) return;
+    const removed = new Set(itemIds), remaining = this.items.filter((item) => !removed.has(item.id));
+    if (remaining.length === this.items.length) return;
+    this.items = remaining;
+    this.render();
+  }
   render() {
     this.groups.innerHTML = categories.map((category) => {
       const items = this.items.filter((item) => item.category === category);

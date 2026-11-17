@@ -467,6 +467,9 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
     }
     const old = db.prepare("SELECT text FROM conversation_messages WHERE id=? AND conversation_id=?").get(previous.originatingMessageId, id);
     if (!old) throw error("The original request message is unavailable", 409);
+    const previousAttachments = attachments.messages(id).get(previous.originatingMessageId) ?? [];
+    if (previousAttachments.some((attachment) => attachment.unavailable))
+      throw error("This redline image was removed when a new chat started. Send a new redline from Preview instead of retrying.", 409);
     let message, created;
     db.exec("BEGIN IMMEDIATE");
     try {
@@ -478,7 +481,6 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
       if (db.isTransaction) db.exec("ROLLBACK");
       throw cause;
     }
-    const previousAttachments = attachments.messages(id).get(previous.originatingMessageId) ?? [];
     if (previousAttachments.length) emit(value, "message.attachments", { messageId: message.id, attachments: previousAttachments });
     const authorityMessageId = root.origin === "typed" ? root.originatingMessageId : null;
     const result = dispatch(value, message.id, old.text, { id: created.run.id, kind: created.run.kind, origin: "button", targetCardId: created.run.targetCardId,
@@ -550,6 +552,10 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
     get: (episodeId, id) => project(episodeId, id || first(episodeId).id), update,
     send: (episodeId, id, text, attachmentIds = []) => text === undefined ? send(episodeId, first(episodeId).id, id, attachmentIds) : send(episodeId, id, text, attachmentIds),
     sendProduction, retry,
+    // Images attached to the creator message of a turn still running in this production; redline removal keeps them.
+    runningAttachmentItemIds: (episodeId) => db.prepare(`SELECT m.id,m.conversation_id conversationId FROM conversation_messages m JOIN conversations c ON c.id=m.conversation_id
+      WHERE c.episode_id=? AND m.role='user' AND m.state IN ('queued','running')`).all(episodeId)
+      .flatMap((message) => (attachments.messages(message.conversationId).get(message.id) ?? []).map((attachment) => attachment.itemId)),
     interrupt: (episodeId, id) => interrupt(episodeId, id || first(episodeId).id),
     getLegacy: (episodeId) => project(episodeId, first(episodeId).id), sendLegacy: (episodeId, text) => send(episodeId, first(episodeId).id, text), interruptLegacy: (episodeId) => interrupt(episodeId, first(episodeId).id),
     subscribe(episodeId, listener) { episode(episodeId); const set = listeners.get(episodeId) || new Set(); set.add(listener); listeners.set(episodeId, set); return () => { set.delete(listener); if (!set.size) listeners.delete(episodeId); }; },

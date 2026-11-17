@@ -165,7 +165,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
   const store = dataRoot ? openDataRoot(dataRoot, { startup: true, storeOptions }) : new Store(workspaceOption, storeOptions);
   const workspace = store.workspace;
   const listeners = new Map();
-  const notify = (episodeId) => listeners.get(episodeId)?.forEach((fn) => fn());
+  const notify = (episodeId, detail = {}) => listeners.get(episodeId)?.forEach((fn) => fn(detail));
   const library = createLibraryService({ workspace, store });
   const decks = createDeckService({store,onChange:notify});
   const deckCapture = createDeckCapture({ store });
@@ -397,7 +397,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         if (parts[3] === 'events' && parts.length === 4 && req.method === 'GET') {
           res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
           eventStreams.add(res);
-          const emit = () => res.write(`data: ${JSON.stringify({ episodeId })}\n\n`);
+          const emit = (detail = {}) => res.write(`data: ${JSON.stringify({ ...detail, episodeId })}\n\n`);
           const subscribers = listeners.get(episodeId) || new Set();
           subscribers.add(emit); listeners.set(episodeId, subscribers);
           emit();
@@ -602,7 +602,16 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           if (parts[4] && parts[5] === "settings" && parts.length === 6 && req.method === "PUT")
             return send(res, 200, await chat.updateSettings(episodeId, parts[4], await jsonBody(req)));
           if (parts.length === 4 && req.method === "GET") return send(res, 200, chat.list(episodeId));
-          if (parts.length === 4 && req.method === "POST") return send(res, 201, chat.create(episodeId, await jsonBody(req)));
+          if (parts.length === 4 && req.method === "POST") {
+            const created = chat.create(episodeId, await jsonBody(req));
+            // Starting a new chat removes this production's redline images; a failure never blocks the new chat.
+            try {
+              const removal = await library.removeRedlines(episodeId, { keepItemIds: chat.runningAttachmentItemIds(episodeId) });
+              for (const failure of removal.failed) console.warn(`Redline ${failure.itemId} was not removed and will be retried at the next new chat: ${failure.error}`);
+              if (removal.removed.length || removal.kept.length) notify(episodeId, { libraryRemoved: removal.removed });
+            } catch (cause) { console.warn(`Redline removal did not run and will be retried at the next new chat: ${cause.message}`); }
+            return send(res, 201, created);
+          }
           const conversationId = parts[4];
           if (conversationId && parts.length === 5 && req.method === "GET") return send(res, 200, chat.get(episodeId, conversationId));
           if (conversationId && parts.length === 5 && req.method === "PUT") return send(res, 200, chat.update(episodeId, conversationId, await jsonBody(req)));

@@ -1600,6 +1600,52 @@ export class Store {
       .get(episodeId, assetId, sourceKind);
     return row ? this.getLibraryItem(episodeId, row.id) : null;
   }
+  // ---- Redline lifetime (spec #29): redline items are removed when a new chat starts in their production ----
+  listRedlineItems(episodeId) {
+    return this.listEpisodeLibrary(episodeId).filter((item) => item.sourceKind === "redline");
+  }
+  // In use = referenced by a card or slide (output media, deck media/vector/subnav, card references) or the production's references.
+  libraryItemInUse(episodeId, itemId) {
+    const episode = this.getEpisode(episodeId);
+    if (!episode) throw new StoreError("Episode not found", 404);
+    return episode.referenceItemIds.includes(itemId) || episode.cards.some((card) => card.itemId === itemId
+      || card.media?.itemId === itemId || card.vector?.itemId === itemId
+      || (card.subnav || []).some((entry) => entry.itemId === itemId) || (card.referenceItemIds || []).includes(itemId));
+  }
+  // Whether anything besides this library item depends on the asset row or its file.
+  assetSharedBeyond(assetId, itemId) {
+    const asset = this.db.prepare("SELECT path FROM assets WHERE id=?").get(assetId);
+    if (!asset) return false;
+    if (this.db.prepare("SELECT 1 FROM library_items WHERE asset_id=? AND id<>? LIMIT 1").get(assetId, itemId)) return true;
+    if (this.db.prepare("SELECT 1 FROM episode_library WHERE asset_id=? LIMIT 1").get(assetId)) return true;
+    if (this.db.prepare("SELECT dependency_items FROM branding_templates").all().some((row) => parse(row.dependency_items, []).some((dependency) => dependency.assetId === assetId))) return true;
+    return this.outputPathOwners(asset.path).some((owner) => owner.kind !== "asset" || owner.id !== assetId);
+  }
+  // An in-use redline is kept as an ordinary library item: it is no longer removed with the other redlines.
+  releaseRedline(episodeId, itemId) {
+    this.db.prepare("UPDATE library_items SET source_kind='file',revision=revision+1,updated_at=? WHERE id=? AND episode_id=? AND source_kind='redline'")
+      .run(now(), itemId, episodeId);
+  }
+  // Deletes the redline record and, unless something else depends on its asset, the file (via removeFile) and the
+  // asset row, without touching cards, history or the production revision. The use check, the file removal and the
+  // record deletion run in one synchronous transaction, so nothing can start using the redline between them: a
+  // redline in use is released instead, and a file that cannot be removed rolls back and keeps its record.
+  deleteRedlineItem(episodeId, itemId, removeFile) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare("SELECT asset_id FROM library_items WHERE id=? AND episode_id=? AND source_kind='redline'").get(itemId, episodeId);
+      if (!row) { this.db.exec("COMMIT"); return { outcome: "absent" }; }
+      if (this.libraryItemInUse(episodeId, itemId)) { this.releaseRedline(episodeId, itemId); this.db.exec("COMMIT"); return { outcome: "kept" }; }
+      const shared = this.assetSharedBeyond(row.asset_id, itemId);
+      if (!shared) {
+        try { removeFile(); } catch (error) { this.db.exec("ROLLBACK"); return { outcome: "failed", error }; }
+      }
+      this.db.prepare("DELETE FROM library_items WHERE id=?").run(itemId);
+      if (!shared) this.db.prepare("DELETE FROM assets WHERE id=?").run(row.asset_id);
+      this.db.exec("COMMIT");
+      return { outcome: "removed" };
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
   // Explicit creator direction to edit or directly use a specific reference item. It must cite a creator (user)
   // message in one of this episode's conversations; migration, category changes, attachments and model output
   // never create one. Callers attach the returned record to the request/result provenance.

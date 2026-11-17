@@ -90,7 +90,24 @@ async function load(select, { remember = true } = {}) {
   await syncChat();
   if (episode && !$("#boardPanel").hidden) await loadBoardContext();
 }
+// One episode event stream per open production, used only for library removals (redline images on a new chat).
+let libraryEvents = null, libraryEventsEpisode = null;
+function watchLibraryRemovals() {
+  const id = episode?.id ?? null;
+  if (id === libraryEventsEpisode) return;
+  libraryEvents?.close();
+  libraryEvents = null; libraryEventsEpisode = id;
+  if (!id) return;
+  libraryEvents = new EventSource(withChannel(`/api/episodes/${encodeURIComponent(id)}/events`, channelId));
+  libraryEvents.onmessage = (event) => {
+    const detail = JSON.parse(event.data);
+    if (!detail.libraryRemoved?.length || detail.episodeId !== episode?.id) return;
+    libraryWorkspace.drop(detail.episodeId, detail.libraryRemoved);
+    if (boardItemsEpisode === detail.episodeId && boardItems) boardItems = boardItems.filter((item) => !detail.libraryRemoved.includes(item.id));
+  };
+}
 function render() {
+  watchLibraryRemovals();
   $('#newEpisode').disabled = !channelId;
   $('#firstEpisode').textContent = channelId ? 'Create a production' : 'Create a channel';
   const filter = $("#episodeFilter").value;
