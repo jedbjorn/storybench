@@ -238,6 +238,37 @@ export function createLibraryService({ workspace, store, fetchImpl = null, dnsLo
       } finally { await rm(temporary, { force: true }); }
     });
   }
+  // A new chat removes the production's redline images: file from disk, then record. In-use redlines become
+  // ordinary items; keepItemIds (a running turn's attachments) wait for the next removal; a file whose asset
+  // something else depends on stays on disk. A file that cannot be deleted keeps its record for the next removal.
+  async function removeRedlines(episodeId, { keepItemIds = [] } = {}) {
+    return serialized(async () => {
+      const keep = new Set(keepItemIds), result = { removed: [], kept: [], failed: [] };
+      for (const item of store.listRedlineItems(episodeId)) {
+        if (keep.has(item.id)) continue;
+        if (store.libraryItemInUse(episodeId, item.id)) { store.releaseRedline(episodeId, item.id); result.kept.push(item.id); continue; }
+        const shared = store.assetSharedBeyond(item.assetId, item.id);
+        if (!shared) {
+          try { await rm(managedPath(item.asset.path), { force: true }); }
+          catch (error) { result.failed.push({ itemId: item.id, error: error.message }); continue; }
+        }
+        const outcome = store.deleteRedlineItem(episodeId, item.id, { dropAsset: !shared });
+        if (outcome === "kept") result.kept.push(item.id);
+        if (outcome !== "removed") continue;
+        result.removed.push(item.id);
+        // Derived caches are keyed by content hash and shared across channels: drop them only with the last asset.
+        if (!shared && !store.db.prepare("SELECT 1 FROM assets WHERE hash=? LIMIT 1").get(item.asset.hash))
+          for (const cache of [item.asset.thumbnailPath, `cache/${item.asset.hash}-probe-v1.json`].filter(Boolean))
+            await rm(managedPath(cache), { force: true }).catch(() => {});
+      }
+      return result;
+    });
+  }
+  function managedPath(relative) {
+    const absolute = path.resolve(workspace, relative);
+    if (!absolute.startsWith(path.resolve(workspace) + path.sep)) throw new StoreError("Managed file escapes the workspace", 403);
+    return absolute;
+  }
   async function registerText({ episodeId, title, text, sectionId }) {
     return serialized(async () => {
       const target = destination(episodeId);
@@ -403,5 +434,5 @@ export function createLibraryService({ workspace, store, fetchImpl = null, dnsLo
         alreadyPresent: Boolean(already), appliedToCard, applyNote };
     });
   }
-  return { registerFile, registerRedline, registerText, registerUrl, reuseItem };
+  return { registerFile, registerRedline, removeRedlines, registerText, registerUrl, reuseItem };
 }

@@ -109,7 +109,7 @@ test("the shipped templates render with the app's boot context and cover the ski
   assert.doesNotMatch(renderedBoot, /not in this render|not reported in this render/);
   const roster = ["storybench-understand-project", "storybench-read-references", "storybench-edit-story-cards", "storybench-edit-broll",
     "storybench-create-graphics", "storybench-reuse-project-assets", "storybench-assemble-draft", "storybench-finish-video",
-    "storybench-video-context", "storybench-video-reuse", "storybench-video-references"];
+    "storybench-video-context", "storybench-video-reuse", "storybench-video-references", "storybench-redline"];
   for (const name of roster) for (const root of [".claude/skills", ".agents/skills", ".opencode/skills"])
     assert.ok(result.files.some((file) => file.path === `${root}/${name}/SKILL.md`), `${root}/${name} rendered`);
   const loaded = await loadTemplates();
@@ -125,6 +125,7 @@ test("the shipped templates render with the app's boot context and cover the ski
   assert.equal(boot, await readFile(path.join(dir, "CLAUDE.md"), "utf8"));
   assert.match(boot, /Reference material is read-only feel context\. Do not edit it or directly use it in the production unless the creator explicitly asks for that use or edit\./);
   for (const name of roster) assert.ok(boot.includes(`.claude/skills/${name}/SKILL.md`), `boot indexes ${name}`);
+  assert.match(boot, /A creator message that begins with `Redline on` is a redline[^\n]*Read the `storybench-redline` skill before doing anything else/);
   assert.ok(!/\{\{/.test(boot), "no unfilled placeholders in the boot");
 });
 
