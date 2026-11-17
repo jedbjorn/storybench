@@ -36,6 +36,20 @@ test('only http, https and mailto destinations are clickable; images load nothin
   assert.match(html.textContent, /<script>alert\(1\)<\/script><img src=x onerror=alert\(1\)><a href="javascript:alert\(1\)">raw<\/a>/);
 });
 
+test('a linked image is one anchor to the outer target, or plain alt text when that target is refused', () => {
+  const render = createChatRenderer();
+  const allowed = fragment(render('See [![Deck cover](https://img.example/cover.png)](https://example.com/deck) now.'));
+  assert.deepEqual([...allowed.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href'), a.target, a.rel]),
+    [['Deck cover', 'https://example.com/deck', '_blank', 'noreferrer noopener']]);
+  assert.equal(allowed.textContent.trim(), 'See Deck cover now.');
+  for (const target of ['javascript:alert(1)', 'story.md']) {
+    const refused = fragment(render(`See [![Deck cover](https://img.example/cover.png)](${target}) now.`));
+    assert.equal(refused.querySelectorAll('a').length, 0);
+    assert.equal(refused.textContent.trim(), 'See Deck cover now.');
+  }
+  assert.equal(fragment(render('[![a](https://img.example/a.png)](https://example.com) ![b](https://img.example/b.png)')).querySelectorAll('img, [src]').length, 0);
+});
+
 test('single line breaks stay breaks and tables sit in their own scroll block', () => {
   const html = fragment(createChatRenderer()('one\ntwo\n\n| a | b |\n|---|---|\n| 1 | 2 |'));
   assert.equal(html.querySelectorAll('p br').length, 1);
