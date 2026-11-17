@@ -39,7 +39,6 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: paste, drop an
   const downloads = [];
   context.on('page', opened => opened.on('download', download => downloads.push(download)));
   const page = await context.newPage();
-  let preview;
   for (const kind of ['video', 'deck']) {
     const episode = app.store.createEpisode({ title: `${kind} image loop`, kind });
     lastEpisode = episode;
@@ -88,18 +87,24 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: paste, drop an
       await link.waitFor();
       assert.equal(await link.getAttribute('target'), 'storybench-preview');
       assert.equal(await link.getAttribute('rel'), null);
-      if (!preview) [preview] = await Promise.all([context.waitForEvent('page'), link.click()]);
-      else await link.click();
+      await link.click();
+      await page.locator('#previewModal').waitFor();
+      const preview = await (await page.locator('[data-preview-frame]').elementHandle()).contentFrame();
       await preview.waitForURL(`${base}/preview/library/${episode.id}/${attachmentId}?channel=${episode.channelId}`);
       await preview.waitForFunction(() => document.querySelector('#viewer img')?.naturalWidth > 0);
       assert.match(await preview.title(), /^Storybench Preview — /);
-      assert.equal(context.pages().length, 2, 'Transcript images reuse the Preview tab');
+      assert.equal(context.pages().length, 1, 'Transcript images open in the workspace popup');
       assert.equal(downloads.length, 0, 'Opening an image never downloads it');
+      if (process.env.STORYBENCH_EVIDENCE_DIR) {
+        await mkdir(process.env.STORYBENCH_EVIDENCE_DIR, { recursive: true });
+        await page.screenshot({ path: path.join(process.env.STORYBENCH_EVIDENCE_DIR, `chat-preview-${kind}-${engine.name()}.png`) });
+      }
+      await page.click('#previewModal header [data-preview-close]');
+      await page.locator('#previewModal').waitFor({ state: 'hidden' });
     }
     if (process.env.STORYBENCH_EVIDENCE_DIR) {
       await mkdir(process.env.STORYBENCH_EVIDENCE_DIR, { recursive: true });
       await page.screenshot({ path: path.join(process.env.STORYBENCH_EVIDENCE_DIR, `chat-${kind}-${engine.name()}.png`) });
-      await preview.screenshot({ path: path.join(process.env.STORYBENCH_EVIDENCE_DIR, `chat-preview-${kind}-${engine.name()}.png`) });
     }
   }
   // The explicit action remains a download, unlike the transcript image itself.

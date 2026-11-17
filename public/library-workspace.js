@@ -1,4 +1,5 @@
 import { libraryOpenUrl, withChannel } from "./preview-links.js";
+import { icons } from "./icons.js";
 const categories = ["Reference", "B-roll", "Narration", "Graphics"];
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
 
@@ -46,7 +47,8 @@ export async function uploadLibraryFile({ episodeId, file, label = file.name, ca
 }
 
 export class LibraryWorkspace {
-  constructor({ api, toast, getEpisode, refreshState, beforeDelete = () => {}, onMutation = () => {} }) {
+  constructor({ api, toast, getEpisode, refreshState, preview, beforeDelete = () => {}, onMutation = () => {} }) {
+    this.preview = preview;
     this.api = api;
     this.toast = toast;
     this.getEpisode = getEpisode;
@@ -58,7 +60,6 @@ export class LibraryWorkspace {
     this.groups = document.querySelector("#libraryGroups");
     this.progress = document.querySelector("#libraryProgress");
     this.importModal = document.querySelector("#libraryImportModal");
-    this.editModal = document.querySelector("#libraryEditModal");
     this.bind();
   }
   bind() {
@@ -86,9 +87,12 @@ export class LibraryWorkspace {
       const id = event.target.closest("[data-library-edit]")?.dataset.libraryEdit;
       if (id) this.openEdit(id);
     };
+    // Only the grip is draggable; the whole card is the drag image.
     this.groups.ondragstart = (event) => {
-      const item = event.target.closest("[data-library-item]");
-      if (item) event.dataTransfer.setData("text/library-item", item.dataset.libraryItem);
+      const item = event.target.closest?.("[data-library-grip]")?.closest("[data-library-item]");
+      if (!item) return;
+      event.dataTransfer.setData("text/library-item", item.dataset.libraryItem);
+      event.dataTransfer.setDragImage(item, 20, 20);
     };
     this.groups.ondragover = (event) => { if (event.target.closest("[data-library-category]")) event.preventDefault(); };
     this.groups.ondrop = async (event) => {
@@ -98,7 +102,6 @@ export class LibraryWorkspace {
       event.preventDefault();
       await this.move(id, group.dataset.libraryCategory);
     };
-    this.editModal.querySelectorAll("[data-library-close]").forEach((button) => button.onclick = () => this.editModal.close());
     document.querySelector("#libraryEditForm").onsubmit = (event) => { event.preventDefault(); this.saveEdit(); };
   }
   async open() {
@@ -126,15 +129,28 @@ export class LibraryWorkspace {
   }
   card(item) {
     const base = `/api/episodes/${encodeURIComponent(item.episodeId)}/library/${encodeURIComponent(item.id)}`;
-    const channelId = item.asset.channelId || this.getEpisode()?.channelId;
-    const file = withChannel(`${base}/file`, channelId);
-    const open = libraryOpenUrl(item, channelId);
+    const label = esc(item.label);
     let preview = '<div class="library-file-icon">◇</div>';
     if (item.asset.kind === "image") preview = `<img src="${base}/file" alt="">`;
     else if (item.asset.kind === "video") preview = `<video src="${base}/file" preload="metadata" muted></video>`;
-    else if (item.asset.kind === "audio") preview = `<audio src="${base}/file" controls preload="metadata"></audio>`;
+    // A player is its own control, so an audio card opens from its Edit button only.
+    const thumb = item.asset.kind === "audio" ? `<audio src="${base}/file" controls preload="metadata"></audio>`
+      : `<button type="button" class="library-thumb" data-library-edit="${item.id}" aria-label="Open ${label}" title="Open">${preview}</button>`;
     const extraction = item.category === "Reference" ? `<span class="extraction ${item.extractionStatus}">${esc(item.extractionStatus)}</span>` : "";
-    return `<article class="asset library-item" draggable="true" data-library-item="${item.id}">${preview}<div><b>${esc(item.label)}</b><span>${esc(item.asset.kind)} ${extraction}</span><div class="library-card-actions"><a href="${esc(open)}" target="${open.startsWith('/preview/') ? 'storybench-preview' : '_blank'}">Open</a> <a href="${esc(file)}${file.includes('?') ? '&amp;' : '?'}download=1">Download</a><div><button data-library-edit="${item.id}">Edit</button><button data-library-delete="${item.id}" aria-label="Delete ${esc(item.label)} from library">Delete</button></div></div></div></article>`;
+    return `<article class="asset library-item" data-library-item="${item.id}"><span class="library-grip" data-library-grip draggable="true" title="Drag to another category" aria-hidden="true">${icons.grip}</span>${thumb}<div><b>${label}</b><span>${esc(item.asset.kind)} ${extraction}</span><div class="library-card-actions"><div><button type="button" data-library-edit="${item.id}" aria-label="Edit ${label}">${icons.edit}Edit</button><a class="icon-button" href="${esc(this.downloadUrl(item))}" aria-label="Download ${label}" title="Download">${icons.download}</a></div><button type="button" class="icon-button danger" data-library-delete="${item.id}" aria-label="Delete ${label} from library" title="Delete">${icons.trash}</button></div></div></article>`;
+  }
+  downloadUrl(item) {
+    const file = withChannel(`/api/episodes/${encodeURIComponent(item.episodeId)}/library/${encodeURIComponent(item.id)}/file`, item.asset.channelId || this.getEpisode()?.channelId);
+    return `${file}${file.includes("?") ? "&" : "?"}download=1`;
+  }
+  // What the popup's viewer shows: the framed Preview page, or a player or file pane for anything it cannot show.
+  viewer(item) {
+    const channelId = item.asset.channelId || this.getEpisode()?.channelId;
+    const open = libraryOpenUrl(item, channelId);
+    if (open.startsWith("/preview/")) return { url: open };
+    const download = `<a class="button" href="${esc(this.downloadUrl(item))}">${icons.download}Download</a>`;
+    if (item.asset.kind === "audio") return { file: `<audio src="${esc(open)}" controls preload="metadata"></audio>${download}` };
+    return { file: `<div class="library-file-icon" aria-hidden="true">◇</div><p>${esc(item.asset.name || item.label)}</p>${download}` };
   }
   queueFiles(files) {
     if (!files.length) return;
@@ -204,14 +220,14 @@ export class LibraryWorkspace {
     form.elements.tags.value = item.tags.join(", ");
     form.elements.notes.value = item.notes;
     form.querySelector("[data-library-edit-error]").textContent = "";
-    this.editModal.showModal();
+    this.preview.open({ ...this.viewer(item), title: item.label, aside: true });
   }
   async saveEdit() {
     const form = document.querySelector("#libraryEditForm");
     const body = { expectedRevision: this.editing.revision, label: form.elements.label.value, category: form.elements.category.value, tags: form.elements.tags.value.split(",").map((tag) => tag.trim()).filter(Boolean), notes: form.elements.notes.value };
     try {
       await this.api(`/api/episodes/${this.getEpisode().id}/library/${this.editing.id}`, { method: "PUT", body: JSON.stringify(body) });
-      this.editModal.close(); await this.open(); await this.onMutation(); this.toast("Library item saved");
+      this.preview.close(); await this.open(); await this.onMutation(); this.toast("Library item saved");
     } catch (error) { form.querySelector("[data-library-edit-error]").textContent = error.message; }
   }
   async deleteItem(id) {

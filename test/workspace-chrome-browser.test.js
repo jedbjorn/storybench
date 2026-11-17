@@ -52,10 +52,17 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
   assert.equal(libraryCards.length, 2);
   const actionBottoms = [];
   for (const card of libraryCards) {
-    assert.ok((await card.boundingBox()).width <= 220, 'Library cards stay compact instead of filling the workspace');
-    const actions = await card.locator('.library-card-actions').boundingBox();
+    const box = await card.boundingBox(), actions = await card.locator('.library-card-actions').boundingBox();
+    assert.ok(actions.x + actions.width <= box.x + box.width, 'Card actions fit inside the card');
     actionBottoms.push(actions.y + actions.height);
   }
+  // The columns share the row: no strip wider than a gap is left over on the right.
+  const grid = page.locator('[data-library-category="Graphics"] .asset-grid');
+  const leftover = await grid.evaluate((element) => {
+    const style = getComputedStyle(element), tracks = style.gridTemplateColumns.split(' ').map(parseFloat);
+    return element.clientWidth - tracks.reduce((sum, width) => sum + width, 0) - parseFloat(style.columnGap) * (tracks.length - 1);
+  });
+  assert.ok(leftover < 1, `Library columns fill the workspace (${leftover}px left over)`);
   assert.ok(Math.abs(actionBottoms[0] - actionBottoms[1]) < 1, 'Card actions align along the bottom despite wrapped labels');
   for (const width of [1600, 600, 390]) {
     await page.setViewportSize({ width, height: 1000 });
@@ -69,10 +76,13 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
   await page.setViewportSize({ width: 1600, height: 1000 });
   const graphicBox = await page.locator(libraryItem).boundingBox();
   assert.ok(graphicBox.y + 100 < 1000, 'Graphics preview is visible below three empty categories');
-  const dragOptions = { sourcePosition: { x: 20, y: 150 }, targetPosition: { x: 20, y: 10 } };
-  await page.locator(libraryItem).dragTo(page.locator('[data-library-category="Narration"] .library-group-heading'), dragOptions);
+  // The grip at the card's top left is the drag handle.
+  const grip = page.locator(`${libraryItem} [data-library-grip]`), dragOptions = { targetPosition: { x: 20, y: 10 } };
+  const gripBox = await grip.boundingBox();
+  assert.ok(gripBox.x - graphicBox.x < 12 && gripBox.y - graphicBox.y < 12, 'The grip sits at the top left of the card');
+  await grip.dragTo(page.locator('[data-library-category="Narration"] .library-group-heading'), dragOptions);
   await page.locator(`[data-library-category="Narration"] ${libraryItem}`).waitFor();
-  await page.locator(libraryItem).dragTo(page.locator('[data-library-category="Graphics"] .library-group-heading'), dragOptions);
+  await grip.dragTo(page.locator('[data-library-category="Graphics"] .library-group-heading'), dragOptions);
   await page.locator(`[data-library-category="Graphics"] ${libraryItem}`).waitFor();
   await page.click('[data-tab="board"]');
   await page.click('#episodeRailToggle');

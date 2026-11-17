@@ -322,10 +322,13 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: Markup capture
   await transcript.filter({ hasText: 'Move the logo' }).waitFor();
   const thumbnail = workspacePage.locator(`a.chat-image-link[href*="${record.id}"]`);
   await thumbnail.waitFor();
-  const [reopened] = await Promise.all([context.waitForEvent('page'), thumbnail.click()]);
+  await thumbnail.click();
+  await workspacePage.locator('#previewModal').waitFor();
+  const reopened = await (await workspacePage.locator('[data-preview-frame]').elementHandle()).contentFrame();
   await reopened.waitForURL(`${base}/preview/library/${episode.id}/${record.id}${scope}`);
-  await reopened.locator('#label').filter({ hasText: 'Redline — white.png' }).waitFor();
-  await reopened.close();
+  await workspacePage.locator('[data-preview-title]').filter({ hasText: 'Redline — white.png' }).waitFor();
+  await reopened.locator('#markup').waitFor();
+  await workspacePage.click('#previewModal header [data-preview-close]');
 
   // While a turn is active, Send is disabled with the existing explanation; it returns when the turn ends.
   agent.hold = true;

@@ -5,6 +5,10 @@ const metadataUrl = `/api${location.pathname}${location.search}`;
 let current;
 let events;
 let shown = null; // The deck state last reported by the pinned deck's own frame.
+// Framed by the workspace's preview popup: the popup's header carries the label, so hand it over.
+const embedded = window.parent !== window;
+if (embedded) document.documentElement.classList.add('embed');
+const announce = label => { if (embedded) window.parent.postMessage({ type: 'storybench-preview-label', label }, location.origin); };
 
 function unavailable(message = 'This item is no longer available.') {
   events?.close();
@@ -14,6 +18,7 @@ function unavailable(message = 'This item is no longer available.') {
   $('#markup').hidden = true;
   $('#newer').hidden = true;
   $('#label').textContent = 'Preview unavailable';
+  announce('Preview unavailable');
   $('#details').textContent = '';
   $('#message').textContent = message;
   document.title = 'Storybench Preview — Unavailable';
@@ -82,6 +87,7 @@ async function open() {
   document.title = `Storybench Preview — ${current.label}`;
   $('#production').textContent = current.production;
   $('#label').textContent = current.label;
+  announce(current.label);
   $('#download').href = current.downloadUrl;
   $('#download').textContent = current.kind === 'deck' ? 'Download bundle (ZIP)' : 'Download';
   $('#download').hidden = false;

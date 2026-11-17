@@ -13,6 +13,8 @@ import { linkReference, referencePanelHTML, unlinkReference } from "/reference-w
 import { ChatWorkspace } from "/chat-workspace.js";
 import { formatBytes, jobsForOutputView, refreshJobStatus, releasePlayer, renderJobList } from "/job-status.js";
 import { cleanupRowsHTML, selectedTotal, toggleSelection } from "/draft-cleanup.js";
+import { PreviewModal } from "/preview-modal.js";
+import { icons } from "/icons.js";
 
 installSelectControls();
 
@@ -149,11 +151,27 @@ function render() {
 }
 // The job poll calls renderJobs every 1.8 s; rewrite the deck list only when it changed, so its links stay put.
 let deckJobsHTML = null;
+function deckJobHTML(job) {
+  const meta = job.state === 'completed' ? new Date(job.finishedAt || job.createdAt).toLocaleString()
+    : ['queued', 'running'].includes(job.state) ? `${esc(job.state)} · ${Math.round(job.progress * 100)}%` : esc(job.state);
+  const actions = job.state === 'completed'
+    ? `<a class="icon-button" href="${esc(previewUrl('deck', job.id, channelId))}" target="storybench-preview" aria-label="Preview revision ${esc(job.revision)}" title="Preview">${icons.preview}</a><a class="icon-button" href="${esc(withChannel(`/api/jobs/${encodeURIComponent(job.id)}/deck/bundle.zip`, channelId))}" download aria-label="Download revision ${esc(job.revision)} bundle (ZIP)" title="Download bundle (ZIP)">${icons.download}</a>`
+    : ['queued', 'running'].includes(job.state) ? `<button data-deck-cancel="${esc(job.id)}">Cancel build</button>` : '';
+  return `<article class="deck-build" data-deck-job="${esc(job.id)}"><div><strong>Revision ${esc(job.revision)}</strong><span>${meta}</span></div><div class="deck-build-actions">${actions}</div>${job.error ? `<p role="alert">${esc(job.error)}</p>` : ''}</article>`;
+}
 function renderJobs() {
   if (!episode) return;
   if (episode.kind === "deck") {
-    const html = state.jobs.filter(job => job.episodeId === episode.id && job.kind === 'deck').map(job => `<article><strong>${esc(job.state)}</strong> · revision ${esc(job.revision)} · ${Math.round(job.progress * 100)}% ${job.error ? `<p role="alert">${esc(job.error)}</p>` : ''}${job.state === 'completed' ? `<a href="${esc(previewUrl('deck', job.id, channelId))}" target="storybench-preview">Open preview</a> <a href="${esc(withChannel(`/api/jobs/${encodeURIComponent(job.id)}/deck/bundle.zip`, channelId))}" download>Download bundle (ZIP)</a>` : ['queued','running'].includes(job.state) ? `<button data-deck-cancel="${esc(job.id)}">Cancel build</button>` : ''}</article>`).join('');
-    if (html !== deckJobsHTML) $('#deckJobs').innerHTML = deckJobsHTML = html;
+    // Active builds and the newest finished one stay in view; older builds fold away.
+    const jobs = state.jobs.filter(job => job.episodeId === episode.id && job.kind === 'deck');
+    const latest = jobs.find(job => !['queued', 'running'].includes(job.state));
+    const shown = jobs.filter(job => job === latest || ['queued', 'running'].includes(job.state)), earlier = jobs.filter(job => !shown.includes(job));
+    const html = shown.map(deckJobHTML).join('') + (earlier.length ? `<details class="deck-history"><summary>Earlier builds (${earlier.length})</summary>${earlier.map(deckJobHTML).join('')}</details>` : '');
+    if (html !== deckJobsHTML) {
+      const open = $('#deckJobs .deck-history')?.open;
+      $('#deckJobs').innerHTML = deckJobsHTML = html;
+      if (open && $('#deckJobs .deck-history')) $('#deckJobs .deck-history').open = true;
+    }
     $("#draftJobs").innerHTML = ""; $("#finalJobs").innerHTML = ""; return;
   }
   const episodeJobs = state.jobs.filter((job) => job.episodeId === episode.id);
@@ -184,7 +202,15 @@ const storyEditor = new StoryEditor({
   onSaved: () => refreshJobs().catch((error) => toast(error.message)),
 });
 const researchEditor = new ResearchEditor({ root: $("#researchPanel"), api, renderMarkdown: createStoryRenderer() });
-const libraryWorkspace = new LibraryWorkspace({ api, toast, getEpisode: () => episode, refreshState: () => load(episode?.id), beforeDelete: flushDraft, onMutation: () => refreshJobs().catch((error) => toast(error.message)) });
+const previewModal = new PreviewModal($("#previewModal"));
+// Every Preview link opens the popup; a modified click still opens a browser tab.
+document.addEventListener("click", (event) => {
+  const link = event.target.closest?.('a[target="storybench-preview"]');
+  if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  previewModal.open({ url: link.getAttribute("href") });
+});
+const libraryWorkspace = new LibraryWorkspace({ api, toast, preview: previewModal, getEpisode: () => episode, refreshState: () => load(episode?.id), beforeDelete: flushDraft, onMutation: () => refreshJobs().catch((error) => toast(error.message)) });
 const chatWorkspace = new ChatWorkspace({ root: $("#chatWorkspace"), api, renderMarkdown: createChatRenderer(), toast, getEpisode: () => episode, onBusyChange: setProductionBusy, beforeSend: async () => { if (!(await leaveStory())) throw new Error("Save or discard story edits before sending"); await flushDraft(); } });
 async function syncChat() {
   if (episode?.id === chatWorkspace.episodeId) return;

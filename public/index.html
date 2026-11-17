@@ -192,12 +192,19 @@
       <div class="modal-actions"><button id="importLibraryUrl" type="button">Add URL</button><button id="importLibraryText" type="button">Add text</button></div>
       <div id="libraryImportError" class="error" role="alert"></div>
     </dialog>
-    <dialog id="libraryEditModal" class="library-modal">
-      <form id="libraryEditForm"><div class="modal-heading"><h2>Edit library item</h2><button type="button" data-library-close aria-label="Close">×</button></div>
-        <label>Label <input name="label" required></label><label>Category <select name="category"><option>Reference</option><option>B-roll</option><option>Narration</option><option>Graphics</option></select></label>
-        <label>Tags <input name="tags" placeholder="interview, opening"></label><label>Notes <textarea name="notes"></textarea></label>
-        <div class="modal-actions"><button type="button" data-library-close>Cancel</button><button class="primary">Save</button></div><div class="error" data-library-edit-error></div>
-      </form>
+    <dialog id="previewModal" class="preview-modal" closedby="none" aria-labelledby="previewTitle">
+      <header class="modal-heading"><h2 id="previewTitle" data-preview-title>Preview</h2><button type="button" class="icon-button" data-preview-close aria-label="Close" title="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
+      <div class="preview-modal-body">
+        <iframe data-preview-frame title="Media preview" hidden></iframe>
+        <div class="preview-file" data-preview-file hidden></div>
+        <aside class="preview-aside" data-preview-aside hidden>
+          <form id="libraryEditForm"><h3>Details</h3>
+            <label>Label <input name="label" required></label><label>Category <select name="category"><option>Reference</option><option>B-roll</option><option>Narration</option><option>Graphics</option></select></label>
+            <label>Tags <input name="tags" placeholder="interview, opening"></label><label>Notes <textarea name="notes"></textarea></label>
+            <div class="modal-actions"><button type="button" data-preview-close>Cancel</button><button class="primary">Save</button></div><div class="error" data-library-edit-error></div>
+          </form>
+        </aside>
+      </div>
     </dialog>
 
     <dialog id="promoteCardModal" class="library-modal"><form id="promoteCardForm"><div class="modal-heading"><h2>Promote card</h2><button type="button" data-promote-close>×</button></div><label>Name <input name="name" required></label><label>Standard role <select name="role"><option value="">Reusable only</option><option value="intro">Standard intro</option><option value="outro">Standard outro</option></select></label><div class="modal-actions"><button type="button" data-promote-close>Cancel</button><button class="primary">Promote</button></div><div class="error" data-promote-error></div></form></dialog>

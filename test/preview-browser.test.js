@@ -8,7 +8,7 @@ import { createApp } from '../src/server.js';
 import { listenInRange } from '../test-support/loopback-port.js';
 import { previewFixtures } from '../test-support/preview-fixtures.js';
 
-for (const engine of [chromium, firefox]) test(`${engine.name()}: workspace Open reuses Preview, reports new versions and isolates active content`, { timeout: 90_000 }, async t => {
+for (const engine of [chromium, firefox]) test(`${engine.name()}: workspace Open shows Preview in the popup, reports new versions and isolates active content`, { timeout: 90_000 }, async t => {
   // Required seats: launch failure is a test failure, never a skip.
   const browser = await engine.launch(engine === chromium ? { channel: 'chromium' } : {});
   t.after(() => browser.close());
@@ -23,6 +23,10 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: workspace Open
   const downloads = [];
   context.on('page', opened => opened.on('download', download => downloads.push(download.url())));
   const workspacePage = await context.newPage();
+  const popup = workspacePage.locator('#previewModal');
+  // The popup's frame, once the click that opens it has landed.
+  const popupFrame = async () => { await popup.waitFor(); return (await workspacePage.locator('[data-preview-frame]').elementHandle()).contentFrame(); };
+  const closePopup = async () => { await workspacePage.click('#previewModal header [data-preview-close]'); await popup.waitFor({ state: 'hidden' }); };
   let page;
   let last;
   for (const [name, type] of cases) {
@@ -35,32 +39,41 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: workspace Open
     const item = await upload.json();
     const url = `${base}/preview/library/${episode.id}/${item.id}?channel=${channel.id}`;
     await workspacePage.goto(`${base}/?channel=${channel.id}&episode=${episode.id}#media`);
-    const open = workspacePage.locator(`[data-library-item="${item.id}"] a`).filter({ hasText: /^Open$/ });
-    assert.equal(await open.getAttribute('target'), 'storybench-preview');
-    assert.equal(await open.getAttribute('rel'), null);
-    if (!page) [page] = await Promise.all([context.waitForEvent('page'), open.click()]);
-    else await open.click();
-    await page.waitForURL(url);
-    assert.equal(context.pages().length, 2, 'Every Open reuses one Preview tab');
-    await page.waitForFunction(() => document.title.startsWith('Storybench Preview — '));
-    assert.equal(await page.locator('#production').textContent(), episode.title);
-    assert.equal(await page.locator('#download').isVisible(), true);
+    await workspacePage.locator(`[data-library-item="${item.id}"] .library-thumb`).click();
+    const frame = await popupFrame();
+    await frame.waitForURL(url);
+    assert.equal(context.pages().length, 1, 'Open stays in the workspace popup');
+    await frame.waitForFunction(() => document.title.startsWith('Storybench Preview — '));
+    assert.equal(await frame.locator('#production').textContent(), episode.title);
+    await workspacePage.locator('[data-preview-title]').filter({ hasText: await frame.locator('#label').textContent() }).waitFor();
+    assert.equal(await frame.locator('#label').isVisible(), false, 'The popup header carries the label');
+    assert.equal(await frame.locator('#download').isVisible(), true);
+    assert.equal(await workspacePage.locator('#libraryEditForm [name="label"]').inputValue(), item.label, 'Open shows the edit column');
     const isImage = name.startsWith('image');
     if (isImage) {
-      await page.waitForFunction(() => document.querySelector('#viewer img')?.naturalWidth > 0);
-      await page.click('#actual-size');
-      assert.equal(await page.locator('#actual-size').getAttribute('aria-pressed'), 'true');
-      assert.match(await page.locator('#viewer').getAttribute('class'), /actual/);
+      await frame.waitForFunction(() => document.querySelector('#viewer img')?.naturalWidth > 0);
+      await frame.click('#actual-size');
+      assert.equal(await frame.locator('#actual-size').getAttribute('aria-pressed'), 'true');
+      assert.match(await frame.locator('#viewer').getAttribute('class'), /actual/);
     } else {
-      assert.equal(await page.locator('#viewer video[controls]').count(), 1);
+      assert.equal(await frame.locator('#viewer video[controls]').count(), 1);
       // MOV container decoding varies by browser; the Preview page must still open.
-      if (name.endsWith('.mp4')) await page.waitForFunction(() => document.querySelector('video')?.duration > 0);
+      if (name.endsWith('.mp4')) await frame.waitForFunction(() => document.querySelector('video')?.duration > 0);
     }
+    // Escape and the backdrop never close it; only its X or Cancel does.
+    await workspacePage.keyboard.press('Escape');
+    await workspacePage.keyboard.press('Escape');
+    await workspacePage.mouse.click(4, 4);
+    assert.equal(await popup.evaluate(dialog => dialog.open), true, 'Escape and backdrop clicks leave the popup open');
+    await closePopup();
     last = { episode, item, url };
   }
   assert.deepEqual(downloads, []);
-  await page.reload();
+  // The Preview page still stands alone at its own address.
+  page = await context.newPage();
+  await page.goto(last.url);
   await page.waitForFunction(() => document.querySelector('#viewer video')?.duration > 0);
+  assert.equal(await page.locator('#label').isVisible(), true);
 
   // A legacy/agent-written SVG can exist even though today's upload parser rejects scripts.
   const scriptFile = path.join(workspace, 'scripted.svg');
@@ -87,17 +100,20 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: workspace Open
       state: 'completed', progress: 1, revision: 1, outputPath: 'draft.mp4', snapshot: {}, createdAt: new Date().toISOString() });
     await workspacePage.goto(`${base}/?channel=${last.episode.channelId}&episode=${last.episode.id}#${kind === 'draft' ? 'drafts' : 'final'}`);
     await workspacePage.locator(`[data-job-id="${job.id}"] a`).filter({ hasText: /^Open$/ }).click();
+    const frame = await popupFrame();
     const pinned = `${base}/preview/output/${job.id}${scope}`;
-    await page.waitForURL(pinned);
-    await page.waitForFunction(() => document.querySelector('#viewer video')?.duration > 0);
+    await frame.waitForURL(pinned);
+    assert.equal(await workspacePage.locator('[data-preview-aside]').isVisible(), false, 'Outputs have no edit column');
+    await frame.waitForFunction(() => document.querySelector('#viewer video')?.duration > 0);
     const snapshot = app.renders.getRenderSnapshot(last.episode.id);
     const next = app.renders.enqueueRender({ episodeId: last.episode.id, outputClass: 'draft', expectedRenderRevision: snapshot.renderRevision });
-    await page.locator('#newer').waitFor({ state: 'visible' });
-    assert.equal(page.url(), pinned, 'A new output does not replace the pinned preview');
+    await frame.locator('#newer').waitFor({ state: 'visible' });
+    assert.equal(frame.url(), pinned, 'A new output does not replace the pinned preview');
     assert.equal(app.store.getJob(next.id).state, 'completed');
-    await page.click('#latest');
-    await page.waitForURL(`${base}/preview/output/${next.id}${scope}`);
-    assert.equal(context.pages().length, 2);
+    await frame.click('#latest');
+    await frame.waitForURL(`${base}/preview/output/${next.id}${scope}`);
+    assert.equal(context.pages().length, 2, 'Only the standalone page above is a tab');
+    await closePopup();
 
   }
   const deck = app.store.createEpisode({ title: 'Preview deck', kind: 'deck', channelId: last.episode.channelId });
@@ -114,40 +130,59 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: workspace Open
   await workspacePage.goto(`${base}/?channel=${deck.channelId}&episode=${deck.id}`);
   assert.equal(await workspacePage.locator('#deckPreview').count(), 0);
   // The job poll must not rebuild an unchanged deck job list: the link survives a full poll cycle.
-  const deckLink = await workspacePage.locator('#deckJobs a').filter({ hasText: 'Open preview' }).elementHandle();
+  const deckPreview = workspacePage.locator('#deckJobs a[title="Preview"]');
+  const deckLink = await deckPreview.elementHandle();
+  assert.equal(await deckPreview.getAttribute('target'), 'storybench-preview', 'A modified click can still open a tab');
   const isStatePoll = message => new URL(message.url()).pathname === '/api/state';
   await (await workspacePage.waitForResponse(isStatePoll)).finished();
   await workspacePage.waitForRequest(isStatePoll);
   assert.equal(await deckLink.evaluate(link => link.isConnected), true, 'An unchanged deck job list is not re-rendered');
-  await workspacePage.locator('#deckJobs a').filter({ hasText: 'Open preview' }).click();
-  await page.waitForURL(`${base}/preview/deck/${build.id}${scope}`);
-  const frame = page.frameLocator('#viewer iframe');
-  await frame.locator('body').waitFor();
-  assert.equal(await page.locator('iframe').getAttribute('sandbox'), 'allow-scripts');
-  await frame.locator('body').click();
-  await page.keyboard.press('ArrowRight');
-  await frame.locator('article.slide').filter({ hasText: 'Second slide' }).waitFor({ state: 'visible' });
-  const pinned = page.url();
+  await deckPreview.click();
+  let frame = await popupFrame();
+  await frame.waitForURL(`${base}/preview/deck/${build.id}${scope}`);
+  const deckFrame = frame.frameLocator('#viewer iframe');
+  await deckFrame.locator('body').waitFor();
+  assert.equal(await frame.locator('#viewer iframe').getAttribute('sandbox'), 'allow-scripts');
+  // The standalone tab opened above took focus; keys reach a nested frame only in the focused tab. Press again
+  // until the deck's script is listening (two slides, so a repeat stays on the second).
+  await workspacePage.bringToFront();
+  const second = deckFrame.locator('article.slide').filter({ hasText: 'Second slide' });
+  for (let attempt = 0; attempt < 10 && !(await second.isVisible()); attempt++) {
+    await deckFrame.locator('body').click();
+    await workspacePage.keyboard.press('ArrowRight');
+    await second.waitFor({ state: 'visible', timeout: 1000 }).catch(() => {});
+  }
+  await second.waitFor({ state: 'visible' });
+  const pinned = frame.url();
   const secondBuild = await (await fetch(`${base}/api/episodes/${deck.id}/deck-build${scope}`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ expectedRevision: 2 }),
   })).json();
-  await page.locator('#newer').waitFor({ state: 'visible' });
-  assert.equal(page.url(), pinned);
+  await frame.locator('#newer').waitFor({ state: 'visible' });
+  assert.equal(frame.url(), pinned);
   assert.equal(app.store.getJob(secondBuild.id).state, 'completed');
-  await page.click('#latest');
-  await page.waitForURL(`${base}/preview/deck/${secondBuild.id}${scope}`);
-  await page.frameLocator('#viewer iframe').locator('article.slide:not([hidden])').waitFor();
+  await frame.click('#latest');
+  await frame.waitForURL(`${base}/preview/deck/${secondBuild.id}${scope}`);
+  await frame.frameLocator('#viewer iframe').locator('article.slide:not([hidden])').waitFor();
   assert.equal(context.pages().length, 2);
-  // Reopening from the workspace still addresses the same named browser tab.
-  await workspacePage.locator('#deckJobs a').filter({ hasText: 'Open preview' }).last().click();
-  await page.waitForURL(`${base}/preview/deck/${build.id}${scope}`);
+  await closePopup();
+  // The newest build stays in view; the earlier one folds away until asked for.
+  await workspacePage.locator('#deckJobs > .deck-build').filter({ hasText: `Revision ${app.store.getJob(secondBuild.id).revision}` }).waitFor();
+  assert.equal(await workspacePage.locator('#deckJobs > .deck-build').count(), 1);
+  const history = workspacePage.locator('#deckJobs .deck-history');
+  assert.equal(await history.locator('summary').textContent(), 'Earlier builds (1)');
+  assert.equal(await history.locator('a[title="Preview"]').isVisible(), false);
+  await history.locator('summary').click();
+  await history.locator('a[title="Preview"]').click();
+  frame = await popupFrame();
+  await frame.waitForURL(`${base}/preview/deck/${build.id}${scope}`);
   assert.equal(context.pages().length, 2);
-  await page.locator('#newer').waitFor({ state: 'visible' });
-  await page.frameLocator('#viewer iframe').locator('article.slide:not([hidden])').waitFor();
+  await frame.locator('#newer').waitFor({ state: 'visible' });
+  await frame.frameLocator('#viewer iframe').locator('article.slide:not([hidden])').waitFor();
   if (process.env.STORYBENCH_EVIDENCE_DIR) {
     await mkdir(process.env.STORYBENCH_EVIDENCE_DIR, { recursive: true });
-    await page.screenshot({ path: path.join(process.env.STORYBENCH_EVIDENCE_DIR, `preview-deck-${engine.name()}.png`) });
+    await workspacePage.screenshot({ path: path.join(process.env.STORYBENCH_EVIDENCE_DIR, `preview-deck-${engine.name()}.png`) });
   }
+  await closePopup();
   const wrongChannel = app.store.createChannel('Wrong channel');
   for (const url of [last.url.replace(last.episode.channelId, wrongChannel.id), `${base}/preview/output/missing${scope}`, `${base}/preview/deck/missing${scope}`]) {
     assert.equal((await page.goto(url)).status(), 404);
