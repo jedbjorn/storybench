@@ -16,8 +16,9 @@ const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:\-[\]]{0,79}$/;
 const SESSION = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 // Codex: app-server over stdio; Storybench tools arrive as app-server dynamic tools.
-// Integrations the worker does not use are disabled; command execution stays enabled.
-const CODEX_DISABLED = ["apps", "plugins", "browser_use", "computer_use", "in_app_browser", "multi_agent", "image_generation"];
+// Integrations the worker does not use are disabled; command execution and subagents
+// (multi_agent) stay enabled.
+const CODEX_DISABLED = ["apps", "plugins", "browser_use", "computer_use", "in_app_browser", "image_generation"];
 
 export function launchArgv(header) {
   if (!header || typeof header !== "object") throw new Error("Launch header must be an object");

@@ -10,6 +10,18 @@ export function openCodeConfig(route, { model, mcp, boot = 'AGENTS.md', transpor
     models: { [model]: { ...(route.modelVariants?.[model] ? { variants: route.modelVariants[model] } : {}), name: model, attachment: true, tool_call: true, modalities: { input: ['text', 'image'], output: ['text'] } } },
   } }, mcp: { storybench: { type: 'local', command: [mcp.command, ...mcp.args], environment: mcp.env, enabled: true } }, instructions: [boot], permission: 'allow' };
 }
+// Reduce one `opencode run --format json` event to what crosses the worker boundary. The
+// first session seen is the production agent's: a subagent's session never replaces it and
+// its events are dropped. Only normalized public text/tool fields; provider error payloads
+// are private.
+export function openCodeRunEvent(event, native) {
+  const session = native || event.sessionID || null;
+  if (event.sessionID && event.sessionID !== session) return { session };
+  if (event.type === 'error') return { session, failed: true };
+  if (event.type === 'text') return { session, output: { type: 'text', part: { text: event.part?.text || '' } } };
+  if (event.type === 'tool_use') return { session, output: { type: 'tool_use', part: { tool: event.part?.tool, state: { status: event.part?.state?.status } } } };
+  return { session };
+}
 export class OpenCodeConnection {
   constructor({ spawnSession, model, effort, onEvent = () => {}, onError = () => {} }) { Object.assign(this, { spawnSession, model, effort, onEvent, onError }); this.resolved = { model, effort }; }
   async open() { return this; }
@@ -19,11 +31,17 @@ export class OpenCodeConnection {
   async startTurn(threadId, text, images = [], { onDelivered } = {}) {
     this.turnId = randomUUID(); this.completed = false;
     const child = await this.spawnSession({ harness: 'opencode', model: this.model, sessionId: threadId, ...(this.resume ? { resume: threadId } : {}), ...(this.effort ? { effort: this.effort } : {}) }); this.child = child;
-    const lines = createInterface({ input: child.stdout });
+    const lines = createInterface({ input: child.stdout }), running = new Map();
     lines.on('line', (line) => {
       let event; try { event = JSON.parse(line); } catch { return; }
       if (event.type === 'text' && event.part?.text) this.emit('item/agentMessage/delta', { delta: event.part.text });
-      if (event.type === 'tool_use') this.emit(event.part?.state?.status === 'running' ? 'item/started' : 'item/completed', { item: { type: 'mcpToolCall', tool: event.part?.tool, status: event.part?.state?.status } });
+      if (event.type === 'tool_use') {
+        // `opencode run` reports a tool only once it has ended; give it its started entry too.
+        const tool = event.part?.tool, status = event.part?.state?.status, open = running.get(tool) || 0;
+        if (status === 'running' || !open) this.emit('item/started', { item: { type: 'mcpToolCall', tool, status: 'running' } });
+        if (status === 'running') running.set(tool, open + 1);
+        else { if (open) running.set(tool, open - 1); this.emit('item/completed', { item: { type: 'mcpToolCall', tool, status } }); }
+      }
       if (event.type === 'error') this.failed = true;
       if (event.type === 'storybench.complete') {
         this.completed = true;
