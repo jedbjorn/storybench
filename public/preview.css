@@ -39,3 +39,6 @@ a { color: #173d39; }
 .redline-status { flex: 1; margin: 0; color: #8a3b12; }
 .redline-submit { color: white; background: #173d39; border-color: #173d39; }
 .redline-submit:disabled { opacity: .5; cursor: not-allowed; }
+/* Framed in the workspace popup, which shows the label in its own header. */
+.embed #production, .embed #label { display: none; }
+.embed body > header { padding: 8px 16px; }
