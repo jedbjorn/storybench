@@ -14,6 +14,5 @@ h1,h2{font-family:var(--font-accent,Manrope),Arial,sans-serif}.slide header,.cap
 
 .layout-text-media .stage-nav{grid-column:1/-1}[data-vector-step][data-pending="true"]{opacity:0;visibility:hidden}
 
-/* Reserve scroll space beneath the fixed controls so the last reveal is clickable. */
-#presentation{padding-bottom:var(--footer)}
-@media(max-width:900px),print{#presentation{padding-bottom:0}}
+/* Give controls their own row: tall slides scroll above, never behind them. */
+@media screen and (min-width:901px){body:has(#presentation){height:100svh;display:grid;grid-template-rows:minmax(0,1fr) auto}#presentation{min-height:0;overflow-y:auto;overflow-x:hidden}footer{position:static}}

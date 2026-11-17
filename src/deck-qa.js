@@ -32,10 +32,35 @@ const boundedText = (value, name, max = 300) => {
 export function inspectPage() {
   const visible = e => e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && !e.closest('[hidden]');
   const rect = e => { const r=e.getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height}; };
+  const overlays = [...document.querySelectorAll('footer,#status')].filter(e => visible(e) && ['fixed','sticky'].includes(getComputedStyle(e).position));
+  const layout = e => {
+    const bounds = rect(e), region = {...bounds};
+    let clipped = false;
+    // Contents outside a scrollport are reachable by scrolling. A hidden/clip
+    // ancestor, in contrast, can make content inaccessible.
+    for (let parent=e.parentElement; parent && parent!==document.body; parent=parent.parentElement) {
+      const style=getComputedStyle(parent), box=rect(parent);
+      for (const [axis,size,overflow,scroll,client] of [['x','width','overflowX','scrollWidth','clientWidth'],['y','height','overflowY','scrollHeight','clientHeight']]) {
+        const start=box[axis]+(axis==='x'?parent.clientLeft:parent.clientTop), end=start+parent[client];
+        if (['hidden','clip'].includes(style[overflow]) && (region[axis]<start-2 || region[axis]+region[size]>end+2)) clipped=true;
+        if (!['auto','scroll'].includes(style[overflow]) || parent[scroll]<=parent[client]+2) continue;
+        const to=Math.min(region[axis]+region[size],end);
+        region[axis]=Math.max(region[axis],start); region[size]=Math.max(0,to-region[axis]);
+      }
+    }
+    const inView=region.width>0 && region.height>0;
+    const outsideViewport=inView && (region.x< -2 || region.x+region.width>innerWidth+2 || region.y< -2 || region.y+region.height>innerHeight+2);
+    const occluded=inView && overlays.some(overlay => {
+      if (overlay.contains(e)) return false;
+      const box=rect(overlay);
+      return Math.min(region.x+region.width,box.x+box.width)-Math.max(region.x,box.x)>2 && Math.min(region.y+region.height,box.y+box.height)-Math.max(region.y,box.y)>2;
+    });
+    return {bounds,outsideViewport,clipped,occluded};
+  };
   const slide = document.querySelector('.slide:not([hidden])');
   const elements = [...document.querySelectorAll('h1,h2,h3,p,li,button,select,svg,img,video,[data-vector-step]')].filter(visible).slice(0,300).map(e => ({
     tag:e.tagName.toLowerCase(),id:e.id || null,role:e.getAttribute('role'),label:e.getAttribute('aria-label'),text:(e.innerText || e.getAttribute('alt') || '').slice(0,500),
-    bounds:rect(e),overflow:e.scrollWidth > e.clientWidth + 2 && e.clientWidth > 0,
+    ...layout(e),overflow:e.scrollWidth > e.clientWidth + 2 && e.clientWidth > 0 && !['auto','scroll'].includes(getComputedStyle(e).overflowX),
   }));
   return {title:document.title,slideId:slide?.id ?? null,stage:[...(slide?.querySelectorAll('[data-stage][aria-pressed="true"]') || [])].map(e=>e.dataset.stage),
     visibleGroups:[...(slide?.querySelectorAll('[data-vector-step]') || [])].filter(visible).map(e=>e.dataset.vectorStep),
@@ -43,7 +68,7 @@ export function inspectPage() {
     text:document.body.innerText.slice(0,12000),elements,viewport:{width:innerWidth,height:innerHeight},
     fullscreen:Boolean(document.fullscreenElement),status:document.querySelector('#status')?.textContent || '',
     presenter:document.querySelector('#connection')?.textContent ?? null,notes:document.querySelector('#notes')?.textContent ?? null,
-    fonts:[...document.fonts].map(f=>({family:f.family,status:f.status})),
+    fonts:[...document.fonts].map(f=>({family:f.family,weight:f.weight,style:f.style,status:f.status})),
     images:[...document.images].map(e=>({src:e.getAttribute('src'),loaded:e.complete && e.naturalWidth>0})),
     media:[...document.querySelectorAll('video')].map((e,index)=>({index,src:e.getAttribute('src'),visible:visible(e),readyState:e.readyState,error:e.error?.code ?? null,paused:e.paused,time:e.currentTime,duration:Number.isFinite(e.duration)?e.duration:null})),
     inventory:[...document.querySelectorAll('.slide')].map(e=>({slideId:e.id,title:e.dataset.title,stages:[...e.querySelectorAll('[data-stage]')].map(s=>s.dataset.stage),gallery:[...e.querySelectorAll('[data-gallery]')].map(g=>g.dataset.gallery)})),
@@ -183,7 +208,12 @@ export function createDeckQa({store,scope}) {
       const inventory=(await snapshot(s,page)).inventory;
       for(const id of args.slideIds) {
         const index=inventory.findIndex(v=>v.slideId===id); if(index<0) throw new Error('Contact sheet slide not found');
-        await page.locator(`[data-go="${index}"]`).click(); captures.push(await capture(s,page));
+        const control=page.locator(`[data-go="${index}"]`);
+        // Print CSS hides screen controls; selection still goes through the
+        // trusted runtime so the image and recorded slide state agree.
+        if ((s.emulations.get('audience')?.media)==='print') await control.dispatchEvent('click');
+        else await control.click();
+        captures.push(await capture(s,page));
       }
     } else captures.push(await capture(s,page,args.clip));
     let image=captures[0].bytes,contactSheet=null;
@@ -229,14 +259,19 @@ export function createDeckQa({store,scope}) {
     const requested=args.checks??['console','resources','fonts','media','layout','presenter','fullscreen'];
     if(!Array.isArray(requested) || requested.length<1 || requested.length>7 || requested.some(c=>!['console','resources','fonts','media','layout','presenter','fullscreen'].includes(c))) throw new Error('Unknown QA check set');
     const page=pageFor(s,args.pageId),before=await snapshot(s,page);
+    if(requested.includes('fonts')) await page.evaluate(async()=>{
+      // This check verifies the bundle, including faces unused in this state.
+      await Promise.allSettled([...document.fonts].map(face=>face.load()));
+      await document.fonts.ready;
+    });
     if(requested.includes('media')) await page.waitForTimeout(400);
     const state=await snapshot(s,page),result={};
     const check=(status,reason,details)=>({status,reason,details});
     for(const name of requested) {
       if(name==='console') {const errors=s.record.errors.filter(e=>['console','page'].includes(e.type));result[name]=check(errors.length?'fail':'pass','Observed browser errors',errors);}
       if(name==='resources') {const errors=s.record.errors.filter(e=>!['console','page'].includes(e.type));result[name]=check(errors.length||state.images.some(i=>!i.loaded)?'fail':'pass','Observed local resources', {errors,images:state.images});}
-      if(name==='fonts') result[name]=check(state.fonts.length && state.fonts.every(f=>f.status==='loaded')?'pass':'fail','Bundled font faces must actually load',state.fonts);
-      if(name==='layout') {const candidates=state.elements.filter(e=>e.overflow || e.bounds.x< -2 || e.bounds.x+e.bounds.width>state.viewport.width+2 || e.bounds.y< -2 || e.bounds.y+e.bounds.height>state.viewport.height+2);result[name]=check(candidates.length||state.pageOverflow?'fail':'pass','Overflow candidates only; inspect the screenshot',candidates);}
+      if(name==='fonts') result[name]=check(state.fonts.length && state.fonts.every(f=>f.status==='loaded')?'pass':'fail','Bundle integrity: explicitly load every font face, including unused weights/styles',state.fonts);
+      if(name==='layout') {const candidates=state.elements.filter(e=>e.overflow || e.outsideViewport || e.clipped || e.occluded);result[name]=check(candidates.length||state.pageOverflow?'fail':'pass','Overflow, inaccessible clipping or fixed-control overlap candidates; inspect the screenshot',candidates);}
       if(name==='media') {
         // Generated bundles keep a static media DOM; an asset URL can occur on many slides.
         const sameView=state.slideId===before.slideId && JSON.stringify([state.stage,state.gallery])===JSON.stringify([before.stage,before.gallery]);
