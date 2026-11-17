@@ -95,6 +95,38 @@ export function createStoryRenderer() {
   return (source) => renderer.render(String(source || "").replace(sectionMarker, ""));
 }
 
+// Assistant chat replies (spec #30): reply text is never markup, only
+// http/https/mailto destinations become links, and nothing can fetch a resource.
+const chatLinkAllowed = (href) => /^(https?:|mailto:)/i.test(href || "");
+
+export function createChatRenderer() {
+  const renderer = new MarkdownIt({ html: false, linkify: true, breaks: true, typographer: false });
+  // Scheme-only autolinks: `story.md` (a TLD) and `//host` stay plain text.
+  renderer.linkify.set({ fuzzyLink: false, fuzzyEmail: false, fuzzyIP: false }).add("//", null).add("ftp:", null);
+  // Accept every destination at parse time so a refused link keeps its text.
+  renderer.validateLink = () => true;
+  const { escapeHtml } = renderer.utils;
+  const anchor = (href) => `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer noopener">`;
+  renderer.renderer.rules.link_open = (tokens, index) => {
+    const href = tokens[index].attrGet("href");
+    tokens[index].meta = { allowed: chatLinkAllowed(href) };
+    return tokens[index].meta.allowed ? anchor(href) : "";
+  };
+  renderer.renderer.rules.link_close = (tokens, index) => {
+    let open = index;
+    while (open >= 0 && tokens[open].type !== "link_open") open -= 1;
+    return tokens[open]?.meta?.allowed ? "</a>" : "";
+  };
+  renderer.renderer.rules.image = (tokens, index, options, env, self) => {
+    const token = tokens[index], src = token.attrGet("src");
+    const alt = escapeHtml(self.renderInlineAsText(token.children || [], options, env) || "image");
+    return chatLinkAllowed(src) ? `${anchor(src)}${alt}</a>` : alt;
+  };
+  renderer.renderer.rules.table_open = () => '<div class="chat-table"><table>\n';
+  renderer.renderer.rules.table_close = () => "</table></div>\n";
+  return (source) => renderer.render(String(source ?? ""));
+}
+
 export class StoryEditor {
   constructor({ root, api, setStatus, toast, onSaved = () => {} }) {
     this.root = root;

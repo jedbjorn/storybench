@@ -53,7 +53,7 @@ outside files are refused. The browser receives a fresh temporary profile and an
 explicit environment without provider/account/proxy credentials. Only trusted
 exported runtime and validated assets are supported browser input.
 
-Sessions are request-owned, limited to one per request/two per app, ten minutes,
+Sessions are request-owned, limited to one per request/two per app, fifteen minutes,
 four pages, 120 screenshots and 600 actions. Operations time out after 20 seconds;
 individual browser actions use five seconds. Viewports are bounded to 1920×1080,
 V8 heaps to 128 MiB and renderer count to two. Release checks run with a 1536 MiB

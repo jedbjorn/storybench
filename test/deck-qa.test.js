@@ -80,3 +80,32 @@ test('browser blocks outside destinations and records network errors without ret
   await assert.rejects(scoped.call('act_deck_qa',{sessionId,action:'click',selector:'#outside'}),/closed|destroyed|navigation/);
   await assert.rejects(scoped.call('inspect_deck_qa',{sessionId}),/closed|unknown/);
 });
+
+test('a QA session is still open after ten minutes and expires at fifteen, as open_deck_qa reports and describes', {timeout:30000}, async t=>{
+  const { QA_LIMITS } = await import('../src/deck-qa.js'), { DECK_QA_DEFINITIONS } = await import('../src/deck-qa-tools.js');
+  assert.equal(QA_LIMITS.lifetimeMs,900_000);
+  assert.match(DECK_QA_DEFINITIONS.find(d=>d.name==='open_deck_qa').description,/fifteen minute lifetime/);
+  const root=await mkdtemp(path.join(os.tmpdir(),'sb-qa-lifetime-'));let f,scoped;
+  t.after(async()=>{await scoped?.close();await f?.close();await rm(root,{recursive:true,force:true});});
+  f=await browserFixture(root);scoped=createScopedTools(f.scope('codex'),{store:f.store});
+  // Controlled clock for minute-scale timers only; browser and operation timeouts stay real.
+  const realSet=globalThis.setTimeout,realClear=globalThis.clearTimeout,pending=new Set();let now=0;
+  globalThis.setTimeout=(fn,ms,...args)=>{
+    if(ms<60_000) return realSet(fn,ms,...args);
+    const timer={at:now+ms,fn:()=>fn(...args),unref(){return timer;},ref(){return timer;}};pending.add(timer);return timer;
+  };
+  globalThis.clearTimeout=timer=>pending.has(timer)?pending.delete(timer):realClear(timer);
+  t.after(()=>{globalThis.setTimeout=realSet;globalThis.clearTimeout=realClear;});
+  const advance=ms=>{now+=ms;for(const timer of [...pending]) if(timer.at<=now){pending.delete(timer);timer.fn();}};
+  const opened=JSON.parse((await scoped.call('open_deck_qa',{jobId:f.job.id})).text),sessionId=opened.sessionId;
+  assert.equal(opened.limits.lifetimeMs,900000);assert.equal(pending.size,1);
+  const lifecycle=async()=>JSON.parse(await readFile(path.join(root,opened.artifactRoot,'session.json'),'utf8')).lifecycle;
+  advance(600_000);
+  assert.ok(JSON.parse((await scoped.call('check_deck_qa',{sessionId,checks:['console']})).text).results.console,'usable at ten minutes');
+  assert.equal(await lifecycle(),'open');
+  advance(299_999);assert.equal(pending.size,1,'still open just before fifteen minutes');
+  advance(1);assert.equal(pending.size,0);
+  for(let n=0;n<200 && await lifecycle()!=='expired';n++) await new Promise(resolve=>realSet(resolve,25));
+  assert.equal(await lifecycle(),'expired');
+  await assert.rejects(scoped.call('inspect_deck_qa',{sessionId}),/closed, expired/);
+});

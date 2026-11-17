@@ -5,7 +5,7 @@ import { installWorkspaceChrome } from "/workspace-chrome.js";
 import { installProductionSearch } from "/production-search.js";
 import { installChannelDrawer } from "/channel-drawer.js";
 import { SettingsPages } from "/settings-pages.js";
-import { StoryEditor, createStoryRenderer } from "/story-editor.js?v=round2-editor";
+import { StoryEditor, createStoryRenderer, createChatRenderer } from "/story-editor.js?v=round2-editor";
 import { ResearchEditor } from "/research-workspace.js";
 import { LibraryWorkspace, episodeNavigatorHTML, uploadLibraryFile } from "/library-workspace.js";
 import { attachMediaToCard, categoryForCardMedia, setCardType } from "/card-workspace.js";
@@ -165,7 +165,7 @@ const storyEditor = new StoryEditor({
 });
 const researchEditor = new ResearchEditor({ root: $("#researchPanel"), api, renderMarkdown: createStoryRenderer() });
 const libraryWorkspace = new LibraryWorkspace({ api, toast, getEpisode: () => episode, refreshState: () => load(episode?.id), beforeDelete: flushDraft, onMutation: () => refreshJobs().catch((error) => toast(error.message)) });
-const chatWorkspace = new ChatWorkspace({ root: $("#chatWorkspace"), api, toast, getEpisode: () => episode, onBusyChange: setProductionBusy, beforeSend: async () => { if (!(await leaveStory())) throw new Error("Save or discard story edits before sending"); await flushDraft(); } });
+const chatWorkspace = new ChatWorkspace({ root: $("#chatWorkspace"), api, renderMarkdown: createChatRenderer(), toast, getEpisode: () => episode, onBusyChange: setProductionBusy, beforeSend: async () => { if (!(await leaveStory())) throw new Error("Save or discard story edits before sending"); await flushDraft(); } });
 async function syncChat() {
   if (episode?.id === chatWorkspace.episodeId) return;
   if (episode) await chatWorkspace.open();

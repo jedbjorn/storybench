@@ -12,7 +12,7 @@ import { extractBuild } from './deck-qa-bundle.js';
 import { getQaReport, recordReview } from './deck-qa-report.js';
 import { withToolDelivery } from './tool-delivery.js';
 const require = createRequire(import.meta.url);
-export const QA_LIMITS = Object.freeze({ sessions: 2, lifetimeMs: 600_000, operationMs: 20_000, screenshots: 120, actions: 600, errors: 100 });
+export const QA_LIMITS = Object.freeze({ sessions: 2, lifetimeMs: 900_000, operationMs: 20_000, screenshots: 120, actions: 600, errors: 100 });
 export const BROWSER_IDENTITY = Object.freeze({ controller: require('playwright-core/package.json').version,
   ...require(path.join(path.dirname(require.resolve('playwright-core/package.json')), 'browsers.json')).browsers.find(b => b.name === 'chromium') });
 let active = 0;
