@@ -1,4 +1,4 @@
-import { previewUrl, withChannel } from "./preview-links.js";
+import { previewUrl, selectedConversationKey, withChannel } from "./preview-links.js";
 import { ChatTranscript } from "./chat-transcript.js";
 import { uploadLibraryFile } from "./library-workspace.js";
 import { ChatSettings, boundaryText, selectionLabel } from "./chat-settings.js";
@@ -316,6 +316,8 @@ export class ChatWorkspace {
     const switching = this.currentId !== null;
     this.transcript?.destroy();
     this.currentId = id;
+    // Shared with Preview's redline popup (same origin) so a redline defaults to the conversation open here.
+    try { if (this.episodeId) localStorage.setItem(selectedConversationKey(this.episodeId), id); } catch { /* storage unavailable */ }
     this.current = null;
     ++this.selection;
     this.transcript = new ChatTranscript(this.root.querySelector('[data-chat-messages]'), this.root.querySelector('[data-chat-jump]'), this.getEpisode()?.kind);

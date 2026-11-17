@@ -13,3 +13,8 @@ export function libraryOpenUrl(item, channelId) {
   return previewable ? previewUrl('library', item.episodeId, channelId, item.id)
     : withChannel(`/api/episodes/${encodeURIComponent(item.episodeId)}/library/${encodeURIComponent(item.id)}/file`, channelId);
 }
+
+// The workspace records its selected conversation per production; Preview's redline popup defaults to it.
+export function selectedConversationKey(episodeId) {
+  return `storybench.chat.selected.${episodeId}`;
+}

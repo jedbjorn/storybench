@@ -1,4 +1,5 @@
-import { previewMetadata } from './preview.js';
+import { previewMetadata, previewTarget } from './preview.js';
+import { renderSvg } from './svg-render.js';
 import { projectContentType, downloadDisposition } from './project-files.js';
 import { createDeckService } from './deck-service.js';
 import { createDeckCapture, reportsState, validateCaptureState, CAPTURE_REBUILD } from './deck-capture.js';
@@ -6,7 +7,7 @@ import { controlRequest } from './runtime/channel.js';
 import { FONTS, fontPath, fontCatalog } from './fonts.js';
 import { validateSelection } from './runtime/conversation-runtime.js';
 import http from "node:http";
-import { rm, stat, realpath } from "node:fs/promises";
+import { readFile, rm, stat, realpath } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +40,7 @@ const mime = {
   ".webm": "video/webm",
   ".webp": "image/webp",
   ".gif": "image/gif",
+  ".txt": "text/plain; charset=utf-8",
   ".mov": "video/quicktime",
   ".m4v": "video/x-m4v",
   ".xhtml": "application/xhtml+xml",
@@ -223,6 +225,25 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
       // default is only a fallback for navigation entry; it never retargets an explicitly scoped request.
       const requestedChannel = url.searchParams.get("channel") || String(req.headers["x-storybench-channel"] || "") || null;
       const viewChannel = () => requestedChannel ? store.requireChannel(requestedChannel) : store.getDefaultChannel();
+      if (req.method === 'POST' && parts[0] === 'api' && parts[1] === 'preview' && parts.at(-1) === 'redline') {
+        // The redline popup's upload: pinned to the previewed asset, so a deleted asset or unavailable channel refuses it.
+        const { metadata } = await previewTarget(store, workspace, parts.slice(2, -1), requestedChannel);
+        if (!/^image\/png(;|$)/i.test(String(req.headers['content-type'] || ''))) throw new StoreError('A redline must be a PNG image', 415);
+        const position = String(req.headers['x-redline-position'] || '');
+        if (position && !/^(at \d+:\d{2}\.\d|slide \d+)$/.test(position)) throw new StoreError('Redline position must be a timecode or slide number');
+        const value = await library.registerRedline({ episodeId: metadata.episodeId, readable: req,
+          label: `Redline — ${metadata.label}${position ? ` ${position}` : ''}`, signal: AbortSignal.timeout(60_000) });
+        notify(metadata.episodeId);
+        return send(res, value.created ? 201 : 200, value.item);
+      }
+      if (['GET', 'HEAD'].includes(req.method) && parts[0] === 'api' && parts[1] === 'preview' && parts.at(-1) === 'raster') {
+        // Fallback base image when the browser refuses to read an SVG drawn into a canvas.
+        const { metadata, file } = await previewTarget(store, workspace, parts.slice(2, -1), requestedChannel);
+        if (metadata.contentType !== 'image/svg+xml') throw new StoreError('Only SVG previews have a server raster', 404);
+        const png = await renderSvg(await readFile(file), { maxWidth: 2048 });
+        res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'content-length': png.length });
+        return res.end(req.method === 'HEAD' ? undefined : png);
+      }
       if (['GET', 'HEAD'].includes(req.method) && (parts[0] === 'preview' || (parts[0] === 'api' && parts[1] === 'preview'))) {
         const page = parts[0] === 'preview';
         let status = 200;
