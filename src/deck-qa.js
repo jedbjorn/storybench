@@ -35,7 +35,7 @@ export function inspectPage() {
   const overlays = [...document.querySelectorAll('footer,#status')].filter(e => visible(e) && ['fixed','sticky'].includes(getComputedStyle(e).position));
   const layout = e => {
     const bounds = rect(e), region = {...bounds};
-    let clipped = false;
+    let clipped = false, oversized = false;
     // Contents outside a scrollport are reachable by scrolling. A hidden/clip
     // ancestor, in contrast, can make content inaccessible.
     for (let parent=e.parentElement; parent && parent!==document.body; parent=parent.parentElement) {
@@ -44,6 +44,9 @@ export function inspectPage() {
         const start=box[axis]+(axis==='x'?parent.clientLeft:parent.clientTop), end=start+parent[client];
         if (['hidden','clip'].includes(style[overflow]) && (region[axis]<start-2 || region[axis]+region[size]>end+2)) clipped=true;
         if (!['auto','scroll'].includes(style[overflow]) || parent[scroll]<=parent[client]+2) continue;
+        // Scrolling can reveal ordinary items below the fold, but cannot fit a
+        // single oversized heading/media element in the presentation area.
+        if (region[size]>parent[client]+2) oversized=true;
         const to=Math.min(region[axis]+region[size],end);
         region[axis]=Math.max(region[axis],start); region[size]=Math.max(0,to-region[axis]);
       }
@@ -55,7 +58,7 @@ export function inspectPage() {
       const box=rect(overlay);
       return Math.min(region.x+region.width,box.x+box.width)-Math.max(region.x,box.x)>2 && Math.min(region.y+region.height,box.y+box.height)-Math.max(region.y,box.y)>2;
     });
-    return {bounds,outsideViewport,clipped,occluded};
+    return {bounds,outsideViewport,clipped,occluded,oversized};
   };
   const slide = document.querySelector('.slide:not([hidden])');
   const elements = [...document.querySelectorAll('h1,h2,h3,p,li,button,select,svg,img,video,[data-vector-step]')].filter(visible).slice(0,300).map(e => ({
@@ -271,7 +274,7 @@ export function createDeckQa({store,scope}) {
       if(name==='console') {const errors=s.record.errors.filter(e=>['console','page'].includes(e.type));result[name]=check(errors.length?'fail':'pass','Observed browser errors',errors);}
       if(name==='resources') {const errors=s.record.errors.filter(e=>!['console','page'].includes(e.type));result[name]=check(errors.length||state.images.some(i=>!i.loaded)?'fail':'pass','Observed local resources', {errors,images:state.images});}
       if(name==='fonts') result[name]=check(state.fonts.length && state.fonts.every(f=>f.status==='loaded')?'pass':'fail','Bundle integrity: explicitly load every font face, including unused weights/styles',state.fonts);
-      if(name==='layout') {const candidates=state.elements.filter(e=>e.overflow || e.outsideViewport || e.clipped || e.occluded);result[name]=check(candidates.length||state.pageOverflow?'fail':'pass','Overflow, inaccessible clipping or fixed-control overlap candidates; inspect the screenshot',candidates);}
+      if(name==='layout') {const candidates=state.elements.filter(e=>e.overflow || e.outsideViewport || e.clipped || e.occluded || e.oversized);result[name]=check(candidates.length||state.pageOverflow?'fail':'pass','Overflow, oversized content, inaccessible clipping or fixed-control overlap candidates; inspect the screenshot',candidates);}
       if(name==='media') {
         // Generated bundles keep a static media DOM; an asset URL can occur on many slides.
         const sameView=state.slideId===before.slideId && JSON.stringify([state.stage,state.gallery])===JSON.stringify([before.stage,before.gallery]);

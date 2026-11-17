@@ -67,8 +67,8 @@ not assert that the model reviewed them. A closed session is still QA incomplete
 Font checks explicitly load every bundled face, including unused weights, and
 report family, weight, style and load status. This checks package integrity;
 an initially unloaded face alone does not prove a rendering defect. Layout
-diagnostics account for scrollable content, flag inaccessible clipping and
-overlap with fixed or sticky footer/status controls, and still require image
+diagnostics account for scrollable content, flag oversized content, inaccessible
+clipping and overlap with fixed or sticky footer/status controls, and still require image
 review. Print contact sheets select slides through the runtime even though
 print CSS hides the screen navigation.
 

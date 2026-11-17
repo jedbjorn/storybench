@@ -105,6 +105,17 @@ test('layout accepts reachable rail content and detects inaccessible clipping an
   assert.ok(failed.results.layout.details.some(e => e.text === 'A regular body.' && e.outsideViewport));
 });
 
+test('layout still rejects a single heading taller than its scrollport', { timeout: 15000 }, async t => {
+  const f = await fixture(t, [{ id: 'crowded', title: 'Crowded heading '.repeat(55), layout: 'statement' }]);
+  const qa = await f.open();
+  for (const width of [1280, 960]) {
+    await qa.call('act_deck_qa', { action: 'resize', viewport: { width, height: 720 } });
+    const checked = await qa.call('check_deck_qa', { checks: ['layout'] });
+    assert.equal(checked.results.layout.status, 'fail');
+    assert.ok(checked.results.layout.details.some(e => e.tag === 'h1' && e.oversized));
+  }
+});
+
 test('desktop footer reserves space, long captions remain reachable and legacy overlap fails QA', { timeout: 15000 }, async t => {
   const f = await fixture(t, [
     { id: 'closing', title: 'A closing title that wraps over two lines', layout: 'statement', body: Array(10).fill('A short body line.').join('\n'), caption: 'A caption that should remain readable' },

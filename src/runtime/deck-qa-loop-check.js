@@ -51,6 +51,7 @@ export async function checkCorrectionLoop() {
           };
           const bad=await inspect(),badCheck=await call('check_deck_qa',{sessionId,checks:['layout']});
           assert.equal(badCheck.results.layout.status,'fail','defect is observable in real browser bounds');
+          assert.ok(badCheck.results.layout.details.some(e=>e.tag==='h1' && e.oversized),'a heading taller than its scrollport remains a defect');
           const failed=await call('report_deck_qa',{sessionId,summary:'Scripted defect: crowded title exceeds viewport.',changesMade:[],reviews:[{artifactId:bad.artifactId,assessment:'Fixture title bounds extend beyond viewport; screenshot received.',findings:[{severity:'blocking',description:'Crowded opening heading.'}]}]});
           assert.equal(failed.qaStatus,'incomplete');assert.ok(failed.findings.length);
           await call('close_deck_qa',{sessionId});
