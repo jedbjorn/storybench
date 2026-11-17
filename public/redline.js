@@ -1,5 +1,5 @@
 import Painterro from './painterro.js';
-import { selectedConversationKey, withChannel } from './preview-links.js';
+import { withChannel, workspaceSelection } from './preview-links.js';
 
 // The redline popup: one still of the pinned asset, Painterro marks, a prompt, and Send to chat.
 // Loaded only when Markup is first pressed, so ordinary previews never fetch Painterro.
@@ -134,13 +134,14 @@ export function openRedline({ metadata, pinnedPath, canvas, context, position = 
   doc.body.append(backdrop);
 
   const long = Math.max(canvas.width, canvas.height);
-  let ptro, baseline = null, marks = 0, conversations = [], chosen = null, busy = false, sending = false, error = '', closed = false;
-  const stored = () => { try { return localStorage.getItem(selectedConversationKey(metadata.episodeId)); } catch { return null; } };
+  // `current` is the target the selector shows: the default once the list first loads, then only the creator's
+  // choice. When it disappears it becomes null and Send waits for an explicit choice; it is never replaced silently.
+  let ptro, baseline = null, marks = 0, conversations = null, current = null, defaulted = true, busy = false, sending = false, error = '', closed = false;
   const unsent = () => marks > 0 || prompt.value.trim() !== '';
   const paint = () => {
     dialog.dataset.marks = String(marks);
     status.textContent = error || (busy ? BUSY : sending ? 'Sending…' : '');
-    send.disabled = busy || sending || !target.value || !unsent();
+    send.disabled = busy || sending || !current || !unsent();
     send.title = busy ? BUSY : '';
   };
   const countMarks = () => {
@@ -173,24 +174,25 @@ export function openRedline({ metadata, pinnedPath, canvas, context, position = 
   window.addEventListener('drop', blockDrop, true);
   window.addEventListener('beforeunload', leave);
 
+  const lose = () => { current = null; error = 'The chosen conversation no longer exists. Choose where to send.'; };
   const refresh = async () => {
     let list;
     try { list = await request(episodeUrl('/chats')); } catch { return; }
     if (closed) return;
+    // Defaults: the selection of a workspace tab that has this production open, else the most recent conversation.
+    // A defaulted "New conversation" gives way to the conversations once some exist.
+    const gone = current && (current === 'new' ? list.length > 0 : !list.some(item => item.id === current));
+    if (!conversations || (gone && current === 'new' && defaulted))
+      current = list.length ? list.find(item => item.id === workspaceSelection(metadata.episodeId))?.id ?? list[0].id : 'new';
+    else if (gone) lose();
     conversations = list;
     busy = list.some(item => working(item.state));
-    if (chosen && !list.some(item => item.id === chosen)) {
-      chosen = null;
-      error = 'The chosen conversation no longer exists. Choose where to send.';
-    }
-    const fallback = list.find(item => item.id === stored())?.id ?? list[0]?.id ?? '';
-    const selected = chosen ?? fallback;
-    const options = list.length ? list.map(item => [item.id, item.name]) : [['new', 'New conversation']];
+    const options = [...(current ? [] : [['', 'Choose a conversation']]), ...(list.length ? list.map(item => [item.id, item.name]) : [['new', 'New conversation']])];
     if (target.dataset.options !== JSON.stringify(options)) {
-      target.replaceChildren(...options.map(([value, name]) => Object.assign(doc.createElement('option'), { value, textContent: name })));
+      target.replaceChildren(...options.map(([value, name]) => Object.assign(doc.createElement('option'), { value, textContent: name, disabled: !value })));
       target.dataset.options = JSON.stringify(options);
     }
-    target.value = list.length ? selected : 'new';
+    target.value = current ?? '';
     paint();
   };
   const timer = setInterval(refresh, 1500);
@@ -208,7 +210,7 @@ export function openRedline({ metadata, pinnedPath, canvas, context, position = 
     for (const element of inerted) element.inert = false;
     onClosed();
   };
-  target.onchange = () => { chosen = target.value === 'new' ? null : target.value; error = ''; paint(); };
+  target.onchange = () => { current = target.value || null; defaulted = false; error = ''; paint(); };
   prompt.oninput = () => paint();
   $('[data-redline-close]').onclick = () => {
     if (sending) return;
@@ -219,7 +221,7 @@ export function openRedline({ metadata, pinnedPath, canvas, context, position = 
     if (send.disabled) return;
     sending = true; error = ''; paint();
     try {
-      let conversationId = target.value, name = conversations.find(item => item.id === conversationId)?.name;
+      let conversationId = current, name = conversations.find(item => item.id === conversationId)?.name;
       if (conversationId === 'new') ({ id: conversationId, name } = await request(episodeUrl('/chats'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Conversation 1' }) }));
       const png = await shrink(ptro.imageSaver.asBlob('image/png'));
       // Uploading identical bytes again returns the same redline record, so a retry never duplicates it.
@@ -233,8 +235,8 @@ export function openRedline({ metadata, pinnedPath, canvas, context, position = 
       onSent({ conversationId, name });
     } catch (cause) {
       sending = false;
-      if (cause.status === 404 && /conversation/i.test(cause.message)) chosen = null;
       error = cause.status === 409 && /active/i.test(cause.message) ? BUSY : cause.message || 'Send failed. Your markup is still here; try again.';
+      if (cause.status === 404 && /conversation/i.test(cause.message)) lose();
       paint();
       refresh();
     }

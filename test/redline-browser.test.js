@@ -9,6 +9,7 @@ import { createApp } from '../src/server.js';
 import { listenInRange } from '../test-support/loopback-port.js';
 
 const BUSY = /A turn is active for this production\. Let it finish or press Stop/;
+const LOST = 'The chosen conversation no longer exists. Choose where to send.';
 const SHOWN = ['line', 'arrow', 'rect', 'ellipse', 'brush', 'text', 'undo', 'redo'];
 const HIDDEN = ['select', 'crop', 'pixelize', 'eraser', 'rotate', 'resize', 'settings', 'zoomin', 'zoomout', 'bucket', 'filters', 'clear', 'save', 'open', 'close'];
 const ffmpeg = (...args) => execFileSync('ffmpeg', ['-v', 'error', ...args]);
@@ -375,11 +376,25 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: every failure 
   await keeps(1, 'Tighten this area');
   assert.equal(redlines().length, 1);
 
-  // The target conversation disappeared: the selector reloads and the creator chooses again.
+  // The target conversation disappeared: the selector reloads and the creator chooses again. Send waits for that
+  // explicit choice; no other conversation becomes the target by itself.
+  const waitsForChoice = async () => {
+    await page.locator('[data-redline-status]').filter({ hasText: LOST }).waitFor();
+    await page.waitForTimeout(3200); // two selector refreshes
+    assert.equal(await page.locator('[data-redline-target]').inputValue(), '');
+    assert.equal(await page.locator('[data-redline-send]').isDisabled(), true);
+    await keeps(1, 'Tighten this area');
+  };
   await page.route('**/messages?*', route => route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'Conversation not found' }) }), { times: 1 });
   await page.click('[data-redline-send]');
-  await page.locator('[data-redline-status]').filter({ hasText: 'Conversation not found' }).waitFor();
-  await keeps(1, 'Tighten this area');
+  await waitsForChoice();
+  const doomedChat = app.chat.create(episode.id, { name: 'Doomed chat' });
+  await page.locator(`[data-redline-target] option[value="${doomedChat.id}"]`).waitFor({ state: 'attached' });
+  await page.selectOption('[data-redline-target]', doomedChat.id);
+  assert.equal(await page.locator('[data-redline-send]').isDisabled(), false);
+  app.store.db.prepare('DELETE FROM conversations WHERE id=?').run(doomedChat.id);
+  await waitsForChoice();
+  assert.equal(await page.locator(`[data-redline-target] option[value="${doomedChat.id}"]`).count(), 0);
 
   // A new chat started while the popup is open: nothing is lost and the selector offers it.
   const fresh = await (await fetch(`${base}/api/episodes/${episode.id}/chats${scope}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Fresh chat' }) })).json();
@@ -488,4 +503,34 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: every failure 
     await page.click('[data-redline-close]');
     await page.locator('.redline').waitFor({ state: 'detached' });
   }
+
+  // The workspace selection is the default only while a workspace tab has the production open; once every
+  // workspace tab has closed, or one ended without closing (its record expired), the most recent conversation is.
+  const listed = async () => (await (await fetch(`${base}/api/episodes/${episode.id}/chats${scope}`)).json()).map(item => item.id);
+  const [recent] = await listed();
+  const picked = (await listed()).at(-1);
+  assert.notEqual(picked, recent);
+  const workspacePage = await context.newPage();
+  await workspacePage.goto(`${base}/?channel=${episode.channelId}&episode=${episode.id}`);
+  await workspacePage.locator('[data-chat-history-toggle]').click();
+  await workspacePage.locator(`[data-chat-id="${picked}"]`).click();
+  await workspacePage.locator(`[data-chat-id="${picked}"][aria-current="true"]`).waitFor({ state: 'attached' });
+  await page.bringToFront();
+  await page.goto(png.url);
+  await openMarkup(page, 800);
+  assert.equal(await page.locator('[data-redline-target]').inputValue(), picked, 'An open workspace tab sets the default');
+  await page.click('[data-redline-close]');
+  // Leaving the workspace page fires pagehide in a live process; a killed page is the expiry case below.
+  await workspacePage.goto('about:blank');
+  await workspacePage.close();
+  await page.waitForFunction(prefix => !Object.keys(localStorage).some(key => key.startsWith(prefix)), `storybench.chat.selected.${episode.id}.`);
+  assert.equal((await listed())[0], recent);
+  await openMarkup(page, 800);
+  assert.equal(await page.locator('[data-redline-target]').inputValue(), recent, 'With no workspace tab open the most recent conversation is the default');
+  await page.click('[data-redline-close]');
+  await page.evaluate(({ episodeId, picked }) => localStorage.setItem(`storybench.chat.selected.${episodeId}.crashed-tab`,
+    JSON.stringify({ id: picked, selectedAt: Date.now(), seenAt: Date.now() - 600_000 })), { episodeId: episode.id, picked });
+  await openMarkup(page, 800);
+  assert.equal(await page.locator('[data-redline-target]').inputValue(), recent, 'A record whose tab stopped refreshing is ignored');
+  await page.click('[data-redline-close]');
 });

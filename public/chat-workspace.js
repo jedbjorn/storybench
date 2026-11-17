@@ -1,4 +1,4 @@
-import { previewUrl, selectedConversationKey, withChannel } from "./preview-links.js";
+import { previewUrl, pruneSelections, selectionKey, withChannel } from "./preview-links.js";
 import { ChatTranscript } from "./chat-transcript.js";
 import { uploadLibraryFile } from "./library-workspace.js";
 import { ChatSettings, boundaryText, selectionLabel } from "./chat-settings.js";
@@ -17,6 +17,13 @@ export class ChatWorkspace {
     this.draftChain = Promise.resolve();
     this.historyOpen = false;
     this.settings = new ChatSettings({ root, api, toast });
+    // This tab's selection record for Preview's redline popup lives only while the tab has the production open.
+    this.tabId = crypto.randomUUID();
+    pruneSelections();
+    // A timer can still fire while the page is being torn down; nothing is recorded after pagehide.
+    const view = root.ownerDocument.defaultView;
+    view?.addEventListener("pagehide", () => { this.departed = true; this.forgetSelection(); });
+    view?.addEventListener("pageshow", () => { this.departed = false; });
     this.current = null;
     this.selection = 0;
     this.refreshSequence = 0;
@@ -39,7 +46,17 @@ export class ChatWorkspace {
     await this.settings.loadCatalog();
     await this.refreshList(generation, episodeId);
     if (!this.isCurrent(generation, episodeId)) return;
-    this.pollTimer = setInterval(() => this.refreshList(generation, episodeId, { preserveSelection: true }).catch(() => {}), 1000);
+    this.pollTimer = setInterval(() => { this.recordSelection(); this.refreshList(generation, episodeId, { preserveSelection: true }).catch(() => {}); }, 1000);
+  }
+
+  recordSelection() {
+    if (this.departed || !this.episodeId || !this.currentId) return;
+    const value = { id: this.currentId, selectedAt: this.selectedAt, seenAt: Date.now() };
+    try { localStorage.setItem(selectionKey(this.episodeId, this.tabId), JSON.stringify(value)); } catch { /* storage unavailable */ }
+  }
+
+  forgetSelection() {
+    try { if (this.episodeId) localStorage.removeItem(selectionKey(this.episodeId, this.tabId)); } catch { /* storage unavailable */ }
   }
 
   close() {
@@ -54,6 +71,7 @@ export class ChatWorkspace {
 
   clear() { this.root.hidden = true; this.root.innerHTML = ""; }
   stopTimers() {
+    this.forgetSelection();
     this.transcript?.destroy();
     this.transcript = null;
     this.current = null;
@@ -317,7 +335,8 @@ export class ChatWorkspace {
     this.transcript?.destroy();
     this.currentId = id;
     // Shared with Preview's redline popup (same origin) so a redline defaults to the conversation open here.
-    try { if (this.episodeId) localStorage.setItem(selectedConversationKey(this.episodeId), id); } catch { /* storage unavailable */ }
+    this.selectedAt = Date.now();
+    this.recordSelection();
     this.current = null;
     ++this.selection;
     this.transcript = new ChatTranscript(this.root.querySelector('[data-chat-messages]'), this.root.querySelector('[data-chat-jump]'), this.getEpisode()?.kind);
