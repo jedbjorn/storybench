@@ -113,6 +113,12 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: workspace Open
   assert.equal(app.store.getJob(build.id).state, 'completed', app.store.getJob(build.id).error || 'Deck build did not finish');
   await workspacePage.goto(`${base}/?channel=${deck.channelId}&episode=${deck.id}`);
   assert.equal(await workspacePage.locator('#deckPreview').count(), 0);
+  // The job poll must not rebuild an unchanged deck job list: the link survives a full poll cycle.
+  const deckLink = await workspacePage.locator('#deckJobs a').filter({ hasText: 'Open preview' }).elementHandle();
+  const isStatePoll = message => new URL(message.url()).pathname === '/api/state';
+  await (await workspacePage.waitForResponse(isStatePoll)).finished();
+  await workspacePage.waitForRequest(isStatePoll);
+  assert.equal(await deckLink.evaluate(link => link.isConnected), true, 'An unchanged deck job list is not re-rendered');
   await workspacePage.locator('#deckJobs a').filter({ hasText: 'Open preview' }).click();
   await page.waitForURL(`${base}/preview/deck/${build.id}${scope}`);
   const frame = page.frameLocator('#viewer iframe');

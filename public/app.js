@@ -147,10 +147,13 @@ function render() {
     storyEditor.open(episode.id).catch((error) => toast(error.message));
   if (!$("#researchPanel").hidden) researchEditor.open(episode.id);
 }
+// The job poll calls renderJobs every 1.8 s; rewrite the deck list only when it changed, so its links stay put.
+let deckJobsHTML = null;
 function renderJobs() {
   if (!episode) return;
   if (episode.kind === "deck") {
-    $('#deckJobs').innerHTML = state.jobs.filter(job => job.episodeId === episode.id && job.kind === 'deck').map(job => `<article><strong>${esc(job.state)}</strong> · revision ${esc(job.revision)} · ${Math.round(job.progress * 100)}% ${job.error ? `<p role="alert">${esc(job.error)}</p>` : ''}${job.state === 'completed' ? `<a href="${esc(previewUrl('deck', job.id, channelId))}" target="storybench-preview">Open preview</a> <a href="${esc(withChannel(`/api/jobs/${encodeURIComponent(job.id)}/deck/bundle.zip`, channelId))}" download>Download bundle (ZIP)</a>` : ['queued','running'].includes(job.state) ? `<button data-deck-cancel="${esc(job.id)}">Cancel build</button>` : ''}</article>`).join('');
+    const html = state.jobs.filter(job => job.episodeId === episode.id && job.kind === 'deck').map(job => `<article><strong>${esc(job.state)}</strong> · revision ${esc(job.revision)} · ${Math.round(job.progress * 100)}% ${job.error ? `<p role="alert">${esc(job.error)}</p>` : ''}${job.state === 'completed' ? `<a href="${esc(previewUrl('deck', job.id, channelId))}" target="storybench-preview">Open preview</a> <a href="${esc(withChannel(`/api/jobs/${encodeURIComponent(job.id)}/deck/bundle.zip`, channelId))}" download>Download bundle (ZIP)</a>` : ['queued','running'].includes(job.state) ? `<button data-deck-cancel="${esc(job.id)}">Cancel build</button>` : ''}</article>`).join('');
+    if (html !== deckJobsHTML) $('#deckJobs').innerHTML = deckJobsHTML = html;
     $("#draftJobs").innerHTML = ""; $("#finalJobs").innerHTML = ""; return;
   }
   const episodeJobs = state.jobs.filter((job) => job.episodeId === episode.id);
