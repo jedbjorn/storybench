@@ -17,6 +17,9 @@ export const MANIFEST = ".storybench/renders.json";
 // (and .codex/skills) as repo-scope skills via skills/list.
 export const SKILL_ROOTS = Object.freeze({ claude: ".claude/skills", codex: ".agents/skills", opencode: ".opencode/skills" });
 const BOOT_FILES = ["AGENTS.md", "CLAUDE.md"];
+// OpenCode 1.19.5 writes this file into any project `.opencode` directory that lacks it and
+// exits when it cannot. Workers mount the episode read-only, so the app supplies the file.
+const OPENCODE_GITIGNORE = [".opencode/.gitignore", "node_modules\npackage.json\npackage-lock.json\nbun.lock\n.gitignore\n"];
 const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
@@ -96,6 +99,7 @@ export async function renderEpisodeBoot({ episodeDir, context, templates, kind =
     const rendered = fillTemplate(skill.source, fullContext, `skill ${skill.name}`);
     for (const root of Object.values(SKILL_ROOTS)) outputs.set(`${root}/${skill.name}/SKILL.md`, rendered);
   }
+  outputs.set(...OPENCODE_GITIGNORE);
 
   const manifestPath = path.join(episodeDir, MANIFEST);
   const previous = JSON.parse(await readFile(manifestPath, "utf8").catch(() => "{}"));
