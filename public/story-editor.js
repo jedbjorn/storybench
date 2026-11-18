@@ -29810,7 +29810,7 @@ function createStoryRenderer() {
   };
   return (source) => renderer.render(String(source || "").replace(sectionMarker, ""));
 }
-var chatLinkAllowed = (href) => /^(https?:|mailto:)/i.test(href || "");
+var chatLinkAllowed = (href) => /^(https?:|mailto:)/i.test(href || "") || /^\/report\/[0-9a-f]{16}$/.test(href || "");
 function createChatRenderer() {
   const renderer = new MarkdownItCallable({ html: false, linkify: true, breaks: true, typographer: false });
   renderer.linkify.set({ fuzzyLink: false, fuzzyEmail: false, fuzzyIP: false }).add("//", null).add("ftp:", null);

@@ -97,7 +97,9 @@ export function createStoryRenderer() {
 
 // Assistant chat replies (spec #30): reply text is never markup, only
 // http/https/mailto destinations become links, and nothing can fetch a resource.
-const chatLinkAllowed = (href) => /^(https?:|mailto:)/i.test(href || "");
+// The one app path allowed is a prepared upstream report's short link (spec #35),
+// which only redirects to GitHub's new-issue form.
+const chatLinkAllowed = (href) => /^(https?:|mailto:)/i.test(href || "") || /^\/report\/[0-9a-f]{16}$/.test(href || "");
 
 export function createChatRenderer() {
   const renderer = new MarkdownIt({ html: false, linkify: true, breaks: true, typographer: false });
