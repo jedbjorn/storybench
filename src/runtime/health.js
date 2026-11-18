@@ -56,6 +56,8 @@ export function createHealth({ store, getState = () => "ready", release = releas
           },
           agents: {
             active: count(db, "SELECT COUNT(*) n FROM conversations WHERE state IN ('queued','running','interrupting')"),
+            // Background agent jobs (spec #42): update, stop and backup wait for them as for turns.
+            jobs: count(db, "SELECT COUNT(*) n FROM agent_jobs WHERE state IN ('queued','running')"),
           },
           deletions: {
             pending: count(db, "SELECT COUNT(*) n FROM channel_deletions WHERE state='pending'"),

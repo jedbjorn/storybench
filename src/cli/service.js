@@ -58,8 +58,9 @@ export function healthProblems(health, { identity = null, dataRootId = null } = 
 export const activeWork = (health) => {
   const renders = (health?.activity?.renders?.queued ?? 0) + (health?.activity?.renders?.running ?? 0);
   const agents = health?.activity?.agents?.active ?? 0;
+  const jobs = health?.activity?.agents?.jobs ?? 0;
   const deletions = health?.activity?.deletions?.pending ?? 0;
-  return { renders, agents, deletions, busy: renders + agents + deletions > 0 };
+  return { renders, agents, jobs, deletions, busy: renders + agents + jobs + deletions > 0 };
 };
 
 // Combined view: stopped | starting | healthy | failed | stopping, plus details for status and the other commands.

@@ -202,7 +202,7 @@ export async function runRestart(context, { options }, configuredRoot) {
         hint: "Retry in a moment, or run `storybench restart --force` to restart anyway (interrupted work is not replayed)." });
     if (before.health) {
       const work = activeWork(before.health);
-      if (work.busy && !options.force) throw new CliError(`Storybench is busy: ${work.renders} render job(s), ${work.agents} agent turn(s), and ${work.deletions} channel deletion(s) are active`, {
+      if (work.busy && !options.force) throw new CliError(`Storybench is busy: ${work.renders} render job(s), ${work.agents} agent turn(s), ${work.jobs} agent job(s), and ${work.deletions} channel deletion(s) are active`, {
         hint: "Wait for them to finish, or run `storybench restart --force` to interrupt them (interrupted work is not replayed)." });
     }
     if (before.unit.active !== "inactive" && before.unit.active !== "unknown") {

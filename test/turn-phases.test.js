@@ -15,6 +15,8 @@ const APP = {
   check: ["open_deck_qa", "inspect_deck_qa", "act_deck_qa", "check_deck_qa", "report_deck_qa", "get_deck_qa_report", "close_deck_qa",
     "inspect_image", "inspect_contact_sheet", "inspect_media", "validate_render"],
   report: ["find_upstream_issues", "prepare_upstream_report", "read_upstream_issue"],
+  // Spec #42 'Parent tools': agent jobs and watches are delegation.
+  delegate: ["start_agent_job", "get_agent_job", "list_agent_jobs", "await_agent_job", "continue_agent_job", "cancel_agent_job", "watch_job"],
 };
 
 // Native names as each harness stores them (Claude Code after its MCP prefix is removed;

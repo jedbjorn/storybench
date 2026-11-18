@@ -8,6 +8,8 @@ export const SHARED_TOOLS = Object.freeze([
   'search_project', 'register_work_file', 'reuse_project_item', 'get_capabilities',
   'get_context', 'read_conversation_history', 'read_research', 'save_research',
   'find_upstream_issues', 'prepare_upstream_report', 'read_upstream_issue',
+  // Agent jobs and watches (spec #42 'Parent tools'), on both kinds.
+  'start_agent_job', 'get_agent_job', 'list_agent_jobs', 'await_agent_job', 'continue_agent_job', 'cancel_agent_job', 'watch_job',
 ]);
 export const KIND_REGISTRY = Object.freeze({
   video: Object.freeze({ templates: 'video', tools: Object.freeze([

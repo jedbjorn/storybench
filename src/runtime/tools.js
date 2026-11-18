@@ -200,6 +200,14 @@ export function assignToCard(store, episodeId, itemId, { cardId, expectedRevisio
   }
 }
 
+// Nothing saved points into an agent job pad (spec #42 'Scratch pads'): pads live in work/jobs/
+// and are deleted when their conversation closes.
+function refusePad(file) {
+  const [top] = file.relative.split(path.sep);
+  if (top === "jobs") throw new RuntimeError("PATH_IN_JOB_PAD", "This file is in an agent job pad (work/jobs/), which is deleted when the chat closes. Copy it into your own work area first, then register the copy.", { status: 403 });
+  return file;
+}
+
 // scope: { requestId, conversationId, harness, model, channelId, episodeId, dataRoot, episodeDir, workDir, requestWorkDir }
 // (resolved by the app from the store path API). `store` is the app's open Store and
 // `library` its library service; storage/mutation rules stay in those services.
@@ -239,10 +247,10 @@ export function createScopedTools(scope, { store, library = null, isShortcutMess
     },
     async register_work_file(args = {}) {
       if (args.cardId) assertAuthoringContext();
-      const file = await resolveWorkFile(scope.workDir, args.path, { base: scope.episodeDir });
+      const file = refusePad(await resolveWorkFile(scope.workDir, args.path, { base: scope.episodeDir }));
       if (args.category != null && !Object.hasOwn(KINDS_FOR_CATEGORY, args.category)) throw new RuntimeError("INVALID_CATEGORY", "category must be Graphics, B-roll or Narration");
       if (args.cardId != null && typeof args.cardId !== "string") throw new RuntimeError("INVALID_CARD", "cardId must be a string");
-      const editable = args.sourcePath == null ? null : await resolveWorkFile(scope.workDir, args.sourcePath, { base: scope.episodeDir });
+      const editable = args.sourcePath == null ? null : refusePad(await resolveWorkFile(scope.workDir, args.sourcePath, { base: scope.episodeDir }));
       const derived = [];
       const direction = args.direction ? validateDirection(store, scope, args.direction, { isShortcutMessage }) : null;
       for (const entry of Array.isArray(args.derivedFrom) ? args.derivedFrom : []) {

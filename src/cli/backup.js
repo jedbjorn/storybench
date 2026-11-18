@@ -110,7 +110,7 @@ export async function runBackup(context) {
     if (wasRunning && !before.health) throw new CliError("Cannot confirm the running Storybench service is idle for backup", { hint: "Retry shortly, or stop it with `storybench down` first." });
     if (before.health) {
       const work = activeWork(before.health);
-      if (work.busy) throw new CliError(`Storybench is busy: ${work.renders} render job(s), ${work.agents} agent turn(s), and ${work.deletions} channel deletion(s) are active`, { hint: "Wait for them to finish, then retry the backup." });
+      if (work.busy) throw new CliError(`Storybench is busy: ${work.renders} render job(s), ${work.agents} agent turn(s), ${work.jobs} agent job(s), and ${work.deletions} channel deletion(s) are active`, { hint: "Wait for them to finish, then retry the backup." });
     }
     if (wasRunning || before.unit.active === "failed") await stopService(context, unit);
     let backup;

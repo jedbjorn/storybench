@@ -230,7 +230,7 @@ function beforeStateFailure(before, force) {
     throw new CliError(`Cannot confirm Storybench is idle: the unit is ${before.unit.active} but activity is unavailable`, { hint: "Retry shortly, or use `storybench update --force` only if interrupting active work is acceptable." });
   if (before.health) {
     const work = activeWork(before.health);
-    if (work.busy && !force) throw new CliError(`Storybench is busy: ${work.renders} render job(s), ${work.agents} agent turn(s), and ${work.deletions} channel deletion(s) are active`, {
+    if (work.busy && !force) throw new CliError(`Storybench is busy: ${work.renders} render job(s), ${work.agents} agent turn(s), ${work.jobs} agent job(s), and ${work.deletions} channel deletion(s) are active`, {
       hint: "Wait for them to finish, or run `storybench update --force` to interrupt them. All other safety checks still apply." });
   }
 }
