@@ -93,6 +93,17 @@ export async function checkDemoDelivery(destination) {
             for (const [name, result] of Object.entries(checks.results)) assert.equal(result.status, 'pass', `${slide.id} ${name}: ${JSON.stringify(result)}`);
           }
         }
+        // Stages that play on their own are motion: frames across the timeline at each viewport, and one real-time run.
+        if (slide.stages.some(stage => stage.afterMs > 0)) {
+          const { durationMs } = (await act({ action: 'seek', timeMs: 0 })).state.timeline;
+          const strip = (await client.call('inspect_deck_qa', { sessionId, frames: { fromMs: 0, toMs: durationMs, count: 6 } })).data.filmstrip;
+          assert.ok(new Set(strip.frames.map(frame => frame.sha256)).size > 1, `${slide.id}: frames differ across the timeline`);
+          reviews.push({ artifactId: strip.artifactId, assessment: `Automated filmstrip receipt for ${slide.id}: six frames across ${durationMs} ms, differing as stages arrive. Final judgment of pacing pending FnB verification.`, findings: [] });
+          if (viewport.width >= 1200) {
+            const motion = (await check(['motion'])).results.motion;
+            assert.equal(motion.status, 'pass', `${slide.id} motion: ${JSON.stringify(motion)}`);
+          }
+        }
       }
     }
     for (const mode of [{ media: 'screen', reducedMotion: 'reduce' }, { media: 'print', reducedMotion: 'reduce' }]) {

@@ -17,6 +17,14 @@ Limits: 512 KiB source, 2000 elements, nesting depth 32, 10,000 expanded element
 
 Scripts, event handlers, foreignObject, nested SVG roots, embedded images, remote/local filesystem resources, external fonts/styles, DTDs/entities, processing instructions, CSS variables/escapes/imports, arbitrary selectors, authored animation and unsupported elements/attributes are rejected. Author static geometry; saved vector-stage mappings use the returned stable `svgGroupIds`. Map independent visible groups, never definitions, nested mapped groups or reused geometry. Trusted export wrappers reveal the mapped groups cumulatively, without altering their authored transforms or opacity. Static SVG and text stages remain supported.
 
+## Motion
+
+Motion is owned by the deck runtime and saved on the slide's stages, never in the SVG. Authored animation is still rejected: animation elements, scripts and event handlers, and CSS animation or transition properties all fail registration with the offending construct named. A stage's optional `motion` (`fade`, `draw`, `enter`), `from` and `changes`, with `trigger`, `afterMs`, `durationMs`, `holdMs` and `easing`, are described in [Authoring and presenting decks](deck-authoring.md#stage-timing-and-motion).
+
+- `draw` runs a group's strokes along their length and brings fills and unstroked parts in as the strokes complete. It needs stroked geometry: registration records, for each group in `asset.metadata.svgGroups`, `{id, stroked}`, where `stroked` is true when any path, rect, circle, ellipse, line, polyline or polygon in the group resolves to a stroke other than `none` through its attribute, inline style, a matching `.class`/`#id` rule or an ancestor. `inspect_media` returns the same list. Save and build refuse `draw` on a group without one.
+- `enter` and `changes` move a mapped group as a whole. `x` and `y` are SVG user units, `rotate` is in degrees and `scale` is a factor, both about the group's centre, and `opacity` multiplies the group's own. All are relative to the authored geometry, which is where every group ends unless a later stage changes it.
+- The registered source and the SVG file in an exported ZIP are byte-identical with or without motion configured; motion data travels as stage data in the page, adding no script, style or markup to the artwork. Reduced motion and print show the authored final state.
+
 Exact-image diagnostic entrypoints (network disabled, disposable data):
 
 ```sh

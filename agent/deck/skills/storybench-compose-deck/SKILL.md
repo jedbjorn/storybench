@@ -24,7 +24,7 @@ Use `update_story({expectedStoryRevision,source})`, then `save_deck({expectedRev
 - `body`, `eyebrow`, `caption`, `notes`: plain text. Write meaningful presenter notes.
 - `targetMinutes`: finite nonnegative number; `sectionId`: optional saved story section.
 - `columns`: two or three `{title,body}` objects for columns layout.
-- `stages`: ordered `{id,title,body,afterMs?,svgGroupIds?}` reveals. Process needs at least one. Timing is milliseconds, 0/manual through 3600000. Stage IDs survive reorder.
+- `stages`: ordered `{id,title,body,svgGroupIds?}` reveals with the optional timing and motion fields under Reveal timing and motion. Process needs at least one. Stage IDs survive reorder.
 - `vector`: `{itemId,alt}` for a staged registered SVG on title, text-media, full-media or process. Do not also set media or gallery views. Map each stage’s `svgGroupIds` to one or more IDs from `asset.metadata.svgGroupIds` (also returned by `inspect_media`). Each group belongs to only one stage. Groups without a mapping remain visible. Reorder stages with their IDs and mappings intact.
 - `media`: `{itemId,alt}` using an image/video member of this deck's library; required on text-media/full-media. `referenceItemIds` are context only.
 - `subnav`: independent gallery views `{id,label,itemId?}`. Only image/video items can be shown. Do not use URLs or file paths.
@@ -33,22 +33,34 @@ Create supporting graphics in the writable work area; inspect with `inspect_imag
 
 The `storybench-svg-1` profile accepts UTF-8 SVG with finite width/height or viewBox (up to 4096 per side), groups/transforms, paths/shapes, text in Manrope or a packaged catalogue font, gradients, local use/clip/mask references and bounded blur/shadow filters. Keep documents below 512 KiB and 2000 elements. Use presentation attributes or simple local `.class`/`#id` style rules; use `font-family` and `font-size` separately. IDs must be unique. No scripts, event attributes, external resources, embedded images, font URLs, DTDs, authored animation, CSS variables or raw HTML. Invalid input reports the unsupported construct; correct the source and register again. Static SVG works as ordinary slide/gallery media. For staged vectors, use independent visible `<g id="...">` groups: do not map definitions, nested mapped groups or geometry referenced by `use`. Local reusable definitions inside visible groups remain supported.
 
-### Reveal timing
+### Reveal timing and motion
 
-By default a slide's reveals start on their own. Give the first stage an `afterMs` near 1,500 so it begins about 1.5 seconds after navigation, and every later stage a positive delay, measured from the previous reveal, so stages run one at a time. Pace to what is animating: text lands in distinct, evenly spaced beats; a diagram or scene that builds across stages uses delays that keep it moving rather than stopping and starting. A zero or omitted `afterMs` waits for manual selection: use it for a moment that needs the presenter's control or when the creator asks, not by default. A first stage without a positive delay is visible on arrival.
+By default a slide's reveals start on their own. Give the first stage an `afterMs` near 1,500 so it begins about 1.5 seconds after navigation, and make every later stage automatic so stages run one at a time. Pace to what is animating: text lands in distinct, evenly spaced beats; a diagram or scene that builds across stages flows from one stage into the next without stopping or jumping. A manual stage waits for selection: use it for a moment that needs the presenter's control or when the creator asks, not by default. A first stage without a positive delay is visible on arrival.
 
-The runtime plays one fixed fade per reveal. Delays are the only pacing control; do not promise continuous or eased motion.
+Every field here is optional; a stage that sets none fades in over a fixed short time.
 
-This example shows fields and two pacings, not a pattern to repeat. It assumes a registered SVG with visible groups `observe`, `connect` and `plan`:
+- `trigger`: `"auto"` or `"manual"`. Unset, a positive `afterMs` is automatic and zero or none is manual.
+- `afterMs` (0 to 3,600,000): delay before the stage begins. With `trigger: "auto"` it may be 0, so one stage flows straight into the next.
+- `durationMs` (0 to 60,000): how long the stage's motion takes. Unset keeps the short fade, which does not push the next stage.
+- `holdMs` (0 to 3,600,000): rest after the motion before the next stage's delay starts.
+- `easing`: `linear`, `ease-in`, `ease-out` or `ease-in-out`.
+- `motion`: `fade` (default; text and SVG groups), `draw` (strokes run along their length and fills arrive as they complete; only for groups `inspect_media` lists in `svgGroups` with `stroked: true`) or `enter` (groups arrive from `from`). `draw` and `enter` need `svgGroupIds`.
+- `from`, and each `to` in `changes`: `{x?,y?,scale?,rotate?,opacity?}` relative to the authored geometry. `x`/`y` are SVG units within ±8,192, `scale` 0 to 16, `rotate` within ±3,600 degrees, `opacity` 0 to 1.
+- `changes`: up to 64 `{groupId,to}` entries that move groups an earlier stage revealed, from the state the previous stage left to `to`, over `durationMs` with `easing`. State accumulates. A vector stage needs `svgGroupIds`, `changes` or both.
+
+A stage begins at the previous stage's start, plus that stage's `durationMs` when it set one, plus its `holdMs`, plus its own `afterMs`. Save and build refuse an unknown value, a number out of bounds, `draw` on a group without strokes, and `changes` naming a group that no earlier stage revealed; the error names the slide and stage. The runtime plays the motion: the SVG stays static source, and authored animation is still rejected.
+
+This example shows the fields, not a pattern to repeat: a diagram that draws itself and flows through its stages, then text in even beats. It assumes a registered SVG whose groups `route` and `stops` hold stroked geometry, with a third group `parcel`:
 
 ```js
 save_deck({ expectedRevision: revision, slides: [{
-  id: "shared_plan", title: "A shared plan", layout: "process",
-  vector: { itemId: registered.libraryItemId, alt: "A landscape and three planning steps" },
-  stages: [ // one drawing building: keep it moving
-    { id: "notice", title: "Observe", svgGroupIds: ["observe"], afterMs: 1500 },
-    { id: "connect", title: "Connect", svgGroupIds: ["connect"], afterMs: 700 },
-    { id: "act", title: "Plan", svgGroupIds: ["plan"], afterMs: 700 }
+  id: "order_route", title: "How an order travels", layout: "process",
+  vector: { itemId: registered.libraryItemId, alt: "A route with three stops and a parcel moving along it" },
+  stages: [ // one drawing: each stage starts as the last one ends
+    { id: "route", title: "The route", svgGroupIds: ["route"], motion: "draw", afterMs: 1500, durationMs: 1200, easing: "ease-in-out" },
+    { id: "stops", title: "Three stops", svgGroupIds: ["stops"], motion: "draw", trigger: "auto", afterMs: 0, durationMs: 800 },
+    { id: "parcel", title: "A parcel", svgGroupIds: ["parcel"], motion: "enter", from: { y: -30, opacity: 0 }, trigger: "auto", afterMs: 0, durationMs: 400, holdMs: 300 },
+    { id: "travel", title: "On its way", changes: [{ groupId: "parcel", to: { x: 320 } }], trigger: "auto", afterMs: 0, durationMs: 2000, easing: "ease-in-out" }
   ]
 }, {
   id: "three_questions", title: "Three questions", layout: "statement",
@@ -80,6 +92,9 @@ Read `get_capabilities` first (`deck.runtime`, `deck.installation`, `deck.screen
 {"tool":"act_deck_qa","arguments":{"sessionId":"<session-id>","pageId":"presenter-1","action":"select","selector":"#slide-select","value":"1"}}
 {"tool":"check_deck_qa","arguments":{"sessionId":"<session-id>","checks":["console","resources","fonts","media","layout","presenter","fullscreen"]}}
 {"tool":"inspect_deck_qa","arguments":{"sessionId":"<session-id>","slideIds":["<slide-id-1>","<slide-id-2>"]}}
+{"tool":"act_deck_qa","arguments":{"sessionId":"<session-id>","action":"seek","timeMs":2100}}
+{"tool":"inspect_deck_qa","arguments":{"sessionId":"<session-id>","frames":{"fromMs":1500,"toMs":5900,"count":6}}}
+{"tool":"check_deck_qa","arguments":{"sessionId":"<session-id>","checks":["motion"]}}
 {"tool":"close_deck_qa","arguments":{"sessionId":"<session-id>"}}
 ```
 
@@ -93,6 +108,21 @@ content, not a path-only description. In Codex code mode forward the returned MC
 image block with `image(...)`. A `clip` with integer x/y/width/height captures a
 viewport detail. An audience contact sheet accepts at most six saved slide IDs;
 its cell order matches the input and each cell has a full-resolution artifact.
+
+Every `inspect_deck_qa` and `act_deck_qa` state carries the current slide's
+`timeline`: each stage's `id`, `trigger`, `startMs`, `motionEndMs` and `holdEndMs`,
+the current `timeMs`, and `state` (`playing`, `paused`, `waiting` on a manual stage,
+or `complete`). `seek` with `timeMs` pauses the slide exactly as it is at that
+time, with no real-time wait; `resume` plays on from there. `frames` on
+`inspect_deck_qa` takes `timesMs` (up to eight) or `fromMs`, `toMs` and `count`,
+and returns one filmstrip in time order, labelled with its times, plus a
+full-resolution artifact per frame; review it by `filmstrip.artifactId`. Frames
+count toward the screenshot limit and leave the timeline paused at the last one.
+`check_deck_qa` with `checks: ["motion"]`, requested on its own, plays the current
+slide from navigation in real time for at most 15 seconds, reports each stage's
+observed start against its saved start, then leaves and re-enters the slide and
+confirms nothing is still running. Stages beyond the window are `unobserved` and
+stages behind a manual one are `manual`; neither is passed, so seek to them.
 
 The session is bound to the current request and production, one immutable build,
 and a fifteen-minute lifetime. Close before opening another build. Screenshots,
@@ -140,6 +170,8 @@ report_deck_qa({sessionId:fresh.sessionId, summary:"Title corrected; remaining c
 ```
 
 Continue with `act_deck_qa` and `inspect_deck_qa` for **every slide, every distinct reveal/gallery combination and matching Presenter notes**. Use the inventory and DOM selectors returned by the browser. Select each stage (`[data-stage="0"]` or Presenter `#stage-select`) and gallery (`[data-gallery="1"]`), exercise `[data-command="replay"]`, wait through timed reveals, and verify manual takeover stops automatic progression. For a positive first-stage delay inspect the initial pre-reveal state too. Navigate via audience controls, keyboard and Presenter. For each video state at each viewport, click Presenter `[data-command="video-restart"]` or `[data-command="video-toggle"]` and require an advancing `media` check on the visible audience video, not metadata or a paused frame. Use these exact selectors and resize Presenter to the same viewport as the audience. Autoplay or playback started in the audience does not replace the Presenter control operation. Check resource/font/console/layout and matching `presenter` results for each normal audience state. Never treat unverified checks as passed.
+
+Motion needs filmstrip evidence. For every slide with an automatic stage, `draw`, `enter` or `changes`, review a filmstrip of at least two times at a normal viewport and at a constrained one, with times inside each stage's motion, and pass a `motion` check. End-state screenshots do not show motion. Judge pacing from the frames: text in distinct beats, a diagram that flows without a jump or a reset.
 
 Inspect normal screen states with both audience and Presenter at a normal viewport (at least 1200x700) and a constrained viewport (at most 1000x800), for example 1280x720 and 960x720. Resize both pages explicitly with `act_deck_qa({sessionId,pageId,action:"resize",viewport:{width:960,height:720}})`. Capture/assess fresh images after each state change; record each artifact with its actual visual findings. Use `report_deck_qa` in batches; already-reviewed images are immutable evidence, so take another image for a new assessment. Reports return concrete `missing` items until full evidence exists.
 

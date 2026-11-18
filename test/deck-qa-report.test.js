@@ -186,3 +186,74 @@ test('only the active request/session or explicitly closed batches contribute ev
   assert.equal(combined.reviewedImages.length,2);assert.equal(combined.viewports.length,2);
   assert.ok(!combined.missing.includes('visual/narrative summary'));assert.ok(!combined.missing.includes('audience navigation'));
 });
+
+// Spec #34 B13: motion needs frames and a real-time run; end-state images alone never complete it.
+const stagedJob=stages=>({...structuredClone(job),snapshot:{...structuredClone(job.snapshot),slides:[{id:'s',stages,subnav:[]}]}});
+// Otherwise-complete evidence for a one-stage slide: every end-state image, check and control operation.
+function stagedRecord() {
+  const r=completeRecord(),staged=entry=>({...entry,state:{...entry.state,stage:['0']}});
+  r.screenshots=r.screenshots.map(staged);r.checks=r.checks.map(staged);
+  r.actions.push(...['[data-command="replay"]','[data-stage="0"]'].map(selector=>({action:'click',pageId:'audience',selector,state:shot.state})),
+    {action:'wait',pageId:'audience',state:{...shot.state,stage:['0']}});
+  return r;
+}
+const strip=(r,viewport,change={})=>{
+  const artifactId=`strip-${r.filmstrips?.length??0}`;
+  (r.filmstrips??=[]).push({artifactId,file:`${artifactId}.png`,sha256:'x',delivered:true,frames:[{timeMs:0},{timeMs:400}],
+    state:{pageId:'audience',slideId:'s',viewport,emulation:{media:'screen',reducedMotion:'no-preference'}},...change});
+  r.reviews.push({artifactId,assessment:'Frames inspected',findings:[]});
+};
+const motionCheck=(r,status,slideId='s',at='2026-01-01T00:00:02.000Z')=>r.checks.push({at,state:{...shot.state,slideId},results:{motion:{status}}});
+const motionItems=report=>report.missing.filter(item=>/motion/.test(item));
+
+test('a build with a moving stage stays incomplete until a filmstrip is reviewed at both viewports and a motion check passes',()=>{
+  const normal={width:1280,height:720},constrained={width:960,height:720};
+  const owed=['s: motion filmstrip review (normal viewport, at least two times)','s: motion filmstrip review (constrained viewport, at least two times)','s: motion check'];
+  // A delay alone makes a stage automatic, as it always has; such a first stage also owes its pre-reveal state.
+  assert.deepEqual(motionItems(evaluateQa(stagedJob([{id:'a',afterMs:1800}]),[stagedRecord()])),owed);
+  for(const stage of [{trigger:'auto',afterMs:0},{motion:'draw'},{motion:'enter',from:{y:-20}},{changes:[{groupId:'g',to:{x:10}}]}]) {
+    const moving=stagedJob([{id:'a',...stage}]),r=stagedRecord();
+    let report=evaluateQa(moving,[r]);
+    assert.equal(report.qaStatus,'incomplete',JSON.stringify(stage));assert.deepEqual(report.missing,owed,'only motion evidence is owed');
+    strip(r,normal);assert.deepEqual(motionItems(evaluateQa(moving,[r])),owed.slice(1));
+    strip(r,constrained);assert.deepEqual(motionItems(evaluateQa(moving,[r])),owed.slice(2));
+    motionCheck(r,'pass');
+    report=evaluateQa(moving,[r]);
+    assert.equal(report.qaStatus,'complete',JSON.stringify(report.missing));assert.equal(report.reviewedFilmstrips.length,2);
+    // A later failed run reopens it; a run on another slide does not close it.
+    motionCheck(r,'fail','s','2026-01-01T00:00:03.000Z');motionCheck(r,'pass','other','2026-01-01T00:00:04.000Z');
+    assert.deepEqual(evaluateQa(moving,[r]).missing,['s: motion check']);
+    motionCheck(r,'unverified','s','2026-01-01T00:00:05.000Z');assert.deepEqual(evaluateQa(moving,[r]).missing,['s: motion check']);
+  }
+});
+
+test('filmstrips count only when delivered, reviewed, on screen and showing more than one time',()=>{
+  const moving=stagedJob([{id:'a',motion:'draw'}]),normal={width:1280,height:720};
+  for(const change of [{delivered:false},{frames:[{timeMs:400}]},{frames:[{timeMs:400},{timeMs:400}]},
+    {state:{pageId:'audience',slideId:'other',viewport:normal,emulation:{media:'screen',reducedMotion:'no-preference'}}},
+    {state:{pageId:'audience',slideId:'s',viewport:normal,emulation:{media:'screen',reducedMotion:'reduce'}}},
+    {state:{pageId:'audience',slideId:'s',viewport:normal,emulation:{media:'print',reducedMotion:'no-preference'}}},
+    {state:{pageId:'audience',slideId:'s',viewport:{width:1100,height:760},emulation:{media:'screen',reducedMotion:'no-preference'}}}]) {
+    const r=stagedRecord();strip(r,normal,change);motionCheck(r,'pass');
+    assert.ok(motionItems(evaluateQa(moving,[r])).some(item=>item.includes('normal viewport')),JSON.stringify(change));
+  }
+  const r=stagedRecord();strip(r,normal);r.reviews.pop();
+  assert.ok(motionItems(evaluateQa(moving,[r])).some(item=>item.includes('normal viewport')),'an unreviewed filmstrip is not evidence');
+  // A reviewed frame or end-state image at the same viewport is not a filmstrip.
+  assert.equal(evaluateQa(moving,[stagedRecord()]).reviewedImages.length,6);
+  // Review goes through the filmstrip's own artifact, and a blocking finding on it blocks.
+  const live=record();live.filmstrips=[{artifactId:'strip',delivered:true,frames:[{timeMs:0},{timeMs:1}],state:{...shot.state}}];
+  assert.throws(()=>recordReview(live,{...args,reviews:[{artifactId:'strip-undelivered',assessment:'x',findings:[]}]}),/delivered/);
+  recordReview(live,{...args,reviews:[{artifactId:'strip',assessment:'The line jumps between frames.',findings:[{severity:'blocking',description:'Jump at 400 ms'}]}]});
+  const report=evaluateQa(moving,[live]);
+  assert.ok(report.missing.some(item=>item.includes('blocking visual')));assert.equal(report.findings[0].artifactId,'strip');
+});
+
+test('builds with only manual fades need no motion evidence',()=>{
+  for(const stage of [{},{afterMs:0},{trigger:'manual'},{trigger:'manual',afterMs:1500},{motion:'fade',durationMs:900,holdMs:300,easing:'ease-out'}]) {
+    const report=evaluateQa(stagedJob([{id:'a',...stage}]),[stagedRecord()]);
+    assert.equal(report.qaStatus,'complete',`${JSON.stringify(stage)}: ${JSON.stringify(report.missing)}`);
+    assert.deepEqual(report.reviewedFilmstrips,[]);
+  }
+  assert.equal(evaluateQa(job,[completeRecord()]).qaStatus,'complete','a slide without stages is unaffected');
+});

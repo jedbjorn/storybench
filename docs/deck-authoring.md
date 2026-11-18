@@ -14,7 +14,28 @@ Import a supported SVG in Library. In Slides, use title, text-media, full-media 
 
 The SVG must give visible groups stable IDs, for example `<g id="foundation">…</g>`. Each stage needs at least one group; a group may appear in only one mapping. Unmapped artwork stays visible. Definitions, nested mapped groups and mapped geometry reused through `use` are rejected with an asset/slide error; use independent visible groups. Group IDs come from the registered source, not exported instance names. Choosing a static SVG under ordinary Media still works without stages.
 
-A positive first reveal delay holds the opening geometry back; subsequent delays run relative to the previous reveal. Zero on later stages waits for manual selection. Agent-authored slides start their reveals on their own by default, about 1.5 seconds after the slide opens, then pace to the content: text in evenly spaced beats, a building diagram with delays that keep it moving. Ask for a manual reveal where you want to control the moment. Each reveal is one fixed fade. The slide editor's own defaults are unchanged. The diagram holds complete until Replay or slide re-entry. Audience and Presenter stage controls share the same state. Download and unzip the bundle to use Presenter/fullscreen; use extended displays, move Presenter to the notes screen and the audience window to the presentation screen.
+A positive first reveal delay holds the opening geometry back; subsequent delays run relative to the previous reveal. Zero on later stages waits for manual selection. Agent-authored slides start their reveals on their own by default, about 1.5 seconds after the slide opens, then pace to the content: text in evenly spaced beats, a building diagram with delays that keep it moving. Ask for a manual reveal where you want to control the moment. A stage that sets no timing or motion field appears with one short fade, as before; the fields below give a stage its own pace and movement. The slide editor's own defaults are unchanged. The diagram holds complete until Replay or slide re-entry. Audience and Presenter stage controls share the same state. Download and unzip the bundle to use Presenter/fullscreen; use extended displays, move Presenter to the notes screen and the audience window to the presentation screen.
+
+### Stage timing and motion
+
+Every field is optional and lives in the saved slide. A stage that sets none plays exactly as it did before these fields existed, so an older deck keeps its timing when rebuilt.
+
+| Field | Meaning | Bounds |
+|---|---|---|
+| `trigger` | `"auto"` or `"manual"`. Unset: a positive `afterMs` is automatic, zero or none is manual | — |
+| `afterMs` | Delay before the stage begins. With `trigger: "auto"` it may be 0, so one stage flows straight into the next | 0 to 3,600,000 |
+| `durationMs` | How long the stage's motion takes. Unset keeps the short fade | 0 to 60,000 |
+| `holdMs` | Rest after the motion before the next stage's delay starts | 0 to 3,600,000 |
+| `easing` | `linear`, `ease-in`, `ease-out`, `ease-in-out`. Unset keeps the fade's curve | — |
+| `motion` | `fade` (default; text and SVG groups), `draw` (SVG groups with stroked geometry: strokes run along their length and fills arrive as they complete), `enter` (SVG groups arrive from `from`) | — |
+| `from` | Starting state for `enter`: `{x?, y?, scale?, rotate?, opacity?}` relative to the authored geometry | `x`/`y` ±8,192 SVG units, `scale` 0 to 16, `rotate` ±3,600 degrees, `opacity` 0 to 1 |
+| `changes` | `[{groupId, to}]`: moves groups an earlier stage revealed, from the state the previous stage left to `to` (same shape as `from`), over `durationMs` with `easing` | at most 64 per stage |
+
+A stage begins at the previous stage's start, plus that stage's `durationMs` when it set one, plus its `holdMs`, plus its own `afterMs`. An unset duration does not push the next stage. The first stage begins `afterMs` after navigation. State set by `changes` accumulates: selecting any stage shows every group as it is at the end of that stage. A group belongs to one stage's `svgGroupIds` and may appear in the `changes` of any later stage.
+
+Save and build refuse, naming the slide and stage: an unknown `trigger`, `easing` or `motion`; a number out of bounds; `draw` on a group with no stroked geometry; `draw` or `enter` on a stage with no SVG groups; `changes` naming a group that is unknown, unmapped, or revealed by the same or a later stage; more than 64 changes. `inspect_media` and asset metadata list each group in `svgGroups` with `stroked`, so `draw` can be chosen knowingly.
+
+The runtime plays the motion; the SVG stays static. The registered file and the copy in the ZIP are byte-identical with or without motion, and authored animation inside an SVG is still rejected (see the [SVG profile](svg-profile.md)). Leaving a slide cancels its motion and returning starts it from the beginning; Replay restarts it; selecting a stage stops automatic progression, and one step forward plays that stage's motion once; a hidden tab pauses and resumes from the same point. Reduced motion and print show every group in its final state with nothing moving. Motion applies to stage text and staged SVG groups only, not raster images, video, gallery views or slide transitions.
 
 ## Try the editable demo
 
@@ -40,8 +61,8 @@ No real-provider, manual-browser, deployed-app or final aesthetic/presentation-u
 ### Packaged browser inspection
 
 Deck requests expose `open_deck_qa`, `act_deck_qa`, `inspect_deck_qa`,
-`check_deck_qa` and `close_deck_qa` through the same scoped MCP bridge on Codex,
-Claude and OpenCode. The app image contains Playwright 1.63.0 and its matching
+`check_deck_qa`, `report_deck_qa`, `get_deck_qa_report` and `close_deck_qa` through
+the same scoped MCP bridge on Codex, Claude and OpenCode. The app image contains Playwright 1.63.0 and its matching
 Chromium revision 1243 (153.0.8010.12), installed at image build time; no personal
 browser, provider call or runtime browser download is involved. Browser OS
 libraries use the image's pinned Debian snapshot. The worker needs no browser.
@@ -72,10 +93,35 @@ clipping and overlap with fixed or sticky footer/status controls, and still requ
 review. Print contact sheets select slides through the runtime even though
 print CSS hides the screen navigation.
 
+Motion is inspected through the slide's timeline rather than by waiting.
+`inspect_deck_qa` and `act_deck_qa` results include the current slide's timeline:
+each stage's ID, trigger, start, motion end and hold end in milliseconds, the
+current time, and whether it is playing, paused, waiting on a manual stage or
+complete. `act_deck_qa` `seek` with `timeMs` pauses the slide exactly as it is at
+that time without waiting in real time, so a long hold costs nothing to inspect;
+`resume` plays on from there. `inspect_deck_qa` `frames` takes up to eight times
+(`timesMs`), or a range and a count (`fromMs`, `toMs`, `count`), and returns one
+filmstrip image with the frames in time order, labelled with their times, plus a
+full-resolution artifact per frame. A filmstrip is one reviewable image; its
+frames count individually toward the 120-screenshot limit. `check_deck_qa` with
+`motion`, requested on its own, plays the current slide from navigation in real
+time for at most 15 seconds and reports each stage's observed start against its
+saved start (on time within 250 ms), then leaves and re-enters the slide and
+confirms nothing is still running from the first visit. A deck of one slide is
+restarted with Replay instead. Stages beyond the window are reported as
+unobserved and stages behind a manual one as manual, never as passed.
+
+For a build with any automatic stage or any stage using `draw`, `enter` or
+`changes`, `report_deck_qa` keeps the build incomplete until each such slide has
+a reviewed filmstrip of at least two times at a normal and at a constrained
+viewport and a passing `motion` check. End-state screenshots alone do not
+satisfy this. Builds with only manual fades are unaffected.
+
 The real-browser proof is `node src/runtime/browser-check.js`. It tests all three
 MCP routes without inference, including image decoding, file-URL ZIP rendering,
 local fonts, presenter notes/control, SVG reveals, MP4 and WebM playback, gallery,
-contact sheets and retained evidence. Missing Chromium fails this proof. The CI
+contact sheets, the timeline, a seek, a filmstrip of a drawn, entering and moved
+group, the `motion` check on a short and an over-long slide, and retained evidence. Missing Chromium fails this proof. The CI
 release image runs it with networking disabled; Node CI also installs the pinned
 browser for the mandatory regression suite. This proves exercised Chromium states,
 not a live model's aesthetic judgment, another browser, or physical dual displays.
@@ -83,9 +129,9 @@ not a live model's aesthetic judgment, another browser, or physical dual display
 
 ## Installed deck readiness
 
-Install/update and reused releases must pass network-disabled checks against both exact image IDs before activation. The app diagnostic exercises retained SVG source, saved stages, extracted ZIP playback, Presenter, local fonts, MP4/WebM and screenshot image blocks through all three harness routes. The worker diagnostic proves SVG parsing, native raster inspection and the authoring command. Failed checks preserve the previous release. `storybench doctor` reruns these disposable diagnostics; use a normal update to repair an image rather than installing packages inside a running container.
+Install/update and reused releases must pass network-disabled checks against both exact image IDs before activation. The app diagnostic exercises retained SVG source, saved stages, extracted ZIP playback, Presenter, local fonts, MP4/WebM, screenshot image blocks, and one `draw` stage, one `changes` stage, a seek and a filmstrip through all three harness routes. The worker diagnostic proves SVG parsing, native raster inspection and the authoring command. Failed checks preserve the previous release. `storybench doctor` reruns these disposable diagnostics; use a normal update to repair an image rather than installing packages inside a running container.
 
-The manifest retains versioned, commit/image-bound deck evidence separately from command versions. Old manifests remain readable but cannot advertise verified deck support. Startup runs a bounded parser/renderer/template/font/browser screenshot check once per runtime identity. `/api/health`, `get_context` and `get_capabilities` report startup results separately from installation evidence. A local development check is identified as local. Screenshot tool availability and tested MCP image transport do not prove that an unknown selected model can interpret images; text-only routes may edit/export drafts but cannot finish visual QA.
+The manifest retains versioned, commit/image-bound deck evidence separately from command versions. Old manifests remain readable but cannot advertise verified deck support. Startup runs a bounded parser/renderer/template/font/browser check once per runtime identity: it builds one slide with a `draw` stage and a `changes` stage, seeks it to three times and renders the frames as a filmstrip. `/api/health`, `get_context` and `get_capabilities` report startup results separately from installation evidence. A local development check is identified as local. Screenshot tool availability and tested MCP image transport do not prove that an unknown selected model can interpret images; text-only routes may edit/export drafts but cannot finish visual QA.
 
 ## Reproduce the synthetic delivery
 
@@ -95,4 +141,4 @@ The editable demo includes a retained SVG illustration and four saved reveal gro
 node src/runtime/deck-demo-check.js /absolute/path/to/demo-artifacts
 ```
 
-This generates `demo.zip`, `editable-source.json`, `report.json` and a reopenable `workspace/` containing saved slides, media, build-bound screenshots and session evidence. Open the workspace using `node src/server.js --workspace /absolute/path/to/demo-artifacts/workspace --port <available-port>`, or unzip `demo.zip` and open `index.html` offline. Report image paths are relative to `workspace/`. The script exercises both pages at normal/constrained viewports, every reveal/gallery state, media, fullscreen and print/reduced motion. Its image assessments are explicitly scripted automated evidence. Deployment, live-model interpretation, physical displays and final aesthetic judgment remain pending for the installation owner after deployment.
+This generates `demo.zip`, `editable-source.json`, `report.json` and a reopenable `workspace/` containing saved slides, media, build-bound screenshots and session evidence. Open the workspace using `node src/server.js --workspace /absolute/path/to/demo-artifacts/workspace --port <available-port>`, or unzip `demo.zip` and open `index.html` offline. Report image paths are relative to `workspace/`. The script exercises both pages at normal/constrained viewports, every reveal/gallery state, media, fullscreen and print/reduced motion, and supplies a filmstrip at each viewport and a `motion` check for the automatically staged slide. Its image assessments are explicitly scripted automated evidence. Deployment, live-model interpretation, physical displays and final aesthetic judgment remain pending for the installation owner after deployment.

@@ -109,3 +109,69 @@ test('a QA session is still open after ten minutes and expires at fifteen, as op
   assert.equal(await lifecycle(),'expired');
   await assert.rejects(scoped.call('inspect_deck_qa',{sessionId}),/closed, expired/);
 });
+
+// Spec #34 Motion QA, beyond the three-route proof in browser-check.js.
+test('motion QA refuses malformed requests, counts every frame, and reports rather than passes what it cannot observe', {timeout:90000}, async t=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),'sb-qa-motion-'));let f,scoped;
+  t.after(async()=>{await scoped?.close();await f?.close();await rm(root,{recursive:true,force:true});});
+  f=await browserFixture(root);scoped=createScopedTools(f.scope('codex'),{store:f.store});
+  const data=async(name,args)=>JSON.parse((await scoped.call(name,args)).text);
+  const opened=await data('open_deck_qa',{jobId:f.job.id,viewport:{width:640,height:360}}),sessionId=opened.sessionId;
+  const session=async()=>JSON.parse(await readFile(path.join(root,opened.artifactRoot,'session.json'),'utf8'));
+  // A slide without stages still reports a timeline, and has nothing to seek into.
+  assert.deepEqual(opened.state.timeline.stages,[]);assert.equal(opened.state.timeline.state,'complete');
+  await assert.rejects(scoped.call('act_deck_qa',{sessionId,action:'seek',timeMs:1}),/0–0 ms/);
+  await data('act_deck_qa',{sessionId,action:'click',selector:'[data-go="5"]'});
+  for(const frames of [{},{timesMs:[]},{timesMs:[0,'1']},{timesMs:[-1]},{timesMs:[0],count:2},{fromMs:0,toMs:2000},{fromMs:0,toMs:2000,count:1},
+    {fromMs:0,toMs:2000,count:9},{fromMs:500,toMs:500,count:2},{fromMs:0,toMs:2001,count:2}])
+    await assert.rejects(scoped.call('inspect_deck_qa',{sessionId,frames}),/Frames take timesMs/,JSON.stringify(frames));
+  await assert.rejects(scoped.call('inspect_deck_qa',{sessionId,frames:{timesMs:[0]},clip:{x:0,y:0,width:10,height:10}}),/without a crop/);
+  await assert.rejects(scoped.call('inspect_deck_qa',{sessionId,frames:{timesMs:[0]},slideIds:['motion']}),/omit slideIds/);
+  for(const timeMs of [-1,'500',NaN]) await assert.rejects(scoped.call('act_deck_qa',{sessionId,action:'seek',timeMs}),/Seek time must be/);
+  assert.equal((await session()).screenshots.length,0,'a refused request captures nothing');
+  // Frames are screenshots: each counts toward the session limit, and a batch that would pass it is refused whole.
+  const first=await data('inspect_deck_qa',{sessionId,frames:{timesMs:[500,1500]}});
+  assert.equal(first.screenshots.length,2);
+  let record=await session();
+  assert.equal(record.screenshots.length,2);assert.equal(record.filmstrips.length,1);
+  assert.deepEqual(record.screenshots.map(s=>[s.frame.timeMs,s.fullResolutionDelivered]),[[500,false],[1500,false]]);
+  for(const frame of record.screenshots) assert.ok((await readFile(path.join(root,opened.artifactRoot,frame.file))).length>1000,'each frame keeps its own full-resolution artifact');
+  for(let n=0;n<14;n++) await data('inspect_deck_qa',{sessionId,frames:{fromMs:0,toMs:2000,count:8}});
+  await assert.rejects(scoped.call('inspect_deck_qa',{sessionId,frames:{fromMs:0,toMs:2000,count:8}}),/Screenshot batch limit/);
+  record=await session();assert.equal(record.screenshots.length,114);assert.equal(record.filmstrips.length,15);
+  // Print and reduced motion show the final state: the check says so instead of timing nothing.
+  await data('act_deck_qa',{sessionId,action:'emulate',reducedMotion:'reduce'});
+  const reduced=(await data('check_deck_qa',{sessionId,checks:['motion']})).results.motion;
+  assert.equal(reduced.status,'unverified');assert.match(reduced.reason,/reduced motion/);
+  await data('act_deck_qa',{sessionId,action:'emulate'});
+  // Presenter reads the audience's timeline, and a stage that waits for a person is reported as such.
+  await data('act_deck_qa',{sessionId,action:'click',selector:'[data-go="1"]'});
+  await data('act_deck_qa',{sessionId,action:'click',selector:'#presenter-open'});
+  await data('act_deck_qa',{sessionId,action:'wait',milliseconds:150});
+  const sought=(await data('act_deck_qa',{sessionId,pageId:'presenter-1',action:'seek',timeMs:300})).state;
+  assert.equal(sought.pageId,'presenter-1');assert.equal(sought.timeline.slideId,'stages');assert.equal(sought.timeline.timeMs,300);
+  assert.equal((await data('check_deck_qa',{sessionId})).results.motion,undefined,'the default check set does not replay the slide');
+});
+
+test('the motion check restarts a one-slide deck through Replay and never passes a stage that waits for a person', {timeout:60000}, async t=>{
+  const { Store } = await import('../src/store.js'), { createDeckService } = await import('../src/deck-service.js'), { HeavyJobQueue } = await import('../src/job-runner.js');
+  const root=await mkdtemp(path.join(os.tmpdir(),'sb-qa-solo-'));
+  const store=new Store(root),episode=store.createEpisode({kind:'deck',title:'One slide'});store.ensureEpisodeDirectories(episode.id);
+  const queue=new HeavyJobQueue(),decks=createDeckService({store,queue});let scoped;
+  t.after(async()=>{await scoped?.close();await decks.close();store.close();await rm(root,{recursive:true,force:true});});
+  const saved=store.saveDeck(episode.id,1,[{id:'solo',title:'Three beats',layout:'statement',stages:[
+    {id:'one',title:'One',trigger:'auto',afterMs:300},{id:'two',title:'Two',trigger:'auto',afterMs:0,durationMs:300},{id:'three',title:'Three',trigger:'manual'},{id:'four',title:'Four',trigger:'auto',afterMs:100}]}]);
+  const pending=decks.enqueue({episodeId:episode.id,expectedRevision:saved.revision});await queue.draining;
+  const job=decks.getJob(episode.id,pending.id);assert.equal(job.state,'completed',job.error);
+  scoped=createScopedTools({episodeId:episode.id,channelId:episode.channelId,requestId:'solo',conversationId:'solo',harness:'codex',model:'fixture',dataRoot:root,
+    episodeDir:store.episodeDirectory(episode.id),workDir:store.episodeWorkDirectory(episode.id)},{store});
+  const data=async(name,args)=>JSON.parse((await scoped.call(name,args)).text);
+  const sessionId=(await data('open_deck_qa',{jobId:job.id})).sessionId;
+  const motion=(await data('check_deck_qa',{sessionId,checks:['motion']})).results.motion;
+  assert.equal(motion.status,'pass',JSON.stringify(motion));
+  assert.deepEqual(motion.details.stages.map(row=>[row.id,row.savedStartMs,row.status]),[['one',300,'on-time'],['two',300,'on-time'],['three',750,'manual'],['four',850,'manual']]);
+  for(const row of motion.details.stages.slice(0,2)) assert.ok(Math.abs(row.deltaMs)<=250 && row.observedStartMs>=250,JSON.stringify(row));
+  for(const row of motion.details.stages.slice(2)) assert.equal(row.observedStartMs,null);
+  assert.deepEqual(motion.details.reentry,{method:'replay',stillWhileAway:null,restarted:true,ahead:false});
+  assert.match(motion.reason,/2 waiting for a person/);
+});

@@ -8,19 +8,22 @@ import { chromium } from 'playwright-core';
 import { buildDeck } from '../deck-template/build.js';
 import { parseSvg } from '../svg.js';
 import { renderSvg } from '../svg-render.js';
-import { BROWSER_IDENTITY } from '../deck-qa.js';
+import { BROWSER_IDENTITY, filmstrip } from '../deck-qa.js';
 
 export async function checkDeckStartup() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'sb-deck-startup-'));
   let browser;
   const result = { vector: { state: 'unavailable', reason: 'Parser/renderer/template/font check failed; run doctor.' },
-    browser: { state: 'unavailable', reason: 'Packaged browser launch/render/screenshot failed; run doctor.' } };
+    browser: { state: 'unavailable', reason: 'Packaged browser launch/render/motion/screenshot failed; run doctor.' } };
   try {
     const svg = await readFile(new URL('./fixtures/svg-illustration.svg', import.meta.url));
     parseSvg(svg);
     const png = await renderSvg(svg);
     if (png.length < 1000) return result;
-    const files = buildDeck({ title: 'Readiness', slides: [{ id: 'ready', title: 'Ready', layout: 'full-media', media: { type: 'image', src: 'assets/proof.svg', alt: 'Synthetic readiness diagram' } }] }, { assets: { 'assets/proof.svg': svg } });
+    const files = buildDeck({ title: 'Readiness', slides: [{ id: 'ready', title: 'Ready', layout: 'full-media', vector: { type: 'image', src: 'assets/proof.svg', alt: 'Synthetic readiness diagram' },
+      // One drawn stage flowing into one that moves what the first revealed.
+      stages: [{ id: 'draw', title: 'Draw', svgGroupIds: ['observe'], motion: 'draw', trigger: 'auto', afterMs: 0, durationMs: 1000, easing: 'linear' },
+        { id: 'move', title: 'Move', svgGroupIds: ['connect'], changes: [{ groupId: 'observe', to: { x: 60 } }], trigger: 'auto', afterMs: 0, durationMs: 1000, easing: 'linear' }] }] }, { assets: { 'assets/proof.svg': svg } });
     for (const [name, bytes] of files) { await mkdir(path.dirname(path.join(root, name)), { recursive: true }); await writeFile(path.join(root, name), bytes); }
     result.vector = { state: 'ready', reason: 'Parsed SVG, native raster, template and bundled fonts loaded.' };
     browser = await chromium.launch({ channel: 'chromium', headless: true, timeout: 8000,
@@ -34,9 +37,17 @@ export async function checkDeckStartup() {
     await page.goto(pathToFileURL(path.join(root, 'index.html')).href, { timeout: 5000 });
     await page.evaluate(async () => { await document.fonts.ready; await Promise.all([...document.fonts].map(font => font.load())); });
     const loaded = await page.evaluate(() => [...document.fonts].length > 0 && [...document.fonts].every(f => f.status === 'loaded') && Boolean(document.querySelector('svg path')));
-    const screenshot = await page.screenshot({ timeout: 5000 });
-    if (!loaded || errors.length || screenshot.length < 5000 || screenshot.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') return result;
-    result.browser = { state: 'ready', reason: 'Actual local-file render, fonts and PNG screenshot passed.',
+    // Mid-draw, mid-move and the end: each sought time is shown exactly and looks different.
+    const frames = [];
+    for (const timeMs of [500, 1500, 2000]) {
+      const timeline = await page.evaluate(ms => window.storybenchDeck.seek(ms), timeMs);
+      if (timeline.state !== 'paused' || timeline.timeMs !== timeMs) return result;
+      frames.push({ timeMs, bytes: await page.screenshot({ timeout: 5000 }) });
+    }
+    const moved = frames.every((frame, i) => frames.every((other, j) => i === j || !frame.bytes.equals(other.bytes)));
+    const screenshot = filmstrip(frames, { width: 1280, height: 720 });
+    if (!loaded || !moved || errors.length || screenshot.length < 5000 || screenshot.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') return result;
+    result.browser = { state: 'ready', reason: 'Actual local-file render, fonts, drawn and moved stages at sought times and a PNG filmstrip passed.',
       controller: BROWSER_IDENTITY.controller, revision: BROWSER_IDENTITY.revision, actualVersion: browser.version() };
     return result;
   } catch { return result; }
