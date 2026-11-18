@@ -2,6 +2,7 @@ import { previewMetadata, previewTarget } from './preview.js';
 import { renderSvg } from './svg-render.js';
 import { projectContentType, downloadDisposition } from './project-files.js';
 import { createDeckService } from './deck-service.js';
+import { TEMPLATE_COLORS, TEMPLATE_FONT } from './deck-data.js';
 import { createDeckCapture, reportsState, validateCaptureState, CAPTURE_REBUILD } from './deck-capture.js';
 import { controlRequest } from './runtime/channel.js';
 import { FONTS, fontPath, fontCatalog } from './fonts.js';
@@ -90,6 +91,8 @@ async function jsonBody(req, limit = 6_500_000) {
     throw new StoreError("Invalid JSON", 400);
   }
 }
+// Deck bundles (and the Slides canvas frame) run with an opaque origin: no app storage, network or script authority.
+const DECK_SANDBOX = "sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'none'";
 function send(res, status, data, headers = {}) {
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -315,7 +318,8 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
       if (url.pathname === "/api/brand-standards") {
         const channel = viewChannel();
         if (!channel) throw new StoreError("Select a channel first", 404);
-        if (req.method === "GET") return send(res, 200, store.getBrandStandards(channel.id));
+        // The deck template's own roles show beside the standards wherever a role is unset (Slides theme).
+        if (req.method === "GET") return send(res, 200, { ...store.getBrandStandards(channel.id), deckTemplate: { colorRoles: TEMPLATE_COLORS, font: TEMPLATE_FONT } });
         if (req.method === "PUT") {
           const body = await jsonBody(req);
           return send(res, 200, store.saveBrandStandards(channel.id, body.expectedRevision, body));
@@ -445,6 +449,14 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
             const value = store.saveDeck(episodeId, body.expectedRevision, body.slides, "human", body.design);
             notify(episodeId); return send(res, 200, value);
           }
+        }
+        // The Slides canvas frame: one saved slide built as the bundle builds it, under the bundle's sandbox.
+        if (parts[3] === "deck-canvas" && parts.length >= 6 && ["GET", "HEAD"].includes(req.method)) {
+          const name = decodeURIComponent(parts.slice(6).join("/")) || "index.html";
+          const bytes = await decks.canvasFile(episodeId, Number(parts[4]), decodeURIComponent(parts[5]), name);
+          res.writeHead(200, { "content-type": mime[path.extname(name)] || "application/octet-stream", "content-length": bytes.byteLength, "cache-control": "no-store",
+            "content-security-policy": DECK_SANDBOX, "x-content-type-options": "nosniff", ...(path.extname(name) === ".ttf" ? { "access-control-allow-origin": "*" } : {}) });
+          return res.end(req.method === "HEAD" ? undefined : bytes);
         }
         if (parts[3] === "story" && parts.length === 4 && req.method === "GET")
           return send(res, 200, store.getStory(episodeId));
@@ -754,7 +766,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         if (actual !== file) throw new StoreError('Unsafe bundle path',403);
         // A CSP sandbox forces an opaque origin even if opened directly. The app iframe
         // adds the same boundary. No app storage, network or app-origin script authority.
-        res.setHeader('Content-Security-Policy', "sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'none'");
+        res.setHeader('Content-Security-Policy', DECK_SANDBOX);
         res.setHeader('X-Content-Type-Options','nosniff');
         // Sandboxed previews have an opaque origin; bundled fonts need anonymous CORS.
         if (path.extname(name) === '.ttf') res.setHeader('Access-Control-Allow-Origin', '*');

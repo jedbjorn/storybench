@@ -6,6 +6,7 @@ import { HeavyJobQueue } from './job-runner.js';
 import { StoreError } from './store.js';
 import { createHash } from 'node:crypto';
 import { looksLikeSvg, parseSvg } from './svg.js';
+import { readFileSync } from 'node:fs';
 import { effectiveDeckTheme, themeBuildValues, effectiveSlideDesign, slideHasVisual } from './deck-data.js';
 
 // Uncompressed standard ZIP: portable, deterministic and no shell/archive dependency.
@@ -22,6 +23,55 @@ export function zipBundle(files) {
   const directory = Buffer.concat(central), end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50); end.writeUInt16LE(files.size,8); end.writeUInt16LE(files.size,10); end.writeUInt32LE(directory.length,12); end.writeUInt32LE(offset,16);
   return Buffer.concat([...local,directory,end]);
 }
+const CANVAS_FRAME = readFileSync(new URL('./deck-template/canvas-frame.js', import.meta.url));
+// The build's input from the saved deck. Live inheritance (spec #44): each role is the deck theme's,
+// else the channel's current Brand Standards, else the template's.
+export function deckSnapshot(store, episodeId, deck = store.getDeck(episodeId)) {
+  const theme = effectiveDeckTheme(store.getBrandStandards(deck.channelId), deck.design), { colors, fonts } = themeBuildValues(theme);
+  const valid = store.validateDeckSlides(episodeId,deck.slides,deck.design), { theme:_theme, ...defaults } = deck.design ?? {};
+  // Layout primitives: the deck defaults and each slide's effective values (slide, else deck, else template).
+  const design = { deck:defaults, slides:Object.fromEntries(valid.map(slide => [slide.id,effectiveSlideDesign(defaults,slide.design,{hasVisual:slideHasVisual(slide)})])) };
+  return { title:deck.title, slides:valid, story:deck.story, sourceRevision:deck.revision, fonts, colors, theme, design, library:store.listEpisodeLibrary(episodeId) };
+}
+// Reads the registered media of `slides` (verified against its hash) and builds them with the snapshot's theme.
+async function assembleDeck(store, snapshot, slides, signal = null) {
+  const assets = {}, provenance = {}, root = await realpath(store.workspace);
+  async function media(itemId, slideId) {
+    const item = snapshot.library.find(i => i.id === itemId), asset = item?.asset;
+    if (!asset || !['image','video'].includes(asset.kind)) throw new Error(`Slide ${slideId}: missing image/video ${itemId}`);
+    const source = path.resolve(root,asset.path);
+    let actual;
+    try { actual = await realpath(source); } catch { throw new Error(`Slide ${slideId}: missing media ${itemId}`); }
+    if (!source.startsWith(root + path.sep) || actual !== source) throw new Error(`Slide ${slideId}: unsafe media path`);
+    const handle = await open(source,constants.O_RDONLY | constants.O_NOFOLLOW);
+    let bytes; try { if (!(await handle.stat()).isFile()) throw new Error('Media is not a file'); bytes = await handle.readFile(); } finally { await handle.close(); }
+    if (createHash('sha256').update(bytes).digest('hex') !== asset.hash) throw new Error(`Slide ${slideId}: media ${itemId} differs from its registered source`);
+    let vector;
+    if (looksLikeSvg(bytes)) {
+      try { vector = parseSvg(bytes); } catch (error) { throw new Error(`Slide ${slideId}, asset ${itemId}: ${error.message}`); }
+    }
+    const extension = vector && asset.kind === 'image' ? '.svg' : asset.kind === 'video'
+      ? (bytes.subarray(4,8).toString() === 'ftyp' ? '.mp4' : bytes.subarray(0,4).toString('hex') === '1a45dfa3' ? '.webm' : null)
+      : (bytes.subarray(0,8).toString('hex') === '89504e470d0a1a0a' ? '.png' : bytes.subarray(0,3).toString('hex') === 'ffd8ff' ? '.jpg' : bytes.subarray(0,3).toString() === 'GIF' ? '.gif' : bytes.subarray(8,12).toString() === 'WEBP' ? '.webp' : null);
+    if (!extension) throw new Error(`Slide ${slideId}: unsupported media format; use supported SVG, PNG/JPEG/GIF/WebP or MP4/WebM`);
+    const src = `assets/media_${asset.id.replace(/[^a-zA-Z0-9_-]/g,'_')}${extension}`;
+    // Bundle provenance uses durable identities, never host paths or conversation content.
+    provenance[itemId] = { itemId, assetId: asset.id, channelId: asset.channelId, sourceSha256: asset.hash, file: src,
+      ...(vector ? { svgProfile: vector.profile, editableSource: src } : {}),
+      ...(item.provenance?.reusedFrom ? { reusedFrom: { itemId: item.provenance.reusedFrom.itemId, assetId: item.provenance.reusedFrom.assetId, channelId: item.provenance.reusedFrom.channelId } } : {}) };
+    assets[src] = bytes; return {type:asset.kind,src,alt:asset.name || 'Deck media'};
+  }
+  const built = [];
+  for (const saved of slides) {
+    signal?.throwIfAborted(); const slide = {...saved,subnav:undefined,design:snapshot.design.slides[saved.id]};
+    if (saved.media) slide.media = {...await media(saved.media.itemId,saved.id),alt:saved.media.alt || saved.title};
+    if (saved.vector) slide.vector = {...await media(saved.vector.itemId,saved.id),alt:saved.vector.alt || saved.title};
+    slide.gallery = [];
+    for (const entry of saved.subnav) slide.gallery.push({id:entry.id,label:entry.label,...(entry.itemId ? {media:await media(entry.itemId,saved.id)} : {})});
+    built.push(slide);
+  }
+  return { files: buildDeck({title:snapshot.title,slides:built,fonts:snapshot.fonts,colors:snapshot.colors},{assets}), provenance };
+}
 export function createDeckService({ store, queue = new HeavyJobQueue(), onChange = () => {} }) {
   const update = (job, changes) => { const value = store.saveJob({...job,...changes}); onChange(job.episodeId); return value; };
   const getJob = (episodeId, jobId) => {
@@ -29,59 +79,45 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
     if (!job || job.episodeId !== episodeId || job.kind !== 'deck') throw new StoreError('Deck job not found',404);
     return job;
   };
+  // The Slides canvas: one slide of the saved deck, built exactly as the bundle builds it, plus the
+  // canvas bridge. One build per production is kept for the frame's follow-up requests.
+  const canvases = new Map();
+  async function canvasFile(episodeId, revision, slideId, name) {
+    const deck = store.getDeck(episodeId);
+    if (deck.revision !== revision) throw new StoreError('The deck changed; reload the canvas', 409);
+    if (!deck.slides.some(slide => slide.id === slideId)) throw new StoreError('Slide not found', 404);
+    const key = `${revision}:${slideId}:${store.getBrandStandards(deck.channelId).revision}`;
+    let entry = canvases.get(episodeId);
+    if (entry?.key !== key) {
+      const snapshot = deckSnapshot(store, episodeId, deck);
+      entry = { key, files: assembleDeck(store, snapshot, snapshot.slides.filter(slide => slide.id === slideId)).then(({ files }) => {
+        files.set('index.html', Buffer.from(String(files.get('index.html')).replace('<script src="audience.js" defer></script>', '$&<script src="canvas-frame.js" defer></script>')));
+        files.set('canvas-frame.js', CANVAS_FRAME);
+        return files;
+      }, error => { throw new StoreError(`This slide cannot be shown yet: ${error.message}`, 422); }) };
+      canvases.delete(episodeId); canvases.set(episodeId, entry);
+      while (canvases.size > 4) canvases.delete(canvases.keys().next().value);
+      entry.files.catch(() => { if (canvases.get(episodeId) === entry) canvases.delete(episodeId); });
+    }
+    const files = await entry.files;
+    if (!files.has(name)) throw new StoreError('Canvas file not found', 404);
+    return files.get(name);
+  }
   return {
+    canvasFile,
     hasActiveWork: () => Boolean(queue.active || queue.pending.length || queue.draining),
     getJob,
     enqueue({ episodeId, expectedRevision, requestId = null }) {
       queue.assertOpen(); const deck = store.getDeck(episodeId);
       if (deck.revision !== expectedRevision) throw new StoreError('Stale deck revision; save/reload before building',409);
-      // Live inheritance (spec #44): each role is the deck theme's, else the channel's current Brand Standards, else the template's.
-      const theme = effectiveDeckTheme(store.getBrandStandards(deck.channelId), deck.design), { colors, fonts } = themeBuildValues(theme);
-      const valid = store.validateDeckSlides(episodeId,deck.slides,deck.design), { theme:_theme, ...defaults } = deck.design ?? {};
-      // Layout primitives: the deck defaults and each slide's effective values (slide, else deck, else template).
-      const design = { deck:defaults, slides:Object.fromEntries(valid.map(slide => [slide.id,effectiveSlideDesign(defaults,slide.design,{hasVisual:slideHasVisual(slide)})])) };
-      const snapshot = { title:deck.title, slides:valid, story:deck.story, sourceRevision:deck.revision, fonts, colors, theme, design, library:store.listEpisodeLibrary(episodeId) };
+      const snapshot = deckSnapshot(store, episodeId, deck);
       const job = store.saveJob({ episodeId, kind:'deck', state:'queued', revision:deck.revision, snapshot, outputClass:'deck_bundle', requestId });
       queue.enqueue(job.id, async signal => {
         let staging, published;
         try {
           update(job,{state:'running',progress:0.1}); signal.throwIfAborted();
-          const assets = {}, provenance = {}, root = await realpath(store.workspace);
-          async function media(itemId, slideId) {
-            const item = snapshot.library.find(i => i.id === itemId), asset = item?.asset;
-            if (!asset || !['image','video'].includes(asset.kind)) throw new Error(`Slide ${slideId}: missing image/video ${itemId}`);
-            const source = path.resolve(root,asset.path);
-            let actual;
-            try { actual = await realpath(source); } catch { throw new Error(`Slide ${slideId}: missing media ${itemId}`); }
-            if (!source.startsWith(root + path.sep) || actual !== source) throw new Error(`Slide ${slideId}: unsafe media path`);
-            const handle = await open(source,constants.O_RDONLY | constants.O_NOFOLLOW);
-            let bytes; try { if (!(await handle.stat()).isFile()) throw new Error('Media is not a file'); bytes = await handle.readFile(); } finally { await handle.close(); }
-            if (createHash('sha256').update(bytes).digest('hex') !== asset.hash) throw new Error(`Slide ${slideId}: media ${itemId} differs from its registered source`);
-            let vector;
-            if (looksLikeSvg(bytes)) {
-              try { vector = parseSvg(bytes); } catch (error) { throw new Error(`Slide ${slideId}, asset ${itemId}: ${error.message}`); }
-            }
-            const extension = vector && asset.kind === 'image' ? '.svg' : asset.kind === 'video'
-              ? (bytes.subarray(4,8).toString() === 'ftyp' ? '.mp4' : bytes.subarray(0,4).toString('hex') === '1a45dfa3' ? '.webm' : null)
-              : (bytes.subarray(0,8).toString('hex') === '89504e470d0a1a0a' ? '.png' : bytes.subarray(0,3).toString('hex') === 'ffd8ff' ? '.jpg' : bytes.subarray(0,3).toString() === 'GIF' ? '.gif' : bytes.subarray(8,12).toString() === 'WEBP' ? '.webp' : null);
-            if (!extension) throw new Error(`Slide ${slideId}: unsupported media format; use supported SVG, PNG/JPEG/GIF/WebP or MP4/WebM`);
-            const src = `assets/media_${asset.id.replace(/[^a-zA-Z0-9_-]/g,'_')}${extension}`;
-            // Bundle provenance uses durable identities, never host paths or conversation content.
-            provenance[itemId] = { itemId, assetId: asset.id, channelId: asset.channelId, sourceSha256: asset.hash, file: src,
-              ...(vector ? { svgProfile: vector.profile, editableSource: src } : {}),
-              ...(item.provenance?.reusedFrom ? { reusedFrom: { itemId: item.provenance.reusedFrom.itemId, assetId: item.provenance.reusedFrom.assetId, channelId: item.provenance.reusedFrom.channelId } } : {}) };
-            assets[src] = bytes; return {type:asset.kind,src,alt:asset.name || 'Deck media'};
-          }
-          const slides = [];
-          for (const saved of snapshot.slides) {
-            signal.throwIfAborted(); const slide = {...saved,subnav:undefined,design:snapshot.design.slides[saved.id]};
-            if (saved.media) slide.media = {...await media(saved.media.itemId,saved.id),alt:saved.media.alt || saved.title};
-            if (saved.vector) slide.vector = {...await media(saved.vector.itemId,saved.id),alt:saved.vector.alt || saved.title};
-            slide.gallery = [];
-            for (const entry of saved.subnav) slide.gallery.push({id:entry.id,label:entry.label,...(entry.itemId ? {media:await media(entry.itemId,saved.id)} : {})});
-            slides.push(slide);
-          }
-          const files = buildDeck({title:snapshot.title,slides,fonts:snapshot.fonts,colors:snapshot.colors},{assets});
+          const root = await realpath(store.workspace);
+          const { files, provenance } = await assembleDeck(store, snapshot, snapshot.slides, signal);
           const manifest = {sourceRevision:deck.revision,productionId:episodeId,stateReporting:DECK_STATE_REPORTING,fonts:snapshot.fonts,colors:snapshot.colors,theme:snapshot.theme,design:snapshot.design,assets:Object.values(provenance),files:[...files.keys(),'manifest.json']};
           files.set('manifest.json',JSON.stringify(manifest,null,2));
           const parent = path.join(store.episodeDirectory(episodeId),'outputs','decks');
