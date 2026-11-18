@@ -234,10 +234,31 @@ export function parseSvg(bytes, { namespace = null, stages = null } = {}) {
     const width = dimension('width', 2), height = dimension('height', 3);
     if (![width, height].every(n => Number.isFinite(n) && n > 0 && n <= SVG_LIMITS.dimension) || ['width', 'height'].some(n => root.getAttribute(n)?.endsWith('%'))) fail('root needs finite pixel dimensions or a viewBox, at most 4096 per side');
     const groupIds = nodes.filter(n => n.localName === 'g' && n.id).map(n => n.id);
+    // Stroke cascade of this closed profile: inline style, then #id and .class rules, then the
+    // attribute, else inherited. Lets an author choose `draw` knowingly; the runtime draws the same shapes.
+    const stroke = node => {
+      for (let n = node; n?.nodeType === 1; n = n.parentElement) {
+        let found, rank = 0;
+        for (const rule of styles) for (const selector of rule.selectors) {
+          const level = selector[0] === '#' ? 2 : 1, name = selector.slice(1);
+          if (level < rank || !(level === 2 ? n.id === name : n.classList.contains(name))) continue;
+          for (const [key, val] of rule.declarations) if (key === 'stroke') { found = val; rank = level; }
+        }
+        for (const part of (n.getAttribute('style') ?? '').split(';')) {
+          const m = /^\s*stroke\s*:\s*(.*?)\s*$/.exec(part);
+          if (m) { found = m[1]; rank = 3; }
+        }
+        found ??= n.getAttribute('stroke')?.trim();
+        if (found && found !== 'inherit') return found;
+      }
+      return 'none';
+    };
+    const shapes = 'path,rect,circle,ellipse,line,polyline,polygon';
+    const groups = groupIds.map(id => ({ id, stroked: [...ids.get(id).querySelectorAll(shapes)].some(n => !n.closest('defs,clipPath,mask') && stroke(n) !== 'none') }));
     const mapped = [];
     if (stages !== null) {
-      validateVectorStages(stages, groupIds);
-      for (const [index, stage] of stages.entries()) for (const id of stage.svgGroupIds) {
+      validateVectorStages(stages, groupIds, groups.filter(group => group.stroked).map(group => group.id));
+      for (const [index, stage] of stages.entries()) for (const id of stage.svgGroupIds ?? []) {
         const node = ids.get(id);
         if (node.closest('defs,clipPath,mask,pattern')) fail(`stage group ${id} must be visible geometry, not a definition`);
         mapped.push({ node, index });
@@ -268,15 +289,16 @@ export function parseSvg(bytes, { namespace = null, stages = null } = {}) {
     for (const { node, index } of mapped) {
       const wrapper = doc.createElementNS(NS, 'g');
       wrapper.setAttribute('data-vector-step', String(index));
+      wrapper.setAttribute('data-vector-group', namespace === null ? node.id : node.id.slice(namespace.length + 1));
       node.replaceWith(wrapper); wrapper.append(node);
     }
-    return { profile: SVG_PROFILE, width, height, groupIds, fonts: [...fonts], source, svg: root.outerHTML };
+    return { profile: SVG_PROFILE, width, height, groupIds, groups, fonts: [...fonts], source, svg: root.outerHTML };
   } finally { dom.window.close(); }
 }
 
 export function svgProbe(parsed) {
   return { kind: 'image', duration: null, width: parsed.width, height: parsed.height, hasAudio: false,
-    contentType: 'image/svg+xml', svgProfile: parsed.profile, svgGroupIds: parsed.groupIds,
+    contentType: 'image/svg+xml', svgProfile: parsed.profile, svgGroupIds: parsed.groupIds, svgGroups: parsed.groups,
     streams: [{ codec_type: 'video', codec_name: 'svg', width: parsed.width, height: parsed.height }], format: { format_name: 'svg' } };
 }
 

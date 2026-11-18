@@ -24,6 +24,9 @@ const empty = { type: 'object', properties: {}, additionalProperties: false };
 const object = (required, properties) => ({ type: 'object', additionalProperties: false, required, properties });
 const deckText = { type: 'string' };
 const deckMedia = object(['itemId'], { itemId: deckText, alt: deckText });
+// Relative to the authored geometry: x/y in SVG user units, rotate in degrees about the group's centre.
+const deckGroupState = object([], { x: { type: 'number', minimum: -8192, maximum: 8192 }, y: { type: 'number', minimum: -8192, maximum: 8192 },
+  scale: { type: 'number', minimum: 0, maximum: 16 }, rotate: { type: 'number', minimum: -3600, maximum: 3600 }, opacity: { type: 'number', minimum: 0, maximum: 1 } });
 const deckSlide = object(['id', 'title', 'layout'], {
   id: deckText, title: deckText, layout: { type: 'string', enum: ['title', 'section', 'statement', 'text-media', 'columns', 'full-media', 'process'] },
   body: deckText, notes: deckText, eyebrow: deckText, caption: deckText,
@@ -33,7 +36,14 @@ const deckSlide = object(['id', 'title', 'layout'], {
   columns: { type: 'array', items: object(['title'], { title: deckText, body: deckText }) },
   stages: { type: 'array', items: object(['id', 'title'], { id: deckText, title: deckText, body: deckText,
     afterMs: { type: 'number', minimum: 0, maximum: 3600000 },
-    svgGroupIds: { type: 'array', minItems: 1, uniqueItems: true, items: deckText, description: 'Registered SVG group IDs revealed by this stable stage. Required for each vector stage; groups cannot be mapped twice.' } }) },
+    trigger: { type: 'string', enum: ['auto', 'manual'], description: 'auto starts this stage afterMs after the previous one ends (afterMs may be 0 to flow straight on); manual waits for selection. Unset: a positive afterMs is automatic.' },
+    durationMs: { type: 'number', minimum: 0, maximum: 60000, description: 'How long this stage\'s motion takes. Unset keeps the standard short fade and does not delay the next stage.' },
+    holdMs: { type: 'number', minimum: 0, maximum: 3600000, description: 'Rest after the motion before the next stage\'s afterMs starts.' },
+    easing: { type: 'string', enum: ['linear', 'ease-in', 'ease-out', 'ease-in-out'] },
+    motion: { type: 'string', enum: ['fade', 'draw', 'enter'], description: 'How svgGroupIds arrive: fade (default, also text), draw (strokes draw along their length; groups need stroked geometry), enter (from the state in from).' },
+    from: deckGroupState,
+    changes: { type: 'array', maxItems: 64, description: 'Move groups an earlier stage revealed: each is interpolated from its current state to `to` over durationMs. State accumulates across stages.', items: object(['groupId', 'to'], { groupId: deckText, to: deckGroupState }) },
+    svgGroupIds: { type: 'array', minItems: 1, uniqueItems: true, items: deckText, description: 'Registered SVG group IDs revealed by this stable stage. Each vector stage needs svgGroupIds, changes or both; groups cannot be mapped twice.' } }) },
   subnav: { type: 'array', items: object(['id', 'label'], { id: deckText, label: deckText, itemId: { type: ['string', 'null'] } }) },
 });
 export const AUTHORING_TOOLS = Object.freeze(['save_deck', 'build_deck', 'update_story', 'update_cards', 'update_storyboard', 'create_draft', 'create_final', 'create_graphic_recipe', 'update_graphic_recipe', 'render_graphic', 'apply_branding']);
@@ -44,7 +54,7 @@ const toolSpecs = [
     links: { type: 'array', maxItems: 100, items: object(['url'], { id: { type: 'string' }, url: { type: 'string' }, title: { type: 'string' }, note: { type: 'string' } }) },
   }) },
   { type: 'function', name: 'read_deck', description: 'Read saved ordered slides, story and current revision.', inputSchema: empty },
-  { type: 'function', name: 'save_deck', description: 'Replace ordered slides using the current revision. Preserve slide/stage IDs when reordering. A vector {itemId,alt} selects a registered SVG; each stage maps svgGroupIds from asset metadata, cumulatively revealed in stage order. Vector layouts: title, text-media, full-media, process; do not combine vector with media/gallery. Unmapped geometry stays visible. afterMs delays each reveal, including the first; zero waits for manual selection. Plain text only; never executable markup.', inputSchema: object(['expectedRevision','slides'], {expectedRevision:{type:'integer',minimum:1},slides:{type:'array',items:deckSlide}}) },
+  { type: 'function', name: 'save_deck', description: 'Replace ordered slides using the current revision. Preserve slide/stage IDs when reordering. A vector {itemId,alt} selects a registered SVG; each stage maps svgGroupIds from asset metadata, cumulatively revealed in stage order. Vector layouts: title, text-media, full-media, process; do not combine vector with media/gallery. Unmapped geometry stays visible. afterMs delays each reveal, including the first; zero waits for manual selection unless trigger is auto. Optional per stage: trigger, durationMs, holdMs, easing, motion (fade, draw, enter with from) and changes, which move groups an earlier stage revealed; a stage starts at the start of the previous stage plus its durationMs (when set) plus its holdMs plus its own afterMs. Invalid values are refused naming the slide and stage. Plain text only; never executable markup.', inputSchema: object(['expectedRevision','slides'], {expectedRevision:{type:'integer',minimum:1},slides:{type:'array',items:deckSlide}}) },
   { type: 'function', name: 'build_deck', description: 'Build an offline HTML and ZIP draft bundle from the saved exact revision. Await the returned job; failed/queued is not success.', inputSchema: object(['expectedRevision'], {expectedRevision:{type:'integer',minimum:1}}) },
   { type: 'function', name: 'get_context', description: 'Read current scoped episode, story, cards, library and revisions, with research discovery metadata only. Call read_research for the complete saved summary and links before composing or revising authoring work.', inputSchema: empty },
   { type: 'function', name: 'get_operation_guide', description: 'Read an app-owned guide for one supported operation.', inputSchema: object(['name'], { name: { type: 'string', enum: ['edit_story','edit_card','create_still_graphic','create_animated_graphic','create_draft','create_final'] } }) },

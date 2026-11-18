@@ -158,7 +158,7 @@ test('staged SVG export preserves geometry and rejects ambiguous or definition-o
   const stages = [{ id: 'reveal', title: 'Reveal', svgGroupIds: ['art'] }];
   const input = svg('<g id="art" transform="translate(10 20)" opacity="0.6"><path d="M0 0L20 0L10 20Z"/></g>');
   const parsed = parseSvg(Buffer.from(input), { namespace: 'a', stages });
-  assert.match(parsed.svg, /<g data-vector-step="0"><g id="a-art" transform="translate\(10 20\)" opacity="0.6">/);
+  assert.match(parsed.svg, /<g data-vector-step="0" data-vector-group="art"><g id="a-art" transform="translate\(10 20\)" opacity="0.6">/);
   assert.equal(parsed.source, input);
   for (const [body, mapping, error] of [
     ['<g id="outer"><g id="art"/></g>', [{ id: 'a', svgGroupIds: ['outer'] }, ...stages], /cannot nest/],
