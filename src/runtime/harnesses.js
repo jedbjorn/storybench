@@ -30,15 +30,22 @@ export class WorkerCodexConnection extends CodexConnection {
   }
 
   // Subagents run as their own app-server threads. Only the conversation's thread reaches
-  // chat; each delegation shows as one tool entry, started when the subagent is spawned and
-  // completed when it ends.
+  // chat; each delegation shows as one tool entry per subagent (its `agentThreadId`), started
+  // when the subagent is spawned and completed the first time it ends. Codex reports every
+  // activity kind as an item/started + item/completed pair and may report a subagent again
+  // after it ended ("interacted" on a follow-up, then a second "completed"); none of that
+  // opens or closes another entry.
+  #subagents = new Set();
+
   #production(event) {
     const params = event.params;
     if (params?.threadId && this.threadId && params.threadId !== this.threadId) return null;
     if (params?.item?.type !== "subAgentActivity") return event;
-    const started = params.item.kind === "started";
-    if (event.method !== (started ? "item/started" : "item/completed")) return null;
-    return { ...event, params: { ...params, item: { type: "dynamicToolCall", tool: "subagent", status: started ? "inProgress" : params.item.kind } } };
+    const { kind, agentThreadId } = params.item;
+    const entry = (status) => ({ ...event, params: { ...params, item: { type: "dynamicToolCall", tool: "subagent", status } } });
+    if (event.method === "item/started" && kind === "started" && !this.#subagents.has(agentThreadId)) { this.#subagents.add(agentThreadId); return entry("inProgress"); }
+    if (event.method === "item/completed" && ["completed", "interrupted"].includes(kind) && this.#subagents.delete(agentThreadId)) return entry(kind);
+    return null;
   }
 
   #capture(result) {
