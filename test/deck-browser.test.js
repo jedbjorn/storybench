@@ -161,6 +161,17 @@ test('slide editor edits stage timing and motion and keeps from and changes', {t
   assert.deepEqual(motion(now[2]),reordered,'a duplicate carries the same from and changes');
   assert.deepEqual(now[2].stages.map(({id,...rest})=>rest),now[1].stages.map(({id,...rest})=>rest));
 
+  // Removing the staged SVG drops what only SVG groups can carry, so the slide still saves; timing stays.
+  await page.selectOption('[data-slide-index="2"] [data-slide-field="vectorItemId"]',''); await saved();
+  now=slides();
+  assert.equal(now[2].vector,undefined);
+  assert.deepEqual(now[2].stages.map(({id,body,...rest})=>rest),[
+    {title:'Draw',afterMs:400,durationMs:1500,holdMs:350,trigger:'manual',easing:'ease-out'},
+    {title:'Arrive',afterMs:0,durationMs:400,trigger:'auto'},
+    {title:'Settle',afterMs:500,durationMs:1000,trigger:'auto',easing:'ease-in-out'},
+    {title:'Travel',afterMs:0,durationMs:2000,trigger:'auto',easing:'ease-in'}]);
+  assert.deepEqual(motion(now[1]),reordered,'the slide that kept its SVG is untouched');
+
   await page.reload();
   await ready();
   assert.deepEqual(await shown(1,0),{trigger:'manual',afterMs:'400',durationMs:'1500',holdMs:'350',easing:'ease-out',motion:''});

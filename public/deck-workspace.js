@@ -46,7 +46,11 @@ export function bindDeckBoard(root, { getSlides, onDirty, onSave, render }) {
     else if (field === 'svgGroupIds') target.svgGroupIds = [...event.target.selectedOptions].map(option => option.value);
     else if (field === 'vectorItemId') {
       target.vector = value ? { itemId: value, alt: target.vector?.alt || '' } : null;
-      if (!value) for (const stage of target.stages || []) delete stage.svgGroupIds;
+      // Without its vector the slide is text: drop what only SVG groups can carry, keep the timing.
+      if (!value) for (const stage of target.stages || []) {
+        delete stage.svgGroupIds; delete stage.changes; delete stage.from;
+        if (['draw', 'enter'].includes(stage.motion)) delete stage.motion;
+      }
       onDirty(); render(); onSave(); return;
     }
     else if (field === 'vectorAlt') { if (target.vector) target.vector.alt = value; }
