@@ -1,0 +1,41 @@
+/* Shared UI primitives (see README.md). Colours come only from the :root tokens in /styles.css. */
+.sb-surface { position: relative; }
+.sb-selectable { cursor: pointer; outline-offset: 3px; }
+.sb-selectable:hover { outline: 1px dashed var(--muted); }
+.sb-selectable[aria-pressed="true"] { outline: 2px solid var(--deep); }
+.sb-selectable:focus-visible { outline: 2px solid var(--accent); }
+
+.sb-inspector { display: grid; align-content: start; gap: 12px; min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--ink); }
+.sb-inspector h2 { margin: 0; font-size: 14px; font-weight: 600; color: var(--deep); }
+.sb-inspector h2:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sb-inspector-body { display: grid; gap: 12px; min-width: 0; }
+.sb-inspector-empty .sb-inspector-body { color: var(--muted); }
+
+.sb-segmented { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); }
+.sb-segmented button { padding: 5px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); }
+.sb-segmented button:hover { color: var(--ink); background: var(--paper); }
+.sb-segmented button[aria-pressed="true"] { background: var(--pale); color: var(--deep); font-weight: 600; }
+
+.sb-position, .sb-align { display: inline-grid; gap: 3px; }
+.sb-position { grid-template: repeat(3, 30px) / repeat(3, 30px); }
+.sb-position button, .sb-align button { display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--card); }
+.sb-position button[aria-checked="true"], .sb-align button[aria-checked="true"] { border-color: var(--deep); background: var(--deep); }
+.sb-position-visual { grid-area: 2 / 2; display: grid; place-items: center; border: 1px dashed var(--line); border-radius: 6px; background: var(--pale); color: var(--muted); font-size: 8px; }
+.sb-align { grid-template: repeat(3, 22px) / repeat(3, 22px); }
+.sb-align-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.sb-align button[aria-checked="true"] .sb-align-dot { background: var(--card); }
+
+.sb-duration { display: grid; gap: 4px; }
+.sb-duration label { font-size: 12px; color: var(--muted); }
+.sb-duration-entry { display: inline-flex; align-items: center; gap: 6px; }
+.sb-duration input { width: 9ch; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); }
+.sb-duration input[aria-invalid="true"] { border-color: var(--accent); }
+.sb-duration-unit { color: var(--muted); font-size: 12px; }
+.sb-duration-error { margin: 0; font-size: 12px; color: var(--accent); }
+.sb-duration-error:empty { display: none; }
+
+.sb-scope { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sb-scope-marker { font-size: 12px; color: var(--accent); }
+.sb-scope-marker::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; background: currentColor; vertical-align: middle; }
+.sb-scope-reset { padding: 4px 9px; font-size: 12px; }
+.sb-scope [hidden] { display: none; }
