@@ -72,11 +72,12 @@ test("A5: a captured Claude Code delegation shows only the production agent's pr
   assert.deepEqual(toolEntries(derived.seen), ["started Agent", "completed Agent"]);
 });
 
-test("A6: a captured Codex app-server delegation keeps the subagent thread out of the transcript", async () => {
-  const lines = fixture("codex-0.155.1.jsonl"), stream = lines.map((line) => JSON.parse(line));
+// Replay a captured app-server stream: server output up to each response is written as the
+// connection sends the matching request, and the rest follows turn/start (id 3).
+async function replayCodex(name) {
+  const lines = fixture(name), stream = lines.map((line) => JSON.parse(line));
   let cursor = 0;
   const child = streamChild();
-  // Replay server output up to each response as the connection sends the matching request.
   child.stdin = new Writable({ write(chunk, _encoding, callback) {
     for (const text of String(chunk).split("\n").filter(Boolean)) {
       const { id } = JSON.parse(text);
@@ -93,16 +94,46 @@ test("A6: a captured Codex app-server delegation keeps the subagent thread out o
   const turnId = await connection.startTurn(threadId, "Explore two openings with a subagent.");
   await until(() => completions(seen).length);
   connection.close();
-
   const notifications = stream.filter((message) => message.method);
+  const delta = (own) => notifications.filter((message) => message.method === "item/agentMessage/delta" && (message.params.threadId === threadId) === own).map((message) => message.params.delta).join("");
+  const activity = notifications.filter((message) => message.method === "item/completed" && message.params.item.type === "subAgentActivity").map((message) => message.params.item);
+  return { seen, connection, threadId, turnId, notifications, delta, activity };
+}
+
+test("A6: a captured Codex app-server delegation keeps the subagent thread out of the transcript", async () => {
+  const { seen, connection, threadId, turnId, notifications, delta } = await replayCodex("codex-0.155.1.jsonl");
   const subagentThreads = new Set(notifications.map((message) => message.params.threadId).filter((id) => id && id !== threadId));
   assert.equal(subagentThreads.size, 1, "the capture contains one subagent thread");
-  const delta = (own) => notifications.filter((message) => message.method === "item/agentMessage/delta" && (message.params.threadId === threadId) === own).map((message) => message.params.delta).join("");
   assert.ok(delta(false).length > 0, "the capture contains subagent prose");
   assert.equal(prose(seen), delta(true));
   assert.ok(!prose(seen).includes(delta(false)));
   assert.ok(seen.every((event) => !event.params?.threadId || event.params.threadId === threadId));
   assert.deepEqual(toolEntries(seen), ["started subagent", "completed subagent"]);
+  assert.deepEqual(completions(seen), ["completed"]);
+  assert.equal(seen.find((event) => event.method === "turn/completed").params.turn.id, turnId);
+  assert.equal(connection.threadId, threadId);
+});
+
+test("A6: a captured Codex turn with two subagents and a follow-up shows one tool entry per subagent", async () => {
+  const { seen, connection, threadId, turnId, notifications, delta, activity } = await replayCodex("codex-0.155.1-two-subagents.jsonl");
+  // The capture really is two subagents, one of them sent a follow-up after it had finished:
+  // its thread is reported "completed", then "interacted", then "completed" again.
+  const subagents = [...new Set(activity.map((item) => item.agentThreadId))];
+  assert.equal(subagents.length, 2, "the capture contains two subagents");
+  const kinds = (id) => activity.filter((item) => item.agentThreadId === id).map((item) => item.kind);
+  assert.deepEqual(subagents.map(kinds).sort((a, b) => a.length - b.length), [["started", "completed"], ["started", "completed", "interacted", "completed"]]);
+  assert.ok(notifications.some((message) => message.params.item?.type === "collabAgentToolCall" && message.params.item.tool === "wait"), "the capture contains a wait");
+  assert.deepEqual(new Set(notifications.map((message) => message.params.threadId).filter((id) => id && id !== threadId)), new Set(subagents));
+
+  assert.deepEqual(toolEntries(seen), ["started subagent", "started subagent", "completed subagent", "completed subagent"]);
+  assert.deepEqual(seen.filter((event) => event.params.item?.tool === "subagent").map((event) => event.params.item.status), ["inProgress", "inProgress", "completed", "completed"]);
+  assert.ok(delta(false).length > 0, "the capture contains subagent prose");
+  assert.equal(prose(seen), delta(true));
+  for (const id of subagents) {
+    const own = notifications.filter((message) => message.method === "item/agentMessage/delta" && message.params.threadId === id).map((message) => message.params.delta).join("");
+    assert.ok(own.length > 0 && !prose(seen).includes(own), "no subagent prose reaches the transcript");
+  }
+  assert.ok(seen.every((event) => !event.params?.threadId || event.params.threadId === threadId));
   assert.deepEqual(completions(seen), ["completed"]);
   assert.equal(seen.find((event) => event.method === "turn/completed").params.turn.id, turnId);
   assert.equal(connection.threadId, threadId);
