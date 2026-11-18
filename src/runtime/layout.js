@@ -125,11 +125,16 @@ export function appRunArgs(config) {
 }
 
 // `presentRoots` lists the PROJECT_ROOTS that exist in the data root (checked by the host).
+// An agent job (request.episode.pad, spec #42) is a variant: the work area stays read-only
+// under its project root, and the job's pad is the only writable data path and the working
+// directory. Session folder, credential copy, image, hardening and network are a turn's.
 export function workerRunArgs(config, request, { presentRoots, credentialFile, envFile = null, route = null, gatewayDirectory = null }) {
   const n = names(config.installId);
   const p = hostPaths(config);
   const harness = assertHarness(request.harness);
+  const pad = request.episode.pad ?? null;
   const episodeTarget = `${DATA_MOUNT}/${request.episode.relative}`;
+  const writable = pad ?? request.episode.work;
   const roots = PROJECT_ROOTS.filter((root) => presentRoots.includes(root));
   if (!roots.includes(request.episode.relative.split("/")[0])) throw new RuntimeError("EPISODE_MISSING", "Episode project root is not present");
   return [
@@ -142,13 +147,13 @@ export function workerRunArgs(config, request, { presentRoots, credentialFile, e
     "--network", n.workerNetwork,
     ...(envFile ? ["--env-file", envFile] : []),
     ...(route ? ["--env", `STORYBENCH_ROUTE=${JSON.stringify(route)}`, "--env", "OPENCODE_DISABLE_CLAUDE_CODE=1"] : []),
-    "--workdir", episodeTarget,
+    "--workdir", pad ? `${DATA_MOUNT}/${pad}` : episodeTarget,
     "--env", `STORYBENCH_REQUEST_ID=${request.requestId}`,
     "--env", `STORYBENCH_HARNESS=${harness}`,
     // Project trees: read-only for browsing across episodes/channels.
     ...roots.flatMap((root) => bind(path.join(config.dataRoot, root), `${DATA_MOUNT}/${root}`, { readonly: true })),
-    // Current episode work: writable, nested over the read-only project mount.
-    ...bind(path.join(config.dataRoot, request.episode.work), `${DATA_MOUNT}/${request.episode.work}`),
+    // Current episode work (a job: its pad): writable, nested over the read-only project mount.
+    ...bind(path.join(config.dataRoot, writable), `${DATA_MOUNT}/${writable}`),
     // App-owned native session state for this harness and conversation segment.
     ...bind(p.sessionDir(harness, request.segmentId), `${SESSION_MOUNT}/${harness}`),
     // Exactly one per-request credential copy, freshly staged from the host login.

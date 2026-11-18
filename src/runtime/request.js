@@ -49,10 +49,14 @@ export async function openWorkerRequest(options) {
   return request;
 }
 
-async function openHeldRequest({
+// Opens a worker without taking the render claim. Turns go through openWorkerRequest; an agent
+// job calls this directly because it renders only into its own pad.
+export async function openHeldRequest({
   controlSocket, store, requestId, conversationId, harness, source = `${harness}-login`, segmentId, episodeId,
   bootContext = {}, templates, onToolCall = () => {}, wrapTools = (tools) => tools,
   model = null, supportsImages = true, library = null, release = null, isShortcutMessage = defaultIsShortcutMessage, assertAuthoringContext,
+  // An agent job (runtime/job-worker.js) passes its pad, its tool selection and its boot render.
+  pad = null, selectTools = selectKindTools, renderBoot = null,
 }) {
   const kind = resolveKind(store.getEpisode(episodeId));
   const loaded = templates ?? await loadTemplates(DEFAULT_TEMPLATES, kind);
@@ -65,8 +69,8 @@ async function openHeldRequest({
   const location = store.episodeLocation(episodeId);
   const episodeDir = parseEpisodeDir(path.relative(dataRoot, location.directory));
   const workRelative = path.relative(dataRoot, store.episodeWorkDirectory(episodeId));
-  // A request-specific working subdirectory inside the episode work area.
-  const requestWorkDir = path.join(store.episodeWorkDirectory(episodeId), requestId);
+  // A request-specific working subdirectory inside the episode work area (a job: its pad).
+  const requestWorkDir = pad ?? path.join(store.episodeWorkDirectory(episodeId), requestId);
   await mkdir(requestWorkDir, { recursive: true });
   const scope = {
     requestId, conversationId, harness, model: model ?? null, channelId: location.channelId, episodeId,
@@ -76,18 +80,19 @@ async function openHeldRequest({
   const scoped = createScopedTools(scope, { store, library: library ?? createLibraryService({ workspace: dataRoot, store }), release: effectiveRelease, isShortcutMessage, assertAuthoringContext,
     // Only the host holds this request's provider credential, so the host screens report text.
     upstream: { screenCredential: async (text) => (await controlRequest(controlSocket, { op: "worker.screen", requestId, text })).contains === true } });
-  const tools = selectKindTools(wrapTools(scoped), kind, { supportsImages });
+  const tools = selectTools(wrapTools(scoped), kind, { supportsImages });
   scoped.setServedDefinitions(tools.definitions);
   // Render before the worker starts so the harness never sees a half-written boot. The boot
   // context may be a function of what this request actually serves and where it works.
   const context = typeof bootContext === "function"
     ? bootContext({ requestWorkDir, served: tools.definitions.map((definition) => definition.name), release: effectiveRelease })
     : bootContext;
-  const render = await renderEpisodeBoot({
-    episodeDir: location.directory, templates: loaded, kind,
-    context: { ...context, tools: { served: tools.definitions.map(({ name }) => name).join(", ") }, paths: { ...context.paths, episode: location.directory, work: store.episodeWorkDirectory(episodeId), requestWork: requestWorkDir } },
-  });
-  const started = await controlRequest(controlSocket, { op: "worker.start", requestId, harness, source, model, segmentId, episodeDir: episodeDir.relative, workDir: workRelative });
+  const renderContext = { ...context, tools: { served: tools.definitions.map(({ name }) => name).join(", ") }, paths: { ...context.paths, episode: location.directory, work: store.episodeWorkDirectory(episodeId), requestWork: requestWorkDir } };
+  const render = renderBoot
+    ? await renderBoot({ context: renderContext, kind, templates: loaded })
+    : await renderEpisodeBoot({ episodeDir: location.directory, templates: loaded, kind, context: renderContext });
+  const started = await controlRequest(controlSocket, { op: "worker.start", requestId, harness, source, model, segmentId, episodeDir: episodeDir.relative, workDir: workRelative,
+    ...(pad ? { padDir: path.relative(dataRoot, pad) } : {}) });
   const token = randomBytes(32).toString("hex");
   let bridge;
   try {
@@ -108,7 +113,7 @@ async function openHeldRequest({
     contextVersion: contextFingerprint(kind, loaded, tools.definitions),
     async codex({ model, effort = null, autocompact = null, onEvent, onError, requestTimeout } = {}) {
       const child = await connectHarness(started.harnessSocket, { harness: "codex" });
-      const connection = new WorkerCodexConnection({ child, tools, cwd: started.episodeDir, model: model ? assertModel(model) : undefined, effort, autocompact, onEvent, onError, requestTimeout });
+      const connection = new WorkerCodexConnection({ child, tools, cwd: started.workingDir ?? started.episodeDir, model: model ? assertModel(model) : undefined, effort, autocompact, onEvent, onError, requestTimeout });
       return connection.open();
     },
     // Production Claude chat connection (same interface as the Codex connection).
