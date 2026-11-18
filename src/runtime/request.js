@@ -106,14 +106,14 @@ async function openHeldRequest({
   return {
     started, render, scope, tools,
     contextVersion: contextFingerprint(kind, loaded, tools.definitions),
-    async codex({ model, effort = null, onEvent, onError, requestTimeout } = {}) {
+    async codex({ model, effort = null, autocompact = null, onEvent, onError, requestTimeout } = {}) {
       const child = await connectHarness(started.harnessSocket, { harness: "codex" });
-      const connection = new WorkerCodexConnection({ child, tools, cwd: started.episodeDir, model: model ? assertModel(model) : undefined, effort, onEvent, onError, requestTimeout });
+      const connection = new WorkerCodexConnection({ child, tools, cwd: started.episodeDir, model: model ? assertModel(model) : undefined, effort, autocompact, onEvent, onError, requestTimeout });
       return connection.open();
     },
     // Production Claude chat connection (same interface as the Codex connection).
-    claudeConnection({ model, effort = null, onEvent, onError } = {}) {
-      return new ClaudeChatConnection({ model: model ? assertModel(model) : null, effort, onEvent, onError,
+    claudeConnection({ model, effort = null, autocompact = null, onEvent, onError } = {}) {
+      return new ClaudeChatConnection({ model: model ? assertModel(model) : null, effort, autocompact, onEvent, onError,
         spawnSession: (header) => connectHarness(started.harnessSocket, Object.fromEntries(Object.entries(header).filter(([, value]) => value != null))) });
     },
     async claude({ model, resume, onEvent } = {}) {

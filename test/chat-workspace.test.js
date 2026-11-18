@@ -35,15 +35,20 @@ test("late episode replies cannot redraw the current chat workspace", async (t) 
 test("polling releases the episode busy lock after a turn completes", async (t) => {
   const { dom, root } = page(); t.after(() => dom.window.close());
   let state = "running";
+  const context = { tokens: 1200, trigger: 500000, canCompact: true, reason: null };
   const api = async (url) => url.endsWith("/chats")
     ? [{ id: "chat", name: "Work", state, draft: "" }]
-    : { id: "chat", name: "Work", state, draft: "", messages: [] };
+    : { id: "chat", name: "Work", state, draft: "", messages: [], context };
   const workspace = new ChatWorkspace({ root, api, getEpisode: () => ({ id: "episode" }) });
   await workspace.open();
-  assert.equal(root.querySelector("[data-chat-send]").disabled, true);
+  const compact = root.querySelector("[data-chat-compact]");
+  assert.equal(workspace.isBusy(), true);
+  assert.equal(compact.getAttribute("aria-disabled"), "true");
+  assert.match(compact.title, /Available when the assistant is idle/);
   state = "idle";
   await workspace.refreshList(workspace.generation, "episode", { preserveSelection: true });
-  assert.equal(root.querySelector("[data-chat-send]").disabled, false);
+  assert.equal(workspace.isBusy(), false);
+  assert.equal(compact.getAttribute("aria-disabled"), "false");
   workspace.close();
 });
 
@@ -208,16 +213,16 @@ test('late image uploads persist only to the captured conversation and failures 
   const workspace = new ChatWorkspace({ root, api, getEpisode: () => episode, uploadImage: () => new Promise((resolve) => { finishUpload = resolve; }) });
   await workspace.open();
   const pending = workspace.addImages([{ name: 'image.png', type: 'image/png', size: 20 }]);
-  assert.equal(root.querySelector('[data-chat-send]').disabled, true);
+  assert.equal(workspace.imageDraft().uploads.length, 1, 'Enter does not send while an image is uploading');
   episode = { id: 'two' }; await workspace.open();
   finishUpload({ id: 'one-image', label: 'Image', asset: { kind: 'image' } }); await pending;
   assert.deepEqual(writes, [{ url: '/api/episodes/one/chats/one-chat', body: { attachmentIds: ['one-image'] } }]);
   assert.equal(root.querySelector('.chat-attachment'), null);
   workspace.imageDraft().attachments = [{ itemId: 'two-image', label: 'Two image', episodeId: 'two' }];
   workspace.paintImages();
-  await root.querySelector('[data-chat-send]').onclick();
+  await workspace.sendDraft();
   assert.equal(workspace.imageDraft().attachments[0].itemId, 'two-image');
-  assert.equal(root.querySelector('[data-chat-send]').disabled, false);
+  assert.equal(workspace.sending, false);
   await workspace.addImages([{ name: 'not-image.txt', type: 'text/plain', size: 1 }]);
   assert.match(root.querySelector('[data-chat-upload-status]').textContent, /PNG/);
   workspace.close();
@@ -235,9 +240,41 @@ test('unsaved production conflicts block chat and production requests without di
   const workspace=new ChatWorkspace({root,api,getEpisode:()=>({id:'episode'}),toast:message=>notices.push(message),beforeSend:async()=>{throw new Error('Resolve unsaved slides');}});
   t.after(()=>workspace.close()); await workspace.open();
   const draft=root.querySelector('[data-chat-draft]'); draft.value='Build from this';
-  root.querySelector('[data-chat-send]').click(); await tick();
+  draft.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter' })); await tick();
   assert.equal(writes.some(url=>url.endsWith('/messages')),false);
   assert.equal(draft.value,'Build from this'); assert.ok(notices.includes('Resolve unsaved slides'));
   await assert.rejects(workspace.sendProduction({kind:'draft'}),/unsaved slides/);
   assert.equal(writes.some(url=>url.endsWith('/production-requests')),false);
+});
+
+test("history lists ten conversations; the drawer shows agents; the compact button compacts", async (t) => {
+  const { dom, root } = page(); t.after(() => dom.window.close());
+  const conversations = Array.from({ length: 12 }, (_, index) => ({ id: `c${index}`, name: `Conversation ${12 - index}`, state: "idle", draft: "" }));
+  const calls = [];
+  const context = { tokens: 312_400, trigger: 500_000, canCompact: true, reason: null };
+  const api = async (url, options = {}) => {
+    calls.push({ url, method: options.method ?? "GET" });
+    if (url.endsWith("/chats")) return conversations;
+    if (url.endsWith("/compact")) return {};
+    const id = url.split("/").at(-1);
+    return { id, name: id, state: "idle", draft: "", messages: [], context, settings: { harness: "claude", model: "opus" },
+      runs: [{ state: "completed", modelResolved: "claude-opus-5-5", startedAt: "2026-11-18T10:00:00.000Z", finishedAt: "2026-11-18T10:03:27.000Z" }],
+      events: [{ type: "turn.started", createdAt: "2026-11-18T10:00:00.000Z", payload: {} }, { type: "agent.updated", createdAt: "2026-11-18T10:00:05.000Z", payload: { id: "a", label: "Rework assets", model: "claude-sonnet-5", tokens: 16_461, state: "completed" } },
+        { type: "agent.updated", createdAt: "2026-11-18T10:01:05.000Z", payload: { id: "a", state: "completed" } }] };
+  };
+  const workspace = new ChatWorkspace({ root, api, getEpisode: () => ({ id: "episode" }) });
+  t.after(() => workspace.close());
+  await workspace.open();
+  assert.equal(root.querySelectorAll("[data-chat-id]").length, 10);
+  workspace.selectConversation("c11"); workspace.paintConversationList();
+  const ids = [...root.querySelectorAll("[data-chat-id]")].map((item) => item.dataset.chatId);
+  assert.equal(ids.length, 10); assert.equal(ids.at(-1), "c11", "the open conversation stays reachable");
+  await workspace.refresh(workspace.generation, "episode", "c11");
+  const rows = [...root.querySelectorAll(".chat-agent")].map((row) => [...row.children].map((child) => child.textContent));
+  assert.deepEqual(rows, [["Assistant", "claude-opus-5-5 | 312k / 500k", "Done · 3:27"], ["Rework assets", "claude-sonnet-5 | 16k", "Done · 1:00"]]);
+  const compact = root.querySelector("[data-chat-compact]");
+  assert.equal(compact.getAttribute("aria-disabled"), "false");
+  assert.match(compact.title, /^Compact context\n.+\nContext 312k \/ 500k · compacts automatically at 500k$/);
+  await compact.onclick({ currentTarget: compact });
+  assert.ok(calls.some((call) => call.url === "/api/episodes/episode/chats/c11/compact" && call.method === "POST"));
 });

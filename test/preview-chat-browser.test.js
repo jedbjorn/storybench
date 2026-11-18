@@ -71,7 +71,7 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: paste, drop an
       const response = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/messages'));
       const request = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/messages'));
       await page.fill('[data-chat-draft]', `Inspect ${name}`);
-      await page.click('[data-chat-send]');
+      await page.press('[data-chat-draft]', 'Enter');
       assert.deepEqual((await request).postDataJSON().attachmentIds, [attachmentId]);
       const posted = await response;
       assert.equal(posted.status(), 202, await posted.text());

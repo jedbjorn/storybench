@@ -593,6 +593,16 @@ button.icon-button.danger:hover { border-color: #e2b4a9; background: #fbece8; co
 .chat-history-item span { color: var(--muted); font-size: 10px; text-transform: uppercase; }
 .chat-history-item:hover { background: var(--pale); }
 .chat-history-item.selected { border-color: var(--line); background: #f3f5f2; }
+.chat-agents { max-height: 45%; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.chat-agents-heading { padding: 12px 12px 6px; }
+.chat-agents-list { min-height: 0; padding: 0 8px 8px; overflow: auto; }
+.chat-agent { display: grid; gap: 2px; margin-bottom: 5px; padding: 8px 10px; border-left: 2px solid var(--line); font-size: 12px; }
+.chat-agent.running { border-left-color: var(--accent); }
+.chat-agent b, .chat-agent-stats { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-agent-stats { color: var(--deep); font-variant-numeric: tabular-nums; }
+.chat-agent-status { justify-self: end; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chat-icon[aria-disabled="true"] { opacity: .5; cursor: default; }
+.chat-icon[aria-disabled="true"]:hover { border-color: var(--line); color: var(--deep); }
 .chat-transcript-panel { position: relative; display: flex; flex: 1; min-height: 0; }
 .chat-jump {
   position: absolute; bottom: 12px; left: 14px; z-index: 1;

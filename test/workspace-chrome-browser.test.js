@@ -106,9 +106,9 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
   assert.equal(await page.locator('[data-chat-history-toggle]').evaluate((el) => el === document.activeElement), true);
   await page.locator('[data-chat-files]').setInputFiles({ name: 'red.png', mimeType: 'image/png', buffer: png });
   await page.locator('.chat-attachment img').waitFor();
-  await page.waitForFunction(() => !document.querySelector('[data-chat-send]').disabled);
+  await page.waitForFunction(() => !document.querySelector('.chat-attachment.uploading'));
   await page.reload(); await page.locator('.chat-attachment img').waitFor();
-  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await page.press('[data-chat-draft]', 'Enter');
   await page.locator('.chat-image-link img').waitFor();
   await page.waitForFunction(() => document.querySelector('.chat-image-link img').naturalWidth > 0);
   await page.waitForFunction(() => document.querySelector('[data-chat-status]').textContent === 'idle');
@@ -123,7 +123,7 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
       document.querySelector(kind === 'paste' ? '[data-chat-draft]' : '.chat-composer').dispatchEvent(event);
     }, { kind, base64: png.toString('base64') });
     await page.locator('.chat-attachment img').waitFor();
-    await page.waitForFunction(() => !document.querySelector('[data-chat-send]').disabled);
+    await page.waitForFunction(() => !document.querySelector('.chat-attachment.uploading'));
     await page.locator('[data-chat-remove-image]').click();
     await page.waitForFunction(() => !document.querySelector('.chat-attachment'));
   }
@@ -142,7 +142,7 @@ for (const engine of [chromium, firefox, webkit]) test(`${engine.name()}: shared
       for (const tile of await page.locator('.card-reference-panel .reference-item, .reference-add-tile').all()) {
         assert.ok((await tile.boundingBox()).width >= 200, 'Reference content and picker remain readable');
       }
-      for (const control of await page.locator('.tabs button, .actions button, [data-promote], [data-delete], [data-chat-send]').all()) {
+      for (const control of await page.locator('.tabs button, .actions button, [data-promote], [data-delete], [data-chat-compact]').all()) {
         const box = await control.boundingBox();
         assert.ok(box.x >= 0 && box.x + box.width <= width && box.width >= 30, 'Actions and tabs remain reachable');
       }

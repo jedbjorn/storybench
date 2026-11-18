@@ -2,9 +2,15 @@ import { previewUrl, pruneSelections, selectionKey, withChannel } from "./previe
 import { ChatTranscript } from "./chat-transcript.js";
 import { uploadLibraryFile } from "./library-workspace.js";
 import { ChatSettings, boundaryText, selectionLabel } from "./chat-settings.js";
+import { agentRows, agentStatus, contextLabel, formatTokens } from "./chat-agents.js";
+import { clock } from "./chat-transcript.js";
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
-const working = (state) => ["queued", "running", "interrupting"].includes(state);
+const working = (state) => ["queued", "running", "interrupting", "compacting"].includes(state);
+const stoppable = (state) => ["queued", "running", "interrupting"].includes(state);
+const HISTORY_LIMIT = 10;
+// Compact: two arrows pressing in on one line.
+const COMPACT_ICON = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h16M8 3l4 4 4-4M8 21l4-4 4 4"/></svg>';
 
 export class ChatWorkspace {
   constructor({ root, api, getEpisode, renderMarkdown, toast = () => {}, onBusyChange = () => {}, uploadImage = uploadLibraryFile, beforeSend = async () => {} }) {
@@ -40,7 +46,7 @@ export class ChatWorkspace {
     this.conversations = [];
     if (!episodeId) return this.clear();
     this.root.hidden = false;
-    this.root.innerHTML = `<div class="chat-toolbar"><button class="chat-history-toggle" data-chat-history-toggle type="button" aria-label="Open chat history" aria-controls="chatHistoryDrawer" aria-expanded="false">‹</button><div class="chat-identity"><b data-chat-title>${this.getEpisode()?.kind === "deck" ? "Deck" : "Episode"} assistant</b><span data-chat-status role="status"></span></div><button class="chat-selection" data-chat-selection type="button" aria-haspopup="dialog" aria-controls="chatSettingsPanel" title="Harness, model and thinking for this conversation">Codex · default model</button></div><div id="chatSettingsPanel" class="chat-settings-panel" data-chat-settings-panel role="dialog" aria-label="Conversation harness and model" hidden></div><div class="chat-history-backdrop" data-chat-history-backdrop hidden></div><section id="chatHistoryDrawer" class="chat-history-drawer" data-chat-history-drawer aria-label="Chat history" hidden><div class="chat-history-heading"><strong>Chat history</strong><button data-chat-rename type="button">Rename</button></div><div class="chat-history-list" data-chat-history-list></div></section><div class="chat-transcript-panel"><div data-chat-messages tabindex="0" aria-label="Conversation messages"></div><button class="chat-jump" data-chat-jump type="button" aria-label="Jump to end" title="Jump to end" hidden><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v16m-6-6 6 6 6-6"/></svg></button></div><div class="chat-composer"><div class="chat-attachments" data-chat-attachments></div><div class="chat-upload-status" data-chat-upload-status role="status"></div><textarea data-chat-draft aria-label="Message" placeholder="Ask the ${this.getEpisode()?.kind === "deck" ? "deck" : "episode"} assistant, or drop an image" rows="3"></textarea><div class="chat-composer-actions"><button class="chat-icon" data-chat-send type="button" disabled aria-label="Send message" title="Send message">↑</button><button class="chat-icon" data-chat-attach type="button" aria-label="Attach images" title="Attach images"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m8 13 7-7a3 3 0 0 1 4 4l-9 9a5 5 0 0 1-7-7l10-10M6 15l8-8"/></svg></button><input data-chat-files type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden><button class="chat-icon" data-chat-new type="button" aria-label="New chat" title="New chat">＋</button><button class="chat-icon chat-stop" data-chat-stop type="button" aria-label="Stop active response" title="Stop active response" hidden>×</button></div><small>Enter to send · Shift+Enter for a new line</small></div>`;
+    this.root.innerHTML = `<div class="chat-toolbar"><button class="chat-history-toggle" data-chat-history-toggle type="button" aria-label="Open chat history" aria-controls="chatHistoryDrawer" aria-expanded="false">‹</button><div class="chat-identity"><b data-chat-title>${this.getEpisode()?.kind === "deck" ? "Deck" : "Episode"} assistant</b><span data-chat-status role="status"></span></div><button class="chat-selection" data-chat-selection type="button" aria-haspopup="dialog" aria-controls="chatSettingsPanel" title="Harness, model and thinking for this conversation">Codex · default model</button></div><div id="chatSettingsPanel" class="chat-settings-panel" data-chat-settings-panel role="dialog" aria-label="Conversation harness and model" hidden></div><div class="chat-history-backdrop" data-chat-history-backdrop hidden></div><section id="chatHistoryDrawer" class="chat-history-drawer" data-chat-history-drawer aria-label="Chat history" hidden><div class="chat-history-heading"><strong>Chat history</strong><button data-chat-rename type="button">Rename</button></div><div class="chat-history-list" data-chat-history-list></div><div class="chat-agents"><strong class="chat-agents-heading">Agents</strong><div class="chat-agents-list" data-chat-agents></div></div></section><div class="chat-transcript-panel"><div data-chat-messages tabindex="0" aria-label="Conversation messages"></div><button class="chat-jump" data-chat-jump type="button" aria-label="Jump to end" title="Jump to end" hidden><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v16m-6-6 6 6 6-6"/></svg></button></div><div class="chat-composer"><div class="chat-attachments" data-chat-attachments></div><div class="chat-upload-status" data-chat-upload-status role="status"></div><textarea data-chat-draft aria-label="Message" placeholder="Ask the ${this.getEpisode()?.kind === "deck" ? "deck" : "episode"} assistant, or drop an image" rows="3"></textarea><div class="chat-composer-actions"><button class="chat-icon" data-chat-compact type="button" aria-disabled="true" aria-label="Compact context" title="Compact context">${COMPACT_ICON}</button><button class="chat-icon" data-chat-attach type="button" aria-label="Attach images" title="Attach images"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m8 13 7-7a3 3 0 0 1 4 4l-9 9a5 5 0 0 1-7-7l10-10M6 15l8-8"/></svg></button><input data-chat-files type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden><button class="chat-icon" data-chat-new type="button" aria-label="New chat" title="New chat">＋</button><button class="chat-icon chat-stop" data-chat-stop type="button" aria-label="Stop active response" title="Stop active response" hidden>×</button></div><small>Enter to send · Shift+Enter for a new line</small></div>`;
     this.setHistoryOpen(false);
     this.bind(generation, episodeId);
     await this.settings.loadCatalog();
@@ -141,7 +147,6 @@ export class ChatWorkspace {
     container.innerHTML = state.attachments.map((item) => `<div class="chat-attachment"><img src="/api/episodes/${encodeURIComponent(this.episodeId)}/library/${encodeURIComponent(item.itemId)}/file" alt="${escapeHtml(item.label)}"><span>${escapeHtml(item.label)}</span><button type="button" data-chat-remove-image="${escapeHtml(item.itemId)}" aria-label="Remove ${escapeHtml(item.label)}">×</button></div>`).join('')
       + state.uploads.map((item) => `<div class="chat-attachment uploading"><span>Uploading ${escapeHtml(item.name)}…</span></div>`).join('');
     this.root.querySelector('[data-chat-upload-status]').textContent = state.error;
-    this.root.querySelector('[data-chat-send]').disabled = this.isBusy() || this.sending || state.uploads.length > 0;
   }
 
   supportsImages() {
@@ -273,12 +278,13 @@ export class ChatWorkspace {
       try { await this.saveImages(episodeId, conversationId, state); }
       catch (error) { state.error = error.message; if (this.currentId === conversationId) this.paintImages(); }
     };
-    const send = this.root.querySelector("[data-chat-send]");
-    send.onclick = async () => {
+    // Enter sends; there is no send button. The server decides whether the production is busy
+    // (the one-second poll can be stale); a refusal is a toast and the draft stays.
+    this.sendDraft = async () => {
       const conversationId = this.currentId, text = draft.value, selection = this.selection;
       const imageDraft = this.imageDraft(conversationId);
-      if ((!text.trim() && !imageDraft.attachments.length) || send.disabled || this.sending) return;
-      this.sending = true; send.disabled = true;
+      if ((!text.trim() && !imageDraft.attachments.length) || !conversationId || this.sending || imageDraft.uploads.length) return;
+      this.sending = true;
       try {
         await this.flushDraft();
         await this.beforeSend();
@@ -293,7 +299,16 @@ export class ChatWorkspace {
     draft.onkeydown = (event) => {
       if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
       event.preventDefault();
-      send.click();
+      this.sendDraft();
+    };
+    this.root.querySelector("[data-chat-compact]").onclick = async (event) => {
+      const button = event.currentTarget, conversationId = this.currentId;
+      if (button.getAttribute("aria-disabled") === "true" || !conversationId) return;
+      button.setAttribute("aria-disabled", "true");
+      try {
+        await this.api(`${this.itemUrl(episodeId, conversationId)}/compact`, { method: "POST", body: "{}" });
+        if (this.isCurrent(generation, episodeId, conversationId)) await this.refreshList(generation, episodeId, { preserveSelection: true });
+      } catch (cause) { this.toast(cause.message); }
     };
     this.root.querySelector("[data-chat-stop]").onclick = async () => {
       const conversationId = this.currentId;
@@ -323,8 +338,11 @@ export class ChatWorkspace {
   paintConversationList() {
     const list = this.root.querySelector("[data-chat-history-list]");
     if (!list) return;
-    list.innerHTML = this.conversations.map((value) => `<button class="chat-history-item ${value.id === this.currentId ? "selected" : ""}" data-chat-id="${escapeHtml(value.id)}" type="button" aria-current="${value.id === this.currentId ? "true" : "false"}"><b>${escapeHtml(value.name)}</b><span>${working(value.state) ? "working" : escapeHtml(value.state || "idle")}</span></button>`).join("");
+    // At most ten, newest first; the open conversation stays reachable.
     const current = this.conversations.find((value) => value.id === this.currentId);
+    let shown = this.conversations.slice(0, HISTORY_LIMIT);
+    if (current && !shown.includes(current)) shown = [...shown.slice(0, HISTORY_LIMIT - 1), current];
+    list.innerHTML = shown.map((value) => `<button class="chat-history-item ${value.id === this.currentId ? "selected" : ""}" data-chat-id="${escapeHtml(value.id)}" type="button" aria-current="${value.id === this.currentId ? "true" : "false"}"><b>${escapeHtml(value.name)}</b><span>${working(value.state) ? "working" : escapeHtml(value.state || "idle")}</span></button>`).join("");
     this.root.querySelector("[data-chat-title]").textContent = current?.name || "Episode assistant";
     this.root.querySelector("[data-chat-rename]").disabled = !current;
   }
@@ -342,7 +360,8 @@ export class ChatWorkspace {
     this.transcript = new ChatTranscript(this.root.querySelector('[data-chat-messages]'), this.root.querySelector('[data-chat-jump]'), this.getEpisode()?.kind);
     const draft = this.draftField();
     if (switching) { draft.value = ''; draft.dataset.dirty = 'false'; }
-    this.root.querySelector('[data-chat-send]').disabled = true;
+    this.root.querySelector('[data-chat-compact]').setAttribute('aria-disabled', 'true');
+    this.root.querySelector('[data-chat-agents]').innerHTML = '';
     this.root.querySelector('[data-chat-stop]').hidden = true;
     this.root.querySelector('[data-chat-status]').textContent = '';
   }
@@ -406,7 +425,8 @@ export class ChatWorkspace {
       ...boundaries.map((entry) => ({ ...entry, html: `<p class="chat-boundary" role="note"><span>${escapeHtml(entry.text)}</span></p>` }))]
       .sort((a, b) => String(a.at ?? "").localeCompare(String(b.at ?? "")));
     const run = (value.runs ?? []).findLast((entry) => ["starting", "running"].includes(entry.state));
-    const turnStatus = { events: value.events ?? [], state: value.state, startedAt: run?.startedAt ?? null, offset: this.clockOffset ?? 0 };
+    const compaction = value.state === "compacting" ? (value.events ?? []).findLast((event) => event.type === "compaction.started") : null;
+    const turnStatus = { events: value.events ?? [], state: value.state, startedAt: run?.startedAt ?? compaction?.createdAt ?? null, offset: this.clockOffset ?? 0 };
     this.transcript.render(items.length || active ? items : [{ key: 'empty', html: `<p>Start a conversation about this ${this.getEpisode()?.kind === "deck" ? "deck" : "episode"}.</p>` }], active, turnStatus);
     const draft = this.draftField();
     if (draft.dataset.dirty !== "true") { draft.value = value.draft || ""; draft.dataset.dirty = "false"; }
@@ -414,9 +434,36 @@ export class ChatWorkspace {
     const imageDraft = this.imageDraft();
     if (imageRevision === imageDraft.revision && !imageDraft.dirty && !imageDraft.uploads.length) imageDraft.attachments = value.draftAttachments || [];
     this.paintImages();
-    const send = this.root.querySelector("[data-chat-send]"); send.disabled = busy || this.sending || imageDraft.uploads.length > 0; send.title = busy ? "Another conversation is working for this production" : "";
-    const stop = this.root.querySelector("[data-chat-stop]"); stop.hidden = !working(value.state); stop.disabled = value.state === "interrupting";
+    this.paintCompact(value, busy);
+    this.paintAgents(value);
+    const stop = this.root.querySelector("[data-chat-stop]"); stop.hidden = !stoppable(value.state); stop.disabled = value.state === "interrupting";
     this.onBusyChange(busy);
+  }
+
+  paintCompact(value, busy) {
+    const button = this.root.querySelector("[data-chat-compact]"), context = value.context;
+    const why = !context ? "Not available in this installation"
+      : value.state === "compacting" ? "Compacting now"
+      : busy ? "Available when the assistant is idle"
+      : context.reason;
+    const meter = context ? `Context ${contextLabel(context)}${Number.isFinite(context.trigger) ? ` · compacts automatically at ${formatTokens(context.trigger)}` : ""}` : "";
+    button.setAttribute("aria-disabled", String(Boolean(why) || this.sending));
+    button.title = ["Compact context", why || "Summarize the conversation so far to free the assistant's working memory", meter].filter(Boolean).join("\n");
+  }
+
+  paintAgents(value) {
+    const list = this.root.querySelector("[data-chat-agents]");
+    if (!list) return;
+    const now = Date.now() + (this.clockOffset ?? 0), kind = this.getEpisode()?.kind === "deck" ? "deck" : "video";
+    const html = agentRows(value).map((row) => {
+      const tokens = row.id === "main" ? contextLabel(value.context) : formatTokens(row.tokens);
+      const time = Number.isFinite(row.startedAt) ? ` · ${clock((row.endedAt ?? now) - row.startedAt)}` : "";
+      const running = ["working", "running", "compacting"].includes(row.state);
+      // Worded like the turn status line under the animation, and right aligned like it.
+      const status = agentStatus(row, { kind, live: this.transcript?.animation ? this.transcript.shown?.label : null });
+      return `<div class="chat-agent${running ? " running" : ""}"><b title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</b><span class="chat-agent-stats" title="${escapeHtml(`${row.model} | ${tokens}`)}">${escapeHtml(row.model)} | ${escapeHtml(tokens)}</span><span class="chat-agent-status">${escapeHtml(status)}${escapeHtml(time)}</span></div>`;
+    }).join("");
+    if (list.innerHTML !== html) list.innerHTML = html;
   }
 }
 

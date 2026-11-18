@@ -63,7 +63,7 @@ test('Chromium: atomic responses, sticky reading, image growth, jump and respons
   const atEnd = async () => { await page.waitForFunction(() => { const el = document.querySelector('[data-chat-messages]'); return Math.abs(el.scrollHeight - el.clientHeight - el.scrollTop) < 2; }); };
   const delta = text => adapter.onEvent({ method: 'item/agentMessage/delta', params: { turnId: `turn-${turn}`, delta: text } });
   const finish = status => adapter.onEvent({ method: 'turn/completed', params: { turn: { id: `turn-${turn}`, status } } });
-  const send = async text => { await page.fill('[data-chat-draft]', text); await page.click('[data-chat-send]'); await page.locator('.chat-response-animation').waitFor(); };
+  const send = async text => { await page.fill('[data-chat-draft]', text); await page.press('[data-chat-draft]', 'Enter'); await page.locator('.chat-response-animation').waitFor(); };
   const evidence = process.env.STORYBENCH_CHAT_EVIDENCE;
   const shot = async name => { if (evidence) { mkdirSync(evidence, { recursive: true }); await page.screenshot({ path: path.join(evidence, `${name}.png`) }); } };
   await page.goto(`http://127.0.0.1:${port}/episodes?channel=${episode.channelId}&episode=${episode.id}`);

@@ -58,7 +58,7 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: E4 the turn st
   await page.goto(`http://127.0.0.1:${port}/episodes?channel=${episode.channelId}&episode=${episode.id}`);
   await page.getByText('Earlier reply').waitFor();
   await page.fill('[data-chat-draft]', 'Research, then build the video');
-  await page.click('[data-chat-send]');
+  await page.press('[data-chat-draft]', 'Enter');
   await line.waitFor();
   await showsLabel('Thinking');
   const items = await transcriptItems();

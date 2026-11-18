@@ -20,6 +20,11 @@ export function openCodeRunEvent(event, native) {
   if (event.type === 'error') return { session, failed: true };
   if (event.type === 'text') return { session, output: { type: 'text', part: { text: event.part?.text || '' } } };
   if (event.type === 'tool_use') return { session, output: { type: 'tool_use', part: { tool: event.part?.tool, state: { status: event.part?.state?.status } } } };
+  // A step's input side is the context size of that request (the chat's token meter).
+  if (event.type === 'step_finish') {
+    const tokens = event.part?.tokens ?? {}, context = (tokens.input ?? 0) + (tokens.cache?.read ?? 0) + (tokens.cache?.write ?? 0);
+    return Number.isFinite(context) && context > 0 ? { session, output: { type: 'usage', tokens: context } } : { session };
+  }
   return { session };
 }
 // The worker's record of a failed turn for the service log: where it failed and, for an
@@ -48,6 +53,7 @@ export class OpenCodeConnection {
         if (status === 'running') running.set(tool, open + 1);
         else { if (open) running.set(tool, open - 1); this.emit('item/completed', { item: { type: 'mcpToolCall', tool, status } }); }
       }
+      if (event.type === 'usage' && Number.isFinite(event.tokens)) this.emit('context/usage', { tokens: event.tokens });
       if (event.type === 'error') this.failed = true;
       if (event.type === 'storybench.complete') {
         this.completed = true;

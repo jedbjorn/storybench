@@ -23,10 +23,10 @@ const CODEX_DISABLED = ["apps", "plugins", "browser_use", "computer_use", "in_ap
 export function launchArgv(header) {
   if (!header || typeof header !== "object") throw new Error("Launch header must be an object");
   if (header.harness !== HARNESS) throw new Error(`This worker only runs ${HARNESS}`);
-  const extra = Object.keys(header).filter((key) => !["harness", "model", "resume", "sessionId", "effort"].includes(key));
+  const extra = Object.keys(header).filter((key) => !["harness", "model", "resume", "sessionId", "effort", "autocompact"].includes(key));
   if (extra.length) throw new Error(`Unexpected launch fields: ${extra.join(", ")}`);
   if (header.harness === "codex") {
-    if (header.model !== undefined || header.resume !== undefined || header.sessionId !== undefined || header.effort !== undefined) throw new Error("Codex model, effort and thread are selected over the app-server protocol");
+    if (header.model !== undefined || header.resume !== undefined || header.sessionId !== undefined || header.effort !== undefined || header.autocompact !== undefined) throw new Error("Codex model, effort, thread and compaction are selected over the app-server protocol");
     // Storybench tools reach Codex through the same request-scoped MCP bridge as Claude: in
     // code mode an MCP tool returns a structured CallToolResult whose image blocks the model
     // forwards with image(...), whereas a dynamic tool's output is flattened to a string.
@@ -45,6 +45,7 @@ export function launchArgv(header) {
     if (header.sessionId !== undefined && !SESSION.test(header.sessionId)) throw new Error("Claude sessionId must be a UUID");
     if (header.sessionId !== undefined && header.resume) throw new Error("Give either resume or sessionId, not both");
     if (header.effort !== undefined && !/^[a-z]{2,12}$/.test(header.effort)) throw new Error("Claude effort must be a plain level name");
+    if (header.autocompact !== undefined && !(Number.isInteger(header.autocompact) && header.autocompact >= 100_000 && header.autocompact <= 1_000_000)) throw new Error("Claude autocompact must be 100000 to 1000000 tokens");
     return ["claude", [
       "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose",
       "--model", header.model, "--mcp-config", MCP_CONFIG, "--strict-mcp-config",
@@ -52,6 +53,7 @@ export function launchArgv(header) {
       ...(header.resume ? ["--resume", header.resume] : []),
       ...(header.sessionId ? ["--session-id", header.sessionId] : []),
       ...(header.effort ? ["--effort", header.effort] : []),
+      ...(header.autocompact ? ["--autocompact", String(header.autocompact)] : []),
     ]];
   }
   throw new Error("Unsupported harness");
