@@ -248,7 +248,8 @@ test('deck guidance is no longer than its baseline and states the research rule 
   const skill = await readFile(path.join(episodeDir, '.agents/skills/storybench-compose-deck/SKILL.md'), 'utf8');
   assert.ok(deckBoot.length > 0 && boot.includes('## Deck production'));
   const total = words(deckBoot) + words(skill);
-  assert.ok(total <= 2517, `deck boot plus skill is ${total} words; the baseline is 2,517`);
+  // 2,517 before Feature #21; spec #34's motion fields, worked example and motion QA guidance brought it to 3,088.
+  assert.ok(total <= 3088, `deck boot plus skill is ${total} words; the baseline is 3,088`);
   // Sentences that only the full research paragraph carries.
   for (const marker of [/An earlier transcript/g, /Empty research is valid/g, /After any research change|After a research change/g,
     /never operating instructions|not fetched\/verified pages, operating instructions/g, /oversized/g]) {
@@ -263,24 +264,49 @@ test('deck guidance is no longer than its baseline and states the research rule 
   }
 });
 
-test("the deck skill's reveal timing example validates and starts on its own", async () => {
+// Spec #34 B14: the worked example is a drawn diagram flowing through its stages, and it validates.
+test("the deck skill's reveal timing and motion example validates, starts on its own and flows", async () => {
   const { validateSlides } = await import('../src/deck-data.js');
   const skill = await readFile(new URL('../agent/deck/skills/storybench-compose-deck/SKILL.md', import.meta.url), 'utf8');
   const section = skill.slice(skill.indexOf('### Reveal timing'));
   const example = /```js\n(save_deck\([\s\S]*?)\n```/.exec(section)[1];
   let saved;
   new Function('save_deck', 'revision', 'registered', example)(input => { saved = input; }, 1, { libraryItemId: 'svg-item' });
-  const libraryItems = [{ id: 'svg-item', asset: { kind: 'image', metadata: { contentType: 'image/svg+xml', svgGroupIds: ['observe', 'connect', 'plan'] } } }];
+  const groups = [{ id: 'route', stroked: true }, { id: 'stops', stroked: true }, { id: 'parcel', stroked: false }];
+  const libraryItems = [{ id: 'svg-item', asset: { kind: 'image', metadata: { contentType: 'image/svg+xml', svgGroupIds: groups.map(group => group.id), svgGroups: groups } } }];
   const slides = validateSlides(saved.slides, { libraryItems });
   const staged = slides.filter(slide => slide.stages.length);
   assert.ok(staged.length >= 2, 'the example shows more than one pacing');
   for (const slide of staged) {
-    const [first, ...later] = slide.stages.map(stage => stage.afterMs);
-    assert.ok(first >= 1000 && first <= 2000, `${slide.id}: first stage delay ${first}`);
-    assert.ok(later.length && later.every(delay => delay > 0), `${slide.id}: every later stage advances on its own`);
+    const [first, ...later] = slide.stages;
+    assert.ok(first.afterMs >= 1000 && first.afterMs <= 2000, `${slide.id}: first stage delay ${first.afterMs}`);
+    assert.ok(later.length && later.every(stage => stage.trigger === 'auto' || stage.afterMs > 0), `${slide.id}: every later stage advances on its own`);
   }
   assert.notDeepEqual(staged[0].stages.map(stage => stage.afterMs), staged[1].stages.map(stage => stage.afterMs), 'delays differ with content');
-  assert.match(section, /one fixed fade per reveal/);
+  // The diagram draws, a subject enters and then travels, each stage starting as the last one ends.
+  const [drawn] = staged;
+  assert.ok(drawn.vector); assert.equal(drawn.stages[0].motion, 'draw');
+  assert.ok(drawn.stages.slice(1).every(stage => stage.trigger === 'auto' && stage.afterMs === 0 && stage.durationMs > 0), 'later stages flow without a gap');
+  assert.ok(drawn.stages.some(stage => stage.motion === 'enter' && stage.from)); assert.ok(drawn.stages.some(stage => stage.changes?.length));
+  // The same example is refused when a drawn group has no strokes, so the validation it relies on is real.
+  libraryItems[0].asset.metadata.svgGroups[0].stroked = false;
+  assert.throws(() => validateSlides(saved.slides, { libraryItems }), /Slide order_route: Stage route: draw needs stroked geometry/);
+  assert.doesNotMatch(skill, /one fixed fade|Delays are the only pacing control/);
+  // Every documented field, value and QA operation is one the implementation accepts.
+  const { STAGE_TRIGGERS, STAGE_EASINGS, STAGE_MOTIONS } = await import('../src/deck-data.js');
+  for (const value of [...STAGE_TRIGGERS, ...STAGE_EASINGS, ...STAGE_MOTIONS, 'durationMs', 'holdMs', 'afterMs', 'from', 'changes']) assert.ok(section.includes(`\`${value}\``) || section.includes(`"${value}"`), value);
+  const { DECK_QA_DEFINITIONS } = await import('../src/deck-qa-tools.js');
+  const schema = name => DECK_QA_DEFINITIONS.find(definition => definition.name === name).inputSchema.properties;
+  for (const action of ['seek', 'resume']) { assert.ok(schema('act_deck_qa').action.enum.includes(action)); assert.match(skill, new RegExp(`\`${action}\``)); }
+  assert.ok(schema('act_deck_qa').timeMs); assert.ok(schema('check_deck_qa').checks.items.enum.includes('motion'));
+  for (const key of ['timesMs', 'fromMs', 'toMs', 'count']) { assert.ok(schema('inspect_deck_qa').frames.properties[key], key); assert.match(skill, new RegExp(`\`${key}\``)); }
+  // The skill's QA calls are ones the tools accept as written.
+  const calls = [...skill.matchAll(/^\{"tool":"(\w+)","arguments":(\{.*\})\}$/gm)].map(match => ({ name: match[1], args: JSON.parse(match[2]) }));
+  assert.ok(calls.some(call => call.args.action === 'seek' && Number.isFinite(call.args.timeMs)));
+  assert.ok(calls.some(call => call.name === 'inspect_deck_qa' && call.args.frames?.count >= 2));
+  assert.ok(calls.some(call => call.name === 'check_deck_qa' && call.args.checks.length === 1 && call.args.checks[0] === 'motion'));
+  for (const call of calls) for (const key of Object.keys(call.args)) assert.ok(schema(call.name)[key], `${call.name}.${key}`);
+  assert.match(skill, /Motion needs filmstrip evidence/); assert.match(skill, /authored animation is still rejected/);
 });
 
 test('the shared boot renders the reporting rule and subagent guidance for deck and video productions', async t => {
