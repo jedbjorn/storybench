@@ -442,7 +442,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           if (req.method === "GET") return send(res, 200, store.getDeck(episodeId));
           if (req.method === "PUT") {
             const body = await jsonBody(req);
-            const value = store.saveDeck(episodeId, body.expectedRevision, body.slides);
+            const value = store.saveDeck(episodeId, body.expectedRevision, body.slides, "human", body.design);
             notify(episodeId); return send(res, 200, value);
           }
         }

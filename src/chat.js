@@ -181,7 +181,7 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
       return origin.research.saved(saved);
     },
     read_deck: read.read_deck,
-    save_deck: ({expectedRevision, slides}) => { ensureActive(value, origin); return store.saveDeck(value.episode_id,expectedRevision,slides,'agent'); },
+    save_deck: ({expectedRevision, slides, design}) => { ensureActive(value, origin); return store.saveDeck(value.episode_id,expectedRevision,slides,'agent',design); },
     build_deck: ({expectedRevision}) => { ensureActive(value, origin); return decks.enqueue({episodeId:value.episode_id,expectedRevision,requestId:origin.requestId}); },
     get_context: read.get_context,
     get_operation_guide: read.get_operation_guide,

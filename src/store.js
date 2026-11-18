@@ -1,4 +1,4 @@
-import { validateSlides } from './deck-data.js';
+import { validateSlides, validateDeckDesign, emptyDesign } from './deck-data.js';
 import { fontForFamily } from './fonts.js';
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -28,7 +28,7 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 // Shared persistence/UI/tool limits: 1 MiB summary, 100 links, 200-byte IDs, 8 KiB URLs,
 // 512-byte titles, 2 KiB notes, 2 MiB complete normalized JSON (including escaping).
 // All text limits use UTF-8 bytes. Oversize input is rejected, never truncated.
@@ -281,6 +281,7 @@ function episodeRow(row) {
       referencePrompt: row.reference_prompt ?? "",
       referenceItemIds: parse(row.reference_item_ids, []),
       cards: parse(row.cards, []),
+      ...((row.kind || "video") === "deck" ? { design: row.design == null ? emptyDesign() : parse(row.design) } : {}),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }
@@ -469,6 +470,7 @@ export class Store {
     if (version < 18) this.migrateV18();
     if (version < 19) this.migrateV19();
     if (version < 20) this.migrateV20();
+    if (version < 21) this.migrateV21();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -619,6 +621,16 @@ export class Store {
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
     finally { this.db.exec("PRAGMA foreign_keys=ON"); }
   }
+  // Deck design (spec #44): saved with the deck under the same revision and history as slides.
+  migrateV21() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (!this.columns("episodes").has("design")) this.db.exec("ALTER TABLE episodes ADD COLUMN design TEXT");
+      if (!this.columns("episode_history").has("design")) this.db.exec("ALTER TABLE episode_history ADD COLUMN design TEXT");
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(21,?)").run(now());
+      this.db.exec("PRAGMA user_version=21; COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
   upstreamReportRow(row) {
     return row ? { reportId: row.id, episodeId: row.episode_id, conversationId: row.conversation_id, requestId: row.request_id,
       kind: row.kind, title: row.title, body: row.body, createdAt: row.created_at, openedAt: row.opened_at ?? null } : null;
@@ -683,9 +695,10 @@ export class Store {
     const production = this.requireProductionKind(episodeId, "deck");
     return { ...production, slides: production.cards, story: this.getStory(episodeId) };
   }
-  saveDeck(episodeId, expectedRevision, slides, actor = "human") {
+  // An omitted design keeps the saved one.
+  saveDeck(episodeId, expectedRevision, slides, actor = "human", design = undefined) {
     this.requireProductionKind(episodeId, "deck");
-    this.updateEpisode(episodeId, expectedRevision, { cards: slides }, actor);
+    this.updateEpisode(episodeId, expectedRevision, { cards: slides, ...(design === undefined ? {} : { design }) }, actor);
     return this.getDeck(episodeId);
   }
   validateDeckSlides(episodeId, slides) {
@@ -1276,9 +1289,9 @@ export class Store {
     return this.getModelDefault(mode);
   }
   insertHistory(episode, actor, createdAt, parentRevision) {
-    this.db.prepare(`INSERT INTO episode_history(episode_id,revision,title,notes,cards,actor,created_at,parent_revision,reference_prompt,reference_item_ids)
-      VALUES(?,?,?,?,?,?,?,?,?,?)`).run(episode.id, episode.revision, episode.title, episode.notes, JSON.stringify(episode.cards), actor, createdAt,
-      parentRevision ?? null, episode.referencePrompt ?? "", JSON.stringify(episode.referenceItemIds ?? []));
+    this.db.prepare(`INSERT INTO episode_history(episode_id,revision,title,notes,cards,actor,created_at,parent_revision,reference_prompt,reference_item_ids,design)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(episode.id, episode.revision, episode.title, episode.notes, JSON.stringify(episode.cards), actor, createdAt,
+      parentRevision ?? null, episode.referencePrompt ?? "", JSON.stringify(episode.referenceItemIds ?? []), episode.design === undefined ? null : JSON.stringify(episode.design));
   }
   dataRootIdentity() {
     const row = this.db.prepare("SELECT * FROM data_root WHERE singleton=1").get();
@@ -1592,6 +1605,14 @@ export class Store {
     }
     if (changes.archived != null && typeof changes.archived !== "boolean")
       throw new StoreError("archived must be true or false");
+    if (changes.design !== undefined && current.kind !== "deck") throw new StoreError("design applies only to deck productions");
+    let design = current.design;
+    if (changes.design !== undefined) {
+      // Undo restores a recorded design with its setBy; other saves record who set each changed value.
+      const setBy = actor === "undo" ? null : actor === "agent" ? "agent" : "creator";
+      try { design = validateDeckDesign(changes.design, { previous: current.design, setBy }); }
+      catch (error) { throw new StoreError(error.message); }
+    }
     const updatedAt = now();
     const next = {
       ...current,
@@ -1602,6 +1623,7 @@ export class Store {
       archivedAt: changes.archived == null ? current.archivedAt : changes.archived ? current.archivedAt ?? updatedAt : null,
       referencePrompt,
       referenceItemIds,
+      ...(current.kind === "deck" ? { design } : {}),
       revision: current.revision + 1,
       updatedAt,
     };
@@ -1609,7 +1631,7 @@ export class Store {
     try {
       const result = this.db
         .prepare(
-          "UPDATE episodes SET title=?,notes=?,state=?,archived_at=?,revision=?,cards=?,reference_prompt=?,reference_item_ids=?,updated_at=? WHERE id=? AND revision=?",
+          "UPDATE episodes SET title=?,notes=?,state=?,archived_at=?,revision=?,cards=?,reference_prompt=?,reference_item_ids=?,design=?,updated_at=? WHERE id=? AND revision=?",
         )
         .run(
           next.title,
@@ -1620,6 +1642,7 @@ export class Store {
           JSON.stringify(next.cards),
           next.referencePrompt,
           JSON.stringify(next.referenceItemIds),
+          next.design === undefined ? null : JSON.stringify(next.design),
           next.updatedAt,
           episodeId,
           expectedRevision,
@@ -1656,7 +1679,8 @@ export class Store {
       episodeId,
       expectedRevision,
       { title: prior.title, notes: prior.notes, cards: current.kind === "deck" ? parse(prior.cards, []) : this.normalizeLegacyCards(episodeId, parse(prior.cards, [])),
-        ...(prior.reference_item_ids == null ? {} : { referencePrompt: prior.reference_prompt ?? "", referenceItemIds: parse(prior.reference_item_ids, []) }) },
+        ...(prior.reference_item_ids == null ? {} : { referencePrompt: prior.reference_prompt ?? "", referenceItemIds: parse(prior.reference_item_ids, []) }),
+        ...(current.kind === "deck" ? { design: prior.design == null ? null : parse(prior.design) } : {}) },
       "undo",
       prior.parent_revision,
     );

@@ -534,7 +534,7 @@ test("schema 20 widens a populated v19 production_runs to the wake origin and ke
   store.close();
   store = new Store(root);
   t.after(() => store.close());
-  assert.equal(Number(store.db.prepare("PRAGMA user_version").get().user_version), 20);
+  assert.equal(Number(store.db.prepare("PRAGMA user_version").get().user_version), 21);
   assert.equal(store.getProductionRun(run.id).originatingMessageId, message.id, "rows survive the rebuild");
   assert.equal(store.getJob(job.id).requestId, run.id, "job references survive");
   const line = store.addConversationMessage({ conversationId, role: "system", text: "Agent results: Facts (Done)", state: "queued" });

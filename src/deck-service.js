@@ -6,6 +6,7 @@ import { HeavyJobQueue } from './job-runner.js';
 import { StoreError } from './store.js';
 import { createHash } from 'node:crypto';
 import { looksLikeSvg, parseSvg } from './svg.js';
+import { effectiveDeckTheme, themeBuildValues } from './deck-data.js';
 
 // Uncompressed standard ZIP: portable, deterministic and no shell/archive dependency.
 export function zipBundle(files) {
@@ -34,8 +35,9 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
     enqueue({ episodeId, expectedRevision, requestId = null }) {
       queue.assertOpen(); const deck = store.getDeck(episodeId);
       if (deck.revision !== expectedRevision) throw new StoreError('Stale deck revision; save/reload before building',409);
-      const fonts = store.getBrandStandards(deck.channelId).fonts;
-      const snapshot = { title:deck.title, slides:store.validateDeckSlides(episodeId,deck.slides), story:deck.story, sourceRevision:deck.revision, fonts, library:store.listEpisodeLibrary(episodeId) };
+      // Live inheritance (spec #44): each role is the deck theme's, else the channel's current Brand Standards, else the template's.
+      const theme = effectiveDeckTheme(store.getBrandStandards(deck.channelId), deck.design), { colors, fonts } = themeBuildValues(theme);
+      const snapshot = { title:deck.title, slides:store.validateDeckSlides(episodeId,deck.slides), story:deck.story, sourceRevision:deck.revision, fonts, colors, theme, library:store.listEpisodeLibrary(episodeId) };
       const job = store.saveJob({ episodeId, kind:'deck', state:'queued', revision:deck.revision, snapshot, outputClass:'deck_bundle', requestId });
       queue.enqueue(job.id, async signal => {
         let staging, published;
@@ -76,8 +78,8 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
             for (const entry of saved.subnav) slide.gallery.push({id:entry.id,label:entry.label,...(entry.itemId ? {media:await media(entry.itemId,saved.id)} : {})});
             slides.push(slide);
           }
-          const files = buildDeck({title:snapshot.title,slides,fonts:snapshot.fonts},{assets});
-          const manifest = {sourceRevision:deck.revision,productionId:episodeId,stateReporting:DECK_STATE_REPORTING,fonts:snapshot.fonts,assets:Object.values(provenance),files:[...files.keys(),'manifest.json']};
+          const files = buildDeck({title:snapshot.title,slides,fonts:snapshot.fonts,colors:snapshot.colors},{assets});
+          const manifest = {sourceRevision:deck.revision,productionId:episodeId,stateReporting:DECK_STATE_REPORTING,fonts:snapshot.fonts,colors:snapshot.colors,theme:snapshot.theme,assets:Object.values(provenance),files:[...files.keys(),'manifest.json']};
           files.set('manifest.json',JSON.stringify(manifest,null,2));
           const parent = path.join(store.episodeDirectory(episodeId),'outputs','decks');
           await mkdir(parent,{recursive:true});

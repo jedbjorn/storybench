@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { readFile, readdir, realpath } from 'node:fs/promises';
 import { readDeckBundle } from './deck-qa-bundle.js';
+import { effectiveDeckTheme, themeBuildValues } from './deck-data.js';
 
 const key = state => JSON.stringify([state.slideId, state.stage, state.gallery, state.viewport, state.emulation]);
 const screen = state => state.emulation?.media === 'screen' && state.emulation?.reducedMotion === 'no-preference';
@@ -160,9 +161,12 @@ export async function getQaReport(store, episodeId, jobId, activeSession) {
   }
   // Never trust the historical qaStatus in a session file as current delivery status.
   const latest = store.listJobs(episodeId).find(j => j.kind === 'deck' && j.state === 'completed');
-  const stale = store.getDeck(episodeId).revision !== build.sourceRevision || latest?.id !== jobId ||
-    JSON.stringify(store.getBrandStandards(store.getDeck(episodeId).channelId).fonts) !== JSON.stringify(build.job.snapshot.fonts);
-  if (stale) { report.qaStatus = 'incomplete'; report.missing.push('stale build: saved revision, fonts or latest completed output changed'); }
+  // The effective theme follows Brand Standards live, so a channel change also makes the build stale.
+  // Builds from before deck colours applied none: their colours compare as unset.
+  const deck = store.getDeck(episodeId), current = themeBuildValues(effectiveDeckTheme(store.getBrandStandards(deck.channelId), deck.design));
+  const built = { colors: build.job.snapshot.colors ?? { base: null, accent: null, background: null }, fonts: [0, 1, 2].map(i => build.job.snapshot.fonts?.[i] ?? null) };
+  const stale = deck.revision !== build.sourceRevision || latest?.id !== jobId || JSON.stringify(current) !== JSON.stringify(built);
+  if (stale) { report.qaStatus = 'incomplete'; report.missing.push('stale build: saved revision, fonts, colours or latest completed output changed'); }
   // Missing screenshots cannot turn historical review statements into current proof.
   for (const image of [...report.reviewedImages, ...report.reviewedFilmstrips]) {
     const file = path.join(store.workspace, image.path);
