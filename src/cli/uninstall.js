@@ -3,7 +3,7 @@
 import { createInterface } from "node:readline/promises";
 import { existsSync, readdirSync, readFileSync, rmSync, rmdirSync } from "node:fs";
 import path from "node:path";
-import { readReleaseManifest } from "../runtime/manifest.js";
+import { readReleaseManifestAt } from "../runtime/manifest.js";
 import { readConfig } from "./config.js";
 import { CliError, EXIT } from "./errors.js";
 import { installationLabeledImages, removeImagesIfUnused } from "./images.js";
@@ -29,7 +29,7 @@ async function installedImages(xdg) {
   if (!existsSync(xdg.releases)) return images;
   for (const name of readdirSync(xdg.releases)) {
     if (!/^[0-9a-f]{40}$/.test(name)) continue;
-    const found = await readReleaseManifest(path.join(xdg.releases, name, "manifest.json"));
+    const found = await readReleaseManifestAt(path.join(xdg.releases, name));
     if (found.ok) for (const role of ["app", "worker"]) images.add(found.manifest.images[role].id);
   }
   return images;

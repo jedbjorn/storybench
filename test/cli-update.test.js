@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { backupDatabase, restoreDatabase } from "../src/cli/backup-image.js";
 import { writeConfigAtomic } from "../src/cli/config.js";
@@ -11,11 +12,12 @@ import { main } from "../src/cli/main.js";
 import { readReceipts, writeJsonAtomic } from "../src/cli/receipts.js";
 import { retainReleases, selectRetainedCommits, verifyActivation, verifyIsolated } from "../src/cli/update.js";
 import { resolveXdg } from "../src/cli/xdg.js";
-import { createManifest, manifestId } from "../src/runtime/manifest.js";
+import { createManifest, manifestId, readReleaseManifest } from "../src/runtime/manifest.js";
 import { bindDeckEvidence } from "../src/runtime/deck-evidence.js";
 import { createHealth, releaseFromEnv } from "../src/runtime/health.js";
 import { describeCapabilities } from "../src/runtime/capabilities.js";
 import { deckCheckFixture } from "../test-support/deck-evidence.js";
+import { seedReleaseModules } from "../test-support/release-modules.js";
 import { initDataRoot } from "../src/services/data-root.js";
 
 const OLD = "a".repeat(40), NEW = "c".repeat(40), OTHER = "d".repeat(40);
@@ -68,6 +70,7 @@ async function fixture(t, { active = true, busy = false, oldRange, newRange } = 
   const releases = new Map([[OLD, oldManifest], [NEW, newManifest]]);
   for (const [commit, value] of releases) {
     const directory = path.join(xdg.releases, commit); mkdirSync(directory); writeFileSync(path.join(directory, "manifest.json"), JSON.stringify(value));
+    seedReleaseModules(directory);
   }
   symlinkSync(path.join(xdg.releases, OLD), xdg.current);
   let isActive = active;
@@ -301,6 +304,42 @@ test("stopped update preserves exact-image deck evidence through isolated enviro
   assert.equal(path.basename(readlinkSync(s.xdg.current)), NEW);
 });
 
+test("update and rollback activate a release on another deck template version", async (t) => {
+  const NEXT = "staged-svg-next";
+  // The release at NEW carries its own modules and a deck receipt on template N+1.
+  async function nextTemplateRelease(s) {
+    const directory = path.join(s.xdg.releases, NEW);
+    seedReleaseModules(directory, { template: NEXT });
+    const own = await import(pathToFileURL(path.join(directory, "src", "runtime", "deck-evidence.js")).href);
+    s.newManifest.runtime.deck = own.bindDeckEvidence({ app: { ...deckCheckFixture("app"), template: NEXT }, worker: { ...deckCheckFixture("worker"), template: NEXT } },
+      NEW, { app: s.newManifest.images.app.id, worker: s.newManifest.images.worker.id });
+    s.newManifest.id = manifestId(s.newManifest);
+    writeJsonAtomic(path.join(directory, "manifest.json"), s.newManifest);
+    const running = await readReleaseManifest(path.join(directory, "manifest.json"));
+    assert.equal(running.ok, false, "the running release's contract does not describe it");
+  }
+  for (const active of [true, false]) await t.test(`update, ${active ? "running" : "stopped"}`, async (t) => {
+    const s = await fixture(t, { active });
+    await nextTemplateRelease(s);
+    const result = await s.run(["update"]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(path.basename(readlinkSync(s.xdg.current)), NEW);
+    const receipt = readReceipts(path.join(s.xdg.state, "updates"), "storybench.update/1")[0].value;
+    assert.equal(receipt.outcome, "success");
+    assert.equal(receipt.to.manifestId, s.newManifest.id);
+    assert.equal(existsSync(path.join(s.xdg.releases, OLD)), true);
+  });
+  await t.test("rollback", async (t) => {
+    const s = await fixture(t, { active: false });
+    await nextTemplateRelease(s);
+    writeJsonAtomic(path.join(s.xdg.state, "updates", "success.json"), { schema: "storybench.update/1", outcome: "success",
+      attemptedAt: "2026-09-20T00:00:00Z", completedAt: "2026-09-20T00:01:00Z", from: { commit: NEW }, to: { commit: OLD } });
+    const result = await s.run(["rollback"]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(path.basename(readlinkSync(s.xdg.current)), NEW);
+  });
+});
+
 test("the all-channel busy gate refuses unless --force and force bypasses no later check", async (t) => {
   const s = await fixture(t, { busy: true });
   let result = await s.run(["update"]);
@@ -367,6 +406,7 @@ test("retention keeps proven activations and never ranks a failed build by built
   const s = await fixture(t, { active: false });
   const failed = manifest(OTHER, "5", "6");
   const failedDirectory = path.join(s.xdg.releases, OTHER); mkdirSync(failedDirectory); writeFileSync(path.join(failedDirectory, "manifest.json"), JSON.stringify(failed));
+  seedReleaseModules(failedDirectory);
   const updates = path.join(s.xdg.state, "updates"); mkdirSync(updates, { recursive: true });
   writeJsonAtomic(path.join(updates, "success.json"), { schema: "storybench.update/1", outcome: "success", attemptedAt: "2026-09-20T00:00:00Z",
     completedAt: "2026-09-20T00:01:00Z", from: { commit: OLD }, to: { commit: NEW } });

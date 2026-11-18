@@ -192,6 +192,30 @@ If Storybench is running and idle, backup stops it safely and restarts it. Activ
 
 Metadata backups are under `~/.local/state/storybench/backups/`. Atomic update/rollback receipts are under `~/.local/state/storybench/updates/`. `status` and `doctor` report an interrupted transition; rerun the named update or rollback command to reconcile it. Restoring an older backup is a separate, deliberate recovery operation because it can discard newer metadata.
 
+### Updating an install from before deck template `staged-svg-2`
+
+Each release now checks a staged release, and reads any other release's manifest, with that release's own modules, so a later change to the deck evidence contract does not stop an update, a rollback or an uninstall.
+
+Releases installed before that change cannot do this. Their updater judges every new release by its own deck template, so from a release on template `staged-svg-1` the update builds both images and then stops, leaving the installed release and data untouched:
+
+```text
+storybench: app deck check: missing or incompatible SVG profile/template evidence
+```
+
+`storybench update` cannot get past this, because the check runs in the release that is already installed. Move that install forward once with the installer from a clean clone of the recorded origin:
+
+```sh
+storybench backup
+storybench down
+git clone https://github.com/jedbjorn/storybench /tmp/storybench-src
+cd /tmp/storybench-src
+./install.sh
+storybench up
+storybench doctor
+```
+
+The installer runs the new release's own image, media and deck checks in full; nothing is skipped. It keeps the configuration, data root, backups and retained releases, and refuses to switch releases while the service is running. It takes no metadata backup and writes no update receipt, which is why `storybench backup` comes first and why `storybench rollback` has no previous release to select until the next `storybench update` succeeds. After this one step, `storybench update` works again.
+
 ## Troubleshooting
 
 Start with these two commands:

@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { existsSync, lstatSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { checkCompatibility, readReleaseManifest, releaseIdentity } from "../runtime/manifest.js";
+import { checkCompatibility, readReleaseManifestAt, releaseIdentity } from "../runtime/manifest.js";
 import { inspectDataRoot } from "../services/data-root.js";
 import { createMetadataBackup, currentRelease, mountPath, restoreMetadataBackup, stopService } from "./backup.js";
 import { CliError, EXIT } from "./errors.js";
@@ -163,7 +163,7 @@ function databaseSchema(config) {
 
 async function releaseAt(directory) {
   const file = path.join(directory, "manifest.json");
-  const found = await readReleaseManifest(file);
+  const found = await readReleaseManifestAt(directory);
   return found.ok ? { root: directory, file, manifest: found.manifest, identity: found.identity } : null;
 }
 
@@ -304,7 +304,7 @@ export async function runUpdate(context, { options }) {
       receipt.to = { commit: available.available, manifestId: null, images: null };
       saveAttempt(file, receipt, adapters);
       const sameCommit = available.available === prior.identity.commit;
-      if (sameCommit && await reusableRelease(prior.file, prior.identity.commit, context.runCommand)) {
+      if (sameCommit && await reusableRelease(prior.root, prior.identity.commit, context.runCommand)) {
         Object.assign(receipt, { outcome: "success", completedAt: new Date().toISOString(), noChange: true }); saveAttempt(file, receipt, adapters);
         context.out(`Storybench is already current at ${available.available}.`); return EXIT.OK;
       }

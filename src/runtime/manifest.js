@@ -4,6 +4,8 @@ import { validateDeckEvidence } from './deck-evidence.js';
 // src/runtime/release.js from docker/Dockerfile; read by the host lifecycle entry point and
 // (later) the installer/CLI. Mutable tags are never identity: images are exact IDs.
 import { createHash } from "node:crypto";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 // v2: the content id excludes the informational `builtAt`. v1 manifests (id over every field
 // but `id`) remain readable with their original id rule.
@@ -110,4 +112,15 @@ export async function readReleaseManifest(file) {
   try { value = JSON.parse(text); } catch { return { ok: false, reason: "Release manifest is not valid JSON" }; }
   try { return { ok: true, manifest: validateManifest(value), identity: releaseIdentity(value) }; }
   catch (error) { return { ok: false, reason: error.message }; }
+}
+
+// Reads the manifest of a release directory with that release's own manifest module. A
+// release's evidence contract (deck template, check versions) belongs to the code that
+// produced it, so the running CLI can stage, activate, roll back to, retain and uninstall
+// releases on another contract version without judging them by its own.
+export async function readReleaseManifestAt(root) {
+  let own;
+  try { own = await import(pathToFileURL(path.join(root, "src", "runtime", "manifest.js")).href); }
+  catch { return { ok: false, reason: "The release directory has no readable manifest module" }; }
+  return own.readReleaseManifest(path.join(root, "manifest.json"));
 }

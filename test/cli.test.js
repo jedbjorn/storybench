@@ -59,6 +59,7 @@ async function installReleasePointer(xdg, commit = "a".repeat(40)) {
   const directory = path.join(xdg.releases, commit);
   mkdirSync(directory, { recursive: true });
   writeFileSync(path.join(directory, "manifest.json"), JSON.stringify(manifest));
+  (await import("../test-support/release-modules.js")).seedReleaseModules(directory);
   mkdirSync(path.dirname(xdg.current), { recursive: true });
   symlinkSync(directory, xdg.current);
   return { directory, manifest };
