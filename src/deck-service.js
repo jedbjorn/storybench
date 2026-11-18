@@ -6,7 +6,7 @@ import { HeavyJobQueue } from './job-runner.js';
 import { StoreError } from './store.js';
 import { createHash } from 'node:crypto';
 import { looksLikeSvg, parseSvg } from './svg.js';
-import { effectiveDeckTheme, themeBuildValues } from './deck-data.js';
+import { effectiveDeckTheme, themeBuildValues, effectiveSlideDesign, slideHasVisual } from './deck-data.js';
 
 // Uncompressed standard ZIP: portable, deterministic and no shell/archive dependency.
 export function zipBundle(files) {
@@ -37,7 +37,10 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
       if (deck.revision !== expectedRevision) throw new StoreError('Stale deck revision; save/reload before building',409);
       // Live inheritance (spec #44): each role is the deck theme's, else the channel's current Brand Standards, else the template's.
       const theme = effectiveDeckTheme(store.getBrandStandards(deck.channelId), deck.design), { colors, fonts } = themeBuildValues(theme);
-      const snapshot = { title:deck.title, slides:store.validateDeckSlides(episodeId,deck.slides), story:deck.story, sourceRevision:deck.revision, fonts, colors, theme, library:store.listEpisodeLibrary(episodeId) };
+      const valid = store.validateDeckSlides(episodeId,deck.slides,deck.design), { theme:_theme, ...defaults } = deck.design ?? {};
+      // Layout primitives: the deck defaults and each slide's effective values (slide, else deck, else template).
+      const design = { deck:defaults, slides:Object.fromEntries(valid.map(slide => [slide.id,effectiveSlideDesign(defaults,slide.design,{hasVisual:slideHasVisual(slide)})])) };
+      const snapshot = { title:deck.title, slides:valid, story:deck.story, sourceRevision:deck.revision, fonts, colors, theme, design, library:store.listEpisodeLibrary(episodeId) };
       const job = store.saveJob({ episodeId, kind:'deck', state:'queued', revision:deck.revision, snapshot, outputClass:'deck_bundle', requestId });
       queue.enqueue(job.id, async signal => {
         let staging, published;
@@ -71,7 +74,7 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
           }
           const slides = [];
           for (const saved of snapshot.slides) {
-            signal.throwIfAborted(); const slide = {...saved,subnav:undefined};
+            signal.throwIfAborted(); const slide = {...saved,subnav:undefined,design:snapshot.design.slides[saved.id]};
             if (saved.media) slide.media = {...await media(saved.media.itemId,saved.id),alt:saved.media.alt || saved.title};
             if (saved.vector) slide.vector = {...await media(saved.vector.itemId,saved.id),alt:saved.vector.alt || saved.title};
             slide.gallery = [];
@@ -79,7 +82,7 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
             slides.push(slide);
           }
           const files = buildDeck({title:snapshot.title,slides,fonts:snapshot.fonts,colors:snapshot.colors},{assets});
-          const manifest = {sourceRevision:deck.revision,productionId:episodeId,stateReporting:DECK_STATE_REPORTING,fonts:snapshot.fonts,colors:snapshot.colors,theme:snapshot.theme,assets:Object.values(provenance),files:[...files.keys(),'manifest.json']};
+          const manifest = {sourceRevision:deck.revision,productionId:episodeId,stateReporting:DECK_STATE_REPORTING,fonts:snapshot.fonts,colors:snapshot.colors,theme:snapshot.theme,design:snapshot.design,assets:Object.values(provenance),files:[...files.keys(),'manifest.json']};
           files.set('manifest.json',JSON.stringify(manifest,null,2));
           const parent = path.join(store.episodeDirectory(episodeId),'outputs','decks');
           await mkdir(parent,{recursive:true});

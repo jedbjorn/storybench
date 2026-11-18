@@ -11,7 +11,7 @@
   // `wants`: it should run; `halted`: paused through the API; `settled`: stages up to here show their end state.
   let opening = false, printing = printMedia.matches, live = false, wants = false, halted = false;
   let held = 0, origin = 0, settled = -1, visit = 0;
-  const FADE_MS = 450, REST = { x: 0, y: 0, scale: 1, rotate: 0, opacity: 1 };
+  const FADE_MS = 450, FLIP_MS = 400, REST = { x: 0, y: 0, scale: 1, rotate: 0, opacity: 1 };
   const bezier = (x1, y1, x2, y2) => (x) => {
     const at = (t, a, b) => 3 * (1 - t) * (1 - t) * t * a + 3 * (1 - t) * t * t * b + t * t * t;
     let low = 0, high = 1;
@@ -26,15 +26,23 @@
   function model(i = index) {
     if (models.has(i)) return models.get(i);
     let previous = null, rest = 0;
+    // Stage text settings that shape the timeline: a slide-wide gap (timing.betweenMs) and the card's flip.
+    const box = slides[i].querySelector('.stages'), card = Boolean(box?.classList.contains('stage-card'));
+    const between = box?.dataset.betweenMs === undefined ? null : Number(box.dataset.betweenMs);
+    const flipMs = box?.dataset.flipMs === undefined ? FLIP_MS : Number(box.dataset.flipMs);
     const plan = [...slides[i].querySelectorAll('.stages > [data-step]')].map((el, n) => {
       const motion = el.dataset.motion ? JSON.parse(el.dataset.motion) : {}, delay = Number(el.dataset.delay) || 0;
-      const auto = motion.trigger ? motion.trigger === 'auto' : delay > 0;
+      // With a slide-wide gap every stage after the first starts that long after the previous one's motion ends.
+      const gap = n > 0 && between !== null;
+      const auto = gap || (motion.trigger ? motion.trigger === 'auto' : delay > 0);
       const timed = motion.durationMs !== undefined, kind = motion.motion || 'fade';
       // An automatic stage follows the previous stage's hold; a manual one waits until everything before it is still.
-      const start = auto ? (previous ? previous.holdEnd : 0) + delay : rest;
+      const start = gap ? previous.motionEnd + between : auto ? (previous ? previous.holdEnd : 0) + delay : rest;
       // An unset duration is the short fade and does not push the next stage. A first stage nobody waits for is simply there.
       const length = timed ? motion.durationMs : !n && !auto && kind === 'fade' ? 0 : FADE_MS;
-      previous = { el, id: el.dataset.stageId ?? null, auto, kind, start, length, motionEnd: start + length,
+      // The card flips to each stage as it starts; the flip is part of that stage's motion.
+      const flip = card && (n > 0 || auto) ? flipMs : 0;
+      previous = { el, id: el.dataset.stageId ?? null, auto, kind, start, length, flip, motionEnd: start + Math.max(length, flip),
         holdEnd: start + (timed ? motion.durationMs : 0) + (motion.holdMs ?? 0),
         ease: curves[motion.easing] || standard, from: motion.from || {}, changes: motion.changes || [] };
       rest = Math.max(rest, previous.motionEnd, previous.holdEnd);
@@ -42,7 +50,7 @@
     });
     const groups = [...slides[i].querySelectorAll('[data-vector-step]')].map((el) => ({ el, step: Number(el.dataset.vectorStep), parts: null, drawing: false,
       changes: plan.flatMap((entry, n) => entry.changes.filter((change) => change.groupId === el.dataset.vectorGroup).map((change) => ({ step: n, to: change.to }))) }));
-    const value = { plan, groups, end: rest };
+    const value = { plan, groups, card, end: rest };
     models.set(i, value); return value;
   }
   const next = () => model().plan[opening ? 0 : stage + 1];
@@ -73,7 +81,7 @@
   function state() {
     return { index, stage, titles: slides.map((slide) => slide.dataset.title),
       notes: slides[index].querySelector('.speaker-notes').textContent,
-      stages: [...slides[index].querySelectorAll('.stage-nav [data-stage]')].map((button) => button.textContent),
+      stages: [...slides[index].querySelectorAll('[data-stage]')].map((button) => button.getAttribute('aria-label') ?? button.textContent),
       targetMinutes: Number(slides[index].dataset.minutes),
       video: video() ? { paused: video().paused } : null };
   }
@@ -120,8 +128,9 @@
   }
   // The whole look of a slide is a function of the timeline's time, so any moment can be shown exactly.
   function paintSlide(i, t) {
-    const { plan, groups } = model(i);
-    plan.forEach((entry, n) => {
+    const { plan, groups, card } = model(i);
+    if (card) paintCard(plan, t);
+    else plan.forEach((entry, n) => {
       const p = progress(entry, n, t), e = p === null || p >= 1 ? null : entry.ease(p);
       flag(entry.el, p === null);
       entry.el.style.opacity = e === null ? '' : e;
@@ -151,6 +160,19 @@
         : `translate(${state.x}px,${state.y}px) rotate(${state.rotate}deg) scale(${state.scale})`;
     }
   }
+  // The card shows one face: the latest stage begun. Mid-flip, the outgoing face turns away over the
+  // first half and the incoming face turns in over the second. Reduced motion swaps faces without turning.
+  function paintCard(plan, t) {
+    let current = -1;
+    plan.forEach((entry, n) => { if (final() ? n <= stage : progress(entry, n, t) !== null) current = n; });
+    const entry = plan[current], f = !entry || final() || !entry.flip ? 1 : Math.max(0, Math.min(1, (t - entry.start) / entry.flip));
+    const e = f >= 1 ? 1 : entry.ease(f), shown = e < 0.5 ? current - 1 : current;
+    plan.forEach((face, n) => {
+      flag(face.el, n !== shown);
+      face.el.style.opacity = '';
+      face.el.style.transform = n !== shown || e >= 1 ? '' : `rotateY(${n === current ? (e - 1) * 180 : e * 180}deg)`;
+    });
+  }
   function paintFrame() {
     const t = clock();
     // Print lays out every slide, so each shows its final state.
@@ -158,7 +180,9 @@
   }
   function paintStage() {
     paintFrame();
-    slides[index].querySelectorAll('.stage-nav [data-stage]').forEach((button, i) => button.setAttribute('aria-pressed', String(i === stage)));
+    slides[index].querySelectorAll('[data-stage]').forEach((button, i) => button.setAttribute('aria-pressed', String(i === stage)));
+    // A list marks its current item.
+    slides[index].querySelectorAll('.stage-list > li').forEach((item, i) => { if (i === stage && !opening) item.setAttribute('aria-current', 'step'); else item.removeAttribute('aria-current'); });
     publish();
   }
   function advance() {
@@ -291,7 +315,7 @@
     }
   }, 1000);
   links.forEach((button) => button.addEventListener('click', () => show(Number(button.dataset.go))));
-  document.querySelectorAll('.stage-nav [data-stage]').forEach((button) => button.addEventListener('click', () => selectStage(Number(button.dataset.stage))));
+  document.querySelectorAll('[data-stage]').forEach((button) => button.addEventListener('click', () => selectStage(Number(button.dataset.stage))));
   document.querySelectorAll('[data-command]').forEach((button) => button.addEventListener('click', () => command(button.dataset.command)));
   // Gallery views are independent of cumulative diagram reveals.
   document.querySelectorAll('[data-gallery]').forEach((button) => button.addEventListener('click', () => {

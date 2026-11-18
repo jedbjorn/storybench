@@ -66,7 +66,7 @@ export function createDeckCapture({ store, launch = options => chromium.launch(o
       await page.evaluate(() => document.fonts.ready);
       // Programmatic clicks: no pointer, so no hover or focus styling the creator did not see.
       // Selecting a stage takes manual control, which holds timed reveals at that stage.
-      if (state.stage !== null) await page.locator(`.slide:not([hidden]) .stage-nav [data-stage="${state.stage}"]`).dispatchEvent('click');
+      if (state.stage !== null) await page.locator(`.slide:not([hidden]) [data-stage="${state.stage}"]`).dispatchEvent('click');
       if (state.gallery !== null) await page.locator(`.slide:not([hidden]) [data-gallery="${state.gallery}"]`).dispatchEvent('click');
       // An embedded video shows its opening frame (spec #29 Out of Scope: playing position).
       await page.evaluate(() => Promise.all([...document.querySelectorAll('video')].map(video => {

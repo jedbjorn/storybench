@@ -1,4 +1,4 @@
-import { validateSlides, validateDeckDesign, emptyDesign } from './deck-data.js';
+import { validateSlides, validateDeckDesign, emptyDesign, validateSlideTiming, effectiveSlideDesign } from './deck-data.js';
 import { fontForFamily } from './fonts.js';
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -701,8 +701,9 @@ export class Store {
     this.updateEpisode(episodeId, expectedRevision, { cards: slides, ...(design === undefined ? {} : { design }) }, actor);
     return this.getDeck(episodeId);
   }
-  validateDeckSlides(episodeId, slides) {
-    try { return validateSlides(slides, { libraryItems: this.listEpisodeLibrary(episodeId), sections: this.getStory(episodeId).sections }); }
+  // `design` is the deck design whose defaults apply (timing.betweenMs); the saved one when omitted.
+  validateDeckSlides(episodeId, slides, design = this.getDeck(episodeId).design) {
+    try { return validateSlides(slides, { libraryItems: this.listEpisodeLibrary(episodeId), sections: this.getStory(episodeId).sections, design }); }
     catch (error) { throw new StoreError(error.message); }
   }
   migrateV5(backupLegacy) {
@@ -1546,8 +1547,19 @@ export class Store {
     )
       throw new StoreError(`Stale revision: expected ${current.revision}`, 409);
     if (changes.kind != null && changes.kind !== current.kind) throw new StoreError("production kind is immutable", 409);
+    if (changes.design !== undefined && current.kind !== "deck") throw new StoreError("design applies only to deck productions");
+    let design = current.design;
+    if (changes.design !== undefined) {
+      // Undo restores a recorded design with its setBy; other saves record who set each changed value.
+      const setBy = actor === "undo" ? null : actor === "agent" ? "agent" : "creator";
+      try { design = validateDeckDesign(changes.design, { previous: current.design, setBy }); }
+      catch (error) { throw new StoreError(error.message); }
+    }
+    // Slides are checked against the design being saved (its defaults reach every slide).
     const cards = changes.cards == null ? current.cards : current.kind === "deck"
-      ? this.validateDeckSlides(episodeId, changes.cards) : validateCards(changes.cards);
+      ? this.validateDeckSlides(episodeId, changes.cards, design) : validateCards(changes.cards);
+    if (changes.cards == null && changes.design !== undefined)
+      for (const slide of cards) try { validateSlideTiming(slide, effectiveSlideDesign(design, slide.design)); } catch (error) { throw new StoreError(error.message); }
     const videoCards = current.kind === "video" ? cards : [];
     const state = changes.state == null ? current.state : String(changes.state);
     if (!["Scaffold", "Draft", "Final", "Published"].includes(state))
@@ -1605,14 +1617,6 @@ export class Store {
     }
     if (changes.archived != null && typeof changes.archived !== "boolean")
       throw new StoreError("archived must be true or false");
-    if (changes.design !== undefined && current.kind !== "deck") throw new StoreError("design applies only to deck productions");
-    let design = current.design;
-    if (changes.design !== undefined) {
-      // Undo restores a recorded design with its setBy; other saves record who set each changed value.
-      const setBy = actor === "undo" ? null : actor === "agent" ? "agent" : "creator";
-      try { design = validateDeckDesign(changes.design, { previous: current.design, setBy }); }
-      catch (error) { throw new StoreError(error.message); }
-    }
     const updatedAt = now();
     const next = {
       ...current,
