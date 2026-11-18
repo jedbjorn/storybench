@@ -141,6 +141,34 @@ test('spec #44: the complete design read_deck returns saves back through save_de
   });
 });
 
+test('spec #44 layout primitives: save_deck accepts deck defaults and slide overrides within its schema, refuses unbounded values naming slide, primitive and argument, and read_deck returns them', async t => {
+  for (const harness of ['codex', 'claude', 'opencode']) await t.test(harness, async t => {
+    const f = fixture(t, { kind: 'deck' });
+    await f.start();
+    const native = await f.native(t, harness);
+    assert.equal((await native.call('read_research')).failed, false);
+    const design = { stageText: { align: 'center', style: 'card', numbered: true, flipMs: 500 }, type: { scale: 'large' }, spacing: { density: 'compact' }, timing: { betweenMs: 300 } };
+    const slides = [{ ...slide(), design: { copy: { align: 'end', valign: 'start' }, stageText: { style: 'list' } } }];
+    const input = { expectedRevision: f.store.getDeck(f.p.id).revision, slides, design };
+    for (const definitions of [STORYBENCH_TOOLS, native.definitions])
+      assert.equal(schemaViolation(definitions.find(tool => tool.name === 'save_deck').inputSchema, input), null);
+    const saved = await native.call('save_deck', input);
+    assert.equal(saved.failed, false, saved.text);
+    const read = JSON.parse((await native.call('read_deck')).text);
+    assert.deepEqual(read.design.stageText, design.stageText); assert.deepEqual(read.design.timing, design.timing);
+    assert.deepEqual(read.slides[0].design, slides[0].design);
+    for (const [bad, pattern] of [
+      [{ slides: [{ ...slide(), design: { copy: { align: 'text-align:right' } } }] }, /Slide slide_one: design\.copy\.align must be one of start, center, end/],
+      [{ slides: [{ ...slide(), design: { copy: { position: 'left' } } }] }, /Slide slide_one: design\.copy\.position needs a visual/],
+      [{ slides, design: { stageText: { style: 'carousel' } } }, /Deck design: stageText\.style must be one of chips, steps, list, card/],
+    ]) {
+      const refused = await native.call('save_deck', { expectedRevision: read.revision, ...bad });
+      assert.equal(refused.failed, true); assert.match(refused.text, pattern);
+    }
+    assert.equal(f.store.getDeck(f.p.id).revision, read.revision, 'refused saves store nothing');
+  });
+});
+
 test('typed authoring matrix: full content, not metadata or an undelivered return, authorizes each request; stale context is refused across kinds/stages/archive and native adapters', async t => {
   const originalFetch = globalThis.fetch, fetched = []; globalThis.fetch = async (...args) => { fetched.push(args); throw new Error('No network allowed'); }; t.after(() => { globalThis.fetch = originalFetch; });
   for (const kind of ['video', 'deck']) for (const harness of ['codex', 'claude', 'opencode']) for (const state of ['Scaffold', 'Draft', 'Final', 'Published', 'Archived']) await t.test(`${kind}/${harness}/${state}`, async t => {

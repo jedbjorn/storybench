@@ -78,7 +78,7 @@ export function validateVectorStages(stages, groupIds, strokedIds = null) {
     }
   }
 }
-export function validateSlides(slides, { libraryItems = [], sections = [] } = {}) {
+export function validateSlides(slides, { libraryItems = [], sections = [], design: deckDesign = {} } = {}) {
   const fail = (message) => { throw new Error(message); };
   const text = (value, name, required = false) => {
     if (typeof value !== 'string' || (required && !value.trim())) fail(`${name} must be ${required ? 'nonempty ' : ''}text`);
@@ -146,6 +146,12 @@ export function validateSlides(slides, { libraryItems = [], sections = [] } = {}
       if (result.stages.some(stage => stage.svgGroupIds !== undefined)) fail(`Slide ${slide.id}: SVG group mappings require a vector composition`);
       for (const stage of result.stages) staged(stage, () => validateTextStage(stage));
     }
+    // Layout primitives: this slide's overrides of the deck defaults.
+    const design = validatePrimitives(slide.design, `Slide ${slide.id}: design`, `Slide ${slide.id}: design.`);
+    for (const name of ['copy', 'stageText']) if (design[name]?.position && !slideHasVisual(result))
+      fail(`Slide ${slide.id}: design.${name}.position needs a visual (media on a text-media or full-media slide, a vector or a gallery)`);
+    if (Object.keys(design).length) result.design = design;
+    validateSlideTiming(result, effectiveSlideDesign(deckDesign, design));
     return result;
   });
 }
@@ -158,8 +164,68 @@ export const THEME_COLOR_ROLES = Object.freeze(['base', 'accent', 'background'])
 export const THEME_FONT_ROLES = Object.freeze(['base', 'accent', 'alternate']);
 export const TEMPLATE_COLORS = Object.freeze({ base: '#252C30', accent: '#26686B', background: '#F7F4ED' });
 export const TEMPLATE_FONT = 'Manrope';
-const DESIGN_KEYS = ['theme'];
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+// Layout primitives (spec #44): bounded arguments only, deck defaults with per-slide overrides.
+// An enum lists its values; a number range is [min, max]; 'boolean' is true or false.
+const SIDES = ['top', 'bottom', 'left', 'right'], ALIGNS = ['start', 'center', 'end'];
+export const STAGE_TEXT_STYLES = Object.freeze(['chips', 'steps', 'list', 'card']);
+export const DESIGN_PRIMITIVES = Object.freeze({
+  copy: { position: SIDES, align: ALIGNS, valign: ALIGNS },
+  stageText: { style: STAGE_TEXT_STYLES, position: SIDES, align: ALIGNS, valign: ALIGNS, numbered: 'boolean', flipMs: [0, 2000] },
+  type: { scale: ['compact', 'standard', 'large'] },
+  spacing: { density: ['compact', 'standard', 'spacious'] },
+  timing: { betweenMs: [0, 60000] },
+});
+const PRIMITIVE_NAMES = Object.keys(DESIGN_PRIMITIVES);
+/** Validates layout primitives. Refusals name the deck or slide (`whole`, e.g. "Slide s1: design"),
+ *  the primitive and the argument; `at` prefixes the field ("Deck design: " or "Slide s1: design.").
+ *  Unset (absent or null) arguments are dropped, and so is a primitive left with none. */
+export function validatePrimitives(value, whole, at) {
+  if (value == null) return {};
+  if (!plain(value)) throw new Error(`${whole} must be an object of ${PRIMITIVE_NAMES.join(', ')}`);
+  const result = {};
+  for (const [name, args] of Object.entries(value)) {
+    const spec = DESIGN_PRIMITIVES[name];
+    if (!spec) throw new Error(`${at}${name} is not supported; use ${PRIMITIVE_NAMES.join(', ')}`);
+    if (args == null) continue;
+    if (!plain(args)) throw new Error(`${at}${name} must be an object of ${Object.keys(spec).join(', ')}`);
+    const kept = {};
+    for (const [arg, entry] of Object.entries(args)) {
+      const allowed = spec[arg], field = `${at}${name}.${arg}`;
+      if (!allowed) throw new Error(`${field} is not supported; use ${Object.keys(spec).join(', ')}`);
+      if (entry == null) continue;
+      if (allowed === 'boolean') { if (typeof entry !== 'boolean') throw new Error(`${field} must be true or false`); }
+      else if (typeof allowed[0] === 'number') { if (typeof entry !== 'number' || !Number.isFinite(entry) || entry < allowed[0] || entry > allowed[1]) throw new Error(`${field} must be a number from ${allowed[0]} to ${allowed[1]}`); }
+      else if (!allowed.includes(entry)) throw new Error(`${field} must be one of ${allowed.join(', ')}`);
+      kept[arg] = entry;
+    }
+    if (Object.keys(kept).length) result[name] = kept;
+  }
+  return result;
+}
+/** Effective primitives for one slide: per argument, the slide's value, else the deck's, else unset
+ *  (the template default). A deck default position is dropped on a slide without a visual. */
+export function effectiveSlideDesign(deckDesign = {}, slideDesign = {}, { hasVisual = true } = {}) {
+  const result = {};
+  for (const name of PRIMITIVE_NAMES) {
+    const merged = { ...deckDesign?.[name], ...slideDesign?.[name] };
+    if (!hasVisual) delete merged.position;
+    if (Object.keys(merged).length) result[name] = merged;
+  }
+  return result;
+}
+// A visual is what the build places text around: rendered media, a vector or a gallery.
+export const slideHasVisual = slide => Boolean(slide.vector || slide.subnav?.length || (slide.media && ['text-media', 'full-media'].includes(slide.layout)));
+/** With a slide-wide gap, every stage after the first starts timing.betweenMs after the previous
+ *  stage's motion ends, so its own afterMs, holdMs and a manual trigger are refused. */
+export function validateSlideTiming(slide, design) {
+  if (design.timing?.betweenMs == null) return;
+  for (const stage of (slide.stages ?? []).slice(1)) for (const key of ['afterMs', 'holdMs', 'trigger']) {
+    if (stage[key] == null || (key === 'trigger' && stage[key] === 'auto')) continue;
+    throw new Error(`Slide ${slide.id}: Stage ${stage.id ?? stage.title}: ${key === 'trigger' ? 'trigger manual' : key} conflicts with timing.betweenMs, which starts every stage after the first; remove it`);
+  }
+}
+const DESIGN_KEYS = ['theme', ...PRIMITIVE_NAMES];
 function themeRoles(value, roles, name, check) {
   if (value == null) return {};
   if (!plain(value)) throw new Error(`Deck design: theme.${name} must be an object of ${roles.join(', ')}`);
@@ -200,7 +266,8 @@ export function validateDeckDesign(design, { previous = {}, setBy = null } = {})
     const kept = prior[kind]?.[role] === value ? prior.setBy?.[kind]?.[role] : null;
     return [role, kept ?? setBy];
   }));
-  return { theme: { colors, fonts, setBy: { colors: sources(colors, 'colors'), fonts: sources(fonts, 'fonts') } } };
+  const { theme: _theme, ...primitives } = design;
+  return { theme: { colors, fonts, setBy: { colors: sources(colors, 'colors'), fonts: sources(fonts, 'fonts') } }, ...validatePrimitives(primitives, 'Deck design', 'Deck design: ') };
 }
 export const emptyDesign = () => ({ theme: { colors: {}, fonts: {}, setBy: { colors: {}, fonts: {} } } });
 /** Effective theme for a build: deck value, else the channel's current Brand Standards role,

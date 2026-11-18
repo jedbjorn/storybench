@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fontForFamily, fontPath } from '../fonts.js';
 import { looksLikeSvg, parseSvg } from '../svg.js';
-import { stageMotion, validateTextStage, THEME_COLOR_ROLES, TEMPLATE_COLORS } from '../deck-data.js';
+import { stageMotion, validateTextStage, validatePrimitives, validateSlideTiming, THEME_COLOR_ROLES, TEMPLATE_COLORS } from '../deck-data.js';
 
 const layouts = ['title', 'section', 'statement', 'text-media', 'columns', 'full-media', 'process'];
 const escape = (value) => String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -120,8 +120,15 @@ export function buildDeck(input, { assets = {} } = {}) {
     const notes = text(slide.notes, 'slide.notes', true);
     const minutes = slide.targetMinutes ?? 0;
     if (!Number.isFinite(minutes) || minutes < 0) throw new Error('targetMinutes must be nonnegative');
-    let content = `<div class="copy"><h1>${heading}</h1><p class="lede">${body}</p></div>`;
     const stages = slide.stages === undefined ? [] : list(slide.stages, 'stages');
+    const gallery = slide.gallery?.length ? slide.gallery : null;
+    // Layout primitives arrive as effective values (slide, else deck); validated again here, whatever saved them.
+    const design = validatePrimitives(slide.design, `Slide ${slide.id}: design`, `Slide ${slide.id}: design.`);
+    const hasVisual = Boolean(slide.vector || gallery || (['text-media', 'full-media'].includes(slide.layout) && slide.media));
+    for (const name of ['copy', 'stageText']) if (design[name]?.position && !hasVisual) throw new Error(`Slide ${slide.id}: design.${name}.position needs a visual (media on a text-media or full-media slide, a vector or a gallery)`);
+    validateSlideTiming(slide, design);
+    const copy = design.copy ?? {}, stageText = design.stageText ?? {};
+    const copyHTML = `<div class="copy"><h1>${heading}</h1><p class="lede">${body}</p></div>`;
     // Timing and motion are validated again here, whatever saved them; refusals name slide and stage.
     const motions = stages.map((stage, i) => {
       try {
@@ -130,32 +137,63 @@ export function buildDeck(input, { assets = {} } = {}) {
         return stageMotion(stage);
       } catch (error) { throw new Error(`Slide ${slide.id}: Stage ${stage?.id ?? i + 1}: ${error.message}`); }
     });
+    // The visual: a vector, rendered media or the gallery with its buttons. Unplaced, its wrapper takes no box.
+    let visual = '';
     if (slide.vector) {
-      if (slide.media || slide.gallery?.length || !['title', 'text-media', 'full-media', 'process'].includes(slide.layout)) throw new Error(`Slide ${slide.id}: vector requires a supported layout without other media/gallery`);
-      try { content += `<figure class="staged-vector">${media(slide.vector, slide.stages ?? [])}</figure>`; }
+      if (slide.media || gallery || !['title', 'text-media', 'full-media', 'process'].includes(slide.layout)) throw new Error(`Slide ${slide.id}: vector requires a supported layout without other media/gallery`);
+      try { visual = `<figure class="staged-vector">${media(slide.vector, slide.stages ?? [])}</figure>`; }
       catch (error) { throw new Error(`Slide ${slide.id}: ${error.message}`); }
     } else {
       if (slide.stages?.some(stage => stage.svgGroupIds !== undefined)) throw new Error(`Slide ${slide.id}: SVG group mappings require a vector composition`);
-      if (['text-media', 'full-media'].includes(slide.layout) && !slide.gallery?.length) content += `<figure>${media(slide.media)}</figure>`;
+      if (['text-media', 'full-media'].includes(slide.layout) && !gallery) visual = `<figure>${media(slide.media)}</figure>`;
     }
+    let columns = '';
     if (slide.layout === 'columns') {
-      const columns = list(slide.columns, 'columns');
-      if (columns.length < 2 || columns.length > 3) throw new Error('columns requires two or three items');
-      content += `<div class="columns">${columns.map((col) => `<section><h2>${text(col.title, 'column.title')}</h2><p>${text(col.body, 'column.body')}</p></section>`).join('')}</div>`;
+      const values = list(slide.columns, 'columns');
+      if (values.length < 2 || values.length > 3) throw new Error('columns requires two or three items');
+      columns = `<div class="columns">${values.map((col) => `<section><h2>${text(col.title, 'column.title')}</h2><p>${text(col.body, 'column.body')}</p></section>`).join('')}</div>`;
     }
     if (slide.layout === 'process' && !stages.length) throw new Error('process requires stages');
     const subnav = slide.subnav === undefined ? stages.map((stage) => stage.title) : list(slide.subnav, 'subnav');
     if (subnav.length !== stages.length) throw new Error('subnav must label every stage');
+    // Stage text (README: Layout primitives). Every style keeps one [data-stage] control per stage, named by its label.
+    let stageHTML = '';
     if (stages.length) {
-      content += `<div class="stages"${slide.vector ? ' hidden' : ''}>${stages.map((stage, i) => {
+      const style = stageText.style ?? (slide.vector ? 'chips' : 'steps'), numbered = stageText.numbered === true;
+      const timing = `${design.timing?.betweenMs == null ? '' : ` data-between-ms="${design.timing.betweenMs}"`}${style === 'card' && stageText.flipMs != null ? ` data-flip-ms="${stageText.flipMs}"` : ''}`;
+      const replay = '<button data-command="replay">Replay</button>';
+      const chips = `<nav class="stage-nav" aria-label="Reveal stages">${subnav.map((label, i) => `<button data-stage="${i}">${text(label, 'subnav label')}</button>`).join('')}${replay}</nav>`;
+      const sections = (number) => stages.map((stage, i) => {
         // The runtime reads its timeline from these attributes; an unset field keeps the older behaviour.
         const { afterMs: delay = 0, ...motion } = motions[i];
-        return `<section data-step="${i}"${stage.id ? ` data-stage-id="${escape(stage.id)}"` : ''} data-delay="${delay}"${Object.keys(motion).length ? ` data-motion="${escape(JSON.stringify(motion))}"` : ''}><span class="step-number">${i + 1}</span><h2>${text(stage.title, 'stage.title')}</h2><p>${text(stage.body, 'stage.body', true)}</p></section>`;
-      }).join('')}</div><nav class="stage-nav" aria-label="Reveal stages">${subnav.map((label, i) => `<button data-stage="${i}">${text(label, 'subnav label')}</button>`).join('')}<button data-command="replay">Replay</button></nav>`;
+        const timeline = `data-step="${i}"${stage.id ? ` data-stage-id="${escape(stage.id)}"` : ''} data-delay="${delay}"${Object.keys(motion).length ? ` data-motion="${escape(JSON.stringify(motion))}"` : ''}`;
+        const title = text(stage.title, 'stage.title'), detail = text(stage.body, 'stage.body', true);
+        if (style === 'list') return `<li ${timeline}><button data-stage="${i}">${title}</button><p>${detail}</p></li>`;
+        return `<section ${timeline}>${number ? `<span class="step-number">${i + 1}</span>` : ''}<h2>${title}</h2><p>${detail}</p></section>`;
+      }).join('');
+      if (style === 'list') { const tag = numbered ? 'ol' : 'ul'; stageHTML = `<${tag} class="stages stage-list"${timing}>${sections(false)}</${tag}><nav class="stage-nav" aria-label="Reveal stages">${replay}</nav>`; }
+      else if (style === 'card') stageHTML = `<div class="stages stage-card"${timing}>${sections(numbered)}</div><nav class="stage-nav stage-nav-compact" aria-label="Reveal stages">${subnav.map((label, i) => `<button data-stage="${i}" aria-label="${text(label, 'subnav label')}">${i + 1}</button>`).join('')}${replay}</nav>`;
+      else stageHTML = `<div class="stages"${style === 'chips' ? ' hidden' : ''}${timing}>${sections(true)}</div>${chips}`;
     }
-    if (slide.gallery?.length) content += `<nav class="gallery-nav" aria-label="Gallery">${slide.gallery.map((entry, i) => `<button data-gallery="${i}">${text(entry.label, 'gallery label')}</button>`).join('')}</nav><div class="gallery">${slide.gallery.map((entry, i) => `<figure data-gallery-view="${i}"${i ? ' hidden' : ''}>${entry.media ? media(entry.media) : ''}<figcaption>${text(entry.label, 'gallery label')}</figcaption></figure>`).join('')}</div>`;
-    if (slide.caption) content += `<p class="caption">${text(slide.caption,'caption')}</p>`;
-    return `<article class="slide layout-${slide.layout}" id="${slide.id}" data-title="${heading}" data-minutes="${minutes}" hidden><header>${text(slide.eyebrow, 'eyebrow', true) || 'Presentation'}<span>${minutes} min</span></header><div class="composition">${content}</div><p class="speaker-notes" hidden>${notes}</p></article>`;
+    if (gallery) visual += `<nav class="gallery-nav" aria-label="Gallery">${gallery.map((entry, i) => `<button data-gallery="${i}">${text(entry.label, 'gallery label')}</button>`).join('')}</nav><div class="gallery">${gallery.map((entry, i) => `<figure data-gallery-view="${i}"${i ? ' hidden' : ''}>${entry.media ? media(entry.media) : ''}<figcaption>${text(entry.label, 'gallery label')}</figcaption></figure>`).join('')}</div>`;
+    const caption = slide.caption ? `<p class="caption">${text(slide.caption,'caption')}</p>` : '';
+    const block = (name, html) => html && `<div class="${name}">${html}</div>`;
+    const placed = hasVisual && Boolean(copy.position || stageText.position);
+    let content;
+    if (placed) {
+      // Placed: stage text sits on its side of the visual, then the copy on its side of both.
+      const arrange = (side, item, other) => `<div class="arrange" data-side="${side}">${['top', 'left'].includes(side) ? item + other : other + item}</div>`;
+      const inner = arrange(stageText.position ?? 'bottom', block('stage-text', stageHTML), block('visual', visual + caption));
+      content = arrange(copy.position ?? (slide.layout === 'text-media' ? 'left' : 'top'), copyHTML, inner) + columns;
+    } else {
+      // Unplaced: today's order. The visual and stage-text wrappers take no box until an alignment needs one.
+      const ordered = visual && !gallery ? block('visual', visual) + columns + block('stage-text', stageHTML) : columns + block('stage-text', stageHTML) + block('visual', visual);
+      content = copyHTML + ordered + caption;
+    }
+    const attrs = (pairs) => pairs.filter(([, value]) => value != null).map(([name, value]) => ` data-${name}="${escape(value)}"`).join('');
+    const composition = attrs([['copy-align', copy.align], ['copy-valign', copy.valign], ['stage-align', stageText.align], ['stage-valign', stageText.valign]]);
+    const scale = attrs([['type', design.type?.scale], ['spacing', design.spacing?.density]]);
+    return `<article class="slide layout-${slide.layout}" id="${slide.id}" data-title="${heading}" data-minutes="${minutes}"${scale} hidden><header>${text(slide.eyebrow, 'eyebrow', true) || 'Presentation'}<span>${minutes} min</span></header><div class="composition${placed ? ' placed' : ''}"${composition}>${content}</div><p class="speaker-notes" hidden>${notes}</p></article>`;
   });
   const shell = (body, script) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="stylesheet" href="styles.css"><script src="${script}" defer></script></head><body>${body}</body></html>`;
   const buttons = '<button data-command="previous">Previous</button><button data-command="next">Next</button>';

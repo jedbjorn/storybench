@@ -27,6 +27,19 @@ const deckMedia = object(['itemId'], { itemId: deckText, alt: deckText });
 // Relative to the authored geometry: x/y in SVG user units, rotate in degrees about the group's centre.
 const deckGroupState = object([], { x: { type: 'number', minimum: -8192, maximum: 8192 }, y: { type: 'number', minimum: -8192, maximum: 8192 },
   scale: { type: 'number', minimum: 0, maximum: 16 }, rotate: { type: 'number', minimum: -3600, maximum: 3600 }, opacity: { type: 'number', minimum: 0, maximum: 1 } });
+// Layout primitives (spec #44): bounded arguments shared by the deck defaults and each slide's overrides.
+const deckSide = { type: ['string', 'null'], enum: ['top', 'bottom', 'left', 'right', null], description: 'Side of the slide\'s visual (media, vector or gallery); needs a visual' };
+const deckAlign = { type: ['string', 'null'], enum: ['start', 'center', 'end', null] };
+const deckPrimitives = {
+  copy: { ...object([], { position: deckSide, align: deckAlign, valign: deckAlign }), description: 'The title and body block: side of the visual, horizontal align, vertical valign (start = top).' },
+  stageText: { ...object([], { style: { type: ['string', 'null'], enum: ['chips', 'steps', 'list', 'card', null], description: 'chips: stage titles as buttons (vector default); steps: numbered sections revealed cumulatively (text default); list: bulleted or numbered items, current marked; card: one card that flips to each stage as it starts' },
+    position: deckSide, align: { ...deckAlign, description: 'Also aligns the stage and gallery buttons; center centres every wrapped row' }, valign: deckAlign,
+    numbered: { type: ['boolean', 'null'], description: 'list and card' }, flipMs: { type: ['number', 'null'], minimum: 0, maximum: 2000, description: 'card: how long each flip takes' } }),
+    description: 'How stage titles and bodies are shown.' },
+  type: { ...object([], { scale: { type: ['string', 'null'], enum: ['compact', 'standard', 'large', null] } }), description: 'Heading and body type, scaled together.' },
+  spacing: { ...object([], { density: { type: ['string', 'null'], enum: ['compact', 'standard', 'spacious', null] } }), description: 'Slide padding and gaps.' },
+  timing: { ...object([], { betweenMs: { type: ['number', 'null'], minimum: 0, maximum: 60000 } }), description: 'One gap for the slide: every stage after the first starts betweenMs after the previous stage\'s motion ends; stages after the first then take no afterMs, holdMs or manual trigger.' },
+};
 const deckSlide = object(['id', 'title', 'layout'], {
   id: deckText, title: deckText, layout: { type: 'string', enum: ['title', 'section', 'statement', 'text-media', 'columns', 'full-media', 'process'] },
   body: deckText, notes: deckText, eyebrow: deckText, caption: deckText,
@@ -45,6 +58,7 @@ const deckSlide = object(['id', 'title', 'layout'], {
     changes: { type: 'array', maxItems: 64, description: 'Move groups an earlier stage revealed: each is interpolated from its current state to `to` over durationMs. State accumulates across stages.', items: object(['groupId', 'to'], { groupId: deckText, to: deckGroupState }) },
     svgGroupIds: { type: 'array', minItems: 1, uniqueItems: true, items: deckText, description: 'Registered SVG group IDs revealed by this stable stage. Each vector stage needs svgGroupIds, changes or both; groups cannot be mapped twice.' } }) },
   subnav: { type: 'array', items: object(['id', 'label'], { id: deckText, label: deckText, itemId: { type: ['string', 'null'] } }) },
+  design: { ...object([], deckPrimitives), description: 'This slide\'s overrides of the deck design defaults, per argument; null or unset follows the deck.' },
 });
 // Deck-level design (spec #44). Omitted keeps the saved design; a supplied design replaces it.
 const deckHex = { type: ['string', 'null'], description: 'Six-digit hex, for example #1255FF' }, deckFont = { type: ['string', 'null'] }, deckSetBy = { type: ['string', 'null'], enum: ['creator', 'agent', null] };
@@ -55,6 +69,7 @@ const deckDesign = object([], {
     setBy: { ...object([], { colors: object([], { base: deckSetBy, accent: deckSetBy, background: deckSetBy }), fonts: object([], { base: deckSetBy, accent: deckSetBy, alternate: deckSetBy }) }),
       description: 'Who set each value, as read_deck returns it. Accepted so a read design can be saved back; ignored on save, which records it.' } }),
     description: 'This deck\'s colour and font roles. A role left unset or null follows the channel Brand Standards at build time. Fonts come from the get_context catalogue.' },
+  ...deckPrimitives,
 });
 export const AUTHORING_TOOLS = Object.freeze(['save_deck', 'build_deck', 'update_story', 'update_cards', 'update_storyboard', 'create_draft', 'create_final', 'create_graphic_recipe', 'update_graphic_recipe', 'render_graphic', 'apply_branding']);
 const toolSpecs = [

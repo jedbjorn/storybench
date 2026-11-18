@@ -34,9 +34,30 @@ Input fields:
 
 - Staged `vector` uses the same `{type: 'image', src, alt}` shape as media, on title/text-media/full-media/process with no media/gallery. Every stage must have a unique stable `id` and nonempty `svgGroupIds` (or `changes`, below). Group mappings are revalidated against parsed source; visible independent groups receive trusted wrappers while their transforms, styles and geometry remain intact. Duplicate, missing, nested, definition-only and reused mappings fail explicitly. Unmapped artwork remains visible.
 
+- `design` on a slide: optional layout primitives, the slide's effective values (the app resolves each argument from the slide, else the deck's defaults, and records both in `manifest.json` `design`). See Layout primitives below. Absent or `{}`, the slide renders exactly as without it.
+
 The synthetic example demonstrates every layout and optional field family. Its synthetic geometric image can be replaced with local media by supplying different bytes. It is a contract demonstration, not the companion production authoring demo.
 
 Up/Down and Previous/Next change slides; Left/Right select reveal stages; Home/End select endpoints; N opens Presenter. Side navigation exposes the current slide. Inputs and editable elements retain their keyboard behavior. Manual reveal/media controls cancel automatic reveal for that visit; hidden tabs pause timing, motion and playback. Returning resumes from the same point. Replay in either window restarts the sequence; complete diagrams hold without looping. Slide changes stop outgoing media. Print exposes all slides and final staged content; reduced motion exposes all staged content and disables automatic timing. Failed playback leaves native controls available. Fullscreen and popup failures provide retry guidance.
+
+## Layout primitives
+
+Bounded arguments only; no colour, font, raw style or markup. Refusals name the slide, primitive and argument. Unset arguments keep today's rendering.
+
+| Primitive | Arguments |
+|---|---|
+| `copy` | `position`, `align`, `valign`: the title and body block |
+| `stageText` | `style` (`chips`, `steps`, `list`, `card`), `position`, `align`, `valign`, `numbered` (list and card), `flipMs` (card, 0 to 2000) |
+| `type` | `scale`: `compact`, `standard`, `large` (headings and body together) |
+| `spacing` | `density`: `compact`, `standard`, `spacious` (slide padding and gaps) |
+| `timing` | `betweenMs` (0 to 60000) |
+
+- `position` (`top`, `bottom`, `left`, `right`) places the block on that side of the slide's visual: rendered media (text-media, full-media), a vector or a gallery. It needs a visual. With a position set, stage text sits on its side of the visual and the copy on its side of both; an unset copy position stays left on text-media and above otherwise, an unset stage text position below.
+- `align` (`start`, `center`, `end`) aligns the block's content horizontally. Stage text alignment also aligns the stage and gallery buttons, each wrapped row on its own.
+- `valign` (`start` = top, `end` = bottom) aligns the block within its area: beside the visual, the row; otherwise the slide's column (the copy moves the column's content, stage text `end` sits at its foot). In a card, it also aligns each face within the card's height.
+- `stageText.style`: `chips` shows stage titles as buttons and hides the bodies (vector default); `steps` shows numbered sections revealed cumulatively with the buttons (text default); `list` shows a bulleted (`numbered`: numbered) list of title and body, revealed cumulatively, the current item marked, each item selecting its stage, with Replay below; `card` shows one card holding the current stage, which flips when the next stage starts on the timeline, with a compact numbered row and Replay under it. Every style keeps one `[data-stage]` control per stage, named by the stage label (card buttons carry it as `aria-label`).
+- The card reserves the height of its tallest stage. Its flip takes `flipMs` (unset 400 ms) from the moment its stage starts and is part of that stage's motion (`motionEndMs`). Reduced motion swaps faces without turning; print shows every stage as a list.
+- `timing.betweenMs`: every stage after the first starts `betweenMs` after the previous stage's motion ends (card flip, diagram and stage text alike) and is automatic; the first stage keeps its own `afterMs`. Stages after the first may then set no `afterMs`, `holdMs` or manual `trigger`.
 
 ## Timeline
 
