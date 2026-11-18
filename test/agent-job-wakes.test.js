@@ -503,3 +503,28 @@ test("schema 20 widens a populated v19 production_runs to the wake origin and ke
   assert.ok(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='job_watches'").get());
   assert.deepEqual(store.db.prepare("PRAGMA foreign_key_check").all(), []);
 });
+
+// Spec #42 'Agents panel and chat' (task #115): a job worker's tokens and tool activity reach the
+// panel as agent_job.updated events, the tool cleared when its result returns, as for native
+// delegations. The polled projection carries no brief or result text.
+test("A11: job worker tokens and activity become panel events; the projection leaves out brief and result", async (t) => {
+  const jobs = heldJobs();
+  const f = fixture(t, { behaviours: [jobs.hold] });
+  const turn = await f.send();
+  const { jobId } = await turn.tools.start_agent_job({ brief: "Collect three facts.", label: "Facts" });
+  const [connection] = await until(() => jobs.held.length === 1 && jobs.held);
+  connection.emit("context/usage", { tokens: 4_200 });
+  connection.emit("item/started", { item: { type: "dynamicToolCall", tool: "read_research", status: "inProgress" } });
+  connection.emit("item/completed", { item: { type: "dynamicToolCall", tool: "read_research", status: "completed" } });
+  connection.emit("context/usage", { tokens: 4_200 });
+  const updates = () => f.view().events.filter((event) => event.type === "agent_job.updated" && event.payload.id === jobId && !("state" in event.payload)).map((event) => event.payload);
+  await until(() => updates().length === 3);
+  assert.deepEqual(updates(), [{ id: jobId, tokens: 4_200 }, { id: jobId, activity: "read_research" }, { id: jobId, activity: "" }], "unchanged values are not emitted again");
+  jobs.end(connection, "Three facts.");
+  await until(() => f.view().agentJobs[0]?.state === "completed");
+  const [row] = f.view().agentJobs;
+  assert.equal(row.label, "Facts");
+  assert.ok(!("brief" in row) && !("result" in row), "the panel row has no brief or result");
+  assert.equal(f.chat.get(f.episode.id, f.conversation.id).waitingForAgents, 0);
+  turn.complete();
+});

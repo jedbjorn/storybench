@@ -292,7 +292,9 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
     onEvent: (job, event) => {
       const params = event.params ?? {};
       const patch = event.method === "context/usage" && Number.isFinite(params.tokens) ? { tokens: params.tokens }
-        : event.method === "item/started" && ["dynamicToolCall", "mcpToolCall"].includes(params.item?.type) ? { activity: String(params.item.tool || params.item.name || "") }
+        // Its current tool, cleared ("") when the result returns, as for native delegations.
+        : ["item/started", "item/completed"].includes(event.method) && ["dynamicToolCall", "mcpToolCall"].includes(params.item?.type)
+          ? { activity: event.method === "item/started" ? String(params.item.tool || params.item.name || "") : "" }
         : null;
       if (!patch) return;
       const previous = jobSeen.get(job.id) ?? {}, next = { ...previous, ...patch };
@@ -458,9 +460,10 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
     }
   };
   const hasBackground = (conversationId) => agentJobs.live(conversationId).length > 0 || liveWatches(conversationId).length > 0 || resultCount(pendingResults(conversationId)) > 0;
-  // What the Agents panel and Stop read (spec #42 'Agents panel and chat').
+  // What the Agents panel and Stop read (spec #42 'Agents panel and chat'). The chat polls this
+  // every second, so a row leaves out the brief and result text; get_agent_job reads them.
   const backgroundState = (conversationId) => {
-    const jobs = agentJobs.list(conversationId), live = jobs.filter((job) => AGENT_JOB_LIVE.includes(job.state));
+    const jobs = agentJobs.list(conversationId).map(({ brief, result, ...job }) => job), live = jobs.filter((job) => AGENT_JOB_LIVE.includes(job.state));
     const pending = resultCount(pendingResults(conversationId));
     return {
       agentJobs: [...live, ...jobs.filter((job) => !AGENT_JOB_LIVE.includes(job.state))].slice(0, Math.max(20, live.length)),
