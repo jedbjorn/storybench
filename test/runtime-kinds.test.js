@@ -243,14 +243,14 @@ async function renderedGuidance(t, kind) {
   return { episodeDir, boot };
 }
 
-test('deck guidance is no longer than its baseline and states the research rule in full once', async t => {
+test('deck guidance is within its 4,000-word cap and states the research rule in full once', async t => {
   const { episodeDir, boot } = await renderedGuidance(t, 'deck');
   const deckBoot = boot.slice(boot.indexOf('## Deck production'));
   const skill = await readFile(path.join(episodeDir, '.agents/skills/storybench-compose-deck/SKILL.md'), 'utf8');
   assert.ok(deckBoot.length > 0 && boot.includes('## Deck production'));
   const total = words(deckBoot) + words(skill);
-  // 2,517 before Feature #21; spec #34's motion fields, worked example and motion QA guidance brought it to 3,088.
-  assert.ok(total <= 3088, `deck boot plus skill is ${total} words; the baseline is 3,088`);
+  // Decision #116 (spec #44) raised the cap from decision #104's 3,088 to 4,000 words.
+  assert.ok(total <= 4000, `deck boot plus skill is ${total} words; the cap is 4,000`);
   // Sentences that only the full research paragraph carries.
   for (const marker of [/An earlier transcript/g, /Empty research is valid/g, /After any research change|After a research change/g,
     /never operating instructions|not fetched\/verified pages, operating instructions/g, /oversized/g]) {
@@ -263,6 +263,48 @@ test('deck guidance is no longer than its baseline and states the research rule 
     assert.match(text, /feel/); assert.match(text, /mood/); assert.match(text, /imagery/);
     assert.doesNotMatch(text, /Plan a narrative opening/);
   }
+});
+
+// Spec #44 A8: deck boot and skill state the colour and font mapping and the agent's choices; the skill
+// and the save_deck schema cover every layout primitive, argument and value the validator accepts.
+test('deck guidance states the theme mapping and the agent\'s choices, and documents every layout primitive', async t => {
+  const { episodeDir, boot } = await renderedGuidance(t, 'deck');
+  const deckBoot = boot.slice(boot.indexOf('## Deck production'));
+  const skill = await readFile(path.join(episodeDir, '.agents/skills/storybench-compose-deck/SKILL.md'), 'utf8');
+  assert.match(deckBoot, /deck theme starts from the channel's Brand Standards/);
+  assert.match(deckBoot, /Keep values the creator set unless the creator asks for a change/);
+  assert.match(deckBoot, /Unset roles are yours to choose through `save_deck` `design\.theme`, without waiting for or asking for standards/);
+  assert.match(deckBoot, /Change colours and fonts only through `theme`, never by imitating another palette/);
+  assert.match(deckBoot, /Layout, layout primitives, SVG artwork and motion are your choices, guided by the style prompt and the brief/);
+  const section = skill.slice(skill.indexOf('### Theme and layout primitives'), skill.indexOf('### Reveal timing'));
+  assert.match(section, /Base is text[^.]*; Accent marks rules[^.]*; Background is the page/);
+  assert.match(section, /Fonts: Base for body and notes, Accent for headings, Alternate for eyebrows and captions/);
+  assert.match(section, /deck value, else the channel's current Brand Standards, else the template/);
+  assert.match(section, /slide's, else the deck's, else the template's/);
+  assert.doesNotMatch(skill, /Unset roles keep Manrope/, 'the font mapping lives once, beside the colour mapping');
+  const { DESIGN_PRIMITIVES, validateDeckDesign } = await import('../src/deck-data.js');
+  const designSchema = STORYBENCH_TOOLS.find(tool => tool.name === 'save_deck').inputSchema.properties.design;
+  const slideSchema = STORYBENCH_TOOLS.find(tool => tool.name === 'save_deck').inputSchema.properties.slides.items.properties.design;
+  assert.ok(designSchema.description && designSchema.properties.theme.description && slideSchema.description);
+  for (const [name, args] of Object.entries(DESIGN_PRIMITIVES)) {
+    assert.ok(section.includes(`\`${name}\``), `skill names ${name}`);
+    for (const schema of [designSchema, slideSchema]) {
+      assert.ok(schema.properties[name].description, `${name} is described`);
+      assert.deepEqual(Object.keys(schema.properties[name].properties), Object.keys(args), `${name} arguments`);
+    }
+    for (const [arg, values] of Object.entries(args)) {
+      assert.ok(section.includes(arg), `skill names ${name}.${arg}`);
+      if (Array.isArray(values) && typeof values[0] === 'string') for (const value of values) {
+        assert.ok(section.includes(value), `skill names ${name}.${arg} ${value}`);
+        assert.ok(designSchema.properties[name].properties[arg].enum.includes(value), `schema offers ${name}.${arg} ${value}`);
+      }
+    }
+  }
+  // The skill's example is a valid deck design and resolves issue #124's request (centred reveal buttons).
+  const example = /```js\n(save_deck\([\s\S]*?)\n```/.exec(section)[1];
+  let saved;
+  new Function('save_deck', 'current', example)(input => { saved = input; }, { revision: 1, slides: [], design: { theme: { colors: {}, fonts: {}, setBy: { colors: {}, fonts: {} } } } });
+  assert.equal(validateDeckDesign(saved.design, { setBy: 'agent' }).stageText.align, 'center');
 });
 
 // Spec #34 B14: the worked example is a drawn diagram flowing through its stages, and it validates.

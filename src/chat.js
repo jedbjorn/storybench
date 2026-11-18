@@ -6,6 +6,7 @@ import { createResearchContext, RESEARCH_ACTIONS, RESEARCH_DATA_RULE } from "./r
 import { RESEARCH_TRANSPORT_BYTES } from "./store.js";
 import { OPERATION_GUIDE_NAMES } from "./agent-guides.js";
 import { createProductionReadTools } from "./production-read-tools.js";
+import { effectiveDeckTheme } from "./deck-data.js";
 import { catalogEntry, changeSettings, initialSettings, planTurn } from "./runtime/conversation-runtime.js";
 import { moveFinalToDrafts } from "./services/outputs.js";
 import { claudeAutocompact, compactionPolicy, COMPACTING_HARNESSES } from "./runtime/compaction.js";
@@ -50,6 +51,17 @@ function installSchema(db) {
 // segments (spec #11 "Switching and continuity"); without it the legacy single-Codex path runs.
 // `agentJobLauncher` (optional): opens an agent job's worker (runtime/job-worker.js); without it
 // agent jobs are refused.
+// Spec #44 launch data: a deck turn carries the effective theme with each role's source and the deck design defaults.
+const THEME_SOURCES = { channel: "Brand Standards (creator)", creator: "deck, set by creator", agent: "deck, chosen by agent" };
+function deckDesignText(standards, design) {
+  const theme = effectiveDeckTheme(standards, design);
+  const roles = (kind) => Object.entries(theme[kind]).map(([role, entry]) => entry.source === "template"
+    ? `${role} unset (your choice; template ${entry.value})`
+    : `${role} ${entry.value} (${entry.source === "channel" ? THEME_SOURCES.channel : THEME_SOURCES[entry.setBy]})`).join(", ");
+  const { theme: _theme, ...defaults } = design ?? {};
+  return `\nDeck theme for this turn, role value (source): colours ${roles("colors")}; fonts ${roles("fonts")}. Keep creator-set values unless the creator directs a change; choose unset roles through save_deck design.theme. Deck design defaults (every slide follows them unless its own design overrides an argument; an unset argument is your choice and renders as the template does today): ${Object.keys(defaults).length ? JSON.stringify(defaults) : "none set"}. read_deck returns the saved design.`;
+}
+
 export function createChatService({ store, renders, decks, onChange = () => {}, codexFactory = createCodexConnection, model = process.env.STORYBENCH_CODEX_MODEL, continuity = null, requestPersistence = null, agentJobLauncher = null }) {
   const db = store.db;
   installSchema(db);
@@ -163,7 +175,7 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
     return { text, included: rows.length, omitted: Math.max(0, total - rows.length) };
   };
   const bootText = (value, standards) => { const currentEpisode = episode(value.episode_id), story = store.getStory(value.episode_id);
-    return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires active request-bound Final intent.\nResearch discovery: ${JSON.stringify(store.getResearchMetadata(value.episode_id))}. Before composing or revising slides, stories, cards, graphics or drafts, read_research must deliver the complete current saved record in this request, unless supplied completely in this turn. After changes, re-read and reconcile. Do not use a failed mutation as the normal discovery path. ${RESEARCH_DATA_RULE}\nChannel brand standards for this turn (creative defaults; explicit episode/card direction takes precedence): ${JSON.stringify(standards)}. Apply to new or revised work; do not restyle existing outputs without a request. Use get_context for the supported font catalogue and file paths.`; };
+    return `Storybench episode ${currentEpisode.title} (${currentEpisode.id}). Current board revision ${currentEpisode.revision}; story revision ${story.storyRevision}. Use scoped tools for current data. Supported guides: ${OPERATION_GUIDE_NAMES.join(", ")}. Final rendering requires active request-bound Final intent.\nResearch discovery: ${JSON.stringify(store.getResearchMetadata(value.episode_id))}. Before composing or revising slides, stories, cards, graphics or drafts, read_research must deliver the complete current saved record in this request, unless supplied completely in this turn. After changes, re-read and reconcile. Do not use a failed mutation as the normal discovery path. ${RESEARCH_DATA_RULE}\nChannel brand standards for this turn (creative defaults; explicit episode/card direction takes precedence): ${JSON.stringify(standards)}. Apply to new or revised work; do not restyle existing outputs without a request. Use get_context for the supported font catalogue and file paths.${currentEpisode.kind === "deck" ? deckDesignText(standards, currentEpisode.design) : ""}`; };
   const jobService = value => episode(value.episode_id).kind === 'deck' ? decks : renders;
   const researchScope = (value, origin, args = {}) => {
     ensureActive(value, origin);

@@ -28,6 +28,7 @@ Use `update_story({expectedStoryRevision,source})`, then `save_deck({expectedRev
 - `vector`: `{itemId,alt}` for a staged registered SVG on title, text-media, full-media or process. Do not also set media or gallery views. Map each stage’s `svgGroupIds` to one or more IDs from `asset.metadata.svgGroupIds` (also returned by `inspect_media`). Each group belongs to only one stage. Groups without a mapping remain visible. Reorder stages with their IDs and mappings intact.
 - `media`: `{itemId,alt}` using an image/video member of this deck's library; required on text-media/full-media. `referenceItemIds` are context only.
 - `subnav`: independent gallery views `{id,label,itemId?}`. Only image/video items can be shown. Do not use URLs or file paths.
+- `design`: this slide's overrides of the deck's layout primitives (below).
 
 Create graphics in the work area, inspect with `inspect_image`, then register the original with `register_work_file` or reuse a library asset with `reuse_project_item`. Assign its item ID to the slide or gallery. Prefer HTML ZIP. Export supports SVG, raster images and mp4/webm. SVG inspection returns PNG. Ship the editable SVG unless the creator requests raster artwork.
 
@@ -36,6 +37,33 @@ Create graphics in the work area, inspect with `inspect_image`, then register th
 Single lengths accept numbers, `px` or `%`. Letter and word spacing also accept `em`, e.g. `letter-spacing=".12em"` or `word-spacing=".2em"`. Filter regions, opacity and stop offsets accept numbers or percentages. Path data, points, transforms, viewBox, blur deviations and dash arrays take unitless numbers.
 
 Use static SVG in slides or galleries. Map stages to independent visible `<g id="...">` groups. Exclude definitions, nested mapped groups and geometry referenced by `use` outside the group. Groups may contain their own reusable definitions.
+
+### Theme and layout primitives
+
+`save_deck` takes an optional top-level `design`, which `read_deck` returns. Omitted, the saved design stays; supplied, it replaces the saved one whole, so edit what `read_deck` returned.
+
+**Theme** (deck level only): `theme.colors` {base, accent, background} as six-digit hex and `theme.fonts` {base, accent, alternate} from the `get_context` catalogue.
+
+- Colours: Base is text (headings, body, controls); Accent marks rules, eyebrows, step numbers, the current rail item, the active stage button and focus; Background is the page (slide, rail, footer, Presenter). Every other template hue derives from these three.
+- Fonts: Base for body and notes, Accent for headings, Alternate for eyebrows and captions.
+- Per role the build uses the deck value, else the channel's current Brand Standards, else the template (today's palette, Manrope). The boot text lists each role's value and source. A value you change records `setBy: agent`; a null role returns to Brand Standards.
+- Creator colours apply as chosen, readable or not; explain their effect only when asked. Contrast among colours you choose is yours to get right.
+
+**Layout primitives** take bounded values only, never CSS:
+
+- `copy` {position, align, valign}: the title and body block.
+- `stageText` {style, position, align, valign, numbered, flipMs}: how stage titles and bodies show. `style`: `chips` (titles as buttons, bodies hidden; the vector default), `steps` (numbered sections revealed cumulatively; the text default), `list` (bulleted or numbered items revealed cumulatively, current marked) or `card` (one card that flips to each stage as it starts, with a numbered row and Replay under it). `numbered` applies to list and card; `flipMs` (0 to 2,000) is how long a flip takes. `align` also aligns stage and gallery buttons: `center` centres every wrapped row.
+- `type` {scale}: compact, standard or large. `spacing` {density}: compact, standard or spacious.
+- `timing` {betweenMs} (0 to 60,000): one gap per slide. Every stage after the first starts that long after the previous stage's motion ends, card, diagram and text alike, and those stages then take no `afterMs`, `holdMs` or manual trigger. The first stage keeps its `afterMs`.
+
+`position` is top, bottom, left or right of the slide's visual (media, vector or gallery) and is refused on a slide without one. `align` is start (left), center or end (right); `valign` is start (top), center or end (bottom). `layout` still sets the slide's form; the primitives arrange text within it.
+
+Two levels: the deck `design` holds defaults and a slide `design` overrides them per argument; the effective value is the slide's, else the deck's, else the template's. Unset values are yours to choose; with none set the template renders as today. Use a deck default for a deck-wide change and a slide override for one slide. Unknown primitives, arguments or values are refused naming the slide or deck, primitive and argument. For example, centred reveal buttons and a flipping card beside the diagram on every slide:
+
+```js
+save_deck({ expectedRevision: current.revision, slides: current.slides,
+  design: { ...current.design, stageText: { style: "card", position: "right", align: "center" } } });
+```
 
 ### Reveal timing and motion
 
@@ -82,7 +110,7 @@ Split crowded content into slides. Use gallery entries for alternate demo views.
 
 ### Building
 
-Call `build_deck({expectedRevision})` after save. The build snapshots current channel font roles: Base for body/notes, Accent for headings, Alternate for eyebrows/captions. Unset roles keep Manrope. Selected regular/bold files and licences ship in the offline bundle; changes apply on the next build, leaving existing exports intact. Use `await_job({jobId})` and inspect failures, including their slide ID, before revising. Completed jobs expose a portable ZIP at `/api/jobs/<id>/deck/bundle.zip` and preview at `/api/jobs/<id>/deck/index.html`. Ask the creator to use the build's Preview / Download bundle buttons. Reopen saved slides, edit and build a new version; previous successes remain.
+Call `build_deck({expectedRevision})` after save. The build snapshots the effective theme and design; selected regular/bold font files and licences ship in the offline bundle. Channel changes apply on the next build, leaving existing exports intact. Use `await_job({jobId})` and inspect failures, including their slide ID, before revising. Completed jobs expose a portable ZIP at `/api/jobs/<id>/deck/bundle.zip` and preview at `/api/jobs/<id>/deck/index.html`. Ask the creator to use the build's Preview / Download bundle buttons. Reopen saved slides, edit and build a new version; previous successes remain.
 
 ### Packaged browser tools
 
