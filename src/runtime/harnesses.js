@@ -10,6 +10,10 @@ import { CodexConnection, CodexError, TOOL_CONTENT } from "../codex.js";
 import { toCodexContentItems } from "./tools.js";
 import { TOOL_DELIVERED, withToolDelivery } from "../tool-delivery.js";
 
+// Codex native item types and the tool names their entries are recorded under. A webSearch
+// item carries no status of its own.
+const CODEX_NATIVE_TOOLS = Object.freeze({ commandExecution: "shell", fileChange: "apply_patch", webSearch: "web_search" });
+
 export class WorkerCodexConnection extends CodexConnection {
   constructor({ child, tools, effort = null, ...options }) {
     const handlers = Object.fromEntries(tools.definitions.map((definition) => [
@@ -40,6 +44,13 @@ export class WorkerCodexConnection extends CodexConnection {
   #production(event) {
     const params = event.params;
     if (params?.threadId && this.threadId && params.threadId !== this.threadId) return null;
+    const native = CODEX_NATIVE_TOOLS[params?.item?.type];
+    if (native && ["item/started", "item/completed"].includes(event.method)) {
+      // Codex's own shell, patch and web search items become ordinary tool entries. Only the
+      // name and status are kept: no command, diff, query or results (spec #40).
+      const status = params.item.status ?? (event.method === "item/started" ? "inProgress" : "completed");
+      return { ...event, params: { ...params, item: { type: "dynamicToolCall", tool: native, status } } };
+    }
     if (params?.item?.type !== "subAgentActivity") return event;
     const { kind, agentThreadId } = params.item;
     const entry = (status) => ({ ...event, params: { ...params, item: { type: "dynamicToolCall", tool: "subagent", status } } });
