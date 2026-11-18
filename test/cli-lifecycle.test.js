@@ -210,7 +210,7 @@ test("restart refuses while any channel is busy unless forced, and verifies the 
   s.system.health.agents = 2;
   const refused = await s.run(["restart"]);
   assert.equal(refused.code, 1);
-  assert.match(refused.stderr, /busy: 1 render job\(s\), 2 agent turn\(s\), and 0 channel deletion\(s\) are active[\s\S]*--force/);
+  assert.match(refused.stderr, /busy: 1 render job\(s\), 2 agent turn\(s\), 0 agent job\(s\), and 0 channel deletion\(s\) are active[\s\S]*--force/);
   assert.equal(s.system.calls.filter(([name]) => name === "stop").length, 0, "nothing was stopped");
   const forced = await s.run(["restart", "--force"]);
   assert.equal(forced.code, 0, forced.stderr);

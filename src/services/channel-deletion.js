@@ -4,6 +4,9 @@ import path from "node:path";
 
 // A deletion is accepted once for the whole batch. Its file inventory and target IDs survive a crash;
 // retries only finish that accepted operation. The rows stay unavailable until cleanup completes.
+// work/jobs/<jobId>/ of a production (spec #42 'Scratch pads'), channel or legacy layout.
+const JOB_PAD = /(^|\/)episodes\/[^/]+\/work\/jobs(\/|$)/;
+
 export function createChannelDeletion(store, StoreError) {
   const db = store.db;
   const root = realpathSync(store.workspace);
@@ -108,8 +111,10 @@ export function createChannelDeletion(store, StoreError) {
         [table, `SELECT * FROM ${table} WHERE episode_id IN (${ep})`]),
       ["graphic_recipe_revisions", `SELECT * FROM graphic_recipe_revisions WHERE recipe_id IN (SELECT id FROM graphic_recipes WHERE episode_id IN (${ep}))`],
       ["output_designations", `SELECT * FROM output_designations WHERE job_id IN (SELECT id FROM jobs WHERE episode_id IN (${ep}))`],
-      ...["conversation_messages", "conversation_events", "conversation_segments"].map((table) =>
+      ...["conversation_messages", "conversation_segments"].map((table) =>
         [table, `SELECT * FROM ${table} WHERE conversation_id IN (${conv})`]),
+      // Agent job telemetry is not reviewed content: the deletion ends those jobs itself.
+      ["conversation_events", `SELECT * FROM conversation_events WHERE conversation_id IN (${conv}) AND type NOT LIKE 'agent\\_job.%' ESCAPE '\\'`],
       ["production_runs", `SELECT * FROM production_runs WHERE episode_id IN (${ep})`],
     ];
     for (const table of ["chats", "chat_messages", "chat_events"])
@@ -120,7 +125,10 @@ export function createChannelDeletion(store, StoreError) {
       rows.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
       for (const row of rows) digest.update(JSON.stringify(row));
     }
-    digest.update(JSON.stringify(manifest));
+    // Agent job pads are scratch, deleted with their conversation; a job still writing one when
+    // the creator confirms must not invalidate the confirmation. They stay in the manifest.
+    const reviewed = { ...manifest, files: manifest.files.filter(({ path }) => !JOB_PAD.test(path)), dirs: manifest.dirs.filter(({ path }) => !JOB_PAD.test(path)) };
+    digest.update(JSON.stringify(reviewed));
     return digest.digest("hex");
   }
 

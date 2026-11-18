@@ -25,6 +25,7 @@ import { openDataRoot } from "./services/data-root.js";
 import { reportAddress } from "./upstream-report.js";
 import { createChannel, listChannels, openChannel, renameChannel, useChannel } from "./services/channels.js";
 import { deleteDraftOutputs, listDraftCleanup, moveFinalToDrafts } from "./services/outputs.js";
+import { createJobWorkerLauncher } from "./runtime/job-worker.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = path.join(root, "public");
@@ -168,9 +169,12 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
   const listeners = new Map();
   const notify = (episodeId, detail = {}) => listeners.get(episodeId)?.forEach((fn) => fn(detail));
   const library = createLibraryService({ workspace, store });
-  const decks = createDeckService({store,onChange:notify});
+  // A render or build job that changes may be a watched one ending (spec #42 'Watches').
+  let chat = null;
+  const jobsChanged = (episodeId, detail) => { notify(episodeId, detail); chat?.productionJobsChanged(episodeId); };
+  const decks = createDeckService({store,onChange:jobsChanged});
   const deckCapture = createDeckCapture({ store });
-  const renders = createRenderService({ workspace, store, renderGraphic, validateGraphicRecipe, ...renderOptions, onChange: notify });
+  const renders = createRenderService({ workspace, store, renderGraphic, validateGraphicRecipe, ...renderOptions, onChange: jobsChanged });
   // In the Docker app container the host lifecycle entry point provides a private control
   // socket; Codex turns then run in request-scoped workers instead of in-process.
   const runtimeControl = process.env.STORYBENCH_RUNTIME_CONTROL;
@@ -180,7 +184,9 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
   const catalog = chatOptions.catalog ?? (runtimeControl ? createModelCatalog({ controlSocket: runtimeControl }) : null);
   const persistence = chatOptions.persistence ?? conversationPersistenceFor(store);
   const continuity = catalog && persistence ? { persistence, catalog: (options) => catalog.list(options) } : null;
-  const chat = createChatService({ store, renders, decks, onChange: notify, ...runtimeChat, continuity, requestPersistence: persistence, ...chatOptions });
+  // Agent jobs run in their own workers through the same control socket (spec #42 'Run').
+  const agentJobLauncher = runtimeControl ? createJobWorkerLauncher({ store, controlSocket: runtimeControl, renders, decks }) : null;
+  chat = createChatService({ store, renders, decks, onChange: notify, ...runtimeChat, continuity, requestPersistence: persistence, agentJobLauncher, ...chatOptions });
   const eventStreams = new Set();
   let closing = false;
   let closePromise;
@@ -205,7 +211,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
     if (activeMutations > 1) return "Another change is still in progress. Let it finish before deleting channels.";
     if (activeFileReads) return "A production file is still being read. Let the download finish before deleting channels.";
     if (chat.workerStopFailure()) return `A worker could not be stopped: ${chat.workerStopFailure()}. Repair worker cleanup or restart Storybench before deleting channels.`;
-    if (chat.hasActiveWorkers() || store.db.prepare("SELECT 1 FROM conversations WHERE state IN ('queued','running','interrupting') LIMIT 1").get() ||
+    if (chat.hasActiveWorkers({ jobs: false }) || store.db.prepare("SELECT 1 FROM conversations WHERE state IN ('queued','running','interrupting') LIMIT 1").get() ||
       store.db.prepare("SELECT 1 FROM production_runs WHERE state IN ('starting','running') LIMIT 1").get())
       return "An agent turn is active. Let it finish and its worker stop before deleting channels.";
     if (renders.hasActiveWork() || decks.hasActiveWork() ||
@@ -344,7 +350,12 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         if (parts.length === 3 && parts[2] === "preview" && req.method === "POST")
           return send(res, 200, store.channelDeletion.preview((await jsonBody(req))?.channelIds));
         if (parts.length === 2 && req.method === "POST") {
-          const result = store.channelDeletion.accept(await jsonBody(req), deletionBusyReason);
+          const body = await jsonBody(req);
+          // The deleted channels' agent jobs end first, and deletion waits for their workers to
+          // stop; jobs in other channels only read and do not block it (spec #42 'Lifecycle').
+          if (Array.isArray(body?.channelIds) && !deletionBusyReason()) await chat.endChannelJobs(body.channelIds);
+          const result = store.channelDeletion.accept(body, deletionBusyReason);
+          chat.kickWakes();
           return send(res, result.state === "completed" ? 200 : 202, result);
         }
         if (parts.length === 3 && req.method === "GET") return send(res, 200, store.channelDeletion.status(parts[2]));
@@ -352,6 +363,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           const reason = deletionBusyReason();
           if (reason) throw new StoreError(reason, 409);
           const result = store.channelDeletion.finish(parts[2]);
+          chat.kickWakes();
           return send(res, result.state === "completed" ? 200 : 202, result);
         }
       }
@@ -606,7 +618,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           }
         }
         if (parts[3] === "jobs" && parts[4] && parts[5] === "cancel" && req.method === "POST") {
-          const value = (store.getEpisode(episodeId)?.kind === 'deck' ? decks : renders).cancelJob(episodeId, parts[4]); notify(episodeId); return send(res, 200, value);
+          const value = (store.getEpisode(episodeId)?.kind === 'deck' ? decks : renders).cancelJob(episodeId, parts[4]); jobsChanged(episodeId); return send(res, 200, value);
         }
         if (parts[3] === "chats") {
           if (parts[4] && parts[5] === "settings" && parts.length === 6 && req.method === "PUT")
@@ -620,6 +632,12 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
               for (const failure of removal.failed) console.warn(`Redline ${failure.itemId} was not removed and will be retried at the next new chat: ${failure.error}`);
               if (removal.removed.length || removal.kept.length) notify(episodeId, { libraryRemoved: removal.removed });
             } catch (cause) { console.warn(`Redline removal did not run and will be retried at the next new chat: ${cause.message}`); }
+            // It also closes the production's other conversations: their agent jobs end, and their
+            // pads are removed. A failure never blocks the new chat; removal is retried next time.
+            try {
+              const pads = await chat.closeProductionJobs(episodeId, created.id);
+              for (const failure of pads.failed) console.warn(`Agent job pad ${failure.padPath} was not removed and will be retried at the next new chat: ${failure.error}`);
+            } catch (cause) { console.warn(`Agent job cleanup did not run and will be retried at the next new chat: ${cause.message}`); }
             return send(res, 201, created);
           }
           const conversationId = parts[4];

@@ -303,6 +303,15 @@ export function createAgentJobService({ store, launcher, catalog, onChange = () 
     // Newest first; summaries without brief or result text (get() reads one in full).
     list: (conversationId) => db.prepare("SELECT * FROM agent_jobs WHERE conversation_id=? ORDER BY created_at DESC,rowid DESC").all(String(conversationId))
       .map((row) => { const { brief, result, ...summary } = project(row); return { ...summary, resultTruncated: result?.truncated ?? false, hasResult: Boolean(result) }; }),
+    // Live (queued or running) jobs of a conversation, oldest first.
+    live: (conversationId) => db.prepare("SELECT * FROM agent_jobs WHERE conversation_id=? AND state IN ('queued','running') ORDER BY created_at,rowid").all(String(conversationId)).map(project),
+    // Ended jobs whose one result has not reached a parent turn yet, in ending order.
+    pending: (conversationId) => db.prepare("SELECT * FROM agent_jobs WHERE conversation_id=? AND delivery='pending' ORDER BY ended_at,rowid").all(String(conversationId)).map(project),
+    // Move results between delivery states; only rows still in `from` change.
+    setDelivery(ids, to, { from = "pending" } = {}) {
+      const update = db.prepare("UPDATE agent_jobs SET delivery=? WHERE id=? AND delivery=?");
+      for (const id of ids) update.run(to, id, from);
+    },
     // Resolves when the job's current run has ended (immediately when it is not running).
     settled: (jobId) => runs.get(jobId)?.settled ?? Promise.resolve(),
     hasRunning: () => runs.size > 0,

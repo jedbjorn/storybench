@@ -21,7 +21,7 @@ const PHASE_TOOLS = {
     'open_deck_qa', 'inspect_deck_qa', 'act_deck_qa', 'check_deck_qa', 'report_deck_qa', 'get_deck_qa_report', 'close_deck_qa',
     'inspect_image', 'inspect_contact_sheet', 'inspect_media', 'validate_render',
   ],
-  delegate: ['subagent', 'Task', 'Agent', 'task'],
+  delegate: ['subagent', 'Task', 'Agent', 'task', 'start_agent_job', 'get_agent_job', 'list_agent_jobs', 'await_agent_job', 'continue_agent_job', 'cancel_agent_job', 'watch_job'],
   report: ['find_upstream_issues', 'prepare_upstream_report', 'read_upstream_issue'],
 };
 

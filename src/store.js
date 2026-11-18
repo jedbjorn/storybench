@@ -28,7 +28,7 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 // Shared persistence/UI/tool limits: 1 MiB summary, 100 links, 200-byte IDs, 8 KiB URLs,
 // 512-byte titles, 2 KiB notes, 2 MiB complete normalized JSON (including escaping).
 // All text limits use UTF-8 bytes. Oversize input is rejected, never truncated.
@@ -47,7 +47,8 @@ const channelNameKey = (name) => name.normalize("NFKC").toLowerCase();
 export const HARNESSES = Object.freeze(["codex", "claude", "opencode"]);
 export const SEGMENT_REASONS = Object.freeze(["initial", "migrated", "harness-switch", "harness-return", "resume-unavailable"]);
 export const RUN_KINDS = Object.freeze(["chat", "card_build", "still_graphic", "animated_graphic", "draft", "final", "other"]);
-export const RUN_ORIGINS = Object.freeze(["typed", "button"]);
+// `wake`: a turn the app starts when agent jobs or watched jobs end (spec #42 'Wake turns').
+export const RUN_ORIGINS = Object.freeze(["typed", "button", "wake"]);
 export const FINAL_END_REASONS = Object.freeze(["stopped", "cancelled", "failed", "restart", "unfulfilled"]);
 // How Final intent ends when its request reaches a terminal state without publishing.
 const FINAL_END_ON_TERMINAL = { failed: "failed", completed: "unfulfilled" };
@@ -467,6 +468,7 @@ export class Store {
     if (version < 17) this.migrateV17();
     if (version < 18) this.migrateV18();
     if (version < 19) this.migrateV19();
+    if (version < 20) this.migrateV20();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -578,6 +580,44 @@ export class Store {
       this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(19,?)").run(now());
       this.db.exec("COMMIT");
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+  // Wake turns and watches (spec #42 'Wake turns', 'Watches'). A wake turn's request has its own
+  // origin, so production_runs is rebuilt with the wider CHECK (the migrateV13 procedure). A
+  // watch records that a conversation waits for one render or build job; it carries one pending
+  // result once that job ends. Watches do not survive a restart.
+  migrateV20() {
+    this.db.exec("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE");
+    try {
+      const schema = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='production_runs'").get().sql;
+      if (!schema.includes("'wake'")) {
+        // Every trigger: those on other tables (jobs) name production_runs too.
+        const triggers = this.db.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger'").all();
+        for (const trigger of triggers) this.db.exec(`DROP TRIGGER "${trigger.name}"`);
+        const indexes = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='production_runs' AND sql IS NOT NULL").all();
+        const widened = schema.replace("origin IN ('typed','button')", "origin IN ('typed','button','wake')");
+        if (widened === schema) throw new StoreError("The production request origin constraint was not found", 500);
+        this.db.exec(widened.replace(/^CREATE TABLE\s+(?:"[^"]+"|\w+)/i, "CREATE TABLE new_production_runs"));
+        this.db.exec("INSERT INTO new_production_runs SELECT * FROM production_runs; DROP TABLE production_runs; ALTER TABLE new_production_runs RENAME TO production_runs");
+        for (const index of indexes) this.db.exec(index.sql);
+        for (const trigger of triggers) this.db.exec(trigger.sql);
+      }
+      this.db.exec(`CREATE TABLE IF NOT EXISTS job_watches (
+        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+        request_id TEXT NOT NULL,
+        created_at TEXT NOT NULL, ended_at TEXT, job_state TEXT,
+        delivery TEXT CHECK(delivery IN ('pending','delivered','undeliverable')),
+        PRIMARY KEY(job_id,conversation_id),
+        CHECK((delivery IS NULL) = (ended_at IS NULL))
+      );
+        CREATE INDEX IF NOT EXISTS job_watches_episode ON job_watches(episode_id,delivery);
+        CREATE INDEX IF NOT EXISTS job_watches_conversation ON job_watches(conversation_id,delivery);`);
+      if (this.db.prepare("PRAGMA foreign_key_check").all().length) throw new StoreError("The wake migration found foreign-key violations", 500);
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(20,?)").run(now());
+      this.db.exec("PRAGMA user_version=20; COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+    finally { this.db.exec("PRAGMA foreign_keys=ON"); }
   }
   upstreamReportRow(row) {
     return row ? { reportId: row.id, episodeId: row.episode_id, conversationId: row.conversation_id, requestId: row.request_id,
@@ -2502,7 +2542,9 @@ export class Store {
     if (originatingMessageId != null) {
       const message = this.db.prepare("SELECT conversation_id,role FROM conversation_messages WHERE id=?").get(originatingMessageId);
       if (!message || message.conversation_id !== conversationId) throw new StoreError("The originating message is not in this conversation", 404);
-      if (message.role !== "user") throw new StoreError("A request originates from a creator (user) message", 400);
+      // A wake turn originates from the app's own line (role system), never a creator message.
+      if (origin === "wake" ? message.role !== "system" : message.role !== "user")
+        throw new StoreError(origin === "wake" ? "A wake request originates from an app wake line" : "A request originates from a creator (user) message", 400);
     }
     if (segmentId != null && this.getSegment(segmentId)?.conversationId !== conversationId) throw new StoreError("The segment is not in this conversation", 404);
     if (successorOf != null) {
@@ -2542,6 +2584,7 @@ export class Store {
     // A Final button (including its Retry chain) has already bound authority; a redundant
     // declaration changes nothing. A typed-root successor still validates the typed identity.
     if (root.origin === "button" && run.kind === "final" && run.finalIntent === "active") return run;
+    if (root.origin === "wake") throw new StoreError("A wake turn carries no creator authority and cannot declare Final intent; a typed creator request can", 403);
     if (root.origin !== "typed") throw new StoreError("Only a typed creator request can declare Final intent", 403);
     if (root.originatingMessageId !== messageId) throw new StoreError("Final intent must cite the root typed request's originating message", 403);
     const message = this.db.prepare("SELECT conversation_id,role,origin FROM conversation_messages WHERE id=?").get(messageId);
