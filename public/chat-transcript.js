@@ -1,4 +1,11 @@
 import { animateHaloSun } from './chat-halo.js';
+import { selectStatus } from './turn-phases.js';
+
+// The turn timer: m:ss, minutes uncapped.
+const clock = (ms) => {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+};
 
 // Owns only the selected conversation's DOM and scroll/animation lifetime.
 export class ChatTranscript {
@@ -79,7 +86,9 @@ export class ChatTranscript {
     this.remember();
   }
 
-  render(items, active) {
+  // `status`: { events, state, startedAt, offset } from the latest poll; offset maps this clock to the server's.
+  render(items, active, status = null) {
+    this.status = status;
     const keys = new Set(items.map(item => item.key));
     for (const [key, entry] of this.nodes) {
       if (!keys.has(key)) { entry.node.remove(); this.nodes.delete(key); }
@@ -109,21 +118,38 @@ export class ChatTranscript {
       this.animation = this.scroller.ownerDocument.createElement('div');
       this.animation.className = 'chat-response-animation';
       this.animation.setAttribute('role', 'status');
-      this.animation.innerHTML = '<span class="visually-hidden">Assistant is working</span><canvas width="900" height="900" aria-hidden="true"></canvas>';
+      // The status region announces the phase label only; the timer is never read out.
+      this.animation.innerHTML = '<canvas width="900" height="900" aria-hidden="true"></canvas><div class="chat-turn-status"><span data-turn-label></span><span data-turn-timer aria-hidden="true"></span></div>';
       this.content.append(this.animation);
       this.stopAnimation = animateHaloSun(this.animation.querySelector('canvas'), this.kind);
+      this.shown = null;
+      this.ticker = this.view.setInterval(() => this.paintStatus(), 500);
     } else if (!active && this.animation) {
       this.stopAnimation();
+      this.view.clearInterval(this.ticker);
       this.animation.remove();
       this.animation = null;
       this.stopAnimation = null;
     }
+    if (this.animation) this.paintStatus();
     this.layout();
+  }
+
+  // Re-run the selection rule between polls too, so the dwell ends and the timer counts on time.
+  paintStatus() {
+    const { events = [], state = 'running', startedAt = null, offset = 0 } = this.status ?? {};
+    const now = Date.now() + offset;
+    this.shown = selectStatus({ events, state, now, kind: this.kind, shown: this.shown });
+    const label = this.animation.querySelector('[data-turn-label]'), timer = this.animation.querySelector('[data-turn-timer]');
+    const start = Date.parse(startedAt), time = Number.isFinite(start) ? ` · ${clock(now - start)}` : '';
+    if (label.textContent !== this.shown.label) label.textContent = this.shown.label;
+    if (timer.textContent !== time) timer.textContent = time;
   }
 
   destroy() {
     this.disposed = true;
     this.stopAnimation?.();
+    this.view.clearInterval(this.ticker);
     this.observer?.disconnect();
     this.events.abort();
     this.scroller.replaceChildren();

@@ -365,10 +365,15 @@ export class ChatWorkspace {
     if (!this.isCurrent(generation, episodeId, conversationId)) return;
     const sequence = ++this.refreshSequence, selection = this.selection;
     const imageRevision = this.imageDraft(conversationId).revision;
+    const sent = Date.now();
     const value = await this.api(this.itemUrl(episodeId, conversationId));
+    const received = Date.now();
     if (!this.isCurrent(generation, episodeId, conversationId) || selection !== this.selection || sequence < (this.appliedRefreshSequence ?? 0)) return;
     this.appliedRefreshSequence = sequence;
     this.current = value;
+    // Server clock minus this one, taking the server's stamp as the round trip's midpoint.
+    const serverTime = Date.parse(value.serverTime);
+    if (Number.isFinite(serverTime)) this.clockOffset = serverTime - (sent + received) / 2;
     const status = this.root.querySelector("[data-chat-status]");
     const active = !value.error && working(value.state);
     const label = value.error || ({ running: "working", interrupting: "stopping" }[value.state] ?? value.state);
@@ -400,7 +405,9 @@ export class ChatWorkspace {
     const items = [...visible.map((message) => { const assistant = message.role === "assistant", tag = assistant ? "div" : "p", body = assistant ? "div" : "span"; return { key: `m:${message.id}`, at: message.createdAt, html: `<${tag} class="chat-${escapeHtml(message.role)}" data-message-id="${escapeHtml(message.id)}"><b>${message.role === "user" ? "You" : "Assistant"}</b><${body}${assistant ? ' class="chat-markdown"' : ""}>${assistant ? this.renderMarkdown(message.text) : escapeHtml(message.text)}${(message.attachments || []).map((item) => item.unavailable ? `<span class="chat-image-removed" role="note">Redline image removed</span>` : `<a class="chat-image-link" href="${escapeHtml(previewUrl('library', episodeId, this.getEpisode()?.channelId, item.itemId))}" target="storybench-preview"><img src="/api/episodes/${encodeURIComponent(episodeId)}/library/${encodeURIComponent(item.itemId)}/file" alt="${escapeHtml(item.label)}" loading="lazy"></a><a class="chat-image-download" href="${escapeHtml(withChannel(`/api/episodes/${encodeURIComponent(episodeId)}/library/${encodeURIComponent(item.itemId)}/file?download=1`, this.getEpisode()?.channelId))}">Download</a>`).join("")}</${body}>${assistant && ['failed', 'interrupted'].includes(message.state) ? `<small class="chat-response-outcome">${message.state === 'interrupted' ? 'Interrupted' : 'Failed'} · partial response</small>` : ''}${retryByMessage.has(message.id) ? `<button type="button" data-chat-retry="${escapeHtml(retryByMessage.get(message.id))}" aria-label="Retry this request as a new explicit request">Retry</button>` : ""}</${tag}>` }; }),
       ...boundaries.map((entry) => ({ ...entry, html: `<p class="chat-boundary" role="note"><span>${escapeHtml(entry.text)}</span></p>` }))]
       .sort((a, b) => String(a.at ?? "").localeCompare(String(b.at ?? "")));
-    this.transcript.render(items.length || active ? items : [{ key: 'empty', html: `<p>Start a conversation about this ${this.getEpisode()?.kind === "deck" ? "deck" : "episode"}.</p>` }], active);
+    const run = (value.runs ?? []).findLast((entry) => ["starting", "running"].includes(entry.state));
+    const turnStatus = { events: value.events ?? [], state: value.state, startedAt: run?.startedAt ?? null, offset: this.clockOffset ?? 0 };
+    this.transcript.render(items.length || active ? items : [{ key: 'empty', html: `<p>Start a conversation about this ${this.getEpisode()?.kind === "deck" ? "deck" : "episode"}.</p>` }], active, turnStatus);
     const draft = this.draftField();
     if (draft.dataset.dirty !== "true") { draft.value = value.draft || ""; draft.dataset.dirty = "false"; }
     const busy = this.conversations.some((item) => working(item.state));

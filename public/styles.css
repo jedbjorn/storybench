@@ -603,6 +603,7 @@ button.icon-button.danger:hover { border-color: #e2b4a9; background: #fbece8; co
 .chat-jump[hidden] { display: none; }
 .chat-response-animation { width: 170px; max-width: 100%; margin-left: auto; }
 .chat-response-animation canvas { display: block; width: 100%; height: auto; aspect-ratio: 1; }
+.chat-turn-status { margin-top: 4px; color: var(--muted); font-size: 11px; text-align: center; overflow-wrap: anywhere; }
 .chat-response-outcome { color: var(--muted); }
 [data-chat-messages] {
   overflow-anchor: none;
