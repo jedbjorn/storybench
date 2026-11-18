@@ -34,10 +34,11 @@
       scroll: { top: presentation.scrollTop, max: presentation.scrollHeight - presentation.clientHeight } }, '*');
   }
   // A stage is shown at the end of its own motion, before the next stage begins; null is the full reveal.
+  // Any stage index the slide has is kept as asked (the editor normalizes by the same rule), the last included.
   function show(value) {
     const { stages, durationMs } = deck.timeline();
-    stage = Number.isInteger(value) && value >= 0 && value < stages.length - 1 ? value : null;
-    const time = stage === null ? durationMs : Math.max(stages[stage].startMs, Math.min(stages[stage].motionEndMs, stages[stage + 1].startMs - 0.5));
+    stage = Number.isInteger(value) && value >= 0 && value < stages.length ? value : null;
+    const time = stage === null ? durationMs : Math.max(stages[stage].startMs, Math.min(stages[stage].motionEndMs, (stages[stage + 1]?.startMs ?? Infinity) - 0.5));
     deck.seek(time);
     post();
   }

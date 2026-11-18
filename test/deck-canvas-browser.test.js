@@ -94,6 +94,18 @@ for (const type of [chromium, firefox]) test(`A7 ${type.name()}: the creator edi
   await page.locator('.deck-canvas-stages').getByRole('button', { name: 'Stage 1' }).click();
   await frameShows(page, 'steps', () => document.querySelector('.stage-list > li[aria-current]') === document.querySelector('.stage-list > li')
     && document.querySelector('.stage-list > li:nth-child(2)').dataset.pending === 'true' && window.storybenchDeck.timeline().state === 'paused');
+  // The last stage holds too, and the canvas exchange settles: no message crosses once it is shown.
+  await page.evaluate(() => { window.canvasMessages = 0; window.addEventListener('message', event => { if (event.data?.type === 'storybench-canvas') window.canvasMessages++; }); });
+  await page.locator('.deck-canvas-stages').getByRole('button', { name: 'Stage 2' }).click();
+  await frameShows(page, 'steps', () => document.querySelector('.stage-list > li[aria-current]') === document.querySelector('.stage-list > li:nth-child(2)')
+    && document.querySelector('.stage-list > li:nth-child(2)').dataset.pending === 'false' && window.storybenchDeck.timeline().state === 'paused'
+    && window.storybenchDeck.timeline().stage === 1);
+  await page.waitForTimeout(100);
+  const before = await page.evaluate(() => window.canvasMessages);
+  await page.waitForTimeout(300);
+  assert.equal(await page.evaluate(() => window.canvasMessages), before, 'no canvas messages after the last stage is shown');
+  assert.ok(before < 10, `the last stage settled in ${before} canvas messages`);
+  assert.equal(await page.locator('.deck-canvas-stages [aria-pressed="true"]').textContent(), 'Stage 2');
   await page.locator('.deck-canvas-stages').getByRole('button', { name: 'Full reveal' }).click();
   await frameShows(page, 'steps', () => document.querySelector('.stage-list > li:nth-child(2)').dataset.pending === 'false');
 

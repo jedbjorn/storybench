@@ -79,6 +79,8 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
     } else if (!frame || event.source !== frame.contentWindow) return;
     const before = info && Object.keys(info.blocks).join();
     info = data;
+    // A stage the slide no longer has is the full reveal, as the bridge shows it; ask again only for a stage it has not applied yet.
+    if (stage !== null && !(stage < data.stages)) stage = null;
     if (stage !== null && data.stage !== stage) return frame.contentWindow.postMessage({ type: 'storybench-canvas-show', stage }, '*');
     place(); renderStages();
     if (before !== Object.keys(info.blocks).join()) { surface.refresh(); renderInspector(); }
