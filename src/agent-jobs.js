@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { validateSelection } from "./runtime/conversation-runtime.js";
+import { SelectionError, validateSelection } from "./runtime/conversation-runtime.js";
 
 export const AGENT_JOB_CAP = 4;
 export const LIVE_STATES = Object.freeze(["queued", "running"]);
@@ -17,7 +17,11 @@ export const LABEL_LIMIT = 200;
 export const RESULT_LIMIT_BYTES = 256 * 1024;
 export const FILE_LIST_LIMIT = 200;
 // Files the app renders into every pad; they are not the job's output.
-const RENDERED_FILES = new Set(["AGENTS.md", "CLAUDE.md", ".opencode/.gitignore", ".storybench/renders.json"]);
+const RENDERED_FILES = new Set(["AGENTS.md", "CLAUDE.md"]);
+// Pad-root directories that hold runtime state, not output: OpenCode's project directory (its
+// installed node_modules, package files and the rendered .gitignore) and the render manifest.
+// They are not walked, so they cannot use up the list or the walk budget.
+const RUNTIME_DIRS = new Set([".opencode", ".storybench"]);
 const MAX_PAD_WALK = 20_000;
 
 const now = () => new Date().toISOString();
@@ -60,7 +64,7 @@ export async function listPadFiles(padDir, { limit = FILE_LIST_LIMIT } = {}) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       if (++visited > MAX_PAD_WALK) return;
       const absolute = path.join(directory, entry.name), relative = path.relative(padDir, absolute);
-      if (entry.isDirectory()) await walk(absolute);
+      if (entry.isDirectory()) { if (!(directory === padDir && RUNTIME_DIRS.has(entry.name))) await walk(absolute); }
       else if (entry.isFile() && !RENDERED_FILES.has(relative)) files.push({ path: relative, size: (await lstat(absolute)).size });
     }
   };
@@ -128,17 +132,33 @@ export function createAgentJobService({ store, launcher, catalog, onChange = () 
     const same = harness == null || harness === conversation.harness;
     const selection = {
       harness: harness ?? conversation.harness,
-      source: same ? conversation.inferenceSource : `${harness}-login`,
       model: model !== undefined ? model : same ? conversation.model : null,
       effort: effort !== undefined ? effort : same ? conversation.effort : null,
     };
     const entries = await catalog();
     let checked;
-    try { checked = validateSelection(entries, selection); }
+    try { checked = validateSelection(entries, { ...selection, source: same ? conversation.inferenceSource : crossSource(entries, selection) }); }
     catch (cause) { throw refusal(`This agent job cannot run: ${cause.message}. Nothing was substituted.`, cause.statusCode ?? 409, { code: cause.code }); }
     const entry = entries.find((candidate) => candidate.harness === checked.harness && (candidate.source ?? candidate.id ?? `${checked.harness}-login`) === checked.source);
     const listed = entry?.models?.find((candidate) => candidate.id === checked.model);
     return { ...checked, supportsImages: !listed?.inputModalities || listed.inputModalities.includes("image") };
+  }
+
+  // Another harness runs on its login source (decision #110). OpenCode has no login: it runs on
+  // the one ready provider source that offers the model. None, or more than one, is refused.
+  function crossSource(entries, { harness, model }) {
+    if (harness !== "opencode") return `${harness}-login`;
+    const providers = entries.filter((entry) => entry.harness === "opencode"), name = (entry) => entry.source ?? entry.id;
+    if (!providers.length) throw new SelectionError("HARNESS_UNAVAILABLE", "OpenCode is unavailable: no OpenCode provider is configured; open Providers", 409);
+    const ready = providers.filter((entry) => entry.available);
+    if (!ready.length) throw new SelectionError("HARNESS_UNAVAILABLE", `OpenCode is unavailable: no provider is ready (${providers.map((entry) => `${name(entry)}: ${entry.reason}`).join("; ")})`, 409);
+    if (model == null) throw new SelectionError("INVALID_MODEL", "Choose an explicit model for OpenCode");
+    const offering = ready.filter((entry) => entry.models.some((candidate) => candidate.id === model));
+    // A provider whose model list is not exhaustive accepts an unlisted exact id.
+    const routes = offering.length ? offering : ready.filter((entry) => entry.exactModelIds);
+    if (!routes.length) throw new SelectionError("UNKNOWN_MODEL", `${model} is not offered by any ready OpenCode provider (${ready.map(name).join(", ")})`);
+    if (routes.length > 1) throw new SelectionError("AMBIGUOUS_ROUTE", `${model} is offered by more than one OpenCode provider (${routes.map(name).join(", ")}), and a job names no provider; start it from a conversation set to the provider you want`, 409);
+    return name(routes[0]);
   }
 
   // The cap and the pad's liveness are checked and the row inserted in one synchronous step.
