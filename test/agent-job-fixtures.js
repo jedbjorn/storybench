@@ -1,7 +1,7 @@
 // Shared fixtures for the agent job tests: a fixture catalogue, a scripted launcher and an
 // app with one production and two conversations.
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createApp } from "../src/server.js";
@@ -12,6 +12,17 @@ export const CATALOG = [
   { source: "claude-login", harness: "claude", available: true, efforts: ["low", "high"], models: [{ id: "sonnet", efforts: ["low", "high"] }] },
   { id: "gateway", source: "gateway", harness: "opencode", available: true, models: [{ id: "fixture-model", efforts: [] }] },
 ];
+
+// What an OpenCode worker leaves in its pad besides the job's output (flag #86): its installed
+// node_modules and package files, plus the rendered boot and manifest. More than 200 files.
+export async function openCodeRuntime(pad, count = 250) {
+  const modules = path.join(pad, ".opencode", "node_modules", "@opencode-ai", "plugin");
+  await mkdir(modules, { recursive: true });
+  for (let index = 0; index < count; index++) await writeFile(path.join(modules, `m${index}.js`), "x");
+  await mkdir(path.join(pad, ".storybench"), { recursive: true });
+  for (const [file, text] of [[".opencode/package.json", "{}"], [".opencode/bun.lock", "{}"], [".opencode/.gitignore", "node_modules\n"], [".storybench/renders.json", "{}"], ["AGENTS.md", "boot"], ["CLAUDE.md", "boot"]])
+    await writeFile(path.join(pad, file), text);
+}
 
 // A scripted harness connection. Each launch takes the next behaviour; the default completes.
 export function fakeLauncher(behaviours = []) {

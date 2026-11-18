@@ -18,7 +18,7 @@ import { createHealth } from "../src/runtime/health.js";
 import { activeWork } from "../src/cli/service.js";
 import { ChatWorkspace } from "../public/chat-workspace.js";
 import { TOOL_DELIVERED } from "../src/tool-delivery.js";
-import { CATALOG, fakeLauncher } from "./agent-job-fixtures.js";
+import { CATALOG, fakeLauncher, openCodeRuntime } from "./agent-job-fixtures.js";
 
 const until = async (check, timeout = 3000) => {
   const end = Date.now() + timeout;
@@ -123,6 +123,28 @@ test("A5: two endings during a running turn start exactly one combined wake turn
   await settle();
   assert.equal(f.turns.length, 2, "a delivered result never produces a second wake");
   assert.equal(f.view().wake.pending, 0);
+});
+
+test("flags #85/#86: an OpenCode job from a Codex parent runs on its provider, and get_agent_job and the wake show its real output past the OpenCode runtime", async (t) => {
+  const jobs = heldJobs();
+  const f = fixture(t, { behaviours: [jobs.hold] });
+  const turn = await f.send();
+  const started = await turn.tools.start_agent_job({ brief: "Write three facts to notes.md.", label: "Notes", harness: "opencode", model: "fixture-model" });
+  assert.deepEqual([started.harness, started.source, started.model, started.effort], ["opencode", "gateway", "fixture-model", null]);
+  await until(() => jobs.held.length === 1);
+  const pad = jobs.held[0].job.padPath;
+  await openCodeRuntime(pad);
+  await writeFile(path.join(pad, "notes.md"), "three facts");
+  jobs.end(jobs.held[0], "Wrote notes.md");
+  await until(() => f.view().agentJobs[0]?.state === "completed");
+  const read = await turn.tools.get_agent_job({ jobId: started.jobId });
+  assert.deepEqual(read.files, { entries: [{ path: "notes.md", size: 11 }], total: 1, truncated: false });
+  turn.complete();
+  const wake = await until(() => f.turns[1]);
+  assert.match(wake.prompt, /Files: notes\.md \(11 B\)\./);
+  assert.doesNotMatch(wake.prompt, /node_modules|files in all/);
+  wake.complete();
+  await f.idle();
 });
 
 test("A5/A8: after a restart, results stay pending with no wake; the next typed turn carries them once", async (t) => {

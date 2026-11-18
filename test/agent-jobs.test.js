@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { chmod, mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { AGENT_JOB_CAP, FILE_LIST_LIMIT, RESULT_LIMIT_BYTES, capResult, createAgentJobService } from "../src/agent-jobs.js";
-import { CATALOG, jobFixture } from "./agent-job-fixtures.js";
+import { CATALOG, jobFixture, openCodeRuntime } from "./agent-job-fixtures.js";
 
 const ended = async (service, job) => { await service.settled(job.id); return service.get(job.conversationId, job.id); };
 
@@ -81,7 +81,7 @@ test("A1: an unusable harness, model or effort is refused and never substituted"
     [{ effort: "turbo" }, /turbo is not a supported effort/],
     [{ model: "gpt-text", effort: "high" }, /high is not a supported effort/],
     [{ harness: "claude" }, /Claude Code is unavailable: not logged in/],
-    [{ harness: "opencode", model: "fixture-model" }, /Unsupported harness: opencode/],
+    [{ harness: "opencode", model: "not-offered" }, /not-offered is not offered by any ready OpenCode provider \(gateway\)/],
     [{ harness: "bash" }, /Unsupported harness/],
   ]) await assert.rejects(start(input), (error) => pattern.test(error.message) && /Nothing was substituted/.test(error.message), JSON.stringify(input));
   for (const input of [{ brief: "" }, { brief: "x".repeat(64 * 1024 + 1) }, { label: " " }, { label: "x".repeat(201) }])
@@ -92,6 +92,67 @@ test("A1: an unusable harness, model or effort is refused and never substituted"
   const { start: startOther } = await jobFixture(t);
   const claude = await startOther({ harness: "claude", model: "sonnet" });
   assert.deepEqual([claude.harness, claude.source, claude.model, claude.effort], ["claude", "claude-login", "sonnet", null]);
+});
+
+// Flag #85: OpenCode has no login source. A job from a Claude or Codex parent runs on the one
+// ready provider source that offers its model, with the parent's model and effort as given.
+const PROVIDERS = [
+  ...CATALOG.filter((entry) => entry.harness !== "opencode"),
+  { id: "gateway", source: "gateway", harness: "opencode", available: true, models: [{ id: "fixture-model", efforts: [] }, { id: "shared-model", efforts: [] }] },
+  { source: "ollama-cloud", harness: "opencode", available: true, models: [{ id: "deepseek-v4.1-flash:1017", efforts: ["high"] }, { id: "shared-model", efforts: [] }] },
+  { id: "moonshotai", harness: "opencode", available: false, reason: "No key; open Providers", models: [] },
+];
+const PARENTS = {
+  codex: "harness='codex',inference_source='codex-login',model='gpt-5.5',effort='medium'",
+  claude: "harness='claude',inference_source='claude-login',model='sonnet',effort='high'",
+};
+const parentFixture = async (t, parent, options = {}) => {
+  const fixture = await jobFixture(t, { catalog: PROVIDERS, ...options });
+  fixture.app.store.db.prepare(`UPDATE conversations SET ${PARENTS[parent]} WHERE id=?`).run(fixture.conversation.id);
+  return fixture;
+};
+const route = (job) => [job.harness, job.source, job.model, job.effort];
+
+for (const parent of Object.keys(PARENTS)) {
+  test(`flag #85: an OpenCode job from a ${parent} parent runs on the provider that offers its model, never substituted`, async (t) => {
+    const { conversation, service, start, fake } = await parentFixture(t, parent);
+    const deepseek = await ended(service, await start({ harness: "opencode", model: "deepseek-v4.1-flash:1017" }));
+    assert.deepEqual(route(deepseek), ["opencode", "ollama-cloud", "deepseek-v4.1-flash:1017", null]);
+    assert.equal(deepseek.state, "completed");
+    assert.deepEqual(route(fake.launches[0].job), route(deepseek), "the worker runs the resolved route");
+    assert.deepEqual(route(await start({ harness: "opencode", model: "deepseek-v4.1-flash:1017", effort: "high" })), ["opencode", "ollama-cloud", "deepseek-v4.1-flash:1017", "high"]);
+    assert.deepEqual(route(await start({ harness: "opencode", model: "fixture-model" })), ["opencode", "gateway", "fixture-model", null]);
+    const count = service.list(conversation.id).length;
+    for (const [input, pattern, code] of [
+      [{ harness: "opencode" }, /Choose an explicit model for OpenCode/, "INVALID_MODEL"],
+      [{ harness: "opencode", model: "no-such-model" }, /no-such-model is not offered by any ready OpenCode provider \(gateway, ollama-cloud\)/, "UNKNOWN_MODEL"],
+      [{ harness: "opencode", model: "shared-model" }, /shared-model is offered by more than one OpenCode provider \(gateway, ollama-cloud\)/, "AMBIGUOUS_ROUTE"],
+      [{ harness: "opencode", model: "deepseek-v4.1-flash:1017", effort: "low" }, /low is not a supported effort/, "UNSUPPORTED_EFFORT"],
+    ]) await assert.rejects(start(input), (error) => pattern.test(error.message) && /Nothing was substituted/.test(error.message) && error.code === code, JSON.stringify(input));
+    assert.equal(service.list(conversation.id).length, count, "nothing was recorded for a refused start");
+  });
+
+  test(`flag #85: from a ${parent} parent, OpenCode with no configured or ready provider is refused naming the cause`, async (t) => {
+    const none = await parentFixture(t, parent, { catalog: PROVIDERS.filter((entry) => entry.harness !== "opencode") });
+    await assert.rejects(none.start({ harness: "opencode", model: "fixture-model" }), (error) => error.statusCode === 409 && /OpenCode is unavailable: no OpenCode provider is configured/.test(error.message));
+    const down = await parentFixture(t, parent, { catalog: PROVIDERS.map((entry) => entry.harness === "opencode" && entry.available ? { ...entry, available: false, reason: "Key rejected", models: [] } : entry) });
+    await assert.rejects(down.start({ harness: "opencode", model: "fixture-model" }),
+      (error) => error.statusCode === 409 && /no provider is ready \(gateway: Key rejected; ollama-cloud: Key rejected; moonshotai: No key; open Providers\)/.test(error.message));
+    // A provider whose model list is not exhaustive takes an unlisted exact id, with a note.
+    const open = await parentFixture(t, parent, { catalog: PROVIDERS.map((entry) => entry.source === "ollama-cloud" ? { ...entry, exactModelIds: true } : entry) });
+    const unlisted = await open.start({ harness: "opencode", model: "qwen-next:cloud" });
+    assert.deepEqual(route(unlisted), ["opencode", "ollama-cloud", "qwen-next:cloud", null]);
+    assert.match(unlisted.notes.join(), /qwen-next:cloud is not in the OpenCode list/);
+    for (const fixture of [none, down]) assert.equal(fixture.fake.launches.length, 0);
+  });
+}
+
+test("flag #85: an OpenCode parent keeps its own provider source for its jobs", async (t) => {
+  const { app, conversation, start } = await jobFixture(t, { catalog: PROVIDERS });
+  app.store.db.prepare("UPDATE conversations SET harness='opencode',inference_source='gateway',model='shared-model',effort=NULL WHERE id=?").run(conversation.id);
+  assert.deepEqual(route(await start()), ["opencode", "gateway", "shared-model", null]);
+  assert.deepEqual(route(await start({ harness: "opencode", model: "shared-model" })), ["opencode", "gateway", "shared-model", null], "same harness: no provider choice is made");
+  await assert.rejects(start({ harness: "opencode", model: "deepseek-v4.1-flash:1017" }), /deepseek-v4.1-flash:1017 is not an available OpenCode model/);
 });
 
 test("A1: interrupted, failed and cut results are never reported as success", async (t) => {
@@ -147,6 +208,16 @@ test("the file list stops at 200 entries with sizes and says how many there were
   assert.deepEqual([done.files.total, done.files.truncated], [FILE_LIST_LIMIT + 5, true]);
   assert.deepEqual(done.files.entries[3], { path: "f003.txt", size: 3 });
   assert.equal(done.result, null);
+});
+
+test("flag #86: OpenCode runtime files and rendered boot files never displace the job's output in the file list", async (t) => {
+  const { service, start } = await jobFixture(t, { behaviours: [async (connection) => {
+    await openCodeRuntime(connection.job.padPath);
+    await writeFile(path.join(connection.job.padPath, "notes.md"), "three facts");
+    connection.emit("turn/completed", { turn: { id: "turn-1", status: "completed" } });
+  }] });
+  const done = await ended(service, await start());
+  assert.deepEqual(done.files, { entries: [{ path: "notes.md", size: 11 }], total: 1, truncated: false });
 });
 
 test("continue runs on the same harness, session and pad, and refuses a live run, a lost session or a removed pad", async (t) => {
