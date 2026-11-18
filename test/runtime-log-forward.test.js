@@ -56,6 +56,17 @@ test("worker forwarding keeps only the launcher's structured diagnostics, never 
   follower.stop();
 });
 
+test("a failed harness stage reaches the journal as a fixed name with its exit code and nothing else", () => {
+  assert.deepEqual(workerDiagnostic('{"event":"harness.failed","harness":"opencode","stage":"opencode-exit","code":1}'),
+    { event: "harness.failed", harness: "opencode", code: 1, stage: "opencode-exit" });
+  assert.deepEqual(workerDiagnostic('{"event":"harness.failed","harness":"opencode","stage":"mcp"}'), { event: "harness.failed", harness: "opencode", stage: "mcp" });
+  // A stage outside the fixed list, an error message or a payload never passes, whatever its length.
+  const secret = "sk-fixture-0123456789";
+  const leaked = workerDiagnostic(JSON.stringify({ event: "harness.failed", harness: "opencode", stage: secret, error: `401 for ${secret}`, message: secret, stderr: secret, payload: { key: secret }, code: 1 }));
+  assert.deepEqual(leaked, { event: "harness.failed", harness: "opencode", code: 1 });
+  assert.ok(!JSON.stringify(leaked).includes(secret));
+});
+
 test("line capping respects multibyte characters", () => {
   assert.equal(capLine("short").truncated, false);
   const { text, truncated } = capLine("é".repeat(10), 5);

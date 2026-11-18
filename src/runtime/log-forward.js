@@ -6,7 +6,9 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
-export const WORKER_DIAGNOSTIC_EVENTS = Object.freeze(["worker.ready", "harness.started", "harness.exited", "launch.rejected"]);
+export const WORKER_DIAGNOSTIC_EVENTS = Object.freeze(["worker.ready", "harness.started", "harness.exited", "launch.rejected", "harness.failed"]);
+// The stage a harness wrapper failed in: fixed names only, so no wrapper text reaches the journal.
+export const WORKER_FAILURE_STAGES = Object.freeze(["config", "mcp", "relay", "session", "opencode-exit", "opencode-event"]);
 
 // Keep only the launcher's own JSON diagnostics, re-serialised from known scalar fields.
 export function workerDiagnostic(line) {
@@ -19,6 +21,7 @@ export function workerDiagnostic(line) {
     if (field === undefined) continue;
     if (field === null || ["string", "number"].includes(typeof field)) pick[key] = typeof field === "string" ? field.slice(0, 64) : field;
   }
+  if (WORKER_FAILURE_STAGES.includes(value.stage)) pick.stage = value.stage;
   return pick;
 }
 

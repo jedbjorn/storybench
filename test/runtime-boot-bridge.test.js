@@ -51,10 +51,25 @@ test("boot renders one body into AGENTS.md and CLAUDE.md plus native skill dirs"
   assert.match(agents, /\.agents\/skills\/beta\/SKILL\.md/);
   for (const root of [".claude/skills", ".agents/skills", ".opencode/skills"])
     assert.match(await readFile(path.join(episode, root, "alpha/SKILL.md"), "utf8"), /Phrase SKILL-Y in \/storybench/);
-  assert.equal(result.files.length, 8);
+  assert.equal(result.files.length, 9);
   assert.ok(result.bootSha256 && result.templateVersion);
   const manifest = JSON.parse(await readFile(path.join(episode, ".storybench/renders.json"), "utf8"));
-  assert.equal(manifest.files.length, 8);
+  assert.equal(manifest.files.length, 9);
+});
+
+// OpenCode 1.19.5 exits before its first event when a project `.opencode` directory has no
+// .gitignore and it cannot write one; a worker mounts the episode read-only (flag #76).
+test("every render leaves OpenCode nothing to write in the episode's .opencode directory", async (t) => {
+  const dir = await tempDir(t);
+  const episode = path.join(dir, "episode");
+  await mkdir(episode);
+  const first = await renderEpisodeBoot({ episodeDir: episode, context, templates: await templates(path.join(dir, "t1"), ["alpha"]) });
+  assert.ok(first.files.some((file) => file.path === ".opencode/.gitignore"));
+  assert.match(await readFile(path.join(episode, ".opencode/.gitignore"), "utf8"), /^node_modules$/m);
+  // A render that drops every skill still leaves the directory behind, so it keeps the file.
+  const second = await renderEpisodeBoot({ episodeDir: episode, context, templates: await templates(path.join(dir, "t2"), []) });
+  assert.deepEqual(second.removed.sort(), [".agents/skills/alpha/SKILL.md", ".claude/skills/alpha/SKILL.md", ".opencode/skills/alpha/SKILL.md"]);
+  assert.match(await readFile(path.join(episode, ".opencode/.gitignore"), "utf8"), /^node_modules$/m);
 });
 
 test("re-render removes only obsolete app-owned skills and keeps user files", async (t) => {

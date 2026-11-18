@@ -22,6 +22,12 @@ export function openCodeRunEvent(event, native) {
   if (event.type === 'tool_use') return { session, output: { type: 'tool_use', part: { tool: event.part?.tool, state: { status: event.part?.state?.status } } } };
   return { session };
 }
+// The worker's record of a failed turn for the service log: where it failed and, for an
+// OpenCode exit, the exit code or signal. Never an error message, stderr or provider payload.
+export function openCodeFailure(stage, { code, signal } = {}) {
+  return { event: 'harness.failed', harness: 'opencode', stage,
+    ...(Number.isInteger(code) ? { code } : {}), ...(typeof signal === 'string' && /^SIG[A-Z0-9]{1,12}$/.test(signal) ? { signal } : {}) };
+}
 export class OpenCodeConnection {
   constructor({ spawnSession, model, effort, onEvent = () => {}, onError = () => {} }) { Object.assign(this, { spawnSession, model, effort, onEvent, onError }); this.resolved = { model, effort }; }
   async open() { return this; }
