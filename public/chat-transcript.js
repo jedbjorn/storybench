@@ -14,9 +14,7 @@ export class ChatTranscript {
     this.events = new this.view.AbortController();
     const listen = (node, type, callback, options = {}) => node.addEventListener(type, callback, { ...options, signal: this.events.signal });
     listen(jump, 'click', () => {
-      this.following = true;
-      jump.hidden = true;
-      this.layout();
+      this.resume();
       scroller.focus({ preventScroll: true });
     });
     listen(scroller, 'wheel', event => { if (event.deltaY < 0) this.pause(); }, { passive: true });
@@ -35,6 +33,8 @@ export class ChatTranscript {
       // resize/clamp is layout, not upward intent (including scrollbar drags).
       if (this.height !== scroller.scrollHeight || this.viewport !== scroller.clientHeight) return this.layout();
       if (scroller.scrollTop < this.top - 1) this.pause();
+      // Returning to the end by any means resumes following, as Jump to end does.
+      else if (!this.following && scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop < 2) return this.resume();
       this.remember();
     }, { passive: true });
     listen(scroller, 'load', () => this.layout(), { capture: true });
@@ -51,6 +51,12 @@ export class ChatTranscript {
     this.following = false;
     this.jump.hidden = false;
     this.remember();
+  }
+
+  resume() {
+    this.following = true;
+    this.jump.hidden = true;
+    this.layout();
   }
 
   remember() {

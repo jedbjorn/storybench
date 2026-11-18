@@ -111,7 +111,7 @@ test('animation suspends for hidden tabs and reduced motion and cleans up on nav
   f.hide(false); assert.equal(f.frames.size, 0);
 });
 
-test('only jump explicitly resumes following; polls, sends, layout and bottom scroll events preserve pause', async t => {
+test('jump or scrolling back to the end resumes following; polls, sends and layout preserve pause', async t => {
   const f = await fixture(t);
   const scroller = f.root.querySelector('[data-chat-messages]'), jump = f.root.querySelector('[data-chat-jump]');
   let height = 1000, top = 0;
@@ -127,9 +127,12 @@ test('only jump explicitly resumes following; polls, sends, layout and bottom sc
   scroller.dispatchEvent(new f.view.Event('load')); assert.equal(top, 500);
   f.root.querySelector('[data-chat-draft]').value = 'new request';
   await f.root.querySelector('[data-chat-send]').onclick(); assert.equal(top, 500);
+  // Scrolling back to the end resumes following, as Jump to end does.
   scroller.scrollTop = 1000; scroller.dispatchEvent(new f.view.Event('scroll'));
-  assert.equal(f.workspace.transcript.following, false);
-  height = 1400; await f.refresh(); assert.equal(top, 1000);
+  assert.equal(f.workspace.transcript.following, true); assert.equal(jump.hidden, true);
+  height = 1400; await f.refresh(); assert.equal(top, 1200);
+  scroller.scrollTop = 700; scroller.dispatchEvent(new f.view.Event('scroll'));
+  assert.equal(f.workspace.transcript.following, false); assert.equal(jump.hidden, false);
   jump.click(); assert.equal(top, 1200); assert.equal(jump.hidden, true);
   height = 1600; [...f.observers][0].fn(); assert.equal(top, 1400);
   // Native scrollbar/keyboard scrolling up is also intent; a layout clamp is not.
