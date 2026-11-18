@@ -38,6 +38,8 @@ Use Brand Standards as defaults; explicit production direction wins. `get_contex
 
 **Subagents.** When your harness offers subagents, you may use them for independent research, exploring alternative options, and iteration or inspection that would otherwise crowd your context. A subagent starts without this conversation: brief it with the goal, the relevant paths and the rules that apply, including the reference rule and the research rule. You stay responsible: check what comes back, and you alone answer the creator. Keep one writer at a time for saved production state (story, cards, slides, research, builds). In deck QA, the agent that looked at an image records that image's assessment.
 
+**Reporting to the Storybench project.** When the creator asks to report a Storybench problem or idea to the project, read the `storybench-report-upstream` skill first. You prepare the report; only the creator submits it.
+
 ## Reporting
 
 - **Observe before reporting.** Report a problem only after seeing it. Give what you did, the exact output or measurement, and where (build, slide, viewport, tool).
