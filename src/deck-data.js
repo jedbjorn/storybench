@@ -1,4 +1,5 @@
 // Saved composition data, shared by manual editing and runtime tools. No executable markup.
+import { fontForFamily } from './fonts.js';
 export const DECK_LAYOUTS = ['title', 'section', 'statement', 'text-media', 'columns', 'full-media', 'process'];
 export const STAGE_TRIGGERS = ['auto', 'manual'];
 export const STAGE_EASINGS = ['linear', 'ease-in', 'ease-out', 'ease-in-out'];
@@ -148,3 +149,77 @@ export function validateSlides(slides, { libraryItems = [], sections = [] } = {}
     return result;
   });
 }
+
+// Deck design (spec #44). `theme` holds per-deck colour and font roles; a role with no deck
+// value follows the channel's Brand Standards at build time, then the template default.
+// setBy is recorded by the save path (creator = Slides/human route, agent = save_deck), never
+// taken from the request; a supplied setBy is accepted for round-trips and ignored.
+export const THEME_COLOR_ROLES = Object.freeze(['base', 'accent', 'background']);
+export const THEME_FONT_ROLES = Object.freeze(['base', 'accent', 'alternate']);
+export const TEMPLATE_COLORS = Object.freeze({ base: '#252C30', accent: '#26686B', background: '#F7F4ED' });
+export const TEMPLATE_FONT = 'Manrope';
+const DESIGN_KEYS = ['theme'];
+const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+function themeRoles(value, roles, name, check) {
+  if (value == null) return {};
+  if (!plain(value)) throw new Error(`Deck design: theme.${name} must be an object of ${roles.join(', ')}`);
+  const result = {};
+  for (const [role, entry] of Object.entries(value)) {
+    if (!roles.includes(role)) throw new Error(`Deck design: theme.${name}.${role} is not supported; use ${roles.join(', ')}`);
+    if (entry !== null) result[role] = check(entry, `theme.${name}.${role}`);
+  }
+  return result;
+}
+const hexColor = (value, name) => {
+  if (typeof value !== 'string' || !/^#[0-9a-f]{6}$/i.test(value)) throw new Error(`Deck design: ${name} must be a six-digit hex colour (for example #1255FF)`);
+  return value.toUpperCase();
+};
+/** Validates a saved deck design. `previous` is the stored design; `setBy` is creator|agent,
+ *  or null to restore a stored design (undo) with its recorded setBy. An unchanged value keeps
+ *  its recorded setBy; a removed role (absent or null) returns to Brand Standards. */
+export function validateDeckDesign(design, { previous = {}, setBy = null } = {}) {
+  if (design == null) return emptyDesign();
+  if (!plain(design)) throw new Error('Deck design must be an object');
+  for (const key of Object.keys(design)) if (!DESIGN_KEYS.includes(key)) throw new Error(`Deck design: ${key} is not supported; use ${DESIGN_KEYS.join(', ')}`);
+  const theme = design.theme ?? {};
+  if (!plain(theme)) throw new Error('Deck design: theme must be an object of colors, fonts');
+  for (const key of Object.keys(theme)) if (!['colors', 'fonts', 'setBy'].includes(key)) throw new Error(`Deck design: theme.${key} is not supported; use colors, fonts`);
+  const font = (value, name) => {
+    if (typeof value !== 'string' || !fontForFamily(value)) throw new Error(`Deck design: ${name} must be a supported font family`);
+    return value;
+  };
+  const colors = themeRoles(theme.colors, THEME_COLOR_ROLES, 'colors', hexColor);
+  const fonts = themeRoles(theme.fonts, THEME_FONT_ROLES, 'fonts', font);
+  const prior = previous?.theme ?? {}, recorded = setBy === null ? theme.setBy : null;
+  const sources = (values, kind) => Object.fromEntries(Object.entries(values).map(([role, value]) => {
+    if (setBy === null) {
+      const source = recorded?.[kind]?.[role];
+      if (!['creator', 'agent'].includes(source)) throw new Error(`Deck design: theme.setBy.${kind}.${role} must be creator or agent`);
+      return [role, source];
+    }
+    const kept = prior[kind]?.[role] === value ? prior.setBy?.[kind]?.[role] : null;
+    return [role, kept ?? setBy];
+  }));
+  return { theme: { colors, fonts, setBy: { colors: sources(colors, 'colors'), fonts: sources(fonts, 'fonts') } } };
+}
+export const emptyDesign = () => ({ theme: { colors: {}, fonts: {}, setBy: { colors: {}, fonts: {} } } });
+/** Effective theme for a build: deck value, else the channel's current Brand Standards role,
+ *  else the template default. Each role records its value and source (deck|channel|template);
+ *  deck and channel roles also record setBy (a channel role is creator-set by definition). */
+export function effectiveDeckTheme(standards, design) {
+  const theme = design?.theme ?? {};
+  const resolve = (kind, roles, channel, template) => Object.fromEntries(roles.map(role => {
+    if (theme[kind]?.[role] != null) return [role, { value: theme[kind][role], source: 'deck', setBy: theme.setBy?.[kind]?.[role] ?? 'creator' }];
+    if (channel?.[role] != null) return [role, { value: channel[role], source: 'channel', setBy: 'creator' }];
+    return [role, { value: template(role), source: 'template' }];
+  }));
+  return {
+    colors: resolve('colors', THEME_COLOR_ROLES, standards?.colorRoles, role => TEMPLATE_COLORS[role]),
+    fonts: resolve('fonts', THEME_FONT_ROLES, standards?.fontRoles, () => TEMPLATE_FONT),
+  };
+}
+/** Build inputs from an effective theme: role values in role order, null where the template applies. */
+export const themeBuildValues = (effective) => ({
+  colors: Object.fromEntries(THEME_COLOR_ROLES.map(role => [role, effective.colors[role].source === 'template' ? null : effective.colors[role].value])),
+  fonts: THEME_FONT_ROLES.map(role => effective.fonts[role].source === 'template' ? null : effective.fonts[role].value),
+});

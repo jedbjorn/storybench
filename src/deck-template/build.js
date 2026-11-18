@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fontForFamily, fontPath } from '../fonts.js';
 import { looksLikeSvg, parseSvg } from '../svg.js';
-import { stageMotion, validateTextStage } from '../deck-data.js';
+import { stageMotion, validateTextStage, THEME_COLOR_ROLES, TEMPLATE_COLORS } from '../deck-data.js';
 
 const layouts = ['title', 'section', 'statement', 'text-media', 'columns', 'full-media', 'process'];
 const escape = (value) => String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -32,6 +32,42 @@ function typography(files, families = [], svgFonts = []) {
   }
   const roles = families.map((family, i) => family == null ? '' : `--font-${['base', 'accent', 'alternate'][i]}:"${fontForFamily(family).family}";`).join('');
   return css + (roles ? `:root{${roles}}\n` : '');
+}
+
+// Colour roles (spec #44): base is --ink, accent is --accent, background is --paper. Every other
+// template hue is mixed from the roles it depends on, as build-time literals so the bundle needs
+// no colour functions offline. A derived hue is written only when one of its roles is set, so an
+// unset role keeps the template's own value and a deck with no colours keeps today's stylesheet.
+const ROLE_VARIABLES = { base: '--ink', accent: '--accent', background: '--paper' };
+const channels = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+/** sRGB mix: `weight` of colour a, the rest of colour b. A weight above 1 pushes a away from b (clamped). */
+export const mixColor = (a, b, weight) => '#' + channels(a).map((value, i) => Math.min(255, Math.max(0, Math.round(value * weight + channels(b)[i] * (1 - weight)))).toString(16).padStart(2, '0')).join('').toUpperCase();
+export const DERIVED_HUES = Object.freeze([
+  ['--muted', ['base', 'background'], c => mixColor(c.base, c.background, 0.78)],
+  ['--line', ['base', 'background'], c => mixColor(c.base, c.background, 0.2)],
+  ['--rail-fill', ['base', 'background'], c => mixColor(c.base, c.background, 0.04)],
+  ['--placeholder', ['base', 'background'], c => mixColor(c.base, c.background, 0.1)],
+  // The slide's glow: the background pushed slightly away from the text colour.
+  ['--highlight', ['base', 'background'], c => mixColor(c.background, c.base, 1.06)],
+  ['--hover', ['accent', 'background'], c => mixColor(c.accent, c.background, 0.12)],
+  ['--rail-current', ['accent', 'background'], c => mixColor(c.accent, c.background, 0.16)],
+  ['--section', ['accent', 'background'], c => mixColor(c.accent, c.background, 0.14)],
+  ['--active', ['accent'], c => c.accent],
+  ['--skip', ['background'], c => c.background],
+  ['--print-paper', ['background'], c => c.background],
+]);
+/** CSS variables for the set roles and the hues derived from them; empty when no role is set. */
+export function deckPalette(colors = {}) {
+  if (!colors || typeof colors !== 'object' || Array.isArray(colors)) throw new Error('Deck colors must be an object of base, accent, background');
+  for (const [role, value] of Object.entries(colors)) {
+    if (!THEME_COLOR_ROLES.includes(role)) throw new Error(`Unsupported deck colour role: ${role}`);
+    if (value != null && (typeof value !== 'string' || !/^#[0-9a-f]{6}$/i.test(value))) throw new Error(`Deck colour ${role} must be a six-digit hex colour`);
+  }
+  const set = THEME_COLOR_ROLES.filter(role => colors[role] != null);
+  const effective = Object.fromEntries(THEME_COLOR_ROLES.map(role => [role, (colors[role] ?? TEMPLATE_COLORS[role]).toUpperCase()]));
+  const palette = Object.fromEntries(set.map(role => [ROLE_VARIABLES[role], effective[role]]));
+  for (const [name, roles, derive] of DERIVED_HUES) if (roles.some(role => set.includes(role))) palette[name] = derive(effective);
+  return palette;
 }
 
 // Bundles built with this runtime report their viewed position when framed (README).
@@ -127,7 +163,9 @@ export function buildDeck(input, { assets = {} } = {}) {
   files.set('presenter.html', shell(`<main class="presenter"><p id="connection" role="status">Connecting to audience…</p><output id="counter"></output><h1 id="current-title"></h1><p>Next: <span id="next-title"></span></p><label>Slide <select id="slide-select" disabled></select></label><div>${buttons}</div><h2>Speaker notes</h2><p id="notes"></p><label>Stage <select id="stage-select" disabled></select></label><div><button data-command="sub-previous">Previous stage</button><button data-command="sub-next">Next stage</button><button data-command="replay">Replay</button><button data-command="video-toggle">Play / pause</button><button data-command="video-restart">Restart video</button></div><p id="video-status"></p></main>`, 'presenter.js'));
   for (const name of ['audience.js', 'presenter.js', 'styles.css', 'assets/manrope-variable.ttf', 'assets/Manrope-OFL.txt']) files.set(name, readFileSync(new URL(name, import.meta.url)));
   const fontCSS = typography(files, input.fonts, [...svgFonts]);
+  const palette = Object.entries(deckPalette(input.colors ?? {}));
   files.set('styles.css', Buffer.from(files.get('styles.css') + '\n.vector-media{width:100%;height:100%;display:flex;align-items:center;justify-content:center}.vector-media>svg{max-width:100%;max-height:60svh;height:auto;font-family:Manrope}\n'));
   if (fontCSS) files.set('styles.css', Buffer.from(files.get('styles.css') + '\n' + fontCSS));
+  if (palette.length) files.set('styles.css', Buffer.from(files.get('styles.css') + `\n:root{${palette.map(([name, value]) => `${name}:${value}`).join(';')}}\n`));
   return files;
 }
