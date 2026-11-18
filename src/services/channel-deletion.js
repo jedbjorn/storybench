@@ -104,7 +104,7 @@ export function createChannelDeletion(store, StoreError) {
       ["channels", `SELECT id,name,revision FROM channels WHERE id IN (${chosen})`],
       ...["episodes", "assets", "branding_templates", "channel_standards"].map((table) =>
         [table, `SELECT * FROM ${table} WHERE channel_id IN (${chosen})`]),
-      ...["episode_history", "stories", "story_sections", "story_history", "production_research", "episode_library", "library_items", "graphic_recipes", "final_authorizations", "jobs", "conversations", "reference_directions"].map((table) =>
+      ...["episode_history", "stories", "story_sections", "story_history", "production_research", "upstream_reports", "episode_library", "library_items", "graphic_recipes", "final_authorizations", "jobs", "conversations", "reference_directions"].map((table) =>
         [table, `SELECT * FROM ${table} WHERE episode_id IN (${ep})`]),
       ["graphic_recipe_revisions", `SELECT * FROM graphic_recipe_revisions WHERE recipe_id IN (SELECT id FROM graphic_recipes WHERE episode_id IN (${ep}))`],
       ["output_designations", `SELECT * FROM output_designations WHERE job_id IN (SELECT id FROM jobs WHERE episode_id IN (${ep}))`],

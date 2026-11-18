@@ -73,7 +73,9 @@ async function openHeldRequest({
     dataRoot, episodeDir: location.directory, workDir: store.episodeWorkDirectory(episodeId), requestWorkDir,
   };
   const effectiveRelease = release ?? releaseFromEnv();
-  const scoped = createScopedTools(scope, { store, library: library ?? createLibraryService({ workspace: dataRoot, store }), release: effectiveRelease, isShortcutMessage, assertAuthoringContext });
+  const scoped = createScopedTools(scope, { store, library: library ?? createLibraryService({ workspace: dataRoot, store }), release: effectiveRelease, isShortcutMessage, assertAuthoringContext,
+    // Only the host holds this request's provider credential, so the host screens report text.
+    upstream: { screenCredential: async (text) => (await controlRequest(controlSocket, { op: "worker.screen", requestId, text })).contains === true } });
   const tools = selectKindTools(wrapTools(scoped), kind, { supportsImages });
   scoped.setServedDefinitions(tools.definitions);
   // Render before the worker starts so the harness never sees a half-written boot. The boot

@@ -18,7 +18,7 @@ import * as dockerCli from "./docker.js";
 import { followContainerLogs, workerDiagnostic } from "./log-forward.js";
 import { createModelDiscovery } from "./model-discovery.js";
 import { RUNTIME_PROTOCOL, checkCompatibility, manifestId, validateManifest } from "./manifest.js";
-import { CredentialLink, CREDENTIAL_FILES, harnessAvailability, shouldLogSyncAction } from "./credentials.js";
+import { CredentialLink, CREDENTIAL_FILES, credentialSecrets, harnessAvailability, shouldLogSyncAction } from "./credentials.js";
 import {
   APP_REQUESTS_MOUNT, BRIDGE_SOCKET_NAME, DATA_MOUNT, LABEL, PROJECT_ROOTS,
   appRunArgs, hostPaths, names, validateHostConfig, workerRunArgs,
@@ -133,11 +133,11 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     try {
       // Resolve the host's current login fresh for this worker (decision #43).
       if (login) credential = await CredentialLink.stage({ harness: request.harness, hostPath: config.credentials[request.harness], stageDir: paths.credentialDir(request.requestId) });
-      let route = null, envFile = null, gatewayDirectory = null;
+      let route = null, envFile = null, gatewayDirectory = null, providerKey = null;
       if (!login) {
         const selected = await providers.route(request.source);
         if (selected.harness !== request.harness) throw new RuntimeError('INVALID_SOURCE', 'Provider does not use the requested harness');
-        const { key, ...metadata } = selected; route = { ...metadata, source: request.source, id: request.source, keyEnv: key ? selected.env : null };
+        const { key, ...metadata } = selected; providerKey = key || null; route = { ...metadata, source: request.source, id: request.source, keyEnv: key ? selected.env : null };
         await mkdir(paths.credentialDir(request.requestId), { recursive: true, mode: 0o700 });
         envFile = path.join(paths.credentialDir(request.requestId), 'selected.env');
         if (isHostLocalGateway(selected)) {
@@ -154,7 +154,7 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
       const containerId = await docker(args);
       // Only the worker launcher's structured diagnostics reach the journal (no prompt/model text).
       const logs = followLogs({ containerId, event: "worker.output", fields: { requestId: request.requestId }, log, filter: workerDiagnostic });
-      const worker = { ...request, containerId, credential, relay, logs, startedAt: new Date().toISOString() };
+      const worker = { ...request, containerId, credential, relay, logs, providerKey, startedAt: new Date().toISOString() };
       workers.set(request.requestId, worker);
       log({ event: "worker.started", requestId: request.requestId, harness: request.harness, container: containerId.slice(0, 12) });
       const requestMount = `${APP_REQUESTS_MOUNT}/${request.requestId}`;
@@ -173,6 +173,16 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
       await rm(requestDir, { recursive: true, force: true });
       throw error;
     }
+  }
+
+  // Does this text contain the one provider credential passed to this request? A login is
+  // read from its staged copy (the bytes the worker holds now); a provider key stays in memory.
+  async function screenWorker(requestId, text) {
+    const worker = workers.get(requestId);
+    if (!worker) throw new RuntimeError("UNKNOWN_REQUEST", "No worker is running for this request", { status: 404 });
+    const secrets = worker.providerKey ? [worker.providerKey] : [];
+    if (worker.credential.stagePath) secrets.push(...credentialSecrets(await readFile(worker.credential.stagePath)));
+    return { requestId, contains: secrets.some((secret) => text.includes(secret)) };
   }
 
   // Concurrent stops of one request (user Stop racing request cleanup) share one operation.
@@ -213,6 +223,7 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
     if (request.op === "harness.models") return providers.loginModels(await discovery.discover(request.harness, { refresh: request.refresh }));
     if (request.op === "worker.start") return startWorker(request);
     if (request.op === "worker.stop") return stopWorker(request.requestId);
+    if (request.op === "worker.screen") return screenWorker(request.requestId, request.text);
     const worker = workers.get(request.requestId);
     const [id] = worker ? [worker.containerId] : await listByLabels({ [LABEL.install]: config.installId, [LABEL.request]: request.requestId });
     return statusOf(request.requestId, worker, id ? await inspectContainer(id) : null);

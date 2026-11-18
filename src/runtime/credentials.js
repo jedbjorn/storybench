@@ -219,3 +219,19 @@ export class CredentialLink {
     await rm(path.dirname(this.stagePath), { recursive: true, force: true });
   }
 }
+
+// Secret strings inside a staged login file: every string under a token/key/secret field,
+// plus any long unbroken string (a token under a field name this release does not know).
+export function credentialSecrets(bytes) {
+  let value;
+  try { value = JSON.parse(bytes.toString("utf8")); } catch { return []; }
+  const secrets = new Set();
+  const visit = (node, name = "") => {
+    if (typeof node === "string") {
+      if ((node.length >= 8 && /token|key|secret/i.test(name)) || (node.length >= 32 && !/\s/.test(node))) secrets.add(node);
+    } else if (Array.isArray(node)) node.forEach((entry) => visit(entry, name));
+    else if (node && typeof node === "object") for (const [key, entry] of Object.entries(node)) visit(entry, key);
+  };
+  visit(value);
+  return [...secrets];
+}

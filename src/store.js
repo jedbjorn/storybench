@@ -28,7 +28,7 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 // Shared persistence/UI/tool limits: 1 MiB summary, 100 links, 200-byte IDs, 8 KiB URLs,
 // 512-byte titles, 2 KiB notes, 2 MiB complete normalized JSON (including escaping).
 // All text limits use UTF-8 bytes. Oversize input is rejected, never truncated.
@@ -465,6 +465,7 @@ export class Store {
     if (version < 15) this.migrateV15();
     if (version < 16) this.migrateV16();
     if (version < 17) this.migrateV17();
+    if (version < 18) this.migrateV18();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -525,6 +526,46 @@ export class Store {
       this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(17,?)").run(now());
       this.db.exec("COMMIT");
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+  // Upstream reports the agent prepared (spec #35). A row is removed with its production or
+  // conversation. Its text is never rewritten; opening its link records opened_at and nothing else.
+  migrateV18() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec(`CREATE TABLE IF NOT EXISTS upstream_reports (
+        id TEXT PRIMARY KEY,
+        episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        request_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('bug','feature')),
+        title TEXT NOT NULL, body TEXT NOT NULL,
+        created_at TEXT NOT NULL, opened_at TEXT
+      );
+        CREATE INDEX IF NOT EXISTS upstream_reports_episode ON upstream_reports(episode_id,created_at);
+        PRAGMA user_version=18;`);
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(18,?)").run(now());
+      this.db.exec("COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+  upstreamReportRow(row) {
+    return row ? { reportId: row.id, episodeId: row.episode_id, conversationId: row.conversation_id, requestId: row.request_id,
+      kind: row.kind, title: row.title, body: row.body, createdAt: row.created_at, openedAt: row.opened_at ?? null } : null;
+  }
+  createUpstreamReport({ id, episodeId, conversationId, requestId, kind, title, body }) {
+    const conversation = this.requireConversation(conversationId);
+    if (conversation.episodeId !== episodeId) throw new StoreError("The conversation does not belong to this production", 409);
+    this.db.prepare("INSERT INTO upstream_reports(id,episode_id,conversation_id,request_id,kind,title,body,created_at) VALUES(?,?,?,?,?,?,?,?)")
+      .run(id, episodeId, conversationId, String(requestId), kind, title, body, now());
+    return this.getUpstreamReport(id);
+  }
+  getUpstreamReport(reportId) {
+    return this.upstreamReportRow(this.db.prepare("SELECT * FROM upstream_reports WHERE id=?").get(String(reportId ?? "")));
+  }
+  listUpstreamReports(episodeId) {
+    return this.db.prepare("SELECT * FROM upstream_reports WHERE episode_id=? ORDER BY created_at DESC,rowid DESC").all(episodeId).map((row) => this.upstreamReportRow(row));
+  }
+  markUpstreamReportOpened(reportId) {
+    this.db.prepare("UPDATE upstream_reports SET opened_at=? WHERE id=? AND opened_at IS NULL").run(now(), reportId);
   }
   // Both production kinds share this shape: { episodeId, researchRevision, summary, links,
   // updatedAt, actor }. Empty legacy/new records start at revision 1 with actor null.
