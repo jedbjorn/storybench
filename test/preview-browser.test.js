@@ -60,12 +60,25 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: workspace Open
       // MOV container decoding varies by browser; the Preview page must still open.
       if (name.endsWith('.mp4')) await frame.waitForFunction(() => document.querySelector('video')?.duration > 0);
     }
-    // Escape and the backdrop never close it; only its X or Cancel does.
-    await workspacePage.keyboard.press('Escape');
-    await workspacePage.keyboard.press('Escape');
+    // Backdrop clicks leave edits open; Escape closes from either the edit column or framed preview.
     await workspacePage.mouse.click(4, 4);
-    assert.equal(await popup.evaluate(dialog => dialog.open), true, 'Escape and backdrop clicks leave the popup open');
-    await closePopup();
+    assert.equal(await popup.evaluate(dialog => dialog.open), true, 'Backdrop clicks leave the popup open');
+    if (name === 'image.png') {
+      await frame.click('#markup');
+      await frame.locator('[data-redline-prompt]').focus();
+      await workspacePage.keyboard.press('Escape');
+      assert.equal(await frame.locator('.redline').isVisible(), true, 'Escape preserves open markup');
+      assert.equal(await popup.evaluate(dialog => dialog.open), true, 'Open markup keeps the preview open');
+      await frame.click('[data-redline-close]');
+    }
+    await frame.locator('#download').focus();
+    await workspacePage.keyboard.press('Escape');
+    await popup.waitFor({ state: 'hidden' });
+    await workspacePage.locator(`[data-library-item="${item.id}"] .library-thumb`).click();
+    await workspacePage.locator('#libraryEditForm [name="label"]').fill('Unsaved label');
+    await workspacePage.keyboard.press('Escape');
+    await popup.waitFor({ state: 'hidden' });
+    assert.equal(app.store.getLibraryItem(episode.id, item.id).label, item.label, 'Escape does not save edits');
     last = { episode, item, url };
   }
   assert.deepEqual(downloads, []);
