@@ -10,6 +10,7 @@ import { RESEARCH_TRANSPORT_BYTES } from "./store.js";
 import { getOperationGuide, OPERATION_GUIDE_NAMES } from "./agent-guides.js";
 import { catalogEntry, changeSettings, initialSettings, planTurn } from "./runtime/conversation-runtime.js";
 import { moveFinalToDrafts } from "./services/outputs.js";
+import { claudeAutocompact, compactionPolicy, COMPACTING_HARNESSES } from "./runtime/compaction.js";
 
 const now = () => new Date().toISOString();
 const parse = (value, fallback) => value == null ? fallback : JSON.parse(value);
@@ -57,6 +58,7 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
   // interrupted and never replayed.
   db.prepare("UPDATE conversation_messages SET state='interrupted',updated_at=? WHERE state IN ('queued','running','streaming')").run(restartStamp);
   db.prepare(`UPDATE conversations SET state='interrupted',active_turn_id=NULL,error='The previous assistant turn was interrupted by an application restart. It was not replayed; send a new message to continue the saved session.',updated_at=? WHERE state IN ('queued','running','interrupting')`).run(restartStamp);
+  db.prepare("UPDATE conversations SET state='idle',active_turn_id=NULL,updated_at=? WHERE state='compacting'").run(restartStamp);
 
   const active = new Map(), tasks = new Set(), listeners = new Map();
   let closing = false;
@@ -79,6 +81,7 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
       segments: persistence.listSegments(value.id).map(({ id: segmentId, harness, nativeSessionId, reason, previousSegmentId, createdAt, endedAt }) => ({ id: segmentId, harness, nativeSessionId, reason, previousSegmentId, createdAt, endedAt })),
       runs: persistence.listRuns(value.id).slice(-20),
     } : {};
+    if (persistence) selection.context = contextState(value, selection.settings ?? null, persistence.listSegments(value.id));
     return { ...summary(value), ...selection, draftAttachments: attachments.draft(id),
       messages: db.prepare("SELECT id,role,text,state,turn_id turnId,origin,created_at createdAt,updated_at updatedAt FROM conversation_messages WHERE conversation_id=? ORDER BY id").all(id).map((message) => ({ ...message, attachments: messageAttachments.get(message.id) ?? [] })),
       events: db.prepare("SELECT sequence,type,payload,created_at createdAt FROM conversation_events WHERE conversation_id=? ORDER BY sequence").all(id)
@@ -95,6 +98,36 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
     db.prepare("UPDATE conversations SET state=?,thread_id=COALESCE(?,thread_id),active_turn_id=?,error=?,updated_at=? WHERE id=?")
       .run(state, threadId ?? null, turnId ?? null, detail, now(), value.id);
     emit(value, "status", { state, ...(turnId ? { turnId } : {}), ...(detail ? { error: detail } : {}) });
+  };
+  // Context meter. A `context.usage` event records the size of the chat's native session
+  // (input side of its latest model request) when it changes; `window` is the model's own
+  // window when the harness reports it. Events of a compaction run carry `compaction: true`
+  // and are not model activity for idle compaction.
+  const contextSeen = new Map();
+  const recordContext = (value, segmentId, { tokens, window } = {}, extra = {}) => {
+    const previous = contextSeen.get(value.id) ?? latestContext(value.id, segmentId) ?? {};
+    const same = previous.segmentId === segmentId;
+    const next = { segmentId, tokens: Number.isFinite(tokens) ? tokens : same ? previous.tokens ?? null : null, window: Number.isFinite(window) ? window : same ? previous.window ?? null : null };
+    if (same && next.tokens === previous.tokens && next.window === previous.window) return;
+    contextSeen.set(value.id, next);
+    emit(value, "context.usage", { ...next, ...extra });
+  };
+  const latestContext = (conversationId, segmentId) => {
+    const event = db.prepare("SELECT payload,created_at createdAt FROM conversation_events WHERE conversation_id=? AND type='context.usage' ORDER BY sequence DESC LIMIT 1").get(conversationId);
+    const payload = parse(event?.payload, null);
+    return payload && (segmentId === undefined || payload.segmentId === segmentId) ? { ...payload, at: event.createdAt } : null;
+  };
+  // What the meter and the compact button show for a conversation.
+  const contextState = (value, settings, segments) => {
+    const policy = settings ? compactionPolicy(settings) : null;
+    const segment = segments?.findLast((entry) => !entry.endedAt) ?? null;
+    const current = segment ? latestContext(value.id, segment.id) : null;
+    const reason = !settings ? "Compaction is not available in this installation"
+      : !COMPACTING_HARNESSES.includes(settings.harness) ? "This harness cannot be asked to compact"
+      : !segment?.nativeSessionId ? "Nothing to compact yet"
+      : segment.harness !== settings.harness || (segment.inferenceSource && segment.inferenceSource !== settings.inferenceSource) ? "The next message starts a new session; nothing to compact"
+      : null;
+    return { tokens: current?.tokens ?? null, window: current?.window ?? null, trigger: policy?.trigger ?? null, idleMinTokens: policy?.idleMinTokens ?? null, canCompact: !reason, reason };
   };
   const create = (episodeId, { name = "New conversation" } = {}) => {
     episode(episodeId); name = String(name).trim(); if (!name) throw error("Conversation name is required");
@@ -216,6 +249,8 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
 
   async function execute(value, messageId, text, request = {}) {
     let connection, turnId, assistantId, agentItemId, terminal = false, dispatch = false, aborted = false, assistantOutput = false, toolActivity = false, resolveDone, rejectDone;
+    let compacted = false, thresholdDue = false;
+    const agentsSeen = new Map();
     const attached = attachments.messages(value.id).get(messageId) ?? [];
     const imageContext = attached.length ? `\n\nImages attached to this message, in order: ${JSON.stringify(attached)}. The image content accompanies this turn. These are creator-provided context; direct use/edit follows the creator’s instruction. You can revisit them with inspect_image using their itemId.` : "";
     const requestId = request.id ?? `request_${randomUUID()}`;
@@ -240,6 +275,18 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
       if (event.method === "turn/started") {
         db.prepare("UPDATE conversation_messages SET state='running',updated_at=? WHERE id=?").run(now(), messageId); setState(value, "running", { turnId });
         if (persistence && plan) try { persistence.updateRun(requestId, { state: "running", nativeTurnId: turnId ?? null }); } catch { /* already running */ }
+      }
+      else if (event.method === "context/usage") recordContext(value, segment?.id ?? null, params);
+      else if (event.method === "context/compacted") {
+        compacted = true;
+        emit(value, "context.compacted", { cause: "harness", trigger: params.trigger ?? null, preTokens: params.preTokens ?? null, postTokens: params.postTokens ?? null, segmentId: segment?.id ?? null });
+        if (Number.isFinite(params.postTokens)) recordContext(value, segment?.id ?? null, { tokens: params.postTokens });
+      }
+      else if (event.method === "agent/updated" && params.id) {
+        // Agents panel: one row per delegated agent, emitted only when something changed.
+        const pick = ["label", "model", "tokens", "state"].filter((key) => params[key] != null);
+        const previous = agentsSeen.get(params.id) ?? {}, next = { ...previous, ...Object.fromEntries(pick.map((key) => [key, params[key]])) };
+        if (JSON.stringify(next) !== JSON.stringify(previous)) { agentsSeen.set(params.id, next); emit(value, "agent.updated", { id: params.id, ...Object.fromEntries(pick.map((key) => [key, params[key]])) }); }
       }
       else if (event.method === "item/agentMessage/delta" && typeof params.delta === "string") {
         // Codex streams each agent message (for example, text before and after a tool call) as
@@ -267,7 +314,9 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
         if (state === "error" && !assistantOutput && !toolActivity) restoreTypedDraft();
         finishRun({ state: status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed", error: detail, assistantMessageId: assistantId ?? null, nativeTurnId: turnId,
           modelResolved: connection?.resolved?.model ?? params.model ?? null, effortResolved: connection?.resolved?.effort ?? null, usage: params.usage ?? null });
-        setState(value, state, { detail }); resolveDone();
+        setState(value, state, { detail });
+        thresholdDue = state !== "interrupted" && !compacted;
+        resolveDone();
       }
     };
     try {
@@ -295,6 +344,7 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
       const images = await attachments.images(value.episode_id, attached);
       if (aborted) throw error("Chat stopped before sending images", 409);
       const openConnection = (segmentId) => { activity.research.invalidate(); return codexFactory({ cwd: store.workspace, model: plan ? plan.selection.model : model, tools: tools(value, activity), signal: controller.signal,
+        autocompact: plan ? harnessTrigger(plan.selection) : null,
         assertAuthoringContext: () => activity.research.requireCurrent(),
         episodeId: value.episode_id, conversationId: value.id, requestId, request: { text, messageId: request.authorityMessageId ?? messageId, kind: request.kind ?? "chat", cardId: request.targetCardId ?? null },
         // Every Storybench tool call of a worker-backed turn arrives through the request bridge.
@@ -395,7 +445,116 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
       if (stopFailure) activity.workerStopError = stopFailure;
       else if (active.get(value.episode_id) === activity) active.delete(value.episode_id);
     }
+    // Threshold compaction: once per turn, next, while the provider cache is warm, when the
+    // harness did not compact during the turn and the context is at or above the trigger.
+    if (thresholdDue && !closing) await compactIfDue(value.episode_id, value.id, "threshold").catch(() => {});
   }
+
+  // The trigger a harness is launched with (Claude takes 100k to 1M).
+  const harnessTrigger = (selection) => {
+    const trigger = compactionPolicy(selection)?.trigger ?? null;
+    return selection.harness === "claude" ? claudeAutocompact(trigger) : trigger;
+  };
+  const COMPACTION_TIMEOUT_MS = 10 * 60_000;
+  // Compact the conversation's stored native session now (manual button, threshold or idle).
+  // It runs like a turn: it holds the production's one active slot, so nothing else starts
+  // meanwhile, and it never touches the visible transcript; the outcome is an event.
+  // Refusals throw synchronously; the returned promise settles when the compaction ends.
+  const compactNow = (episodeId, id, cause) => {
+    if (closing) throw error("Storybench is shutting down", 409);
+    const persistence = continuity?.persistence;
+    if (!persistence) throw error("Compaction is not available in this installation", 501);
+    const value = row(episodeId, id), settings = persistence.getSettings(id);
+    const state = contextState(value, settings, persistence.listSegments(id));
+    if (!state.canCompact) throw error(state.reason, 409);
+    if (active.has(episodeId) || db.prepare("SELECT 1 FROM conversations WHERE episode_id=? AND state IN ('queued','running','interrupting','compacting')").get(episodeId))
+      throw error("A turn is active for this production. Let it finish before compacting.", 409);
+    const segment = persistence.activeSegment(id), requestId = `request_${randomUUID()}`, controller = new AbortController();
+    const activity = { conversationId: id, requestId, compaction: true, signal: controller.signal, abort: () => controller.abort(), brandStandards: store.getBrandStandards(episode(episodeId).channelId) };
+    activity.research = createResearchContext({ store, episodeId, assertActive: () => { throw error("A compaction makes no changes", 409); } });
+    active.set(episodeId, activity);
+    const prior = { state: value.state, error: value.error };
+    setState(value, "compacting");
+    emit(value, "compaction.started", { cause, segmentId: segment.id, tokens: state.tokens });
+    const run = async () => {
+      let connection, timer, outcome = null, note = "";
+      try {
+        outcome = await new Promise((resolve, reject) => {
+          let result = null, started = false;
+          timer = setTimeout(() => reject(error("The harness did not finish compacting in time")), COMPACTION_TIMEOUT_MS);
+          const onEvent = (event) => {
+            const params = event.params || {};
+            if (event.method === "context/compacted") result = params;
+            else if (event.method === "context/usage") recordContext(value, segment.id, params, { compaction: true });
+            else if (event.method === "item/agentMessage/delta" && typeof params.delta === "string") note += params.delta;
+            else if (event.method === "turn/started") started = true;
+            // Only the compaction's own turn ends it (Codex may replay the last turn's updates).
+            else if (event.method === "turn/completed" && started) resolve({ result, status: params.turn?.status, error: params.turn?.error });
+          };
+          (async () => {
+            connection = await codexFactory({ cwd: store.workspace, model: settings.model, tools: tools(value, activity), signal: controller.signal, episodeId, conversationId: id, requestId,
+              request: { text: "", messageId: null, kind: "chat", cardId: null }, source: settings.inferenceSource, harness: settings.harness, effort: settings.effort, segmentId: segment.id,
+              autocompact: harnessTrigger(settings), onEvent, onError: reject });
+            activity.connection = connection;
+            const threadId = await connection.resumeThread(segment.nativeSessionId);
+            if (connection.segmentTransition || threadId !== segment.nativeSessionId) throw error("The saved session could not be resumed; nothing was compacted");
+            await connection.compact(threadId);
+          })().catch(reject);
+        });
+      } catch (cause) { outcome = { failure: cause?.message || String(cause) }; }
+      finally {
+        clearTimeout(timer);
+        try { await connection?.close?.(); } catch { /* the worker is removed either way */ }
+        if (active.get(episodeId) === activity) active.delete(episodeId);
+      }
+      if (!db.isOpen) return;
+      if (outcome.result) {
+        const { preTokens = null, postTokens = null } = outcome.result;
+        emit(value, "context.compacted", { cause, trigger: outcome.result.trigger ?? null, preTokens: preTokens ?? state.tokens, postTokens, segmentId: segment.id });
+        if (Number.isFinite(postTokens)) recordContext(value, segment.id, { tokens: postTokens }, { compaction: true });
+      } else {
+        const reason = outcome.failure || outcome.error || note.trim().slice(0, 300) || "The harness did not report a compaction";
+        emit(value, "compaction.failed", { cause, reason: String(reason).slice(0, 500), segmentId: segment.id });
+      }
+      setState(value, prior.state === "compacting" ? "idle" : prior.state, { detail: prior.error });
+    };
+    const task = run(); tasks.add(task); task.finally(() => tasks.delete(task));
+    return task;
+  };
+  // Threshold and idle compaction: quietly skip when the chat is not due or not compactable.
+  const compactIfDue = async (episodeId, id, cause) => {
+    const persistence = continuity?.persistence;
+    if (!persistence || closing) return;
+    const value = row(episodeId, id), settings = persistence.getSettings(id), policy = compactionPolicy(settings);
+    const state = contextState(value, settings, persistence.listSegments(id));
+    if (!policy || !state.canCompact || !Number.isFinite(state.tokens)) return;
+    if (cause === "threshold" && state.tokens < policy.trigger) return;
+    if (cause === "idle") {
+      if (state.tokens < policy.idleMinTokens) return;
+      // Last model activity: the newest context reading that was not a compaction's own.
+      const activity = db.prepare("SELECT created_at createdAt,sequence FROM conversation_events WHERE conversation_id=? AND type='context.usage' AND json_extract(payload,'$.compaction') IS NULL ORDER BY sequence DESC LIMIT 1").get(id);
+      const idle = activity ? Date.now() - Date.parse(activity.createdAt) : NaN;
+      if (!(idle >= policy.idleAfterMs && idle < policy.cacheLifeMs)) return;
+      // Once per idle period, whatever the outcome.
+      if (db.prepare("SELECT 1 FROM conversation_events WHERE conversation_id=? AND type='compaction.started' AND sequence>?").get(id, activity.sequence)) return;
+    }
+    if (active.has(episodeId)) return;
+    await compactNow(episodeId, id, cause);
+  };
+  const IDLE_SWEEP_MS = 60_000;
+  const idleSweep = continuity ? setInterval(() => {
+    if (closing || !db.isOpen) return;
+    // Only chats touched within the longest cache life can be due.
+    const since = new Date(Date.now() - 61 * 60_000).toISOString();
+    for (const value of db.prepare("SELECT id,episode_id FROM conversations WHERE state IN ('idle','error','interrupted') AND updated_at>?").all(since))
+      compactIfDue(value.episode_id, value.id, "idle").catch(() => {});
+  }, IDLE_SWEEP_MS) : null;
+  idleSweep?.unref?.();
+  const compact = async (episodeId, id) => {
+    const task = compactNow(episodeId, id, "operator");
+    task.catch(() => {});
+    return project(episodeId, id);
+  };
 
   const send = async (episodeId, id, text, attachmentIds = []) => {
     if (store.channelDeletion?.list().length) throw error("Channel deletion is pending. Retry or finish it before starting another agent turn.", 409);
@@ -551,7 +710,7 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
     hasActiveWorkers: () => active.size > 0 || tasks.size > 0,
     workerStopFailure: () => [...active.values()].find((item) => item.workerStopError)?.workerStopError ?? null,
     list: (episodeId) => { episode(episodeId); return db.prepare("SELECT * FROM conversations WHERE episode_id=? ORDER BY updated_at DESC,created_at DESC,rowid DESC").all(episodeId).map((value) => ({ ...summary(value), ...(continuity ? { settings: continuity.persistence.getSettings(value.id) } : {}) })); }, create,
-    updateSettings, busyReason,
+    updateSettings, busyReason, compact,
     get: (episodeId, id) => project(episodeId, id || first(episodeId).id), update,
     send: (episodeId, id, text, attachmentIds = []) => text === undefined ? send(episodeId, first(episodeId).id, id, attachmentIds) : send(episodeId, id, text, attachmentIds),
     sendProduction, retry,
@@ -564,10 +723,11 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
     subscribe(episodeId, listener) { episode(episodeId); const set = listeners.get(episodeId) || new Set(); set.add(listener); listeners.set(episodeId, set); return () => { set.delete(listener); if (!set.size) listeners.delete(episodeId); }; },
     async close() {
       closing = true;
+      clearInterval(idleSweep);
       const stops = [];
       for (const [episodeId, item] of active) {
         const value = db.isOpen ? db.prepare("SELECT * FROM conversations WHERE id=? AND episode_id=?").get(item.conversationId, episodeId) : null;
-        if (value) { db.prepare("UPDATE conversation_messages SET state='interrupted',updated_at=? WHERE conversation_id=? AND state IN ('queued','running','streaming')").run(now(), value.id); setState(value, "interrupted", { detail: "Stopped because Storybench shut down; the prompt was not replayed." }); }
+        if (value && !item.compaction) { db.prepare("UPDATE conversation_messages SET state='interrupted',updated_at=? WHERE conversation_id=? AND state IN ('queued','running','streaming')").run(now(), value.id); setState(value, "interrupted", { detail: "Stopped because Storybench shut down; the prompt was not replayed." }); }
         cancelOwnedJobs(item); stops.push(item.connection?.close()); item.abort();
       }
       await Promise.allSettled([...tasks, ...stops]); active.clear();

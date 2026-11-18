@@ -73,7 +73,7 @@ export function mergeTools(runtimeTools, chatHandlers = {}) {
 // request-scoped worker whose session directory is that segment's. Without a segment
 // the conversation ID is the segment.
 export function createWorkerHarnessFactory({ store, controlSocket, templates, segmentFor = defaultSegmentFor, bootContextFor = defaultBootContextFor, onRequest = () => {} }) {
-  return async function workerHarnessFactory({ episodeId, conversationId, requestId, harness = "codex", source = `${harness}-login`, model, supportsImages = true, effort = null, segmentId = null, request: turnRequest = {}, tools, onEvent, onError, assertAuthoringContext, onToolCall = () => {} }) {
+  return async function workerHarnessFactory({ episodeId, conversationId, requestId, harness = "codex", source = `${harness}-login`, model, supportsImages = true, effort = null, autocompact = null, segmentId = null, request: turnRequest = {}, tools, onEvent, onError, assertAuthoringContext, onToolCall = () => {} }) {
     if (!episodeId || !conversationId || !requestId) throw new Error("Worker-backed turns need episode, conversation and request identity");
     if (!["codex", "claude", "opencode"].includes(harness)) throw new Error(`Unsupported harness: ${harness}`);
     const request = await openWorkerRequest({
@@ -85,9 +85,9 @@ export function createWorkerHarnessFactory({ store, controlSocket, templates, se
     let connection;
     try {
       connection = harness === "codex"
-        ? await request.codex({ model, effort, onEvent, onError, requestTimeout: 60_000 })
+        ? await request.codex({ model, effort, autocompact, onEvent, onError, requestTimeout: 60_000 })
         : harness === "opencode" ? await request.openCodeConnection({ model, effort, onEvent, onError }).open()
-        : await request.claudeConnection({ model, effort, onEvent, onError }).open();
+        : await request.claudeConnection({ model, effort, autocompact, onEvent, onError }).open();
       await bindInstructionContext(connection, { episodeDir: request.scope.episodeDir,
         segmentId: segmentId ?? segmentFor(conversationId), version: request.contextVersion });
     } catch (error) { await request.stop().catch(() => {}); throw error; }

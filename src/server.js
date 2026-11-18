@@ -635,6 +635,8 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
             return send(res, 202, await chat.retry(episodeId, conversationId, parts[6], await jsonBody(req)));
           if (conversationId && parts[5] === "interrupt" && req.method === "POST")
             return send(res, 202, await chat.interrupt(episodeId, conversationId));
+          if (conversationId && parts[5] === "compact" && parts.length === 6 && req.method === "POST")
+            return send(res, 202, await chat.compact(episodeId, conversationId));
           if (conversationId && parts[5] === "events" && req.method === "GET") {
             res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
             eventStreams.add(res);
