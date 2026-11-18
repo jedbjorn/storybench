@@ -60,3 +60,5 @@ grid.
 
 Tests: `test/ui-primitives.test.js` (unit, jsdom) and `test/ui-primitives-browser.test.js` (Chromium
 and Firefox on a blank page).
+
+In use: the Slides canvas and its inspector (`/deck-canvas.js`) only; other screens move onto these in the later UI refactor.

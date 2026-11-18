@@ -1,5 +1,6 @@
 import { previewUrl, withChannel } from "/preview-links.js";
 import { newSlide, deckBoardHTML, bindDeckBoard } from "/deck-workspace.js";
+import { createDeckCanvas } from "/deck-canvas.js";
 import { installSelectControls } from "/select-control.js";
 import { installWorkspaceChrome } from "/workspace-chrome.js";
 import { installProductionSearch } from "/production-search.js";
@@ -256,6 +257,7 @@ function renderCards() {
   if (!episode) return;
   const deck = episode.kind === "deck";
   $("#deckSlides").hidden = !deck; $("#cards").hidden = deck;
+  if (deck) deckCanvas.show(episode); else deckCanvas.hide();
   if (deck) { $("#deckSlides").innerHTML = deckBoardHTML(episode.cards, boardItemsEpisode === episode.id ? boardItems : [], boardItemsEpisode === episode.id ? boardSections : []); return; }
   if (cardCollapseEpisode !== episode.id) {
     collapsedCardIds.clear();
@@ -449,6 +451,7 @@ async function save(changes = {}) {
     cards = structuredClone(episode.cards),
     referencePrompt = episode.referencePrompt ?? "",
     referenceItemIds = [...(episode.referenceItemIds || [])],
+    design = episode.kind === "deck" && episode.design ? { design: structuredClone(episode.design) } : {},
     title = $("#episodeTitle").value,
     notes = $("#episodeNotes").value;
   dirty = false;
@@ -465,6 +468,7 @@ async function save(changes = {}) {
           cards,
           referencePrompt,
           referenceItemIds,
+          ...design,
           ...changes,
         }),
       });
@@ -474,6 +478,7 @@ async function save(changes = {}) {
         const localCards = episode.cards,
           localReferencePrompt = episode.referencePrompt,
           localReferenceItemIds = episode.referenceItemIds,
+          localDesign = episode.design,
           localTitle = $("#episodeTitle").value,
           localNotes = $("#episodeNotes").value;
         episode =
@@ -485,6 +490,7 @@ async function save(changes = {}) {
                 cards: localCards,
                 referencePrompt: localReferencePrompt,
                 referenceItemIds: localReferenceItemIds,
+                ...(localDesign === undefined ? {} : { design: localDesign }),
               }
             : updated;
         $("#saveState").textContent =
@@ -593,6 +599,10 @@ $("#episodeTitle").oninput = $("#episodeNotes").oninput = () => {
   clearTimeout(fieldTimer);
   fieldTimer = setTimeout(() => save(), 500);
 };
+// The Slides canvas edits the deck design and slide overrides in place, then saves like any slide field.
+const deckCanvas = createDeckCanvas($("#deckCanvas"), { channel: () => channelId, onChange: () => { dirty = true; $("#saveState").textContent = "Unsaved changes"; save(); } });
+// Working on a slide's fields opens that slide on the canvas.
+$("#deckSlides").addEventListener("focusin", (event) => { const index = event.target.closest("[data-slide-index]")?.dataset.slideIndex; if (index != null && episode?.cards[index]) deckCanvas.open(episode.cards[index].id); });
 bindDeckBoard($("#deckSlides"), { getSlides: () => episode.cards, onDirty: () => { dirty = true; $("#saveState").textContent = "Unsaved changes"; }, onSave: () => save(), render: renderCards });
 $("#addCard").onclick = () => {
   if (episode.kind === "deck") { episode.cards.push(newSlide()); dirty = true; renderCards(); save(); return; }
