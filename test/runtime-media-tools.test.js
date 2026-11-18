@@ -122,6 +122,14 @@ test("registration validates format, category and editable source, records prove
   await writeFile(path.join(f.scope.workDir, "title.py"), "# editable source\n");
   await writeFile(path.join(f.scope.workDir, "notes.txt"), "plain text");
   await assert.rejects(tools.call("register_work_file", { path: "work/notes.txt" }), { code: "UNSUPPORTED_MEDIA" });
+  const label = spacing => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80"><text id="label" x="10" y="40" font-family="DejaVu Sans" font-size="17" letter-spacing="${spacing}">THE "MYSTERY HOUSE" — AT NIGHT</text></svg>`;
+  const labelFile = path.join(f.scope.workDir, "label.svg");
+  await writeFile(labelFile, label(".12em"));
+  assert.equal((await call(tools, "register_work_file", { path: "work/label.svg" })).registered, true);
+  await writeFile(labelFile, label("2rem"));
+  await assert.rejects(tools.call("register_work_file", { path: "work/label.svg" }), {
+    code: "INVALID_SVG", status: 422, message: /^SVG \(storybench-svg-1\).*<text id="label">, letter-spacing="2rem"$/,
+  });
   const mediaBefore = await readdir(f.store.channelMediaDirectory(f.a.id));
   await assert.rejects(tools.call("register_work_file", { path: "work/title.png", category: "B-roll" }), { code: "CATEGORY_MISMATCH" });
   assert.deepEqual(await readdir(f.store.channelMediaDirectory(f.a.id)), mediaBefore, "no orphaned managed copy");

@@ -128,6 +128,16 @@ export function parseSvg(bytes, { namespace = null, stages = null } = {}) {
     const styles = [];
     const reference = (node, id, allowed, accessibility = false) => { references.push({ node, id, allowed, accessibility }); };
     function value(node, name, val) {
+      try { return validateValue(node, name, val); }
+      catch (error) {
+        if (error.code !== 'INVALID_SVG') throw error;
+        const location = ID.test(node.id) ? `<${node.localName} id="${node.id}">` : `<${node.localName}> (element ${nodes.indexOf(node) + 1})`;
+        const excerpt = val.length > 100 ? val.slice(0, 100) + '…' : val;
+        error.message += ` on ${location}, ${name}=${JSON.stringify(excerpt)}`;
+        throw error;
+      }
+    }
+    function validateValue(node, name, val) {
       if (val.length > 100000) fail(`${name} is too long`);
       if (['fill', 'stroke', 'color', 'stop-color', 'flood-color'].includes(name)) {
         const ref = /^url\(#([A-Za-z_][A-Za-z0-9_-]{0,99})\)$/.exec(val);
@@ -164,6 +174,9 @@ export function parseSvg(bytes, { namespace = null, stages = null } = {}) {
         return;
       }
       if (name === 'stroke-dasharray') { if (val !== 'none') numbers(val, name, 0, 10000); return; }
+      if (name === 'letter-spacing' || name === 'word-spacing') {
+        return number(val.replace(/(?:em|px|%)$/i, ''), `${name} (unitless, px, %, or em)`);
+      }
       if (name.endsWith('opacity') || name === 'offset') { number(val.replace(/%$/, ''), name, 0, val.endsWith('%') ? 100 : 1); return; }
       if (name === 'id') { if (!ID.test(val) || ids.has(val) || val !== node.getAttribute('id')) fail('IDs must be unique safe identifiers'); ids.set(val, node); return; }
       if (name === 'class') { if (!val.split(/\s+/).every(v => ID.test(v))) fail('invalid class names'); return; }
