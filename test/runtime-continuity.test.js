@@ -444,3 +444,32 @@ for (const harness of ['codex', 'claude', 'opencode']) test(`${harness} context 
   assert.equal(fake.log[4].resumed, segments[1].nativeSessionId);
   assert.equal(persistence.listSegments(c.id).length, 2);
 });
+
+// Flag #73: a provider without a key lists under `id` with no `source`, ahead of a keyed one.
+test('an OpenCode turn resolves the selected source, never an earlier keyless provider', async (t) => {
+  const keyless = { id: 'deepseek', harness: 'opencode', status: 'No key', available: false, reason: 'No key; open Providers', models: [] };
+  const keyed = { source: 'ollama-cloud', harness: 'opencode', available: true, reason: null, models: [{ id: 'kimi-k2.7-code', efforts: [] }] };
+  const { chat, persistence, fake, episode } = setup(t, { catalog: [...catalog, keyless, keyed] });
+  const c = chat.create(episode.id, { name: 'Keyed source' });
+  await chat.updateSettings(episode.id, c.id, { harness: 'opencode', source: 'ollama-cloud', model: 'kimi-k2.7-code', expectedRevision: 1 });
+  await chat.send(episode.id, c.id, 'Use the keyed source');
+  assert.equal((await idle(chat, episode.id, c.id)).state, 'idle');
+  assert.equal(fake.log.length, 1);
+  assert.equal(fake.log[0].harness, 'opencode');
+  assert.equal(persistence.activeSegment(c.id).inferenceSource, 'ollama-cloud');
+
+  // The settings path refuses the keyless source with its own reason and keeps the selection.
+  await assert.rejects(chat.updateSettings(episode.id, c.id, { harness: 'opencode', source: 'deepseek', model: 'deepseek-chat', expectedRevision: 2 }),
+    { code: 'HARNESS_UNAVAILABLE', message: /No key; open Providers/ });
+  assert.throws(() => validateSelection([keyless, keyed], { harness: 'opencode', model: 'kimi-k2.7-code' }), { code: 'UNKNOWN_HARNESS' });
+  assert.equal(persistence.getSettings(c.id).inferenceSource, 'ollama-cloud');
+
+  // A selection whose key was removed afterwards is refused at dispatch, before any worker starts.
+  const stale = chat.create(episode.id, { name: 'Keyless source' });
+  persistence.saveSettings(stale.id, { harness: 'opencode', inferenceSource: 'deepseek', model: 'deepseek-chat', effort: null }, { expectedRevision: 1 });
+  await chat.send(episode.id, stale.id, 'Use the keyless source').catch(() => {});
+  const refused = await idle(chat, episode.id, stale.id);
+  assert.equal(refused.state, 'error');
+  assert.match(JSON.stringify(refused), /No key; open Providers/);
+  assert.equal(fake.log.length, 1, 'no worker starts for the keyless source');
+});

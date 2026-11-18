@@ -30,8 +30,11 @@ export class SelectionError extends Error {
 // Validate a requested selection against the live catalogue (harness.models entries).
 // Returns the normalized selection plus notes (e.g. an unlisted exact model ID).
 export const routeSource = (value) => value.inferenceSource || (value.source && !['default','migrated','explicit','explicit-inherited'].includes(value.source) ? value.source : `${value.harness}-login`);
+// The catalogue entry for one harness and exactly one source. A provider without a key lists
+// under `id` and has no `source`; it answers only for itself, never for another source of its harness.
+export const catalogEntry = (catalog, harness, source) => catalog.find((entry) => entry.harness === harness && (entry.source ?? entry.id ?? `${harness}-login`) === source);
 export function validateSelection(catalog, { harness, source = `${harness}-login`, model = null, effort = null }) {
-  const entry = catalog.find((candidate) => candidate.harness === harness && (candidate.source === source || !candidate.source && source === `${harness}-login`));
+  const entry = catalogEntry(catalog, harness, source);
   if (!entry) throw new SelectionError("UNKNOWN_HARNESS", `Unsupported harness: ${String(harness)}`);
   if (!entry.available) throw new SelectionError("HARNESS_UNAVAILABLE", `${HARNESS_LABELS[harness]} is unavailable: ${entry.reason}`, 409);
   if (harness === "opencode" && model == null) throw new SelectionError("INVALID_MODEL", "Choose an explicit model for OpenCode");

@@ -8,7 +8,7 @@ import { createCodexConnection, AUTHORING_TOOLS } from "./codex.js";
 import { createResearchContext, RESEARCH_ACTIONS, RESEARCH_DATA_RULE } from "./research-context.js";
 import { RESEARCH_TRANSPORT_BYTES } from "./store.js";
 import { getOperationGuide, OPERATION_GUIDE_NAMES } from "./agent-guides.js";
-import { changeSettings, initialSettings, planTurn } from "./runtime/conversation-runtime.js";
+import { catalogEntry, changeSettings, initialSettings, planTurn } from "./runtime/conversation-runtime.js";
 import { moveFinalToDrafts } from "./services/outputs.js";
 
 const now = () => new Date().toISOString();
@@ -283,7 +283,7 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
       let supportsImages = true;
       if (continuity && plan) {
         const catalog = await continuity.catalog({ refresh: false });
-        const entry = catalog.find((entry) => entry.harness === plan.selection.harness && (!entry.source || entry.source === plan.selection.source));
+        const entry = catalogEntry(catalog, plan.selection.harness, plan.selection.source);
         if (!entry?.available) throw error(entry?.reason || 'Selected inference route is unavailable; open Providers', 409);
         const selected = entry.models.find((model) => model.id === plan.selection.model);
         supportsImages = !selected?.inputModalities || selected.inputModalities.includes('image');
