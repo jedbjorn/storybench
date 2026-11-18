@@ -89,3 +89,18 @@ test("agent job rows persist across turns: running first, then ended newest firs
   // A turn in flight is working, not waiting, even while jobs run.
   assert.equal(agentRows({ ...value, state: "running", runs: [{ state: "running", startedAt: at(50) }] })[0].state, "working");
 });
+
+// Overlapping jobs end in a different order than they started: ended rows follow the ending.
+test("ended agent job rows are ordered by most recent ending, not by creation", () => {
+  const at = (m) => new Date(Date.UTC(2026, 10, 18, 10, m)).toISOString();
+  const job = (id, created, ended, state = "completed") => ({ id, label: id, harness: "codex", model: "gpt-5.5", state, createdAt: at(created), startedAt: at(created), endedAt: ended === null ? null : at(ended) });
+  const rows = (agentJobs) => agentRows({ state: "completed", runs: [], events: [], agentJobs }).filter((row) => row.job).map((row) => row.name);
+  // The ledger lists newest created first: B (created 10:02, ended 10:03) before A (10:00, ended 10:04).
+  assert.deepEqual(rows([job("B", 2, 3), job("A", 0, 4)]), ["A", "B"]);
+  // Stop ends the older-created job after the newer-created one had already completed.
+  assert.deepEqual(rows([job("Find sources", 2, 3), job("Collect facts", 0, 5, "cancelled"), job("Run", 4, null, "running")]), ["Run", "Collect facts", "Find sources"]);
+  // Equal endings keep the projection's order; the 20-row cap applies after ordering.
+  const many = Array.from({ length: 21 }, (_, index) => job(`e${index}`, 0, 10));
+  assert.deepEqual(rows([...many, job("late", 0, 11)]).slice(0, 3), ["late", "e0", "e1"]);
+  assert.equal(rows([...many, job("late", 0, 11)]).length, 20);
+});

@@ -31,8 +31,10 @@ function jobRows(value) {
     if (typeof payload.activity === 'string') row.activity = payload.activity;
     seen.set(payload.id, row);
   }
-  const jobs = value.agentJobs ?? [];
-  return [...jobs.filter((job) => JOB_LIVE.includes(job.state)), ...jobs.filter((job) => !JOB_LIVE.includes(job.state))].slice(0, 20).map((job) => {
+  const jobs = value.agentJobs ?? [], ended = (job) => Date.parse(job.endedAt) || 0;
+  // Ended jobs newest ending first; the projection's order breaks ties (sort is stable).
+  const done = jobs.filter((job) => !JOB_LIVE.includes(job.state)).sort((a, b) => ended(b) - ended(a));
+  return [...jobs.filter((job) => JOB_LIVE.includes(job.state)), ...done].slice(0, 20).map((job) => {
     const reported = seen.get(job.id) ?? {}, live = JOB_LIVE.includes(job.state);
     return { id: `job:${job.id}`, job: true, name: job.label || 'Agent job', harness: job.harness ?? null, model: job.model ?? 'default model',
       tokens: reported.tokens ?? null, activity: live ? reported.activity ?? '' : '', state: job.state,

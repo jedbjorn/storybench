@@ -99,6 +99,8 @@ test("A5: two endings during a running turn start exactly one combined wake turn
   await until(() => jobs.held.length === 2);
   const byLabel = (label) => jobs.held.find((connection) => connection.job.label === label);
   jobs.end(byLabel("Facts"), "Three facts in facts.md");
+  // The wake line lists results in ending order; end Sources only once Facts has ended.
+  await until(() => f.view().agentJobs.find((job) => job.id === one.jobId).state === "completed");
   jobs.end(byLabel("Sources"), "Two sources in sources.md");
   await until(() => f.chat.get(f.episode.id, f.conversation.id).agentJobs.every((job) => job.state === "completed"));
   await settle();
@@ -225,6 +227,23 @@ test("A7: the transcript shows a wake line as an app line, never a creator bubbl
   assert.equal(line.querySelector("b"), null, "no 'You' label");
   assert.equal(dom.window.document.querySelectorAll(".chat-user").length, 1);
   workspace.close();
+});
+
+test("the projection lists ended jobs by most recent ending: Stop after an earlier completion", async (t) => {
+  const jobs = heldJobs();
+  const f = fixture(t, { behaviours: [jobs.hold, jobs.hold] });
+  const turn = await f.send();
+  await turn.tools.start_agent_job({ brief: "Collect three facts.", label: "Collect facts" });
+  await settle();
+  await turn.tools.start_agent_job({ brief: "Find two sources.", label: "Find sources" });
+  await until(() => jobs.held.length === 2);
+  jobs.end(jobs.held.find((connection) => connection.job.label === "Find sources"), "Two sources.");
+  await until(() => f.view().agentJobs.some((job) => job.state === "completed"));
+  assert.deepEqual(f.view().agentJobs.map((job) => job.label), ["Collect facts", "Find sources"], "running first");
+  await settle();
+  const stopped = await f.chat.interrupt(f.episode.id, f.conversation.id);
+  assert.deepEqual(stopped.agentJobs.map((job) => [job.label, job.state]), [["Collect facts", "cancelled"], ["Find sources", "completed"]],
+    "the older-created job Stop ended last is listed first");
 });
 
 test("A8: Stop with no active turn ends the jobs and the watched jobs, discards their results and starts no wake", async (t) => {

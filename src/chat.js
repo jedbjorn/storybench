@@ -464,9 +464,11 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
   // every second, so a row leaves out the brief and result text; get_agent_job reads them.
   const backgroundState = (conversationId) => {
     const jobs = agentJobs.list(conversationId).map(({ brief, result, ...job }) => job), live = jobs.filter((job) => AGENT_JOB_LIVE.includes(job.state));
+    // Ended jobs newest ending first; the list's newest-created order breaks ties (sort is stable).
+    const ended = jobs.filter((job) => !AGENT_JOB_LIVE.includes(job.state)).sort((a, b) => (b.endedAt ?? "").localeCompare(a.endedAt ?? ""));
     const pending = resultCount(pendingResults(conversationId));
     return {
-      agentJobs: [...live, ...jobs.filter((job) => !AGENT_JOB_LIVE.includes(job.state))].slice(0, Math.max(20, live.length)),
+      agentJobs: [...live, ...ended].slice(0, Math.max(20, live.length)),
       waitingForAgents: live.length,
       watches: liveWatches(conversationId).map((watch) => ({ jobId: watch.job_id, createdAt: watch.created_at })),
       wake: { pending, held: pending > 0 && due.has(conversationId), chainLimited: pending > 0 && wakeChain(conversationId) >= WAKE_CHAIN_LIMIT },
