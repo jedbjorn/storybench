@@ -24,6 +24,7 @@ const CONTROL_OPS = {
   "worker.start": ["op", "requestId", "harness", "segmentId", "episodeDir", "workDir", "source", "model"],
   "worker.stop": ["op", "requestId"],
   "worker.status": ["op", "requestId"],
+  "worker.screen": ["op", "requestId", "text"],
   "harness.availability": ["op"],
   "harness.models": ["op", "harness", "refresh"],
   "providers.list": ["op"],
@@ -105,6 +106,10 @@ export function validateControlRequest(input) {
     return { op: input.op, harness: assertHarness(input.harness), refresh: input.refresh === true };
   }
   const request = { op: input.op, requestId: assertId(input.requestId, "requestId") };
+  if (input.op === "worker.screen") {
+    if (typeof input.text !== "string") throw new RuntimeError("INVALID_REQUEST", "text must be a string");
+    request.text = input.text;
+  }
   if (input.op === "worker.start") {
     request.harness = assertHarness(input.harness);
     request.source = input.source || `${request.harness}-login`;

@@ -124,7 +124,7 @@ test("the shipped templates render with the app's boot context and cover the ski
   assert.doesNotMatch(renderedBoot, /not in this render|not reported in this render/);
   const roster = ["storybench-understand-project", "storybench-read-references", "storybench-edit-story-cards", "storybench-edit-broll",
     "storybench-create-graphics", "storybench-reuse-project-assets", "storybench-assemble-draft", "storybench-finish-video",
-    "storybench-video-context", "storybench-video-reuse", "storybench-video-references", "storybench-redline"];
+    "storybench-video-context", "storybench-video-reuse", "storybench-video-references", "storybench-redline", "storybench-report-upstream"];
   for (const name of roster) for (const root of [".claude/skills", ".agents/skills", ".opencode/skills"])
     assert.ok(result.files.some((file) => file.path === `${root}/${name}/SKILL.md`), `${root}/${name} rendered`);
   const loaded = await loadTemplates();

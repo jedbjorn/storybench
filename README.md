@@ -248,6 +248,17 @@ Common checks:
 
 Lifecycle failures do not implicitly create storage, switch channels, delete media or bypass validation. If the configured data root is missing or has a different identity, restore the expected directory from a known backup rather than initializing a replacement at the same path.
 
+## Reporting a problem to the project
+
+Ask the production agent in chat to report a Storybench problem or idea. It checks the project's public tracker (`jedbjorn/storybench`) for an existing issue, prepares a report, and gives you one link. Open the link in your default browser, where you are normally signed in to GitHub: it opens GitHub's new-issue form with the title and body filled in. Read it, attach files there if you want, and press **Submit**. Tell the agent when it is submitted and it reads the issue back and gives you its address.
+
+- Storybench holds no GitHub login, token or app. Nothing is filed until you press Submit, under your own GitHub account.
+- What leaves the machine before that: unauthenticated read requests from the app to GitHub's public API, carrying only search words or an issue number. The report text leaves only inside the address your own browser opens.
+- GitHub limits unauthenticated requests to 60 an hour and 10 searches a minute per network address. When the limit or the network stops a check, the agent says the check did not run; it never reports that as "no duplicates".
+- The link is best effort. If it does not open or does not fill the form, say so: the agent posts the draft in chat to copy, and what you do with it is yours. Reports too long for a link are given as a draft the same way.
+- The destination is fixed in the app's package metadata (`repository` and `bugs` in `package.json`) and cannot be changed from chat. A fork that wants its own tracker changes that metadata and ships its own build.
+- Security problems are not prepared as public issues; see [SECURITY.md](SECURITY.md).
+
 ## Current limitations
 
 - The repository is public and MIT-licensed. There are still no published packages, images, badges, `curl | sh` installer or release-hosting promises — install from a clone as described above.

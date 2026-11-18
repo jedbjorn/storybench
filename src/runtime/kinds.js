@@ -7,6 +7,7 @@ export const SHARED_TOOLS = Object.freeze([
   'inspect_image', 'inspect_contact_sheet', 'inspect_media', 'read_reference_excerpt',
   'search_project', 'register_work_file', 'reuse_project_item', 'get_capabilities',
   'get_context', 'read_conversation_history', 'read_research', 'save_research',
+  'find_upstream_issues', 'prepare_upstream_report', 'read_upstream_issue',
 ]);
 export const KIND_REGISTRY = Object.freeze({
   video: Object.freeze({ templates: 'video', tools: Object.freeze([

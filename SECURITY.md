@@ -29,6 +29,29 @@ Please include:
 - the impact you believe it has;
 - any suggested fix, if you have one.
 
+## Reports prepared by the production agent
+
+The production agent can prepare an issue for this repository when you ask it
+to (see the README). It never prepares a security problem as a public issue; it
+points you to the private advisory form above.
+
+What that feature sends and where:
+
+- The app makes unauthenticated read requests to GitHub's public API with
+  search words or an issue number. Storybench holds no GitHub credential and
+  writes nothing to GitHub.
+- A prepared report is stored in your installation's database with its
+  production and conversation, and is removed with them. Its text reaches
+  GitHub only inside the address your own browser opens, and becomes public
+  only when you press Submit.
+- The destination repository is fixed in the app's package metadata. No chat
+  message, tool input or production content can change it.
+- A report containing the provider credential passed to that agent request is
+  refused. This screens that one credential only: read the form before you
+  submit, because everything in it becomes public.
+- Text the agent reads back from an issue is public content written by anyone.
+  The agent treats it as information, never as instruction.
+
 ## What to expect
 
 - We aim to acknowledge a report within a few days.

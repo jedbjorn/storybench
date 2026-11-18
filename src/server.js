@@ -22,6 +22,7 @@ import { createLibraryService } from "./library.js";
 import { renderGraphic, validateGraphicRecipe } from "./graphics.js";
 import { createRenderService } from "./render-service.js";
 import { openDataRoot } from "./services/data-root.js";
+import { reportAddress } from "./upstream-report.js";
 import { createChannel, listChannels, openChannel, renameChannel, useChannel } from "./services/channels.js";
 import { deleteDraftOutputs, listDraftCleanup, moveFinalToDrafts } from "./services/outputs.js";
 
@@ -266,6 +267,15 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         return res.end(png);
       }
       if (req.method === "GET" && url.pathname === "/api/health") return send(res, closing ? 503 : 200, health.snapshot());
+      if (["GET", "HEAD"].includes(req.method) && parts.length === 2 && parts[0] === "report") {
+        // The short link of a prepared upstream report (spec #35): redirect to GitHub's prefilled
+        // new-issue form. Following it records that it was opened; it files and changes nothing else.
+        const report = store.getUpstreamReport(parts[1]);
+        if (!report) throw new StoreError("This report link is no longer available; its conversation was removed", 404);
+        if (req.method === "GET") store.markUpstreamReportOpened(report.reportId);
+        res.writeHead(302, { location: reportAddress(report), "cache-control": "no-store", "referrer-policy": "no-referrer" });
+        return res.end();
+      }
       if (parts[0] === 'api' && parts[1] === 'providers') {
         if (!runtimeControl) throw new StoreError('Providers need the Storybench host runtime', 409);
         res.setHeader('Cache-Control', 'no-store');
