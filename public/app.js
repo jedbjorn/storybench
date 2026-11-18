@@ -128,7 +128,6 @@ function render() {
   $("#deckOutputs").hidden = !deck;
   $("#productionReferencesLabel").textContent = deck ? "Deck references" : "Episode references";
   $("#addCard").classList.toggle("primary", deck && !episode.cards.length);
-  $("#buildDeck").classList.toggle("primary", !!episode.cards.length);
   if (deck && (!$("#draftsPanel").hidden || !$("#finalPanel").hidden)) {
     for (const name of ['story','board','media','research','drafts','final']) $(`#${name}Panel`).hidden = name !== 'board';
     document.querySelectorAll('.tabs > button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'board'));
@@ -159,11 +158,23 @@ function deckJobHTML(job) {
     : ['queued', 'running'].includes(job.state) ? `<button data-deck-cancel="${esc(job.id)}">Cancel build</button>` : '';
   return `<article class="deck-build" data-deck-job="${esc(job.id)}"><div><strong>Revision ${esc(job.revision)}</strong><span>${meta}</span></div><div class="deck-build-actions">${actions}</div>${job.error ? `<p role="alert">${esc(job.error)}</p>` : ''}</article>`;
 }
+// Building is offered only when the saved revision has no completed or active build (or edits are still saving).
+function syncBuildDeckButton(jobs) {
+  const current = jobs.filter(job => job.revision === episode.revision);
+  const building = current.some(job => ['queued', 'running'].includes(job.state));
+  const built = current.some(job => job.state === 'completed');
+  const unsaved = dirty || saveRequested || !!saveInFlight;
+  const fresh = !!episode.cards.length && (unsaved || !(building || built));
+  const button = $('#buildDeck');
+  button.disabled = !fresh;
+  button.textContent = fresh || !episode.cards.length ? 'Build saved deck' : building ? 'Building…' : 'Deck up to date';
+}
 function renderJobs() {
   if (!episode) return;
   if (episode.kind === "deck") {
     // Active builds and the newest finished one stay in view; older builds fold away.
     const jobs = state.jobs.filter(job => job.episodeId === episode.id && job.kind === 'deck');
+    syncBuildDeckButton(jobs);
     const latest = jobs.find(job => !['queued', 'running'].includes(job.state));
     const shown = jobs.filter(job => job === latest || ['queued', 'running'].includes(job.state)), earlier = jobs.filter(job => !shown.includes(job));
     const html = shown.map(deckJobHTML).join('') + (earlier.length ? `<details class="deck-history"><summary>Earlier builds (${earlier.length})</summary>${earlier.map(deckJobHTML).join('')}</details>` : '');
