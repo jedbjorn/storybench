@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fontForFamily, fontPath } from '../fonts.js';
 import { looksLikeSvg, parseSvg } from '../svg.js';
+import { stageMotion, validateTextStage } from '../deck-data.js';
 
 const layouts = ['title', 'section', 'statement', 'text-media', 'columns', 'full-media', 'process'];
 const escape = (value) => String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -84,6 +85,15 @@ export function buildDeck(input, { assets = {} } = {}) {
     const minutes = slide.targetMinutes ?? 0;
     if (!Number.isFinite(minutes) || minutes < 0) throw new Error('targetMinutes must be nonnegative');
     let content = `<div class="copy"><h1>${heading}</h1><p class="lede">${body}</p></div>`;
+    const stages = slide.stages === undefined ? [] : list(slide.stages, 'stages');
+    // Timing and motion are validated again here, whatever saved them; refusals name slide and stage.
+    const motions = stages.map((stage, i) => {
+      try {
+        if (!stage || typeof stage !== 'object') throw new Error('must be an object');
+        if (!slide.vector) validateTextStage(stage);
+        return stageMotion(stage);
+      } catch (error) { throw new Error(`Slide ${slide.id}: Stage ${stage?.id ?? i + 1}: ${error.message}`); }
+    });
     if (slide.vector) {
       if (slide.media || slide.gallery?.length || !['title', 'text-media', 'full-media', 'process'].includes(slide.layout)) throw new Error(`Slide ${slide.id}: vector requires a supported layout without other media/gallery`);
       try { content += `<figure class="staged-vector">${media(slide.vector, slide.stages ?? [])}</figure>`; }
@@ -97,15 +107,14 @@ export function buildDeck(input, { assets = {} } = {}) {
       if (columns.length < 2 || columns.length > 3) throw new Error('columns requires two or three items');
       content += `<div class="columns">${columns.map((col) => `<section><h2>${text(col.title, 'column.title')}</h2><p>${text(col.body, 'column.body')}</p></section>`).join('')}</div>`;
     }
-    const stages = slide.stages === undefined ? [] : list(slide.stages, 'stages');
     if (slide.layout === 'process' && !stages.length) throw new Error('process requires stages');
     const subnav = slide.subnav === undefined ? stages.map((stage) => stage.title) : list(slide.subnav, 'subnav');
     if (subnav.length !== stages.length) throw new Error('subnav must label every stage');
     if (stages.length) {
       content += `<div class="stages"${slide.vector ? ' hidden' : ''}>${stages.map((stage, i) => {
-        const delay = stage.afterMs ?? 0;
-        if (!Number.isFinite(delay) || delay < 0 || delay > 3600000) throw new Error('afterMs must be between 0 and 3600000');
-        return `<section data-step="${i}"${stage.id ? ` data-stage-id="${escape(stage.id)}"` : ''} data-delay="${delay}"><span class="step-number">${i + 1}</span><h2>${text(stage.title, 'stage.title')}</h2><p>${text(stage.body, 'stage.body', true)}</p></section>`;
+        // The runtime reads its timeline from these attributes; an unset field keeps the older behaviour.
+        const { afterMs: delay = 0, ...motion } = motions[i];
+        return `<section data-step="${i}"${stage.id ? ` data-stage-id="${escape(stage.id)}"` : ''} data-delay="${delay}"${Object.keys(motion).length ? ` data-motion="${escape(JSON.stringify(motion))}"` : ''}><span class="step-number">${i + 1}</span><h2>${text(stage.title, 'stage.title')}</h2><p>${text(stage.body, 'stage.body', true)}</p></section>`;
       }).join('')}</div><nav class="stage-nav" aria-label="Reveal stages">${subnav.map((label, i) => `<button data-stage="${i}">${text(label, 'subnav label')}</button>`).join('')}<button data-command="replay">Replay</button></nav>`;
     }
     if (slide.gallery?.length) content += `<nav class="gallery-nav" aria-label="Gallery">${slide.gallery.map((entry, i) => `<button data-gallery="${i}">${text(entry.label, 'gallery label')}</button>`).join('')}</nav><div class="gallery">${slide.gallery.map((entry, i) => `<figure data-gallery-view="${i}"${i ? ' hidden' : ''}>${entry.media ? media(entry.media) : ''}<figcaption>${text(entry.label, 'gallery label')}</figcaption></figure>`).join('')}</div>`;

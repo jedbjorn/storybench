@@ -79,7 +79,7 @@ export async function smokeSvg(role) {
     assert.ok(zip.includes(source));
     const html = await readFile(path.join(dir, 'index.html'), 'utf8');
     assert.match(html, /id="_sbv1-plan"/); assert.match(html, /id="_sbv2-plan"/);
-    assert.match(html, /<g data-vector-step="2"><g id="_sbv2-plan"/);
+    assert.match(html, /<g data-vector-step="2" data-vector-group="plan"><g id="_sbv2-plan"/);
     assert.deepEqual(completed.snapshot.slides[1].stages[2].svgGroupIds, ['plan']);
     await assert.rejects(library.registerFile({ episodeId: first.id, readable: Readable.from(invalid), fileName: 'bad.svg', selectedCategory: 'Graphics' }), /unsupported element script/);
     return { ...result, import: true, registration: true, reuse: true, imageTool: true, savedStaticExport: true, savedStagedExport: true, retainedZipSource: true };

@@ -14,7 +14,7 @@ function page(files, name = 'index.html', { opener = null, hash = '', reduced = 
   const delays = new Map(); w.Date.now = () => now;
   Object.defineProperty(w.document, 'hidden', { get: () => hidden });
   const motion = { matches: reduced, addEventListener: (_event, callback) => { motion.change = callback; } };
-  w.matchMedia = () => motion;
+  w.matchMedia = (query) => query.includes('reduced-motion') ? motion : { matches: false, addEventListener() {} };
   w.setTimeout = (fn, delay) => { timeouts.set(++id, fn); delays.set(id, delay); return id; };
   w.clearTimeout = (key) => { timeouts.delete(key); delays.delete(key); };
   w.setInterval = (fn) => { intervals.set(++id, fn); return id; };

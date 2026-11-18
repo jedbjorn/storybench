@@ -21,12 +21,45 @@ Input fields:
 - `media` on text-media/full-media: `{type: 'image'|'video', src, alt, poster?, autoplay?}`. Alt is required plain text. Autoplay is a boolean (default false), muted, and disabled for reduced motion. Poster is an optional local image path for video; include it for printed/video fallback content.
 - Media paths must be a single filename under `assets/`, using letters, digits, underscores, dots and hyphens. Image extensions: svg/png/jpg/jpeg/webp/gif. Video: mp4/webm. No URL, traversal or nested path is accepted. `assets` maps these paths to nonempty Uint8Array/Buffer bytes; provide actual media of the declared format. SVG uses the shared [parsed profile](../../docs/svg-profile.md). Original SVG bytes enter the bundle; validated inline instances receive independent IDs/styles and use bundled fonts. Filesystem acquisition and media inspection belong to the calling builder.
 - Any layout may include `stages: [{title, body?, afterMs?}]`. Stage 0 is initially visible unless its positive `afterMs` delays it; subsequent stages reveal cumulatively after `afterMs` milliseconds relative to the preceding reveal. Zero/omitted delay waits for manual selection; delays range from 0 to 3600000. Process lays these out as a numbered diagram. Optional `subnav` is an array of plain-text labels with exactly one label per stage; default labels are stage titles.
+- Stage timing and motion (all optional; a stage that sets none plays as above, and its HTML is unchanged):
+  - `trigger`: `"auto"` or `"manual"`. Unset: a positive `afterMs` is automatic. With `"auto"`, `afterMs` may be 0 so one stage flows straight into the next. `afterMs` is ignored on a manual stage.
+  - `durationMs` (0 to 60000): how long the stage's motion takes. Unset keeps the 450 ms fade and does not push the next stage.
+  - `holdMs` (0 to 3600000): rest after the motion before the next stage's delay starts.
+  - `easing`: `linear`, `ease-in`, `ease-out`, `ease-in-out`. Unset keeps the fade's curve (CSS `ease`).
+  - `motion`: `fade` (default; text and SVG groups), `draw` (SVG groups with stroked geometry: strokes run along their length, fills and unstroked parts arrive over the last fifth), `enter` (SVG groups arrive from `from` to their authored state).
+  - `from` and each `changes[].to`: `{x?, y?, scale?, rotate?, opacity?}` relative to the authored geometry. `x`/`y` are SVG user units (±8192), `scale` 0 to 16 and `rotate` ±3600 degrees about the group's centre, `opacity` 0 to 1.
+  - `changes: [{groupId, to}]` (at most 64) moves groups revealed by an earlier stage from the state the previous stage left to `to`, over `durationMs` with `easing`. State accumulates; a property `to` omits keeps its value. A vector stage needs `svgGroupIds`, `changes` or both.
+  - Refusals name the slide and the stage: an unknown value or a number out of bounds; `draw` on a group with no stroked geometry; `draw` or `enter` on a stage with no SVG groups; `changes` on a group that is unknown, unmapped, revealed by the same or a later stage, or named twice.
 
-- Staged `vector` uses the same `{type: 'image', src, alt}` shape as media, on title/text-media/full-media/process with no media/gallery. Every stage must have a unique stable `id` and nonempty `svgGroupIds`. Group mappings are revalidated against parsed source; visible independent groups receive trusted wrappers while their transforms, styles and geometry remain intact. Duplicate, missing, nested, definition-only and reused mappings fail explicitly. Unmapped artwork remains visible.
+- Staged `vector` uses the same `{type: 'image', src, alt}` shape as media, on title/text-media/full-media/process with no media/gallery. Every stage must have a unique stable `id` and nonempty `svgGroupIds` (or `changes`, below). Group mappings are revalidated against parsed source; visible independent groups receive trusted wrappers while their transforms, styles and geometry remain intact. Duplicate, missing, nested, definition-only and reused mappings fail explicitly. Unmapped artwork remains visible.
 
 The synthetic example demonstrates every layout and optional field family. Its synthetic geometric image can be replaced with local media by supplying different bytes. It is a contract demonstration, not the companion production authoring demo.
 
-Up/Down and Previous/Next change slides; Left/Right select reveal stages; Home/End select endpoints; N opens Presenter. Side navigation exposes the current slide. Inputs and editable elements retain their keyboard behavior. Manual reveal/media controls cancel automatic reveal for that visit; hidden tabs pause timing and playback. Returning resumes the remaining reveal delay. Replay in either window restarts the sequence; complete diagrams hold without looping. Slide changes stop outgoing media. Print exposes all slides and final staged content; reduced motion exposes all staged content and disables automatic timing. Failed playback leaves native controls available. Fullscreen and popup failures provide retry guidance.
+Up/Down and Previous/Next change slides; Left/Right select reveal stages; Home/End select endpoints; N opens Presenter. Side navigation exposes the current slide. Inputs and editable elements retain their keyboard behavior. Manual reveal/media controls cancel automatic reveal for that visit; hidden tabs pause timing, motion and playback. Returning resumes from the same point. Replay in either window restarts the sequence; complete diagrams hold without looping. Slide changes stop outgoing media. Print exposes all slides and final staged content; reduced motion exposes all staged content and disables automatic timing. Failed playback leaves native controls available. Fullscreen and popup failures provide retry guidance.
+
+## Timeline
+
+Each slide has one timeline, computed from its stages. A stage begins at the previous stage's start, plus that stage's `durationMs` when it set one, plus its `holdMs`, plus this stage's `afterMs`; the first begins `afterMs` after navigation. A manual stage sits where everything before it has come to rest, and the clock stops there until someone steps into it. The whole look of a slide is a function of the timeline's time, so any moment can be shown exactly. The motion data lives in `data-delay` and a JSON `data-motion` attribute on each stage; it adds no script, style or markup to the artwork, and the bundled SVG file is byte-identical to its source.
+
+The audience page exposes the timeline as `window.storybenchDeck` for editors and QA. Every method returns the current slide's timeline as it then is:
+
+```js
+storybenchDeck.timeline()   // read
+storybenchDeck.seek(timeMs) // pause and show the slide exactly as it is at timeMs (clamped to 0..durationMs); no real-time wait
+storybenchDeck.pause()      // hold the clock where it is
+storybenchDeck.resume()     // play on in real time from the current time
+storybenchDeck.replay()     // restart from zero, as the Replay button does
+
+{ version: 1, slideId, index, visit, state, timeMs, durationMs, stage,
+  stages: [{ id, trigger: 'auto' | 'manual', startMs, motionEndMs, holdEndMs }] }
+```
+
+- `state`: `playing`; `paused` (by `pause`/`seek`, a hidden tab or print); `waiting` (stopped before a manual stage, or after a person selected a stage, with stages left); `complete` (nothing further will happen; always the case under reduced motion).
+- `timeMs` is the time shown. `durationMs` is when the last motion and hold have ended. `stage` is the index of the latest stage begun, or null before the first begins or when the slide has none. `holdEndMs` is when the next stage's delay starts counting; with an unset duration it precedes `motionEndMs`, because the short fade does not push the next stage.
+- `visit` increases each time the slide is entered or replayed, so a caller can tell a restart from a continuation.
+- After `seek`, stages are begun by time alone, manual ones included, so a manual stage's motion can be inspected; `resume` then plays on from there.
+
+Leaving a slide cancels its timeline; returning starts it from zero. Selecting a stage stops automatic progression for that visit: one stage forward plays that stage's motion once, any other selection shows the selected stage's end state at once. Presenter's stage controls and Replay go through the same paths. A hidden tab holds the clock and resumes from the same time. Reduced motion and print show every group in its final state with nothing running; print applies it to every slide. Print emulation is noticed on the next frame, or at once by any call above.
 
 When the audience page runs inside a frame, it posts `{type: 'storybench-deck-state', version: 1, slideId, index, stage, gallery}` to the embedding page on every change, and again when the parent window posts `{type: 'storybench-deck-state-request'}`. `stage` and `gallery` are the reveal stage and gallery view indexes, or null when the slide has none. The message carries no titles, notes or slide content; opened standalone (no parent frame), the page posts nothing. Builds with this runtime record `stateReporting: 1` in `manifest.json`; Storybench treats builds without it as unable to report their viewed slide.
 

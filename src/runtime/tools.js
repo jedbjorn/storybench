@@ -88,7 +88,7 @@ export const TOOL_DEFINITIONS = Object.freeze([
   },
   {
     name: "inspect_media",
-    description: "Read media metadata (ffprobe): kind, duration, dimensions, frame rate, codecs, audio streams. No image.",
+    description: "Read media metadata (ffprobe): kind, duration, dimensions, frame rate, codecs, audio streams. For an SVG: its group IDs and, per group in svgGroups, whether it holds stroked geometry (what a deck stage can draw). No image.",
     inputSchema: { type: "object", additionalProperties: false, properties: targetProps },
   },
   {
