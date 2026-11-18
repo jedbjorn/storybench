@@ -271,7 +271,7 @@ test("history lists ten conversations; the drawer shows agents; the compact butt
   assert.equal(ids.length, 10); assert.equal(ids.at(-1), "c11", "the open conversation stays reachable");
   await workspace.refresh(workspace.generation, "episode", "c11");
   const rows = [...root.querySelectorAll(".chat-agent")].map((row) => [...row.children].map((child) => child.textContent));
-  assert.deepEqual(rows, [["Assistant", "claude-opus-5-5 | 312k / 500k", "3:27 · completed"], ["Rework assets", "claude-sonnet-5 | 16k", "1:00 · completed"]]);
+  assert.deepEqual(rows, [["Assistant", "claude-opus-5-5 | 312k / 500k", "Done · 3:27"], ["Rework assets", "claude-sonnet-5 | 16k", "Done · 1:00"]]);
   const compact = root.querySelector("[data-chat-compact]");
   assert.equal(compact.getAttribute("aria-disabled"), "false");
   assert.match(compact.title, /^Compact context\n.+\nContext 312k \/ 500k · compacts automatically at 500k$/);

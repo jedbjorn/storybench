@@ -196,6 +196,7 @@ test("a captured Claude delegation reports its agent row and the production agen
   assert.deepEqual(updates[0], { id, label: "Evaluate slide openings in options.txt", model: null, state: "running" });
   assert.ok(updates.some((update) => update.model === "claude-sonnet-5" && update.tokens > 0), "the subagent's model and context size");
   assert.deepEqual(updates.at(-1), { id, state: "completed", model: "claude-sonnet-5", tokens: 16461 });
+  assert.deepEqual(updates.filter((update) => "activity" in update).map((update) => update.activity), ["Read", ""], "the subagent's Read call, then its result");
   const context = seen.filter((event) => event.method === "context/usage").map((event) => event.params);
   assert.ok(context.some((params) => params.tokens > 0) && context.every((params) => !params.tokens || params.tokens >= 1000), "the production agent's request sizes only");
   assert.equal(context.at(-1).window, 1_000_000, "the model window from the result's modelUsage");
@@ -224,6 +225,9 @@ test("a captured Codex turn reports subagent rows with their own token usage and
   assert.equal(threads.length, 2);
   assert.deepEqual(updates.filter((update) => update.label).map((update) => [update.label, update.state]).sort(), [["closing", "completed"], ["closing", "running"], ["opening", "completed"], ["opening", "running"]]);
   for (const id of threads) assert.ok(updates.some((update) => update.id === id && update.tokens > 0), "each subagent's usage");
+  const notifications = fixture("codex-0.155.1-two-subagents.jsonl").map((line) => JSON.parse(line)).filter((message) => message.method);
+  const tools = notifications.filter((message) => message.params?.threadId && threads.includes(message.params.threadId) && message.method === "item/started" && ["commandExecution", "mcpToolCall", "dynamicToolCall", "fileChange", "webSearch"].includes(message.params.item?.type));
+  assert.equal(updates.filter((update) => update.activity).length, tools.length, "each subagent tool call is its activity");
   const context = seen.filter((event) => event.method === "context/usage").map((event) => event.params);
   assert.equal(context.length, 7, "only the conversation thread's usage feeds the meter");
   assert.equal(context.at(-1).window, 258_400);

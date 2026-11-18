@@ -63,8 +63,13 @@ export class WorkerCodexConnection extends CodexConnection {
       }
       return this.#agentThreads.has(params.threadId) ? [derived("agent/updated", { id: params.threadId, tokens })] : [];
     }
-    if (params?.threadId && this.threadId && params.threadId !== this.threadId) return [];
     const item = params?.item;
+    if (params?.threadId && this.threadId && params.threadId !== this.threadId) {
+      // A subagent's own tool calls: its current activity on the Agents panel, nothing else.
+      if (!this.#agentThreads.has(params.threadId) || !["item/started", "item/completed"].includes(event.method)) return [];
+      const tool = CODEX_NATIVE_TOOLS[item?.type] ?? (["mcpToolCall", "dynamicToolCall"].includes(item?.type) ? item.tool : null);
+      return tool ? [derived("agent/updated", { id: params.threadId, activity: event.method === "item/started" ? tool : "" })] : [];
+    }
     if (item?.type === "contextCompaction") {
       if (event.method === "item/started") this.#compaction = { before: this.#context, after: null };
       if (event.method !== "item/completed") return [];
@@ -264,8 +269,12 @@ export class ClaudeChatConnection {
     // calls stay out of the transcript; the delegation itself is the parent's tool entry.
     // Its model and context size feed the Agents panel only.
     if (event.parent_tool_use_id && ["assistant", "user"].includes(event.type)) {
-      if (event.type === "assistant" && this.agents.has(event.parent_tool_use_id))
-        this.#emit("agent/updated", { id: event.parent_tool_use_id, model: event.message?.model ?? null, tokens: anthropicContext(event.message?.usage) });
+      if (!this.agents.has(event.parent_tool_use_id)) return;
+      // Its current activity: the tool it called last, cleared ("") when the result returns.
+      const content = Array.isArray(event.message?.content) ? event.message.content : [];
+      const call = content.findLast((block) => block.type === "tool_use");
+      const activity = call ? String(call.name || "").replace(MCP_PREFIX, "") : content.some((block) => block.type === "tool_result") ? "" : undefined;
+      this.#emit("agent/updated", { id: event.parent_tool_use_id, ...(event.type === "assistant" ? { model: event.message?.model ?? null, tokens: anthropicContext(event.message?.usage) } : {}), ...(activity !== undefined ? { activity } : {}) });
       return;
     }
     if (event.type === "assistant") {

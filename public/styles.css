@@ -600,7 +600,7 @@ button.icon-button.danger:hover { border-color: #e2b4a9; background: #fbece8; co
 .chat-agent.running { border-left-color: var(--accent); }
 .chat-agent b, .chat-agent-stats { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-agent-stats { color: var(--deep); font-variant-numeric: tabular-nums; }
-.chat-agent-time { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chat-agent-status { justify-self: end; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .chat-icon[aria-disabled="true"] { opacity: .5; cursor: default; }
 .chat-icon[aria-disabled="true"]:hover { border-color: var(--line); color: var(--deep); }
 .chat-transcript-panel { position: relative; display: flex; flex: 1; min-height: 0; }

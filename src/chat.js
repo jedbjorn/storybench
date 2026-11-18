@@ -284,7 +284,7 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
       }
       else if (event.method === "agent/updated" && params.id) {
         // Agents panel: one row per delegated agent, emitted only when something changed.
-        const pick = ["label", "model", "tokens", "state"].filter((key) => params[key] != null);
+        const pick = ["label", "model", "tokens", "state", "activity"].filter((key) => params[key] != null);
         const previous = agentsSeen.get(params.id) ?? {}, next = { ...previous, ...Object.fromEntries(pick.map((key) => [key, params[key]])) };
         if (JSON.stringify(next) !== JSON.stringify(previous)) { agentsSeen.set(params.id, next); emit(value, "agent.updated", { id: params.id, ...Object.fromEntries(pick.map((key) => [key, params[key]])) }); }
       }

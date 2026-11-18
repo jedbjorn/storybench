@@ -2,7 +2,7 @@ import { previewUrl, pruneSelections, selectionKey, withChannel } from "./previe
 import { ChatTranscript } from "./chat-transcript.js";
 import { uploadLibraryFile } from "./library-workspace.js";
 import { ChatSettings, boundaryText, selectionLabel } from "./chat-settings.js";
-import { agentRows, contextLabel, formatTokens } from "./chat-agents.js";
+import { agentRows, agentStatus, contextLabel, formatTokens } from "./chat-agents.js";
 import { clock } from "./chat-transcript.js";
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
@@ -454,12 +454,14 @@ export class ChatWorkspace {
   paintAgents(value) {
     const list = this.root.querySelector("[data-chat-agents]");
     if (!list) return;
-    const now = Date.now() + (this.clockOffset ?? 0);
+    const now = Date.now() + (this.clockOffset ?? 0), kind = this.getEpisode()?.kind === "deck" ? "deck" : "video";
     const html = agentRows(value).map((row) => {
       const tokens = row.id === "main" ? contextLabel(value.context) : formatTokens(row.tokens);
-      const time = Number.isFinite(row.startedAt) ? clock((row.endedAt ?? now) - row.startedAt) : "—";
+      const time = Number.isFinite(row.startedAt) ? ` · ${clock((row.endedAt ?? now) - row.startedAt)}` : "";
       const running = ["working", "running", "compacting"].includes(row.state);
-      return `<div class="chat-agent${running ? " running" : ""}"><b title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</b><span class="chat-agent-stats" title="${escapeHtml(`${row.model} | ${tokens}`)}">${escapeHtml(row.model)} | ${escapeHtml(tokens)}</span><span class="chat-agent-time">${escapeHtml(time)} · ${escapeHtml(row.state)}</span></div>`;
+      // Worded like the turn status line under the animation, and right aligned like it.
+      const status = agentStatus(row, { kind, live: this.transcript?.animation ? this.transcript.shown?.label : null });
+      return `<div class="chat-agent${running ? " running" : ""}"><b title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</b><span class="chat-agent-stats" title="${escapeHtml(`${row.model} | ${tokens}`)}">${escapeHtml(row.model)} | ${escapeHtml(tokens)}</span><span class="chat-agent-status">${escapeHtml(status)}${escapeHtml(time)}</span></div>`;
     }).join("");
     if (list.innerHTML !== html) list.innerHTML = html;
   }
