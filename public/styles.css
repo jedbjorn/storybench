@@ -1019,6 +1019,8 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
 .deck-history summary { padding: 10px 0; color: var(--muted); font-size: 13px; cursor: pointer; }
 .deck-history .deck-build { padding-left: 16px; }
 .deck-parts .icon-actions { justify-content: flex-end; }
+.stage-motion { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; align-items: end; }
+.stage-motion-note { margin: 0; color: var(--muted); font-size: .9em; }
 .preview-modal { width: 90vw; height: 90vh; max-width: none; max-height: none; padding: 0; border: 0; border-radius: 14px; overflow: hidden; box-shadow: 0 20px 70px #17282255; }
 .preview-modal[open] { display: flex; flex-direction: column; }
 .preview-modal::backdrop { background: #17282299; }
