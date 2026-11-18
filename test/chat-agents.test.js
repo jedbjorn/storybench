@@ -52,3 +52,55 @@ test("each card's status line reads like the turn status line", () => {
   assert.equal(agentStatus(rows([started, { type: "agent.updated", createdAt: at(2), payload: { id: "a", activity: "Grep" } }])[1]), "Researching");
   assert.equal(agentStatus(rows([started, { type: "agent.updated", createdAt: at(2), payload: { id: "a", activity: "Grep" } }, { type: "agent.updated", createdAt: at(3), payload: { id: "a", activity: "" } }])[1]), "Thinking");
 });
+
+// Spec #42 'Agents panel and chat' (task #115, A11): agent jobs outlive the turn that started them.
+test("agent job rows persist across turns: running first, then ended newest first, up to 20", () => {
+  const at = (s) => new Date(Date.UTC(2026, 10, 18, 10, 0, s)).toISOString();
+  const job = (id, state, fields = {}) => ({ id, label: `Job ${id}`, harness: "codex", model: "gpt-5.5", state, createdAt: at(0), startedAt: at(1), endedAt: ["queued", "running"].includes(state) ? null : at(31), ...fields });
+  const ended = Array.from({ length: 22 }, (_, index) => job(`e${index}`, ["completed", "failed", "timed_out", "cancelled", "interrupted"][index % 5]));
+  const value = {
+    state: "completed", settings: { model: "gpt-5.5" }, waitingForAgents: 2,
+    runs: [{ state: "completed", modelResolved: "gpt-5.5", startedAt: at(0), finishedAt: at(40) }],
+    // A later turn started after the jobs did: its delegations are the only ones listed, the jobs stay.
+    events: [
+      { type: "agent_job.updated", createdAt: at(2), payload: { id: "r1", tokens: 9_000 } },
+      { type: "agent_job.updated", createdAt: at(3), payload: { id: "r1", activity: "read_research" } },
+      { type: "agent_job.updated", createdAt: at(4), payload: { id: "r1", tokens: 12_400 } },
+      { type: "agent_job.updated", createdAt: at(4), payload: { id: "e0", tokens: 3_000, activity: "read_deck" } },
+      { type: "turn.started", createdAt: at(5), payload: {} },
+      { type: "agent.updated", createdAt: at(6), payload: { id: "native", label: "Check", state: "completed" } },
+    ],
+    agentJobs: [...ended.slice(0, 3), job("r1", "running"), job("q1", "queued", { harness: "claude", model: null, startedAt: null }), ...ended.slice(3)],
+  };
+  const rows = agentRows(value);
+  assert.deepEqual(rows.map((row) => row.id).slice(0, 5), ["main", "native", "job:r1", "job:q1", "job:e0"], "main, the latest turn's delegations, live jobs, then ended jobs");
+  assert.equal(rows.filter((row) => row.job).length, 20, "at most 20 job rows");
+  const [main, , running, queued, done] = rows;
+  assert.deepEqual([main.state, agentStatus(main)], ["waiting", "Waiting for agents (2)"]);
+  assert.deepEqual([running.name, running.harness, running.model, running.tokens, running.endedAt], ["Job r1", "codex", "gpt-5.5", 12_400, null]);
+  assert.equal(agentStatus(running), "Running · Researching", "a job's activity uses the delegations' phase table");
+  assert.deepEqual([queued.model, queued.startedAt, agentStatus(queued)], ["default model", Date.parse(at(0)), "Waiting to start"]);
+  assert.deepEqual([done.tokens, done.activity, done.endedAt - done.startedAt], [3_000, "", 30_000], "an ended job keeps its tokens, not its activity");
+  assert.deepEqual(rows.slice(4, 9).map((row) => agentStatus(row)), ["Done", "Failed", "Timed out", "Stopped", "Interrupted"]);
+  // Between tools the job is thinking; once nothing runs the main row is no longer waiting.
+  assert.equal(agentStatus({ ...running, activity: "" }), "Running · Thinking");
+  const settled = agentRows({ ...value, waitingForAgents: 0, agentJobs: ended });
+  assert.equal(settled[0].state, "completed");
+  // A turn in flight is working, not waiting, even while jobs run.
+  assert.equal(agentRows({ ...value, state: "running", runs: [{ state: "running", startedAt: at(50) }] })[0].state, "working");
+});
+
+// Overlapping jobs end in a different order than they started: ended rows follow the ending.
+test("ended agent job rows are ordered by most recent ending, not by creation", () => {
+  const at = (m) => new Date(Date.UTC(2026, 10, 18, 10, m)).toISOString();
+  const job = (id, created, ended, state = "completed") => ({ id, label: id, harness: "codex", model: "gpt-5.5", state, createdAt: at(created), startedAt: at(created), endedAt: ended === null ? null : at(ended) });
+  const rows = (agentJobs) => agentRows({ state: "completed", runs: [], events: [], agentJobs }).filter((row) => row.job).map((row) => row.name);
+  // The ledger lists newest created first: B (created 10:02, ended 10:03) before A (10:00, ended 10:04).
+  assert.deepEqual(rows([job("B", 2, 3), job("A", 0, 4)]), ["A", "B"]);
+  // Stop ends the older-created job after the newer-created one had already completed.
+  assert.deepEqual(rows([job("Find sources", 2, 3), job("Collect facts", 0, 5, "cancelled"), job("Run", 4, null, "running")]), ["Run", "Collect facts", "Find sources"]);
+  // Equal endings keep the projection's order; the 20-row cap applies after ordering.
+  const many = Array.from({ length: 21 }, (_, index) => job(`e${index}`, 0, 10));
+  assert.deepEqual(rows([...many, job("late", 0, 11)]).slice(0, 3), ["late", "e0", "e1"]);
+  assert.equal(rows([...many, job("late", 0, 11)]).length, 20);
+});

@@ -99,6 +99,8 @@ test("A5: two endings during a running turn start exactly one combined wake turn
   await until(() => jobs.held.length === 2);
   const byLabel = (label) => jobs.held.find((connection) => connection.job.label === label);
   jobs.end(byLabel("Facts"), "Three facts in facts.md");
+  // The wake line lists results in ending order; end Sources only once Facts has ended.
+  await until(() => f.view().agentJobs.find((job) => job.id === one.jobId).state === "completed");
   jobs.end(byLabel("Sources"), "Two sources in sources.md");
   await until(() => f.chat.get(f.episode.id, f.conversation.id).agentJobs.every((job) => job.state === "completed"));
   await settle();
@@ -225,6 +227,23 @@ test("A7: the transcript shows a wake line as an app line, never a creator bubbl
   assert.equal(line.querySelector("b"), null, "no 'You' label");
   assert.equal(dom.window.document.querySelectorAll(".chat-user").length, 1);
   workspace.close();
+});
+
+test("the projection lists ended jobs by most recent ending: Stop after an earlier completion", async (t) => {
+  const jobs = heldJobs();
+  const f = fixture(t, { behaviours: [jobs.hold, jobs.hold] });
+  const turn = await f.send();
+  await turn.tools.start_agent_job({ brief: "Collect three facts.", label: "Collect facts" });
+  await settle();
+  await turn.tools.start_agent_job({ brief: "Find two sources.", label: "Find sources" });
+  await until(() => jobs.held.length === 2);
+  jobs.end(jobs.held.find((connection) => connection.job.label === "Find sources"), "Two sources.");
+  await until(() => f.view().agentJobs.some((job) => job.state === "completed"));
+  assert.deepEqual(f.view().agentJobs.map((job) => job.label), ["Collect facts", "Find sources"], "running first");
+  await settle();
+  const stopped = await f.chat.interrupt(f.episode.id, f.conversation.id);
+  assert.deepEqual(stopped.agentJobs.map((job) => [job.label, job.state]), [["Collect facts", "cancelled"], ["Find sources", "completed"]],
+    "the older-created job Stop ended last is listed first");
 });
 
 test("A8: Stop with no active turn ends the jobs and the watched jobs, discards their results and starts no wake", async (t) => {
@@ -502,4 +521,29 @@ test("schema 20 widens a populated v19 production_runs to the wake origin and ke
   assert.throws(() => store.saveJob({ episodeId: episode.id, kind: "draft", outputClass: "draft", state: "queued", revision: episode.revision, requestId: "request_missing" }), /./, "the jobs request trigger still runs");
   assert.ok(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='job_watches'").get());
   assert.deepEqual(store.db.prepare("PRAGMA foreign_key_check").all(), []);
+});
+
+// Spec #42 'Agents panel and chat' (task #115): a job worker's tokens and tool activity reach the
+// panel as agent_job.updated events, the tool cleared when its result returns, as for native
+// delegations. The polled projection carries no brief or result text.
+test("A11: job worker tokens and activity become panel events; the projection leaves out brief and result", async (t) => {
+  const jobs = heldJobs();
+  const f = fixture(t, { behaviours: [jobs.hold] });
+  const turn = await f.send();
+  const { jobId } = await turn.tools.start_agent_job({ brief: "Collect three facts.", label: "Facts" });
+  const [connection] = await until(() => jobs.held.length === 1 && jobs.held);
+  connection.emit("context/usage", { tokens: 4_200 });
+  connection.emit("item/started", { item: { type: "dynamicToolCall", tool: "read_research", status: "inProgress" } });
+  connection.emit("item/completed", { item: { type: "dynamicToolCall", tool: "read_research", status: "completed" } });
+  connection.emit("context/usage", { tokens: 4_200 });
+  const updates = () => f.view().events.filter((event) => event.type === "agent_job.updated" && event.payload.id === jobId && !("state" in event.payload)).map((event) => event.payload);
+  await until(() => updates().length === 3);
+  assert.deepEqual(updates(), [{ id: jobId, tokens: 4_200 }, { id: jobId, activity: "read_research" }, { id: jobId, activity: "" }], "unchanged values are not emitted again");
+  jobs.end(connection, "Three facts.");
+  await until(() => f.view().agentJobs[0]?.state === "completed");
+  const [row] = f.view().agentJobs;
+  assert.equal(row.label, "Facts");
+  assert.ok(!("brief" in row) && !("result" in row), "the panel row has no brief or result");
+  assert.equal(f.chat.get(f.episode.id, f.conversation.id).waitingForAgents, 0);
+  turn.complete();
 });

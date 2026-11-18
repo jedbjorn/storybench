@@ -1,13 +1,16 @@
 import { previewUrl, pruneSelections, selectionKey, withChannel } from "./preview-links.js";
 import { ChatTranscript } from "./chat-transcript.js";
 import { uploadLibraryFile } from "./library-workspace.js";
-import { ChatSettings, boundaryText, selectionLabel } from "./chat-settings.js";
-import { agentRows, agentStatus, contextLabel, formatTokens } from "./chat-agents.js";
+import { ChatSettings, HARNESS_LABELS, boundaryText, selectionLabel } from "./chat-settings.js";
+import { agentRows, agentStatus, contextLabel, formatTokens, waitingLabel } from "./chat-agents.js";
 import { clock } from "./chat-transcript.js";
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
 const working = (state) => ["queued", "running", "interrupting", "compacting"].includes(state);
 const stoppable = (state) => ["queued", "running", "interrupting"].includes(state);
+// Background work Stop ends with no turn active: running or queued agent jobs, watched jobs and
+// held results (spec #42 'Lifecycle'), the same test the interrupt endpoint makes.
+const background = (value) => (value.waitingForAgents ?? 0) > 0 || (value.watches?.length ?? 0) > 0 || (value.wake?.pending ?? 0) > 0;
 const HISTORY_LIMIT = 10;
 // Compact: two arrows pressing in on one line.
 const COMPACT_ICON = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h16M8 3l4 4 4-4M8 21l4-4 4 4"/></svg>';
@@ -395,8 +398,10 @@ export class ChatWorkspace {
     if (Number.isFinite(serverTime)) this.clockOffset = serverTime - (sent + received) / 2;
     const status = this.root.querySelector("[data-chat-status]");
     const active = !value.error && working(value.state);
-    const label = value.error || ({ running: "working", interrupting: "stopping" }[value.state] ?? value.state);
-    const statusHtml = `${escapeHtml(label)}${active ? ' <span class="chat-working-dots" aria-hidden="true">...</span>' : ""}`;
+    // Between turns, while agent jobs run, the conversation is waiting for them.
+    const waiting = !working(value.state) && value.waitingForAgents > 0;
+    const label = waiting ? waitingLabel(value.waitingForAgents) : value.error || ({ running: "working", interrupting: "stopping" }[value.state] ?? value.state);
+    const statusHtml = `${escapeHtml(label)}${active || waiting ? ' <span class="chat-working-dots" aria-hidden="true">...</span>' : ""}`;
     // Keep the animation and live region stable across the one-second refreshes.
     if (status.innerHTML !== statusHtml) status.innerHTML = statusHtml;
     const chip = this.root.querySelector("[data-chat-selection]");
@@ -438,7 +443,10 @@ export class ChatWorkspace {
     this.paintImages();
     this.paintCompact(value, busy);
     this.paintAgents(value);
-    const stop = this.root.querySelector("[data-chat-stop]"); stop.hidden = !stoppable(value.state); stop.disabled = value.state === "interrupting";
+    const stop = this.root.querySelector("[data-chat-stop]"), turn = stoppable(value.state);
+    stop.hidden = !turn && !background(value); stop.disabled = value.state === "interrupting";
+    const stopLabel = turn ? "Stop active response" : "Stop background agents";
+    if (stop.title !== stopLabel) { stop.title = stopLabel; stop.setAttribute("aria-label", stopLabel); }
     this.onBusyChange(busy);
   }
 
@@ -460,10 +468,11 @@ export class ChatWorkspace {
     const html = agentRows(value).map((row) => {
       const tokens = row.id === "main" ? contextLabel(value.context) : formatTokens(row.tokens);
       const time = Number.isFinite(row.startedAt) ? ` · ${clock((row.endedAt ?? now) - row.startedAt)}` : "";
-      const running = ["working", "running", "compacting"].includes(row.state);
+      const running = ["working", "running", "compacting", "queued"].includes(row.state);
+      const model = row.job ? `${HARNESS_LABELS[row.harness] ?? row.harness ?? "Agent"} · ${row.model}` : row.model;
       // Worded like the turn status line under the animation, and right aligned like it.
       const status = agentStatus(row, { kind, live: this.transcript?.animation ? this.transcript.shown?.label : null });
-      return `<div class="chat-agent${running ? " running" : ""}"><b title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</b><span class="chat-agent-stats" title="${escapeHtml(`${row.model} | ${tokens}`)}">${escapeHtml(row.model)} | ${escapeHtml(tokens)}</span><span class="chat-agent-status">${escapeHtml(status)}${escapeHtml(time)}</span></div>`;
+      return `<div class="chat-agent${running ? " running" : ""}"${row.job ? ` data-agent-job="${escapeHtml(row.id.slice(4))}"` : ""}><b title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</b><span class="chat-agent-stats" title="${escapeHtml(`${model} | ${tokens}`)}">${escapeHtml(model)} | ${escapeHtml(tokens)}</span><span class="chat-agent-status">${escapeHtml(status)}${escapeHtml(time)}</span></div>`;
     }).join("");
     if (list.innerHTML !== html) list.innerHTML = html;
   }

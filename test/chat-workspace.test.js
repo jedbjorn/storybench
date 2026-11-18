@@ -278,3 +278,39 @@ test("history lists ten conversations; the drawer shows agents; the compact butt
   await compact.onclick({ currentTarget: compact });
   assert.ok(calls.some((call) => call.url === "/api/episodes/episode/chats/c11/compact" && call.method === "POST"));
 });
+
+// Spec #42 'Agents panel and chat' / 'Lifecycle' (task #115, A11): with no turn active, running
+// jobs make the conversation wait and keep Stop available; a held wake keeps Stop too.
+test("between turns, agent jobs read 'Waiting for agents (n)' and Stop ends them", async (t) => {
+  const { dom, root } = page(); t.after(() => dom.window.close());
+  const calls = [];
+  let background = { waitingForAgents: 1, watches: [], wake: { pending: 0, held: false, chainLimited: false },
+    agentJobs: [{ id: "job_a", label: "Collect facts", harness: "claude", model: "sonnet", state: "running", createdAt: "2026-11-18T10:00:00.000Z", startedAt: "2026-11-18T10:00:02.000Z", endedAt: null },
+      { id: "job_b", label: "Sources", harness: "codex", model: null, state: "timed_out", createdAt: "2026-11-18T09:00:00.000Z", startedAt: "2026-11-18T09:00:01.000Z", endedAt: "2026-11-18T09:30:01.000Z" }] };
+  const api = async (url, options = {}) => {
+    calls.push({ url, method: options.method ?? "GET" });
+    if (url.endsWith("/chats")) return [{ id: "chat", name: "Work", state: "completed", draft: "" }];
+    if (url.endsWith("/interrupt")) { background = { waitingForAgents: 0, watches: [], wake: { pending: 0 }, agentJobs: background.agentJobs.map((job) => job.state === "running" ? { ...job, state: "cancelled", endedAt: "2026-11-18T10:01:00.000Z" } : job) }; return {}; }
+    return { id: "chat", name: "Work", state: "completed", draft: "", messages: [], settings: { harness: "codex", model: "gpt-5.5" },
+      runs: [{ state: "completed", modelResolved: "gpt-5.5", startedAt: "2026-11-18T09:59:00.000Z", finishedAt: "2026-11-18T10:00:05.000Z" }],
+      events: [{ type: "agent_job.updated", createdAt: "2026-11-18T10:00:03.000Z", payload: { id: "job_a", tokens: 21_000, activity: "Grep" } }], ...background };
+  };
+  const workspace = new ChatWorkspace({ root, api, getEpisode: () => ({ id: "episode" }) });
+  t.after(() => workspace.close());
+  await workspace.open();
+  assert.equal(workspace.isBusy(), false, "jobs never block the creator's next message");
+  assert.equal(root.querySelector("[data-chat-status]").textContent, "Waiting for agents (1) ...");
+  const rows = () => [...root.querySelectorAll(".chat-agent")].map((row) => [...row.children].map((child) => child.textContent.replace(/ · \d+:\d\d$/, "")));
+  assert.deepEqual(rows(), [["Assistant", "gpt-5.5 | — tokens", "Waiting for agents (1)"], ["Collect facts", "Claude Code · sonnet | 21k", "Running · Researching"], ["Sources", "Codex · default model | —", "Timed out"]]);
+  const stop = root.querySelector("[data-chat-stop]");
+  assert.deepEqual([stop.hidden, stop.getAttribute("aria-label")], [false, "Stop background agents"], "Stop is available with no turn active");
+  await stop.onclick();
+  assert.ok(calls.some((call) => call.url === "/api/episodes/episode/chats/chat/interrupt" && call.method === "POST"));
+  assert.equal(stop.hidden, true);
+  assert.equal(root.querySelector("[data-chat-status]").textContent, "completed");
+  assert.deepEqual(rows()[1], ["Collect facts", "Claude Code · sonnet | 21k", "Stopped"]);
+  // A held wake alone keeps Stop available.
+  background = { ...background, wake: { pending: 1, held: true, chainLimited: false } };
+  await workspace.refresh(workspace.generation, "episode", "chat");
+  assert.equal(stop.hidden, false);
+});

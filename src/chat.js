@@ -292,7 +292,9 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
     onEvent: (job, event) => {
       const params = event.params ?? {};
       const patch = event.method === "context/usage" && Number.isFinite(params.tokens) ? { tokens: params.tokens }
-        : event.method === "item/started" && ["dynamicToolCall", "mcpToolCall"].includes(params.item?.type) ? { activity: String(params.item.tool || params.item.name || "") }
+        // Its current tool, cleared ("") when the result returns, as for native delegations.
+        : ["item/started", "item/completed"].includes(event.method) && ["dynamicToolCall", "mcpToolCall"].includes(params.item?.type)
+          ? { activity: event.method === "item/started" ? String(params.item.tool || params.item.name || "") : "" }
         : null;
       if (!patch) return;
       const previous = jobSeen.get(job.id) ?? {}, next = { ...previous, ...patch };
@@ -458,12 +460,15 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
     }
   };
   const hasBackground = (conversationId) => agentJobs.live(conversationId).length > 0 || liveWatches(conversationId).length > 0 || resultCount(pendingResults(conversationId)) > 0;
-  // What the Agents panel and Stop read (spec #42 'Agents panel and chat').
+  // What the Agents panel and Stop read (spec #42 'Agents panel and chat'). The chat polls this
+  // every second, so a row leaves out the brief and result text; get_agent_job reads them.
   const backgroundState = (conversationId) => {
-    const jobs = agentJobs.list(conversationId), live = jobs.filter((job) => AGENT_JOB_LIVE.includes(job.state));
+    const jobs = agentJobs.list(conversationId).map(({ brief, result, ...job }) => job), live = jobs.filter((job) => AGENT_JOB_LIVE.includes(job.state));
+    // Ended jobs newest ending first; the list's newest-created order breaks ties (sort is stable).
+    const ended = jobs.filter((job) => !AGENT_JOB_LIVE.includes(job.state)).sort((a, b) => (b.endedAt ?? "").localeCompare(a.endedAt ?? ""));
     const pending = resultCount(pendingResults(conversationId));
     return {
-      agentJobs: [...live, ...jobs.filter((job) => !AGENT_JOB_LIVE.includes(job.state))].slice(0, Math.max(20, live.length)),
+      agentJobs: [...live, ...ended].slice(0, Math.max(20, live.length)),
       waitingForAgents: live.length,
       watches: liveWatches(conversationId).map((watch) => ({ jobId: watch.job_id, createdAt: watch.created_at })),
       wake: { pending, held: pending > 0 && due.has(conversationId), chainLimited: pending > 0 && wakeChain(conversationId) >= WAKE_CHAIN_LIMIT },
