@@ -2,7 +2,7 @@ import { animateHaloSun } from './chat-halo.js';
 import { selectStatus } from './turn-phases.js';
 
 // The turn timer: m:ss, minutes uncapped.
-const clock = (ms) => {
+export const clock = (ms) => {
   const seconds = Math.max(0, Math.floor(ms / 1000));
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 };

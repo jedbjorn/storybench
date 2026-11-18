@@ -1,3 +1,4 @@
+import { formatTokens } from "./chat-agents.js";
 // Harness / model / effort selection for one Storybench conversation (spec #11 "Selection
 // and availability"). Options come from GET /api/harnesses (installed-harness discovery and the
 // live login); a change is PUT to the conversation and shows as a boundary in the transcript.
@@ -33,6 +34,13 @@ export function boundaryText(event) {
     const why = { "harness-switch": "after switching harness", "harness-return": "after returning to this harness", initial: "for this conversation", "resume-unavailable": "because the previous session could not be resumed" }[payload.reason] ?? "";
     return `New ${HARNESS_LABELS[payload.harness] ?? payload.harness ?? ""} session ${why}; seeded with ${payload.includedMessages ?? 0} earlier messages${payload.omittedMessages ? ` (${payload.omittedMessages} older available on request)` : ""}. Earlier prompts were not re-run.`;
   }
+  if (event.type === "context.compacted") {
+    const [before, after] = [payload.preTokens, payload.postTokens].map((value) => Number.isFinite(value) ? formatTokens(value) : null);
+    const sizes = before && after ? ` · ${before} → ${after}` : before ? ` · ${before}` : "";
+    const why = { operator: "manual", threshold: "at the trigger", idle: "while idle" }[payload.cause] ?? (payload.trigger === "manual" ? "manual" : "automatic");
+    return `Context compacted${sizes} · ${why}`;
+  }
+  if (event.type === "compaction.failed") return `Compaction did not complete: ${payload.reason ?? "no reason reported"}`;
   return null;
 }
 

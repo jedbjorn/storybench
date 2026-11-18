@@ -35,7 +35,7 @@ test('Research guards real tab/production/channel/action navigation, preserves f
   assert.equal(await page.evaluate(() => { const event = new Event('beforeunload', { cancelable: true }); dispatchEvent(event); return event.defaultPrevented; }), true);
   await page.click('#preview'); await leave(); await page.click('[data-research-stay]');
   assert.equal(requests.length, 0); assert.equal(await page.inputValue('[data-research-summary]'), 'Unsaved findings');
-  await page.fill('[data-chat-draft]', 'Use my findings'); await page.click('[data-chat-send]'); await leave(); await page.click('[data-research-stay]');
+  await page.fill('[data-chat-draft]', 'Use my findings'); await page.press('[data-chat-draft]', 'Enter'); await leave(); await page.click('[data-research-stay]');
   assert.equal(requests.length, 0); assert.equal(await page.inputValue('[data-chat-draft]'), 'Use my findings');
   await page.route(`**/api/episodes/${video.id}/research`, route => route.request().method() === 'PUT' ? route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"Injected storage failure"}' }) : route.continue());
   await page.click('[data-tab=story]'); await leave(); await page.click('[data-research-leave-save]');

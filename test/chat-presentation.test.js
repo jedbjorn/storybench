@@ -126,7 +126,7 @@ test('jump or scrolling back to the end resumes following; polls, sends and layo
   height = 1200; await f.refresh(); assert.equal(top, 500);
   scroller.dispatchEvent(new f.view.Event('load')); assert.equal(top, 500);
   f.root.querySelector('[data-chat-draft]').value = 'new request';
-  await f.root.querySelector('[data-chat-send]').onclick(); assert.equal(top, 500);
+  await f.workspace.sendDraft(); assert.equal(top, 500);
   // Scrolling back to the end resumes following, as Jump to end does.
   scroller.scrollTop = 1000; scroller.dispatchEvent(new f.view.Event('scroll'));
   assert.equal(f.workspace.transcript.following, true); assert.equal(jump.hidden, true);
@@ -164,12 +164,12 @@ test('a pending send from a previous episode cannot clear the current send state
   const releases = [];
   f.intercept(url => url.endsWith('/messages') ? new Promise(resolve => releases.push(resolve)) : null);
   f.root.querySelector('[data-chat-draft]').value = 'First episode request';
-  const first = f.root.querySelector('[data-chat-send]').onclick();
+  const first = f.workspace.sendDraft();
   while (!releases.length) await new Promise(resolve => setTimeout(resolve, 0));
   await f.episode('next');
   assert.equal(f.workspace.sending, false);
   f.root.querySelector('[data-chat-draft]').value = 'Next episode request';
-  const next = f.root.querySelector('[data-chat-send]').onclick();
+  const next = f.workspace.sendDraft();
   while (releases.length < 2) await new Promise(resolve => setTimeout(resolve, 0));
   releases[0]({}); await first;
   assert.equal(f.workspace.sending, true);

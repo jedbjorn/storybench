@@ -37,6 +37,7 @@ export const PHASE_LABELS = Object.freeze({
   thinking: 'Thinking',
   waiting: 'Waiting to start',
   stopping: 'Stopping',
+  compacting: 'Compacting context',
 });
 
 // Spec #40 Selection rule. The FnB tunes these by feel at Alpha; they live only here.
@@ -91,6 +92,7 @@ export function selectStatus({ events = [], state, now, kind, shown = null }) {
   };
   if (state === 'queued') return show('waiting');
   if (state === 'interrupting') return show('stopping');
+  if (state === 'compacting') return show('compacting');
   const { windowMs, thinkingMs, dwellMs } = STATUS_TIMING;
   const { starts, inFlight } = turnActivity(events);
   const recent = starts.filter((entry) => now - entry.at <= windowMs);
@@ -107,7 +109,7 @@ export function selectStatus({ events = [], state, now, kind, shown = null }) {
   // Never false: a tool phase stays only while one of its tools is in flight or in the window.
   const untoolled = ['thinking', 'other', 'waiting', 'stopping'];
   const supported = (phase) => untoolled.includes(phase) || [...inFlight, ...recent].some((entry) => entry.phase === phase);
-  const holds = shown && shown.turn === turn && !['waiting', 'stopping'].includes(shown.phase)
+  const holds = shown && shown.turn === turn && !['waiting', 'stopping', 'compacting'].includes(shown.phase)
     && now - shown.since < dwellMs && supported(shown.phase);
   const phase = holds ? shown.phase : candidate;
   return show(phase, phase === 'delegate' ? helpers : 0);
