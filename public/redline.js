@@ -133,7 +133,7 @@ export function openRedline({ metadata, pinnedPath, canvas, context, position = 
     <div class="redline-canvas" id="redline-canvas"></div>
     <div class="redline-send">
       <p class="redline-context" data-redline-context></p>
-      <label class="redline-prompt">Prompt<textarea data-redline-prompt rows="3" placeholder="What should change?"></textarea></label>
+      <label class="redline-prompt">Prompt<textarea data-redline-prompt rows="2" placeholder="What should change?"></textarea></label>
       <div class="redline-actions">
         <label class="redline-target">Send to<select data-redline-target></select></label>
         <p class="redline-status" role="status" data-redline-status></p>
@@ -226,7 +226,13 @@ export function openRedline({ metadata, pinnedPath, canvas, context, position = 
     onClosed();
   };
   target.onchange = () => { current = target.value || null; defaulted = false; error = ''; paint(); };
-  prompt.oninput = () => paint();
+  // The prompt is two lines tall, grows with its text to four, then scrolls.
+  prompt.oninput = () => {
+    prompt.style.height = 'auto';
+    prompt.style.height = `${prompt.scrollHeight + prompt.offsetHeight - prompt.clientHeight}px`;
+    prompt.style.overflowY = prompt.scrollHeight > prompt.clientHeight ? 'auto' : 'hidden';
+    paint();
+  };
   $('[data-redline-close]').onclick = () => {
     if (sending) return;
     if (unsent() && !confirm('Discard this markup and prompt?')) return;
