@@ -21,7 +21,8 @@ const MODEL = /^[A-Za-z0-9][A-Za-z0-9/._:\-[\]]{0,159}$/;
 
 // The only operations the app may ask of the host lifecycle entry point.
 const CONTROL_OPS = {
-  "worker.start": ["op", "requestId", "harness", "segmentId", "episodeDir", "workDir", "source", "model"],
+  // An agent job's worker carries padDir; its job id stands in the requestId field.
+  "worker.start": ["op", "requestId", "harness", "segmentId", "episodeDir", "workDir", "padDir", "source", "model"],
   "worker.stop": ["op", "requestId"],
   "worker.status": ["op", "requestId"],
   "worker.screen": ["op", "requestId", "text"],
@@ -89,6 +90,14 @@ export function parseWorkDir(value, episode) {
   return value;
 }
 
+// An agent job's scratch pad (spec #42): exactly <workDir>/jobs/<jobId>, data-root-relative.
+export function parsePadDir(value, work) {
+  if (typeof value !== "string" || !value.startsWith(`${work}/jobs/`))
+    throw new RuntimeError("INVALID_PAD_DIR", "padDir must be <workDir>/jobs/<jobId>");
+  assertId(value.slice(work.length + "/jobs/".length), "pad id");
+  return value;
+}
+
 // Validate a control request exactly: unknown fields (images, flags, mounts, env, ...) are rejected.
 export function validateControlRequest(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new RuntimeError("INVALID_REQUEST", "Control request must be a JSON object");
@@ -118,6 +127,7 @@ export function validateControlRequest(input) {
     request.segmentId = assertId(input.segmentId, "segmentId");
     request.episode = parseEpisodeDir(input.episodeDir);
     request.episode.work = parseWorkDir(input.workDir, request.episode);
+    if (input.padDir !== undefined) request.episode.pad = parsePadDir(input.padDir, request.episode.work);
   }
   return request;
 }
@@ -142,7 +152,14 @@ export async function resolveEpisodeDirectory(dataRoot, episode) {
   if (!workInfo) throw new RuntimeError("WORK_MISSING", "Episode work directory does not exist", { status: 404 });
   if (workInfo.isSymbolicLink() || !workInfo.isDirectory() || (await realpath(work)) !== work || !isInside(actual, work))
     throw new RuntimeError("WORK_ESCAPE", "Episode work directory must be a real directory inside the episode", { status: 403 });
-  return { dataRoot: rootReal, episodeDir: actual, workDir: work };
+  if (episode.pad === undefined) return { dataRoot: rootReal, episodeDir: actual, workDir: work };
+  // An agent job's pad is its only writable data path: a real directory inside the work area.
+  const pad = path.join(rootReal, episode.pad);
+  const padInfo = await lstat(pad).catch(() => null);
+  if (!padInfo) throw new RuntimeError("PAD_MISSING", "Agent job pad does not exist", { status: 404 });
+  if (padInfo.isSymbolicLink() || !padInfo.isDirectory() || (await realpath(pad)) !== pad || !isInside(work, pad))
+    throw new RuntimeError("PAD_ESCAPE", "Agent job pad must be a real directory inside the work area", { status: 403 });
+  return { dataRoot: rootReal, episodeDir: actual, workDir: work, padDir: pad };
 }
 
 // Resolve a file the agent created in the episode work area. Relative paths resolve

@@ -28,7 +28,7 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 // Shared persistence/UI/tool limits: 1 MiB summary, 100 links, 200-byte IDs, 8 KiB URLs,
 // 512-byte titles, 2 KiB notes, 2 MiB complete normalized JSON (including escaping).
 // All text limits use UTF-8 bytes. Oversize input is rejected, never truncated.
@@ -466,6 +466,7 @@ export class Store {
     if (version < 16) this.migrateV16();
     if (version < 17) this.migrateV17();
     if (version < 18) this.migrateV18();
+    if (version < 19) this.migrateV19();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -544,6 +545,37 @@ export class Store {
         CREATE INDEX IF NOT EXISTS upstream_reports_episode ON upstream_reports(episode_id,created_at);
         PRAGMA user_version=18;`);
       this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(18,?)").run(now());
+      this.db.exec("COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+  // Agent jobs (spec #42 'Ledger'): one row per headless run, scoped to one conversation.
+  // A continued job is a new row on the same pad and session. Rows outlive their pad, so
+  // history stays readable after cleanup; `interrupted` is an unknown outcome, never success.
+  migrateV19() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec(`CREATE TABLE IF NOT EXISTS agent_jobs (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+        parent_request_id TEXT NOT NULL,
+        label TEXT NOT NULL, brief TEXT NOT NULL,
+        harness TEXT NOT NULL, inference_source TEXT NOT NULL, model TEXT, effort TEXT,
+        state TEXT NOT NULL CHECK(state IN ('queued','running','completed','failed','timed_out','cancelled','interrupted')),
+        time_limit_minutes INTEGER NOT NULL CHECK(time_limit_minutes BETWEEN 1 AND 60),
+        created_at TEXT NOT NULL, started_at TEXT, ended_at TEXT,
+        result_text TEXT, result_truncated INTEGER NOT NULL DEFAULT 0,
+        error_stage TEXT, error TEXT, files TEXT,
+        pad_path TEXT NOT NULL, pad_removed_at TEXT,
+        segment_id TEXT NOT NULL, session_id TEXT,
+        continued_from TEXT REFERENCES agent_jobs(id) ON DELETE SET NULL,
+        delivery TEXT CHECK(delivery IN ('pending','delivered','undeliverable')),
+        CHECK((state IN ('queued','running')) = (ended_at IS NULL))
+      );
+        CREATE INDEX IF NOT EXISTS agent_jobs_conversation ON agent_jobs(conversation_id,created_at);
+        CREATE INDEX IF NOT EXISTS agent_jobs_pad ON agent_jobs(pad_path);
+        PRAGMA user_version=19;`);
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(19,?)").run(now());
       this.db.exec("COMMIT");
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }

@@ -104,7 +104,7 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
   async function startWorker(request) {
     const existing = workers.get(request.requestId);
     if (existing) {
-      if (existing.source !== request.source || existing.model !== request.model || existing.harness !== request.harness || existing.segmentId !== request.segmentId || existing.episode.relative !== request.episode.relative || existing.episode.work !== request.episode.work)
+      if (existing.source !== request.source || existing.model !== request.model || existing.harness !== request.harness || existing.segmentId !== request.segmentId || existing.episode.relative !== request.episode.relative || existing.episode.work !== request.episode.work || existing.episode.pad !== request.episode.pad)
         throw new RuntimeError("DUPLICATE_REQUEST", "requestId already owns a worker with different settings", { status: 409 });
       return { ...statusOf(request.requestId, existing, await inspectContainer(existing.containerId)), reused: true };
     }
@@ -162,6 +162,8 @@ export function createHost(rawConfig, { log = (event) => console.log(JSON.string
         ...statusOf(request.requestId, worker, await inspectContainer(containerId)),
         episodeDir: `${DATA_MOUNT}/${request.episode.relative}`,
         workDir: `${DATA_MOUNT}/${request.episode.work}`,
+        // The harness's working directory: the episode for a turn, the pad for an agent job.
+        workingDir: `${DATA_MOUNT}/${request.episode.pad ?? request.episode.relative}`,
         harnessSocket: `${requestMount}/worker/harness.sock`,
         bridgeSocket: `${requestMount}/app/${BRIDGE_SOCKET_NAME}`,
         appRequestDir: `${requestMount}/app`,
