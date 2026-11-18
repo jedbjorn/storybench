@@ -394,6 +394,48 @@ test("A8: channel deletion ends the deleted channel's jobs and waits for their w
   assert.equal(fake.launches[1].closed, 0);
 });
 
+test("A8: a job in a retained channel that ends during a pending deletion starts its wake once the deletion completes", async (t) => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "sb-agent-wakes-delete-"));
+  const { factory, turns } = harness();
+  const jobs = heldJobs();
+  const fake = fakeLauncher([jobs.hold]);
+  const app = await createApp({ workspace, chatOptions: { codexFactory: factory, catalog: { list: async () => CATALOG }, agentJobLauncher: fake.launcher } });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => { await app.close(); rmSync(workspace, { recursive: true, force: true }); });
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const post = async (url, body) => { const response = await fetch(base + url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); return { status: response.status, body: await response.json() }; };
+  const doomed = app.store.getDefaultChannel(), kept = app.store.createChannel("Kept");
+  await writeFile(path.join(app.store.channelMediaDirectory(doomed.id), "owned.txt"), "doomed");
+  const episode = app.store.createEpisode({ title: "Kept", channelId: kept.id });
+  const conversation = app.chat.create(episode.id);
+  codexSettings(app.store, conversation.id);
+  const view = () => app.chat.get(episode.id, conversation.id);
+  await app.chat.send(episode.id, conversation.id, "Work in Kept");
+  const turn = await until(() => turns[0]);
+  await turn.tools.start_agent_job({ brief: "Read.", label: "Kept" });
+  turn.complete();
+  await until(() => view().state === "idle" && jobs.held.length === 1);
+  // The first deletion attempt stops part-way and stays pending.
+  let injected = false;
+  app.store.afterChannelDeleteFile = () => { if (!injected) { injected = true; throw new Error("injected file interruption"); } };
+  const preview = (await post("/api/channel-deletions/preview", { channelIds: [doomed.id] })).body;
+  const operationId = `delete_${randomUUID()}`;
+  const pending = await post("/api/channel-deletions", { channelIds: [doomed.id], token: preview.token, operationId });
+  assert.equal(pending.body.state, "pending", pending.body.error);
+  jobs.end(jobs.held[0], "Notes in notes.md");
+  await until(() => view().wake.pending === 1);
+  await settle();
+  assert.equal(turns.length, 1, "a pending deletion holds the wake");
+  assert.equal(view().wake.held, true);
+  const retried = await post(`/api/channel-deletions/${operationId}/retry`, {});
+  assert.equal(retried.body.state, "completed", retried.body.error);
+  const wake = await until(() => turns[1]);
+  assert.match(wake.prompt, /Storybench wake:[\s\S]*"Kept"[\s\S]*Notes in notes\.md/);
+  wake.complete();
+  await until(() => view().state === "idle");
+  assert.equal(view().wake.pending, 0);
+});
+
 test("A8: health counts running agent jobs, so update, stop and backup refuse while they run", async (t) => {
   const f = fixture(t, { behaviours: ["hang"] });
   const health = createHealth({ store: f.store, release: null });

@@ -355,6 +355,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           // stop; jobs in other channels only read and do not block it (spec #42 'Lifecycle').
           if (Array.isArray(body?.channelIds) && !deletionBusyReason()) await chat.endChannelJobs(body.channelIds);
           const result = store.channelDeletion.accept(body, deletionBusyReason);
+          chat.kickWakes();
           return send(res, result.state === "completed" ? 200 : 202, result);
         }
         if (parts.length === 3 && req.method === "GET") return send(res, 200, store.channelDeletion.status(parts[2]));
@@ -362,6 +363,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
           const reason = deletionBusyReason();
           if (reason) throw new StoreError(reason, 409);
           const result = store.channelDeletion.finish(parts[2]);
+          chat.kickWakes();
           return send(res, result.state === "completed" ? 200 : 202, result);
         }
       }

@@ -970,6 +970,9 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
       const conversations = db.prepare(`SELECT c.id FROM conversations c JOIN episodes e ON e.id=c.episode_id WHERE e.channel_id IN (${ids.map(() => "?").join(",")})`).all(...ids).map(({ id }) => id);
       await endBackground(conversations, { cancelWatched: false });
     },
+    // A pending channel deletion holds every wake; the server calls this once a deletion
+    // request settles so a held result starts its wake when the deletion has completed.
+    kickWakes,
     workerStopFailure: () => [...active.values()].find((item) => item.workerStopError)?.workerStopError ?? null,
     list: (episodeId) => { episode(episodeId); return db.prepare("SELECT * FROM conversations WHERE episode_id=? ORDER BY updated_at DESC,created_at DESC,rowid DESC").all(episodeId).map((value) => ({ ...summary(value), ...(continuity ? { settings: continuity.persistence.getSettings(value.id) } : {}) })); }, create,
     updateSettings, busyReason, compact,
