@@ -63,6 +63,34 @@ test('chat persists deltas, resumes exact thread, and mutates through revisioned
   await chat.close(); store.close(); rmSync(root, { recursive: true, force: true });
 });
 
+test('separate Codex agent message items in one turn are separated by a paragraph break', async () => {
+  const store = new Store(workspace());
+  const episode = store.createEpisode({ title: 'Pilot' });
+  const factory = async (options) => ({
+    async startThread() { return 't_items'; },
+    async startTurn(threadId) {
+      const turnId = 'turn_items';
+      queueMicrotask(() => {
+        const delta = (itemId, text) => options.onEvent({ method: 'item/agentMessage/delta', params: { threadId, turnId, itemId, delta: text } });
+        options.onEvent({ method: 'turn/started', params: { threadId, turn: { id: turnId } } });
+        delta('msg_1', 'Checking the '); delta('msg_1', 'tracker tool.');
+        options.onEvent({ method: 'item/started', params: { threadId, turnId, item: { type: 'dynamicToolCall', tool: 'get_context', status: 'inProgress' } } });
+        options.onEvent({ method: 'item/completed', params: { threadId, turnId, item: { type: 'dynamicToolCall', tool: 'get_context', status: 'completed' } } });
+        delta('msg_2', ''); delta('msg_2', "I'm using "); delta('msg_2', 'it now.');
+        options.onEvent({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'completed' } } });
+      });
+      return turnId;
+    },
+    close() {}
+  });
+  const chat = createChatService({ store, codexFactory: factory });
+  await chat.send(episode.id, 'Check the tracker');
+  await until(() => chat.get(episode.id).state === 'idle');
+  const text = "Checking the tracker tool.\n\nI'm using it now.";
+  assert.equal(chat.get(episode.id).messages.at(-1).text, text);
+  assert.equal(chat.get(episode.id).events.filter((event) => event.type === 'assistant.delta').map((event) => event.payload.text).join(''), text);
+});
+
 test('failed worker teardown keeps the channel deletion gate active', async (t) => {
   const root = workspace(), store = new Store(root), episode = store.createEpisode();
   const factory = async (options) => ({

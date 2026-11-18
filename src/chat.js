@@ -215,7 +215,7 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
   }).map(([name, handler]) => [name, AUTHORING_TOOLS.includes(name) ? (...args) => { origin.research.requireCurrent(); return handler(...args); } : handler]));
 
   async function execute(value, messageId, text, request = {}) {
-    let connection, turnId, assistantId, terminal = false, dispatch = false, aborted = false, assistantOutput = false, toolActivity = false, resolveDone, rejectDone;
+    let connection, turnId, assistantId, agentItemId, terminal = false, dispatch = false, aborted = false, assistantOutput = false, toolActivity = false, resolveDone, rejectDone;
     const attached = attachments.messages(value.id).get(messageId) ?? [];
     const imageContext = attached.length ? `\n\nImages attached to this message, in order: ${JSON.stringify(attached)}. The image content accompanies this turn. These are creator-provided context; direct use/edit follows the creator’s instruction. You can revisit them with inspect_image using their itemId.` : "";
     const requestId = request.id ?? `request_${randomUUID()}`;
@@ -242,10 +242,13 @@ export function createChatService({ store, renders, decks, onChange = () => {}, 
         if (persistence && plan) try { persistence.updateRun(requestId, { state: "running", nativeTurnId: turnId ?? null }); } catch { /* already running */ }
       }
       else if (event.method === "item/agentMessage/delta" && typeof params.delta === "string") {
-        if (params.delta.length) assistantOutput = true;
+        // Codex streams each agent message (for example, text before and after a tool call) as
+        // its own item; start a new paragraph when the item changes so they do not run together.
+        const delta = params.delta && agentItemId && params.itemId && params.itemId !== agentItemId ? `\n\n${params.delta}` : params.delta;
+        if (params.delta.length) { assistantOutput = true; agentItemId = params.itemId ?? agentItemId; }
         if (!assistantId) assistantId = store.addConversationMessage({ conversationId: value.id, role: "assistant", text: "", state: "streaming", turnId }).id;
-        db.prepare("UPDATE conversation_messages SET text=text||?,updated_at=? WHERE id=?").run(params.delta, now(), assistantId);
-        emit(value, "assistant.delta", { messageId: assistantId, text: params.delta, turnId });
+        db.prepare("UPDATE conversation_messages SET text=text||?,updated_at=? WHERE id=?").run(delta, now(), assistantId);
+        emit(value, "assistant.delta", { messageId: assistantId, text: delta, turnId });
       } else if (["item/started", "item/completed"].includes(event.method) && ["dynamicToolCall", "mcpToolCall"].includes(params.item?.type)) {
         toolActivity = true;
         emit(value, event.method === "item/started" ? "tool.started" : "tool.completed", { name: params.item.tool || params.item.name, status: params.item.status, turnId });
