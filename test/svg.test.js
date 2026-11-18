@@ -43,6 +43,19 @@ test('shared profile preserves useful geometry, semantics and isolated local def
   } finally { dom.window.close(); }
 });
 
+test('font-relative spacing survives staged export and renders at the inherited font size', async () => {
+  const art = spacing => svg(`<style>.label{word-spacing:${spacing}}</style><g id="art" font-size="16"><text class="label" x="10" y="30" letter-spacing="${spacing}">MYSTERY HOUSE</text></g>`);
+  const parsed = parseSvg(art('.125em'), { namespace: 'deck', stages: [{ id: 'label', svgGroupIds: ['art'] }] });
+  assert.match(parsed.svg, /letter-spacing="\.125em"/);
+  assert.match(parsed.svg, /\.deck-label\{word-spacing:\.125em\}/);
+  const rendered = await renderSvg(art('.125em'));
+  assert.deepEqual(rendered, await renderSvg(art('2')));
+  assert.notDeepEqual(rendered, await renderSvg(art('0')));
+  assert.throws(() => parseSvg(svg('<text/><text style="word-spacing:2pxem"/>')), /<text> \(element 3\), word-spacing="2pxem"/);
+  assert.throws(() => parseSvg(svg('<text letter-spacing="100001em"/>')), /finite number/);
+  assert.throws(() => parseSvg(svg('<text x="1em"/>')), /<text> \(element 2\), x="1em"/);
+});
+
 test('active, unsupported, malformed and excessive SVG fail explicitly at the parsed boundary', () => {
   const bad = [
     svg('<script>alert(1)</script>'), svg('<g onclick="alert(1)"/>'), svg('<foreignObject/>'),

@@ -256,7 +256,10 @@ export function createScopedTools(scope, { store, library = null, isShortcutMess
       const staged = await stageWorkFile(file, path.join(workspace, "imports", ".agent-staging"));
       let imported;
       try { imported = await importMedia({ workspace, sourcePath: staged, mediaDirectory: store.channelMediaDirectory(scope.channelId) }); }
-      catch (error) { throw new RuntimeError("UNSUPPORTED_MEDIA", `Not a decodable image, video or audio file: ${error.message}`, { status: 422 }); }
+      catch (error) {
+        if (error.code === "INVALID_SVG") throw new RuntimeError(error.code, error.message, { status: 422, cause: error });
+        throw new RuntimeError("UNSUPPORTED_MEDIA", `Not a decodable image, video or audio file: ${error.message}`, { status: 422, cause: error });
+      }
       finally { await rm(path.dirname(staged), { recursive: true, force: true }); }
       const category = args.category ?? CATEGORY_BY_KIND[imported.kind] ?? "B-roll";
       if (!KINDS_FOR_CATEGORY[category].includes(imported.kind)) {
