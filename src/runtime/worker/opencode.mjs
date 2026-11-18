@@ -4,7 +4,7 @@ import { startWorkerGatewayAdapter, GATEWAY_MOUNT } from '../gateway-relay.js';
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
-import { openCodeConfig, TOOL_DISCIPLINE } from '../opencode.js';
+import { openCodeConfig, openCodeRunEvent, TOOL_DISCIPLINE } from '../opencode.js';
 const header = JSON.parse(process.argv[2]);
 const route = JSON.parse(process.env.STORYBENCH_ROUTE);
 const lines = createInterface({ input: process.stdin });
@@ -39,11 +39,10 @@ let failed = false, pending = Promise.resolve();
 createInterface({ input: child.stdout }).on('line', (line) => {
   pending = pending.then(async () => {
     let event; try { event = JSON.parse(line); } catch { return; }
-    if (event.sessionID) { native = event.sessionID; await writeFile(stateFile, JSON.stringify({ session: native })); }
-    if (event.type === 'error') { failed = true; return; }
-    // Only normalized public text/tool fields; provider error payloads are private.
-    if (event.type === 'text') console.log(JSON.stringify({ type: 'text', part: { text: event.part?.text || '' } }));
-    if (event.type === 'tool_use') console.log(JSON.stringify({ type: 'tool_use', part: { tool: event.part?.tool, state: { status: event.part?.state?.status } } }));
+    const { session, failed: errored, output } = openCodeRunEvent(event, native);
+    if (session !== native) { native = session; await writeFile(stateFile, JSON.stringify({ session: native })); }
+    if (errored) failed = true;
+    if (output) console.log(JSON.stringify(output));
   });
 });
 child.once('error', () => { failed = true; });

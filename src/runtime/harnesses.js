@@ -25,6 +25,20 @@ export class WorkerCodexConnection extends CodexConnection {
     // current app-server responses do not report the resolved effort, so effortResolved is
     // normally null even when an effort was selected for the turn.
     this.resolved = { model: null, effort: null };
+    const forward = this.onEvent;
+    this.onEvent = (event) => { const own = this.#production(event); if (own) forward(own); };
+  }
+
+  // Subagents run as their own app-server threads. Only the conversation's thread reaches
+  // chat; each delegation shows as one tool entry, started when the subagent is spawned and
+  // completed when it ends.
+  #production(event) {
+    const params = event.params;
+    if (params?.threadId && this.threadId && params.threadId !== this.threadId) return null;
+    if (params?.item?.type !== "subAgentActivity") return event;
+    const started = params.item.kind === "started";
+    if (event.method !== (started ? "item/started" : "item/completed")) return null;
+    return { ...event, params: { ...params, item: { type: "dynamicToolCall", tool: "subagent", status: started ? "inProgress" : params.item.kind } } };
   }
 
   #capture(result) {
@@ -37,6 +51,7 @@ export class WorkerCodexConnection extends CodexConnection {
     const id = result?.thread?.id;
     if (!id) throw new CodexError("CODEX_PROTOCOL_ERROR", "thread/start returned no thread id.");
     this.#capture(result);
+    this.threadId = id;
     return id;
   }
 
@@ -46,6 +61,7 @@ export class WorkerCodexConnection extends CodexConnection {
     if (result?.thread?.id !== threadId) throw new CodexError("CODEX_SESSION_LOST", "Codex could not resume the saved conversation thread.");
     if (result.thread.cwd && result.thread.cwd !== this.cwd) throw new CodexError("CODEX_SESSION_MISMATCH", "The saved Codex thread belongs to a different workspace.");
     this.#capture(result);
+    this.threadId = threadId;
     return threadId;
   }
 
@@ -177,6 +193,9 @@ export class ClaudeChatConnection {
       if (typeof event.model === "string") this.resolved.model = event.model;
       return;
     }
+    // A subagent's messages carry the delegating tool call's id. Its prose and inner tool
+    // calls stay out of the transcript; the delegation itself is the parent's tool entry.
+    if (event.parent_tool_use_id && ["assistant", "user"].includes(event.type)) return;
     if (event.type === "assistant") {
       if (typeof event.message?.model === "string") this.resolved.model = event.message.model;
       if (event.message?.usage) this.usage = event.message.usage;

@@ -36,10 +36,13 @@ The release images package the production tools rather than relying on host copi
 | Node.js | `node:24-trixie-slim` at the digest pinned in `docker/Dockerfile` (`24.21.0` in the verified image) |
 | Codex CLI | `0.155.1` |
 | Claude Code | `2.1.278` |
+| OpenCode | `1.19.5` |
 | Media and extraction | FFmpeg/ffprobe, Poppler, Python 3/Pillow and resvg from Debian's `20260922T000000Z` snapshot |
 | Fonts | DejaVu, Noto Core and Liberation 2 from the same snapshot |
 
 The base image is digest pinned; both Debian install layers use the same dated, signed snapshot, and the app and harness npm trees use lockfiles with `npm ci`. npm install scripts are disabled except for Claude's reviewed local binary placement script, which selects its lockfile-pinned native package. Upgrading any of these inputs is a reviewed source change. Every installed release records its exact image IDs, base-image identity and detected binary versions in its manifest and install receipt. Before activation, installation and updates probe required tools in each exact app/worker image, then run bounded Pillow, SVG, PDF, AAC audio, H.264/AAC animation, metadata and decode checks without network access. A missing or broken tool stops staging before the active database or service is touched. `storybench doctor` reports per-tool failures against the installed images; it does not claim a pass from partial version output.
+
+The production agent may delegate to subagents on all three harnesses: Codex collaboration threads (`multi_agent` stays enabled; six other Codex integrations are disabled), Claude Code's `Agent` tool and OpenCode's `task` tool. Subagents run inside the same worker container with the same Storybench tools and the same single provider credential, and Stop removes the container and every subagent with it. Chat shows only the production agent's reply; each delegation appears as one tool activity entry, and the conversation always resumes the production agent's own session. Delegation adds model requests to the selected provider's usage; there is no per-conversation switch or spend limit.
 
 Storybench reuses the current host logins at `~/.codex/auth.json` and `~/.claude/.credentials.json`. Sign in on the host with `codex login` and by running `claude`. Only the selected login material is staged for a worker; it is not baked into images or release metadata. The host login is the live authority: if its usable token is absent, that harness is unavailable, with no cached credential, alternate harness or model fallback. A provider warning does not prevent use of the editor.
 
