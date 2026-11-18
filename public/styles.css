@@ -1020,6 +1020,9 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
 #deckOutputs .panel-heading { margin-bottom: 0; }
 #deckOutputs h3 { margin: 0; font-size: 14px; }
 #deckBuildError:empty { display: none; }
+#buildDeck { border-color: #2e7d4f; color: #2e7d4f; font-weight: 600; }
+#buildDeck:hover:not(:disabled) { background: #e6f3eb; border-color: #23633e; color: #23633e; }
+#buildDeck:disabled { opacity: 1; background: #eef0ee; border-color: var(--line); color: var(--muted); font-weight: 400; }
 .deck-build { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 12px; padding: 10px 0; border-top: 1px solid var(--line); }
 .deck-build:first-child { margin-top: 12px; }
 .deck-build > div:first-child { display: flex; align-items: baseline; gap: 12px; }
