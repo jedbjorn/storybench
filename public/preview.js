@@ -9,6 +9,11 @@ let shown = null; // The deck state last reported by the pinned deck's own frame
 const embedded = window.parent !== window;
 if (embedded) document.documentElement.classList.add('embed');
 const announce = label => { if (embedded) window.parent.postMessage({ type: 'storybench-preview-label', label }, location.origin); };
+if (embedded) document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape' || event.defaultPrevented || $('.redline-backdrop')) return;
+  event.preventDefault();
+  window.parent.postMessage({ type: 'storybench-preview-close' }, location.origin);
+});
 
 function unavailable(message = 'This item is no longer available.') {
   events?.close();
