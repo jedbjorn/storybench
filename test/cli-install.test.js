@@ -1,4 +1,5 @@
 import { deckCheckFixture } from '../test-support/deck-evidence.js';
+import { retemplate, seedReleaseModules } from '../test-support/release-modules.js';
 import test from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -6,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { createManifest, readReleaseManifest } from "../src/runtime/manifest.js";
+import { createManifest, readReleaseManifest, readReleaseManifestAt } from "../src/runtime/manifest.js";
 import { SCHEMA_VERSION } from "../src/store.js";
 import { initDataRoot } from "../src/services/data-root.js";
 import { writeConfigAtomic } from "../src/cli/config.js";
@@ -81,6 +82,7 @@ test("reused candidate fails a broken media smoke before activation", async (t) 
   const manifest = createManifest({ packageName: "storybench", packageVersion: "0.1.0", commit: s.commit,
     images: { app: APP, worker: WORKER }, schema: { min: 0, max: SCHEMA_VERSION } });
   writeFileSync(path.join(release, "manifest.json"), JSON.stringify(manifest));
+  seedReleaseModules(release);
   const run = async (_command, args) => {
     if (args[0] === "image") return { code: 0, stdout: `${args[2]}\n` };
     if (args.includes("smoke")) return { code: 1, stderr: "animated video encode: ffmpeg: exit 1" };
@@ -98,6 +100,7 @@ test("reused candidate SVG/browser failures preserve the active pointer and mani
     images: { app: APP, worker: WORKER }, schema: { min: 0, max: SCHEMA_VERSION } });
   const bytes = JSON.stringify(manifest);
   writeFileSync(path.join(release, 'manifest.json'), bytes);
+  seedReleaseModules(release);
   activateSymlink(s.xdg.current, release);
   for (const failedRole of ['app', 'worker']) {
     const run = async (_command, args) => {
@@ -117,6 +120,46 @@ test("reused candidate SVG/browser failures preserve the active pointer and mani
     assert.equal(readlinkSync(s.xdg.current), release);
     assert.equal(readFileSync(path.join(release, 'manifest.json'), 'utf8'), bytes);
   }
+});
+
+test("an updater on deck template N stages and reuses a release on template N+1 by that release's own contract", async (t) => {
+  const s = fixture(t), NEXT = "staged-svg-next";
+  retemplate(path.join(s.source, "src", "runtime", "deck-evidence.js"), NEXT);
+  command("git", ["-C", s.source, "commit", "-am", "next deck template"]);
+  const commit = command("git", ["-C", s.source, "rev-parse", "HEAD"]);
+  mkdirSync(s.xdg.releases, { recursive: true });
+  command("git", ["clone", "--mirror", s.source, s.xdg.mirror]);
+  let template = NEXT;
+  const run = async (executable, args, options) => {
+    if (executable !== "docker") return runCommand(executable, args, options);
+    if (args[0] === "image") return { code: 0, stdout: `${args[2]}\n`, stderr: "" };
+    const role = args.includes(WORKER) ? "worker" : "app";
+    const evidence = args.some((arg) => arg.endsWith("/deck-check.js")) ? { ...deckCheckFixture(role), template }
+      : args.includes("smoke") ? { pillowPng: true, svgPng: true, pdfPng: true, aacAudio: true, h264AacAnimation: true, decodedPng: true }
+      : Object.fromEntries(REQUIRED_TOOLS[role].map((name) => [name, name === "node" ? "v24.21.0" : ["codex", "claude", "opencode"].includes(name) ? "1.2.3" : "available"]));
+    return { code: 0, stdout: JSON.stringify(evidence), stderr: "" };
+  };
+  const buildRelease = async () => createManifest({ packageName: "storybench", packageVersion: "0.1.0", commit, ref: "HEAD",
+    images: { app: APP, worker: WORKER }, schema: { min: 0, max: SCHEMA_VERSION } });
+  const stage = () => stageRelease({ xdg: s.xdg, env: s.env, out() {} }, { commit, remote: s.remote, ref: "main" }, { runCommand: run, buildRelease });
+
+  // The check is not relaxed: evidence on this updater's template is not the staged release's.
+  template = deckCheckFixture("app").template;
+  assert.notEqual(template, NEXT);
+  await assert.rejects(stage(), /app deck check: missing or incompatible SVG profile\/template evidence/);
+  assert.equal(existsSync(path.join(s.xdg.releases, commit)), false);
+
+  template = NEXT;
+  const staged = await stage();
+  assert.equal(staged.reused, false);
+  for (const role of ["app", "worker"]) assert.equal(staged.manifest.runtime.deck.roles[role].template, NEXT);
+  const running = await readReleaseManifest(path.join(staged.release, "manifest.json"));
+  assert.equal(running.ok, false, "this updater's own contract does not describe the staged release");
+  assert.match(running.reason, /SVG profile\/template/);
+  const own = await readReleaseManifestAt(staged.release);
+  assert.equal(own.ok, true, own.reason);
+  assert.equal(own.manifest.id, staged.manifest.id);
+  assert.equal((await stage()).reused, true, "the staged release is reused, not rejected or rebuilt");
 });
 
 test("exact install, doctor, idempotent rerun and uninstall preserve configuration, data and state", async (t) => {

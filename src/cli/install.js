@@ -1,4 +1,3 @@
-import { bindDeckEvidence } from '../runtime/deck-evidence.js';
 // Exact-commit installation and release staging. The shell bootstrap only checks the host and
 // passes immutable source facts here; this module owns every installation mutation.
 import crypto from "node:crypto";
@@ -8,8 +7,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { readReleaseManifest } from "../runtime/manifest.js";
-import { checkImage } from "../runtime/image-verification.js";
+import { readReleaseManifestAt } from "../runtime/manifest.js";
 import { DEFAULT_PORT, readConfig } from "./config.js";
 import { CliError, EXIT } from "./errors.js";
 import { ensurePrivateDirectory } from "./fs-safety.js";
@@ -97,8 +95,14 @@ async function imagesPresent(run, manifest) {
   return true;
 }
 
-export async function reusableRelease(file, commit, run = runCommand) {
-  const found = await readReleaseManifest(file);
+// A release tree is judged by its own runtime modules, never by the running release's: the
+// image checks and deck evidence contract can differ between the two.
+function releaseModule(root, name) {
+  return import(`${pathToFileURL(path.join(root, "src", "runtime", name)).href}?install=${crypto.randomUUID()}`);
+}
+
+export async function reusableRelease(root, commit, run = runCommand) {
+  const found = await readReleaseManifestAt(root);
   return found.ok && found.manifest.source.commit === commit && await imagesPresent(run, found.manifest) ? found.manifest : null;
 }
 
@@ -149,9 +153,9 @@ function nodeBaseIdentity(stage) {
 export async function stageRelease(context, metadata, adapters = {}) {
   const run = adapters.runCommand ?? context.runCommand ?? runCommand;
   const final = releasePath(context.xdg, metadata.commit);
-  const manifestFile = path.join(final, "manifest.json");
-  const reusable = await reusableRelease(manifestFile, metadata.commit, run);
+  const reusable = await reusableRelease(final, metadata.commit, run);
   if (reusable) {
+    const { checkImage } = await releaseModule(final, "image-verification.js");
     for (const role of ["app", "worker"]) {
       await checkImage(run, reusable.images[role].id, role, "probe", { env: context.env });
       await checkImage(run, reusable.images[role].id, role, "smoke", { env: context.env });
@@ -172,8 +176,9 @@ export async function stageRelease(context, metadata, adapters = {}) {
   try {
     detach = await attachDetachedMetadata(run, context.xdg.mirror, metadata.commit, stage, context.env);
     await checked(run, "npm", ["ci", "--omit=dev", "--ignore-scripts=false"], { cwd: stage, timeoutMs: 600_000 });
-    const module = await import(`${pathToFileURL(path.join(stage, "src", "runtime", "release.js")).href}?install=${crypto.randomUUID()}`);
-    const buildRelease = adapters.buildRelease ?? module.buildRelease;
+    const buildRelease = adapters.buildRelease ?? (await releaseModule(stage, "release.js")).buildRelease;
+    const { checkImage } = await releaseModule(stage, "image-verification.js");
+    const { bindDeckEvidence } = await releaseModule(stage, "deck-evidence.js");
     const installId = ensureInstallationId(context.xdg, readConfig(context.xdg.configFile)?.installId ?? null);
     let manifest = await buildRelease({ repo: stage, tag: `storybench-${metadata.commit.slice(0, 12)}`, installId,
       log: (line) => context.out(`  ${line}`) });
@@ -185,7 +190,7 @@ export async function stageRelease(context, metadata, adapters = {}) {
     const deckChecks = {};
     for (const role of ["app", "worker"]) deckChecks[role] = await checkImage(run, manifest.images[role].id, role, "deck", { env: context.env });
     manifest = { ...manifest, runtime: { ...manifest.runtime, deck: bindDeckEvidence(deckChecks, metadata.commit, { app: manifest.images.app.id, worker: manifest.images.worker.id }) } };
-    const manifestModule = await import(`${pathToFileURL(path.join(stage, "src", "runtime", "manifest.js")).href}?install=${crypto.randomUUID()}`);
+    const manifestModule = await releaseModule(stage, "manifest.js");
     const installedAt = new Date().toISOString();
     const installer = { node: process.version, npm: firstLine(await checked(run, "npm", ["--version"])),
       git: firstLine(await checked(run, "git", ["--version"], gitOptions(context.env))), docker: metadata.dockerVersion ?? "unknown" };

@@ -4,7 +4,7 @@
 import { accessSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, renameSync, writeSync } from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
-import { readReleaseManifest } from "../runtime/manifest.js";
+import { readReleaseManifest, readReleaseManifestAt } from "../runtime/manifest.js";
 import { DEFAULT_PORT, readConfig, validatePort, writeConfigAtomic } from "./config.js";
 import { configuredRoot as verifiedRoot } from "./root.js";
 import { CliError, EXIT } from "./errors.js";
@@ -32,11 +32,13 @@ export function lifecyclePaths(context, config) {
   };
 }
 
-export async function expectedRelease(context, explicitFile = null) {
+// `releaseRoot` names a release other than the running one (an update or rollback target); it
+// is read with its own manifest module.
+export async function expectedRelease(context, explicitFile = null, releaseRoot = null) {
   const file = explicitFile ?? manifestFile({ env: context.env });
   if (!existsSync(file)) throw new CliError("No release manifest is installed for this Storybench", {
     hint: `Install a release, or for a development checkout build one: node src/runtime/release.js build --out ${file}` });
-  const result = await readReleaseManifest(file);
+  const result = releaseRoot ? await readReleaseManifestAt(releaseRoot) : await readReleaseManifest(file);
   if (!result.ok) throw new CliError(`The release manifest cannot be used: ${result.reason}`);
   return { file, manifest: result.manifest, identity: result.identity };
 }
@@ -88,7 +90,7 @@ export async function waitForHealth(context, { unit, port, identity, dataRootId,
 // Writes the host configuration and the unit for the current release; returns what to expect from health.
 export async function prepareService(context, config, { releaseRoot = null, manifestPath = null } = {}) {
   const root = releaseRoot ?? PACKAGE_ROOT;
-  const release = await expectedRelease(context, manifestPath);
+  const release = await expectedRelease(context, manifestPath, releaseRoot);
   const paths = lifecyclePaths(context, config);
   if (!paths.runtimeRoot) throw new CliError("A systemd user session is required ($XDG_RUNTIME_DIR is not set)", { hint: "Run Storybench from a normal login session." });
   const home = context.home;
