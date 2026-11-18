@@ -104,9 +104,13 @@ test('Chromium: atomic responses, sticky reading, image growth, jump and respons
   assert.equal(await jump.textContent(), '');
   assert.equal(await jump.evaluate(el => document.querySelector('[data-chat-messages]').contains(el)), false);
   await shot('desktop-reading');
-  // Reaching bottom by scrolling is deliberately not a follow-mode switch.
+  // Scrolling back to the end resumes following: new content below stays in view.
   await messages.evaluate(el => { el.scrollTop = el.scrollHeight; }); await settled();
-  assert.equal(await jump.isVisible(), true);
+  assert.equal(await jump.isVisible(), false, 'Returning to the end resumes following');
+  finish('completed'); await page.locator('.chat-response-animation').waitFor({ state: 'detached' });
+  await send('Request after returning to the end'); await atEnd();
+  // Jump to end also resumes following after upward browsing.
+  await messages.hover(); await page.mouse.wheel(0, -900); await jump.waitFor(); await settled();
   await jump.click(); await atEnd(); assert.equal(await jump.isVisible(), false);
   // Every responsive layout retains the 170px artwork above the composer.
   for (const width of [1440, 900, 600, 390]) {
