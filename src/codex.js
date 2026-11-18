@@ -47,11 +47,13 @@ const deckSlide = object(['id', 'title', 'layout'], {
   subnav: { type: 'array', items: object(['id', 'label'], { id: deckText, label: deckText, itemId: { type: ['string', 'null'] } }) },
 });
 // Deck-level design (spec #44). Omitted keeps the saved design; a supplied design replaces it.
-const deckHex = { type: ['string', 'null'], description: 'Six-digit hex, for example #1255FF' }, deckFont = { type: ['string', 'null'] };
+const deckHex = { type: ['string', 'null'], description: 'Six-digit hex, for example #1255FF' }, deckFont = { type: ['string', 'null'] }, deckSetBy = { type: ['string', 'null'], enum: ['creator', 'agent', null] };
 const deckDesign = object([], {
   theme: { ...object([], {
     colors: object([], { base: deckHex, accent: deckHex, background: deckHex }),
-    fonts: object([], { base: deckFont, accent: deckFont, alternate: deckFont }) }),
+    fonts: object([], { base: deckFont, accent: deckFont, alternate: deckFont }),
+    setBy: { ...object([], { colors: object([], { base: deckSetBy, accent: deckSetBy, background: deckSetBy }), fonts: object([], { base: deckSetBy, accent: deckSetBy, alternate: deckSetBy }) }),
+      description: 'Who set each value, as read_deck returns it. Accepted so a read design can be saved back; ignored on save, which records it.' } }),
     description: 'This deck\'s colour and font roles. A role left unset or null follows the channel Brand Standards at build time. Fonts come from the get_context catalogue.' },
 });
 export const AUTHORING_TOOLS = Object.freeze(['save_deck', 'build_deck', 'update_story', 'update_cards', 'update_storyboard', 'create_draft', 'create_final', 'create_graphic_recipe', 'update_graphic_recipe', 'render_graphic', 'apply_branding']);

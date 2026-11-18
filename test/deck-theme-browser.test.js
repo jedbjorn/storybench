@@ -1,4 +1,4 @@
-// Spec #44 A2 (no leftover template hue) and the colour half of A6 (unset means unchanged):
+// Spec #44 A2 (no leftover template hue), A3 (one role changes only its surfaces) and the colour half of A6 (unset means unchanged):
 // computed styles of a built deck, audience and Presenter, in Chromium and Firefox at 1280x720.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -45,6 +45,13 @@ const SURFACES = [
   ['figure placeholder', '#detail figure img', 'background-color'],
   ['slide glow', '#welcome', 'background-image'],
 ];
+// The template variable that colours each surface, and today's value of each variable.
+const OWNER = { 'page text': '--ink', page: '--paper', rail: '--rail-fill', 'rail border': '--line', 'current rail item': '--rail-current',
+  'current rail marker': '--accent', footer: '--paper', 'footer rule': '--line', 'button border': '--line', 'button hover': '--hover', 'skip link': '--skip',
+  eyebrow: '--accent', 'title rule': '--accent', 'section slide': '--section', 'muted text': '--muted', 'step number': '--accent', 'stage rule': '--accent',
+  'active stage button': '--active', 'active stage text': '--paper', 'figure placeholder': '--placeholder', 'slide glow': '--highlight' };
+const TEMPLATE = { '--ink': '#252c30', '--paper': '#f7f4ed', '--muted': '#505b60', '--accent': '#26686b', '--line': '#c8cecb', '--hover': '#e2eae5', '--rail-fill': '#efeee7',
+  '--rail-current': '#dce6df', '--highlight': '#fffaf1', '--section': '#dfe9e2', '--placeholder': '#e0e5e0', '--active': '#252c30', '--skip': '#ffffff' };
 async function surfaces(page) {
   const found = {};
   for (const [label, selector, property, state] of SURFACES) {
@@ -59,7 +66,7 @@ async function surfaces(page) {
 }
 const colours = value => value.match(/rgba?\([^)]*\)/g) ?? [];
 
-for (const type of [chromium, firefox]) test(`${type.name()}: a distinctive palette leaves no template hue; no colours keeps today's palette`, { timeout: 60000 }, async t => {
+for (const type of [chromium, firefox]) test(`${type.name()}: a distinctive palette leaves no template hue; one role changes only its surfaces; no colours keeps today's palette`, { timeout: 60000 }, async t => {
   const browser = await launch(type);
   if (!browser) return t.skip(`No launchable ${type.name()} on this seat`);
   t.after(() => browser.close());
@@ -106,5 +113,17 @@ for (const type of [chromium, firefox]) test(`${type.name()}: a distinctive pale
   assert.deepEqual(colours(plain['slide glow']), [rgb('#fffaf1'), TRANSPARENT]);
   await page.emulateMedia({ media: 'print' });
   assert.equal(await page.locator('#welcome').evaluate(el => getComputedStyle(el).backgroundColor), rgb('#ffffff'));
+  await page.emulateMedia({ media: 'screen' });
+
+  // A3: one role set changes only that role's surfaces and the hues derived from it; every other surface keeps today's value.
+  for (const role of ['base', 'accent', 'background']) {
+    const single = deckPalette({ [role]: DISTINCT[role] });
+    await page.goto(pathToFileURL(path.join(exportDeck(t, { [role]: DISTINCT[role] }), 'index.html')).href + '#welcome');
+    const found = await surfaces(page);
+    for (const [label, variable] of Object.entries(OWNER)) {
+      const expected = rgb(single[variable] ?? TEMPLATE[variable]);
+      assert.equal(label === 'slide glow' ? colours(found[label])[0] : found[label], expected, `${role} only: ${label} (${variable})`);
+    }
+  }
   assert.deepEqual(errors, []);
 });

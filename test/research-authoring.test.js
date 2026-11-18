@@ -91,6 +91,56 @@ test('deleted gallery items survive read/edit/save under the shared schema and a
   });
 });
 
+// The JSON Schema keywords these tool schemas use; returns the first violation, or null.
+function schemaViolation(schema, value, at = '$') {
+  if (schema.anyOf) return schema.anyOf.some(branch => !schemaViolation(branch, value, at)) ? null : `${at}: matches no anyOf branch`;
+  const types = [schema.type ?? []].flat(), type = value === null ? 'null' : Array.isArray(value) ? 'array' : Number.isInteger(value) ? 'integer' : typeof value;
+  if (types.length && !types.includes(type) && !(type === 'integer' && types.includes('number'))) return `${at}: ${type} is not ${types.join('|')}`;
+  if (schema.enum && !schema.enum.includes(value)) return `${at}: ${JSON.stringify(value)} is not in the enum`;
+  if (type === 'object') {
+    for (const key of schema.required ?? []) if (!(key in value)) return `${at}.${key}: required`;
+    for (const [key, child] of Object.entries(value)) {
+      if (!schema.properties?.[key]) { if (schema.additionalProperties === false) return `${at}.${key}: not allowed`; continue; }
+      const found = schemaViolation(schema.properties[key], child, `${at}.${key}`); if (found) return found;
+    }
+  }
+  if (type === 'array' && schema.items) for (const [index, child] of value.entries()) { const found = schemaViolation(schema.items, child, `${at}[${index}]`); if (found) return found; }
+  return null;
+}
+
+test('spec #44: the complete design read_deck returns saves back through save_deck; unchanged values keep their setBy', async t => {
+  for (const harness of ['codex', 'claude', 'opencode']) await t.test(harness, async t => {
+    const f = fixture(t, { kind: 'deck' });
+    await f.start();
+    const native = await f.native(t, harness);
+    assert.equal((await native.call('read_research')).failed, false);
+    const agentSaved = await native.call('save_deck', { expectedRevision: f.store.getDeck(f.p.id).revision, slides: [slide()],
+      design: { theme: { colors: { base: '#123456' }, fonts: { accent: 'Kalam' } } } });
+    assert.equal(agentSaved.failed, false, agentSaved.text);
+    const human = f.store.getDeck(f.p.id);
+    f.store.saveDeck(f.p.id, human.revision, human.slides, 'human', { theme: { colors: { base: '#123456', accent: '#C03060' }, fonts: { accent: 'Kalam' } } });
+    const read = await native.call('read_deck');
+    assert.equal(read.failed, false, read.text);
+    const deck = JSON.parse(read.text);
+    assert.deepEqual(deck.design.theme.setBy, { colors: { base: 'agent', accent: 'creator' }, fonts: { accent: 'agent' } });
+    // Modify one value and send the complete returned design back, setBy included.
+    deck.design.theme.colors.background = '#F0E0A0';
+    const input = { expectedRevision: deck.revision, slides: deck.slides, design: deck.design };
+    for (const definitions of [STORYBENCH_TOOLS, native.definitions])
+      assert.equal(schemaViolation(definitions.find(tool => tool.name === 'save_deck').inputSchema, input), null);
+    const saved = await native.call('save_deck', input);
+    assert.equal(saved.failed, false, saved.text);
+    assert.deepEqual(f.store.getDeck(f.p.id).design.theme, { colors: { base: '#123456', accent: '#C03060', background: '#F0E0A0' }, fonts: { accent: 'Kalam' },
+      setBy: { colors: { base: 'agent', accent: 'creator', background: 'agent' }, fonts: { accent: 'agent' } } });
+    // A caller's setBy is provenance the save path ignores: claiming a creator value as the agent's changes nothing.
+    const claimed = f.store.getDeck(f.p.id);
+    claimed.design.theme.setBy.colors.accent = 'agent';
+    const reclaimed = await native.call('save_deck', { expectedRevision: claimed.revision, slides: claimed.slides, design: claimed.design });
+    assert.equal(reclaimed.failed, false, reclaimed.text);
+    assert.equal(f.store.getDeck(f.p.id).design.theme.setBy.colors.accent, 'creator');
+  });
+});
+
 test('typed authoring matrix: full content, not metadata or an undelivered return, authorizes each request; stale context is refused across kinds/stages/archive and native adapters', async t => {
   const originalFetch = globalThis.fetch, fetched = []; globalThis.fetch = async (...args) => { fetched.push(args); throw new Error('No network allowed'); }; t.after(() => { globalThis.fetch = originalFetch; });
   for (const kind of ['video', 'deck']) for (const harness of ['codex', 'claude', 'opencode']) for (const state of ['Scaffold', 'Draft', 'Final', 'Published', 'Archived']) await t.test(`${kind}/${harness}/${state}`, async t => {
