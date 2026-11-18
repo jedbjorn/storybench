@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Storybench</title>
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/ui/ui.css" />
   </head>
   <body>
     <header>
@@ -126,7 +127,7 @@
               </div>
               <button id="addCard">＋ Add card</button>
             </div>
-            <section id="deckOutputs" hidden><div class="panel-heading"><div><h3>Preview and export</h3><p>Build the saved slides into a portable deck.</p></div><button id="buildDeck">Build saved deck</button></div><p id="deckBuildError" role="alert"></p><div id="deckJobs"></div></section><div id="cards"></div><div id="deckSlides" hidden></div>
+            <section id="deckOutputs" hidden><div class="panel-heading"><div><h3>Preview and export</h3><p>Build the saved slides into a portable deck.</p></div><button id="buildDeck">Build saved deck</button></div><p id="deckBuildError" role="alert"></p><div id="deckJobs"></div></section><div id="cards"></div><section id="deckCanvas" class="deck-canvas" aria-label="Slide canvas" hidden></section><div id="deckSlides" hidden></div>
           </div>
           <div id="mediaPanel" hidden>
             <div class="panel-heading"><div><h2>Episode library</h2><p>References and media stay grouped here until you explicitly add them to cards.</p></div><button id="openLibraryImport" class="primary">＋ Import</button></div>
