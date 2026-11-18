@@ -11,8 +11,11 @@ import { Resvg } from '@resvg/resvg-js';
 import { extractBuild } from './deck-qa-bundle.js';
 import { getQaReport, recordReview } from './deck-qa-report.js';
 import { withToolDelivery } from './tool-delivery.js';
+import { svgFontFiles } from './svg.js';
 const require = createRequire(import.meta.url);
-export const QA_LIMITS = Object.freeze({ sessions: 2, lifetimeMs: 900_000, operationMs: 20_000, screenshots: 120, actions: 600, errors: 100 });
+export const QA_LIMITS = Object.freeze({ sessions: 2, lifetimeMs: 900_000, operationMs: 20_000, screenshots: 120, actions: 600, errors: 100, frames: 8, motionMs: 15_000 });
+// A stage counts as on time when its observed start is this close to its saved start.
+const MOTION_TOLERANCE_MS = 250;
 export const BROWSER_IDENTITY = Object.freeze({ controller: require('playwright-core/package.json').version,
   ...require(path.join(path.dirname(require.resolve('playwright-core/package.json')), 'browsers.json')).browsers.find(b => b.name === 'chromium') });
 let active = 0;
@@ -79,6 +82,84 @@ export function inspectPage() {
   };
 }
 
+// Runs in the audience page. Plays the current slide from navigation in real time and compares each
+// stage's observed start with its saved start, then leaves and re-enters and looks for anything the
+// first visit left running. A stage whose saved start lies beyond the window is never waited for.
+export async function observeMotion({windowMs,toleranceMs}) {
+  const deck=window.storybenchDeck; if(!deck) return null;
+  const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  const go=i=>document.querySelector(`[data-go="${i}"]`).click();
+  const home=deck.timeline().index, away=document.querySelectorAll('[data-go]').length>1?(home?home-1:1):null;
+  // A deck of one slide has nowhere to go; Replay restarts its timeline exactly as navigation does.
+  const enter=()=>{ if(away===null) deck.replay(); else {go(away);go(home);} };
+  enter();
+  const began=performance.now(), first=deck.timeline(), stages=first.stages, observed=[];
+  if(first.state==='paused') return {status:'unverified',reason:'The slide timeline is held (hidden page); nothing was observed',details:{slideId:first.slideId}};
+  // Stages begin on their own up to the first one that waits for a person.
+  let reach=stages.length?1:0; while(reach<stages.length && stages[reach].trigger==='auto') reach++;
+  let within=0; while(within<reach && stages[within].startMs+toleranceMs<=windowMs) within++;
+  const cutoff=within?Math.min(windowMs,stages[within-1].startMs+toleranceMs+100):0;
+  for(;;) {
+    const now=performance.now()-began, timeline=deck.timeline();
+    for(let n=observed.length; timeline.stage!==null && n<=timeline.stage; n++) observed.push(now);
+    if(observed.length>=within || now>=cutoff || timeline.state==='paused') break;
+    await pause(8);
+  }
+  const rows=stages.map((stage,n)=>{
+    const row={id:stage.id,trigger:stage.trigger,savedStartMs:stage.startMs,observedStartMs:null,deltaMs:null};
+    if(n>=reach) return {...row,status:'manual'};
+    if(n>=within) return {...row,status:'unobserved'};
+    if(observed[n]===undefined) return {...row,status:'not-begun'};
+    const deltaMs=Math.round(observed[n]-stage.startMs);
+    return {...row,observedStartMs:Math.round(observed[n]),deltaMs,status:Math.abs(deltaMs)<=toleranceMs?'on-time':'off-time'};
+  });
+  // Leave while the first visit is still under way. Away, the slide must not change; back, its clock
+  // starts from zero and no stage begins ahead of that clock.
+  let stillWhileAway=null;
+  if(away!==null) {
+    go(away);
+    const slide=document.querySelectorAll('.slide')[home], before=slide.outerHTML;
+    await pause(350); stillWhileAway=slide.outerHTML===before; go(home);
+  } else deck.replay();
+  const reentered=performance.now(); let restarted=deck.timeline().visit>first.visit, ahead=false;
+  while(performance.now()-reentered<400) {
+    const timeline=deck.timeline(), expected=stages.filter((stage,n)=>n<reach && stage.startMs<=timeline.timeMs).length-1;
+    if(timeline.timeMs>performance.now()-reentered+50) restarted=false;
+    if((timeline.stage??-1)>expected) ahead=true;
+    await pause(16);
+  }
+  const count=status=>rows.filter(row=>row.status===status).length;
+  const clean=restarted && !ahead && stillWhileAway!==false, late=count('off-time')+count('not-begun');
+  return {status:clean && !late?'pass':'fail',
+    reason:`${count('on-time')} stage start(s) observed within ${toleranceMs} ms of the saved timeline, ${late} off time or not begun; `+
+      `${count('unobserved')} beyond the ${windowMs} ms window unobserved, ${count('manual')} waiting for a person; `+
+      `re-entry ${clean?'left nothing running':'found the first visit still running'}. Unobserved and manual stages are not passed: seek and capture frames to review them.`,
+    details:{slideId:first.slideId,windowMs,toleranceMs,stages:rows,unobserved:rows.filter(row=>row.status==='unobserved').map(row=>row.id),
+      reentry:{method:away===null?'replay':'navigation',stillWhileAway,restarted,ahead}}};
+}
+
+// Frames in time order, each labelled with its time, as one reviewable PNG.
+export function filmstrip(frames,size) {
+  const columns=Math.min(4,frames.length),width=480,height=Math.round(width*size.height/size.width),label=34,rows=Math.ceil(frames.length/columns);
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${columns*width}" height="${rows*(height+label)}"><rect width="100%" height="100%" fill="white"/>${frames.map((frame,i)=>{
+    const x=i%columns*width,y=Math.floor(i/columns)*(height+label);
+    return `<image x="${x}" y="${y}" width="${width}" height="${height}" xlink:href="data:image/png;base64,${frame.bytes.toString('base64')}"/><rect x="${x+0.5}" y="${y+0.5}" width="${width-1}" height="${height-1}" fill="none" stroke="#888888"/><text x="${x+width/2}" y="${y+height+23}" text-anchor="middle" font-family="Manrope" font-size="18" fill="#111111">${frame.timeMs} ms</text>`;
+  }).join('')}</svg>`;
+  return Buffer.from(new Resvg(svg,{font:{fontFiles:svgFontFiles([]),loadSystemFonts:false,defaultFontFamily:'Manrope'}}).render().asPng());
+}
+// Up to eight times on the slide's timeline, or an evenly spaced range; returned in time order.
+function frameTimes(frames,durationMs) {
+  const time=value=>typeof value==='number' && Number.isFinite(value) && value>=0 && value<=durationMs;
+  const range=['fromMs','toMs','count'].some(key=>frames?.[key]!==undefined);
+  let times;
+  if(Array.isArray(frames?.timesMs) && !range) times=frames.timesMs;
+  else if(frames?.timesMs===undefined && Number.isInteger(frames?.count) && frames.count>=2 && time(frames.fromMs) && time(frames.toMs) && frames.fromMs<frames.toMs)
+    times=Array.from({length:frames.count},(_,i)=>Math.round(frames.fromMs+(frames.toMs-frames.fromMs)*i/(frames.count-1)));
+  if(!times || times.length<1 || times.length>QA_LIMITS.frames || !times.every(time))
+    throw new Error(`Frames take timesMs (1–${QA_LIMITS.frames} times) or fromMs, toMs and count (2–${QA_LIMITS.frames}), all within this slide's timeline of 0–${durationMs} ms`);
+  return [...times].sort((a,b)=>a-b);
+}
+
 export function createDeckQa({store,scope}) {
   let session = null, stopped = false, busy = false, closing = null;
   const requireSession = id => {
@@ -124,6 +205,8 @@ export function createDeckQa({store,scope}) {
       const audience = await pageFor(s).evaluate(inspectPage);
       state.slideId = audience.slideId; state.stage = audience.stage; state.gallery = audience.gallery;
     }
+    // The audience slide's timeline; null for a build that predates it.
+    state.timeline = await (state.pageId==='audience'?page:pageFor(s)).evaluate(()=>window.storybenchDeck?.timeline() ?? null);
     state.emulation = s.emulations.get(state.pageId) ?? {media:'screen',reducedMotion:'no-preference'};
     state.pages = [...s.pages].filter(([,p])=>!p.isClosed()).map(([pageId])=>({pageId}));
     const key = JSON.stringify([state.pageId,state.slideId,state.stage,state.gallery,state.viewport,state.emulation]);
@@ -147,7 +230,7 @@ export function createDeckQa({store,scope}) {
       if (await realpath(s.evidenceDir)!==s.evidenceDir) throw new Error('Unsafe QA evidence path');
       s.record = {version:2,sessionId:s.id,jobId:args.jobId,productionId:scope.episodeId,requestId:scope.requestId,conversationId:scope.conversationId,harness:scope.harness,model:scope.model,
         sourceRevision:s.build.sourceRevision,bundleSha256:s.build.bundleSha256,browser:BROWSER_IDENTITY,startedAt:new Date().toISOString(),
-        artifactRoot:path.relative(store.workspace,s.evidenceDir),qaStatus:'incomplete',lifecycle:'open',screenshots:[],coverage:[],checks:[],actions:[],errors:[],reviews:[],changesMade:[]};
+        artifactRoot:path.relative(store.workspace,s.evidenceDir),qaStatus:'incomplete',lifecycle:'open',screenshots:[],coverage:[],checks:[],actions:[],errors:[],reviews:[],changesMade:[],filmstrips:[]};
       const error = (type,message) => { if(s.record.errors.length<QA_LIMITS.errors) s.record.errors.push({type,message:String(message).replaceAll(s.temp,'<qa>').slice(0,1500)}); };
       // Whitelist environment: no inference, account, proxy or application credentials.
       // The full pinned Chromium channel includes the supported MP4/WebM decode path.
@@ -186,7 +269,7 @@ export function createDeckQa({store,scope}) {
     } catch(error) { s.resolveInitialized(); await close('failed'); throw new Error(`Deck browser QA unavailable: ${error.message}. Preserve the draft and retry after correcting the named component.`); }
     finally {s.resolveInitialized();}
   }
-  async function capture(s,page,clip) {
+  async function capture(s,page,clip,extra) {
     if(s.record.screenshots.length>=QA_LIMITS.screenshots) throw new Error('Screenshot batch limit reached; close/reopen this build to continue');
     const size=page.viewportSize();
     if(clip && (!['x','y','width','height'].every(k=>Number.isInteger(clip[k])) || clip.x<0 || clip.y<0 || clip.width<1 || clip.height<1 || clip.x+clip.width>size.width || clip.y+clip.height>size.height)) throw new Error('Screenshot crop must be inside the viewport');
@@ -201,11 +284,12 @@ export function createDeckQa({store,scope}) {
     if(bytes.length>4*1024*1024) throw new Error('Screenshot exceeds transport bound; use a smaller viewport or crop');
     const artifactId=randomUUID(),file=`${artifactId}.png`;
     await writeFile(path.join(s.evidenceDir,file),bytes,{flag:'wx'});
-    const record={artifactId,file,state,clip:clip??null,sha256:createHash('sha256').update(bytes).digest('hex'),delivered:false,fullResolutionDelivered:false,createdAt:new Date().toISOString()};s.record.screenshots.push(record);
+    const record={artifactId,file,state,clip:clip??null,sha256:createHash('sha256').update(bytes).digest('hex'),delivered:false,fullResolutionDelivered:false,createdAt:new Date().toISOString(),...extra};s.record.screenshots.push(record);
     return {bytes,record};
   }
   async function inspect(s,args) {
     const page=pageFor(s,args.pageId); const captures=[];
+    if(args.frames && args.slideIds) throw new Error('Frames are captured on the current slide; omit slideIds');
     if(args.slideIds) {
       if(args.pageId && args.pageId!=='audience' || args.clip || !Array.isArray(args.slideIds) || args.slideIds.length<1 || args.slideIds.length>6) throw new Error('Contact sheet requires 1–6 audience slide IDs and no crop');
       const inventory=(await snapshot(s,page)).inventory;
@@ -218,18 +302,42 @@ export function createDeckQa({store,scope}) {
         else await control.click();
         captures.push(await capture(s,page));
       }
+    } else if(args.frames) {
+      if(args.pageId && args.pageId!=='audience' || args.clip) throw new Error('Frames are captured on the audience page, without a crop or slide list');
+      const timeline=(await snapshot(s,page)).timeline;
+      if(!timeline) throw new Error('This build has no slide timeline; rebuild it to inspect motion');
+      const times=frameTimes(args.frames,timeline.durationMs);
+      if(s.record.screenshots.length+times.length>QA_LIMITS.screenshots) throw new Error('Screenshot batch limit reached; close/reopen this build to continue');
+      // Each frame is the slide exactly as it is at that time; no real-time wait. The timeline stays paused at the last one.
+      for(const timeMs of times) {
+        await page.evaluate(ms=>{window.storybenchDeck.seek(ms);},timeMs);
+        captures.push(await capture(s,page,undefined,{frame:{timeMs}}));
+      }
     } else captures.push(await capture(s,page,args.clip));
-    let image=captures[0].bytes,contactSheet=null;
+    let image=captures[0].bytes,contactSheet=null,strip=null;
     if(args.slideIds) {
       const width=640,height=360,rows=Math.ceil(captures.length/2);
       const svg=`<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${width*2}" height="${rows*height}"><rect width="100%" height="100%" fill="white"/>${captures.map((c,i)=>`<image x="${i%2*width}" y="${Math.floor(i/2)*height}" width="${width}" height="${height}" xlink:href="data:image/png;base64,${c.bytes.toString('base64')}"/>`).join('')}</svg>`;
       image=Buffer.from(new Resvg(svg).render().asPng());contactSheet=`${randomUUID()}.png`;
       await writeFile(path.join(s.evidenceDir,contactSheet),image,{flag:'wx'});
     }
+    if(args.frames) {
+      const last=captures.at(-1).record.state,artifactId=randomUUID();
+      image=filmstrip(captures.map(c=>({bytes:c.bytes,timeMs:c.record.frame.timeMs})),last.viewport);
+      await writeFile(path.join(s.evidenceDir,`${artifactId}.png`),image,{flag:'wx'});
+      // The filmstrip is the reviewable image; its frames are the full-resolution artifacts.
+      strip={artifactId,file:`${artifactId}.png`,sha256:createHash('sha256').update(image).digest('hex'),
+        state:{pageId:'audience',slideId:last.slideId,viewport:last.viewport,emulation:last.emulation},stages:last.timeline.stages,
+        frames:captures.map(c=>({timeMs:c.record.frame.timeMs,artifactId:c.record.artifactId,sha256:c.record.sha256,stage:c.record.state.stage})),
+        delivered:false,createdAt:new Date().toISOString()};
+      s.record.filmstrips.push(strip);
+    }
     if(s.closed) throw new Error('QA session closed during inspection');
     await save(s);
-    return withToolDelivery({text:JSON.stringify({sessionId:s.id,jobId:s.record.jobId,bundleSha256:s.record.bundleSha256,contactSheet,screenshots:captures.map(c=>c.record),errors:s.record.errors}),images:[{data:image.toString('base64'),mimeType:'image/png'}]},()=>{
-      captures.forEach(c=>{c.record.delivered=true;c.record.fullResolutionDelivered=!args.slideIds;});void save(s).catch(()=>{});
+    // Eight full page states would bury the image; a frame's state stays in the session record.
+    const screenshots=strip?captures.map(c=>({artifactId:c.record.artifactId,file:c.record.file,sha256:c.record.sha256,frame:c.record.frame,stage:c.record.state.stage,visibleGroups:c.record.state.visibleGroups})):captures.map(c=>c.record);
+    return withToolDelivery({text:JSON.stringify({sessionId:s.id,jobId:s.record.jobId,bundleSha256:s.record.bundleSha256,contactSheet,...(strip?{filmstrip:strip,timeline:captures.at(-1).record.state.timeline}:{}),screenshots,errors:s.record.errors}),images:[{data:image.toString('base64'),mimeType:'image/png'}]},()=>{
+      captures.forEach(c=>{c.record.delivered=true;c.record.fullResolutionDelivered=!args.slideIds && !strip;});if(strip)strip.delivered=true;void save(s).catch(()=>{});
     });
   }
   async function act(s,args) {
@@ -247,6 +355,14 @@ export function createDeckQa({store,scope}) {
       case 'resize': await page.setViewportSize(viewport(args.viewport)); break;
       case 'wait': if(!Number.isInteger(args.milliseconds) || args.milliseconds<0 || args.milliseconds>2000) throw new Error('Wait must be 0–2000 ms'); await page.waitForTimeout(args.milliseconds); break;
       case 'focus': await page.bringToFront(); break;
+      // The timeline belongs to the audience slide, whichever page the action names.
+      case 'seek': case 'resume': {
+        const audience=pageFor(s),durationMs=await audience.evaluate(()=>window.storybenchDeck?.timeline().durationMs ?? null);
+        if(durationMs===null) throw new Error('This build has no slide timeline; rebuild it to inspect motion');
+        if(args.action==='resume') {await audience.evaluate(()=>{window.storybenchDeck.resume();});break;}
+        if(typeof args.timeMs!=='number' || !Number.isFinite(args.timeMs) || args.timeMs<0 || args.timeMs>durationMs) throw new Error(`Seek time must be 0–${durationMs} ms on this slide's timeline`);
+        await audience.evaluate(ms=>{window.storybenchDeck.seek(ms);},args.timeMs);break;
+      }
       case 'emulate':
         if(!['screen','print'].includes(args.media??'screen') || !['reduce','no-preference'].includes(args.reducedMotion??'no-preference')) throw new Error('Unsupported media emulation');
         { const emulation={media:args.media??'screen',reducedMotion:args.reducedMotion??'no-preference'};s.emulations.set(args.pageId??'audience',emulation);await page.emulateMedia(emulation);break; }
@@ -255,13 +371,23 @@ export function createDeckQa({store,scope}) {
     }
     const state=await snapshot(s,page.isClosed()?pageFor(s):page);
     if(s.closed) throw new Error('QA session closed during action');
-    s.record.actions.push({action:args.action,pageId:args.pageId??'audience',selector:args.selector,key:args.key,value:args.value,at:new Date().toISOString(),state});
+    s.record.actions.push({action:args.action,pageId:args.pageId??'audience',selector:args.selector,key:args.key,value:args.value,timeMs:args.timeMs,at:new Date().toISOString(),state});
     await save(s);return json({state,errors:s.record.errors});
   }
   async function checks(s,args) {
     const requested=args.checks??['console','resources','fonts','media','layout','presenter','fullscreen'];
-    if(!Array.isArray(requested) || requested.length<1 || requested.length>7 || requested.some(c=>!['console','resources','fonts','media','layout','presenter','fullscreen'].includes(c))) throw new Error('Unknown QA check set');
+    if(!Array.isArray(requested) || requested.length<1 || requested.length>7 || requested.some(c=>!['console','resources','fonts','media','layout','presenter','fullscreen','motion'].includes(c))) throw new Error('Unknown QA check set');
+    // Motion replays the slide in real time, so no other check can describe the state it was asked about.
+    if(requested.includes('motion') && requested.length>1) throw new Error('Request the motion check on its own; it replays the current slide in real time');
     const page=pageFor(s,args.pageId),before=await snapshot(s,page);
+    let motion;
+    if(requested.includes('motion')) {
+      const emulation=s.emulations.get('audience');
+      motion=emulation && (emulation.media!=='screen' || emulation.reducedMotion!=='no-preference')
+        ? {status:'unverified',reason:'Print and reduced motion show the final state with nothing moving; restore screen media and no-preference to check motion'}
+        : await pageFor(s).evaluate(observeMotion,{windowMs:QA_LIMITS.motionMs,toleranceMs:MOTION_TOLERANCE_MS})
+          ?? {status:'unverified',reason:'This build has no slide timeline; rebuild it to check motion'};
+    }
     if(requested.includes('fonts')) await page.evaluate(async()=>{
       // This check verifies the bundle, including faces unused in this state.
       await Promise.allSettled([...document.fonts].map(face=>face.load()));
@@ -290,6 +416,7 @@ export function createDeckQa({store,scope}) {
         else {const p=await presenter[1].evaluate(inspectPage),a=await pageFor(s).evaluate(inspectPage),slide=s.build.job.snapshot.slides.find(v=>v.id===a.slideId);
           result[name]=check(p.presenter?.startsWith('Connected') && p.notes===(slide?.notes??'') && p.text.includes(slide?.title)?'pass':'fail','Current presenter handshake, title and notes',{pageId:presenter[0],connection:p.presenter,slideId:a.slideId});}
       }
+      if(name==='motion') result[name]=check(motion.status,motion.reason,motion.details);
       if(name==='fullscreen') result[name]=check(state.fullscreen?'pass':'unverified',state.fullscreen?'document.fullscreenElement is set':state.status||'Not currently fullscreen; invoke the control. Physical display behavior is unverified.');
     }
     if(s.closed) throw new Error('QA session closed during checks');

@@ -37,6 +37,13 @@ export async function browserFixture(root) {
     {id:'stages',title:'Observe, connect, plan',layout:'process',vector:{itemId:svg.id},notes:'Three steps',stages:['observe','connect','plan'].map(id=>({id,title:id,svgGroupIds:[id],afterMs:200}))},
     ...media.map((m,i)=>({id:`video-${i}`,title:i?'WebM playback':'MP4 playback',layout:'full-media',media:{itemId:m.id},notes:'Start playback from Presenter'})),
     {id:'video-reused',title:'Reused MP4 playback',layout:'full-media',media:{itemId:media[0].id},notes:'Independent playback of the same asset'},
+    // Motion (spec #34): a drawn group, one that enters, and a state change, flowing without a gap; then a
+    // stage far beyond the real-time window.
+    {id:'motion',title:'Draw, arrive, move',layout:'process',vector:{itemId:svg.id},notes:'Motion',stages:[
+      {id:'outline',title:'Observe',svgGroupIds:['observe'],motion:'draw',trigger:'auto',afterMs:200,durationMs:600,easing:'linear'},
+      {id:'link',title:'Connect',svgGroupIds:['connect'],motion:'enter',from:{y:-30,opacity:0},trigger:'auto',afterMs:0,durationMs:400},
+      {id:'shift',title:'Plan',svgGroupIds:['plan'],changes:[{groupId:'observe',to:{x:60}}],trigger:'auto',afterMs:0,durationMs:600,holdMs:200,easing:'linear'}]},
+    {id:'long',title:'A long hold',layout:'statement',notes:'Long',stages:[{id:'now',title:'Now',trigger:'auto',afterMs:200},{id:'later',title:'Later',trigger:'auto',afterMs:20000}]},
     {id:'gallery',title:'Compare views',layout:'statement',subnav:[{id:'first',label:'First',itemId:svg.id},{id:'second',label:'Second',itemId:svg.id}],notes:'Compare two views'},
   ]);
   const queue=new HeavyJobQueue(),decks=createDeckService({store,queue});
@@ -150,6 +157,48 @@ export async function smokeBrowser() {
           const missingMedia=(await currentEvidence()).missing.filter(m=>m.startsWith(`video-${i}: presenter media control`) || m.startsWith(`video-${i}: advancing media`));
           assert.deepEqual(missingMedia,[], 'real Presenter restart plus advancing audience playback satisfies both media requirements');
         }
+        // Motion QA: the timeline is readable, a seek shows an exact moment without waiting, frames come back
+        // as one labelled image, and the real-time check observes starts and a clean re-entry.
+        state=(await act({action:'click',selector:'[data-go="5"]'})).state;
+        assert.equal(state.slideId,'motion');assert.equal(state.timeline.state,'playing');assert.equal(state.timeline.durationMs,2000);
+        assert.deepEqual(state.timeline.stages,[{id:'outline',trigger:'auto',startMs:200,motionEndMs:800,holdEndMs:800},
+          {id:'link',trigger:'auto',startMs:800,motionEndMs:1200,holdEndMs:1200},{id:'shift',trigger:'auto',startMs:1200,motionEndMs:1800,holdEndMs:2000}]);
+        assert.ok((await currentEvidence()).missing.includes('motion: motion check'));
+        state=(await act({action:'seek',timeMs:500})).state;
+        assert.equal(state.timeline.state,'paused');assert.equal(state.timeline.timeMs,500);assert.deepEqual(state.stage,['0']);
+        assert.equal((await act({action:'wait',milliseconds:150})).state.timeline.timeMs,500,'a seek holds the slide at that time');
+        assert.equal((await inspect({})).data.screenshots[0].state.timeline.timeMs,500);
+        await assert.rejects(act({action:'seek',timeMs:2001}),/0–2000 ms/);
+        await assert.rejects(inspect({frames:{timesMs:[0,1,2,3,4,5,6,7,8]}}),/1–8 times/);
+        await assert.rejects(inspect({frames:{timesMs:[2500]}}),/0–2000 ms/);
+        const strip=await inspect({frames:{timesMs:[2000,500,1500,1000]}}),stripImage=Buffer.from(strip.content.find(c=>c.type==='image').data,'base64');
+        assert.equal(stripImage.subarray(0,8).toString('hex'),'89504e470d0a1a0a');assert.equal(stripImage.readUInt32BE(16),1920);
+        assert.deepEqual(strip.data.filmstrip.frames.map(f=>f.timeMs),[500,1000,1500,2000],'frames are at the requested times, in time order');
+        assert.deepEqual(strip.data.screenshots.map(f=>f.frame.timeMs),[500,1000,1500,2000]);
+        assert.equal(new Set(strip.data.filmstrip.frames.map(f=>f.sha256)).size,4,'a moving stage differs from frame to frame');
+        assert.deepEqual(strip.data.filmstrip.frames.map(f=>f.stage),[['0'],['1'],['2'],['2']]);
+        assert.equal(strip.data.timeline.state,'paused');assert.equal(strip.data.timeline.timeMs,2000);
+        assert.deepEqual((await inspect({frames:{fromMs:0,toMs:2000,count:3}})).data.filmstrip.frames.map(f=>f.timeMs),[0,1000,2000]);
+        await act({action:'seek',timeMs:300});
+        state=(await act({action:'resume'})).state;assert.equal(state.timeline.state,'playing');
+        state=(await act({action:'wait',milliseconds:300})).state;assert.ok(state.timeline.timeMs>=550,'resume plays on from the sought time');
+        const motion=(await check({checks:['motion']})).results.motion;
+        assert.equal(motion.status,'pass',`${harness} motion: ${JSON.stringify(motion)}`);
+        assert.deepEqual(motion.details.stages.map(row=>row.status),['on-time','on-time','on-time']);
+        assert.deepEqual(motion.details.reentry,{method:'navigation',stillWhileAway:true,restarted:true,ahead:false});
+        await assert.rejects(check({checks:['motion','layout']}),/on its own/);
+        // A filmstrip counts once reviewed, at its own viewport class; the constrained one is still owed.
+        assert.ok((await currentEvidence()).missing.some(m=>m.startsWith('motion: motion filmstrip review (normal viewport')));
+        await client.call('report_deck_qa',{sessionId,summary:'Scripted motion evidence regression',changesMade:[],
+          reviews:[{artifactId:strip.data.filmstrip.artifactId,assessment:'Filmstrip received through native MCP transport; frames differ over time.',findings:[]}]});
+        const motionMissing=(await currentEvidence()).missing.filter(m=>m.startsWith('motion: motion'));
+        assert.deepEqual(motionMissing,['motion: motion filmstrip review (constrained viewport, at least two times)']);
+        // A stage beyond the fifteen-second window is reported unobserved without being waited for.
+        await act({action:'click',selector:'[data-go="6"]'});
+        const longStarted=Date.now(),long=(await check({checks:['motion']})).results.motion;
+        assert.ok(Date.now()-longStarted<5000,'a stage beyond the window is not waited for');
+        assert.deepEqual(long.details.stages.map(row=>[row.id,row.status,row.observedStartMs===null]),[['now','on-time',false],['later','unobserved',true]]);
+        assert.deepEqual(long.details.unobserved,['later']);assert.match(long.reason,/1 beyond the 15000 ms window unobserved/);
         await act({action:'key',key:'End'});
         await act({action:'wait',milliseconds:0,selector:'[data-gallery="1"]'});
         assert.ok((await currentEvidence()).missing.includes('gallery: gallery navigation'),'no-op selector cannot prove gallery operation');
@@ -166,7 +215,7 @@ export async function smokeBrowser() {
         const closed=(await client.call('close_deck_qa',{sessionId})).data;assert.equal(closed.closed,true);assert.equal(closed.qaStatus,'incomplete');
         const retained=JSON.parse(await readFile(path.join(root,closed.evidence,'session.json'),'utf8'));assert.ok(retained.screenshots.every(s=>s.delivered));assert.ok(retained.coverage.length>6);actualVersion=retained.browser.actualVersion;
         await assert.rejects(client.call('inspect_deck_qa',{sessionId}),/closed|expired/);
-        routes[harness]={imageBlocks:true,delivered:true,presenter:true,mp4Playback:true,webmPlayback:true,reusedVideoPauseAndPlayback:true,stagedInteraction:true,contactSheet:true,evidenceRetained:true,fullscreen:fullscreen.results.fullscreen.status};
+        routes[harness]={imageBlocks:true,delivered:true,presenter:true,mp4Playback:true,webmPlayback:true,reusedVideoPauseAndPlayback:true,stagedInteraction:true,contactSheet:true,motionTimeline:true,seek:true,filmstrip:true,motionCheck:true,evidenceRetained:true,fullscreen:fullscreen.results.fullscreen.status};
       } finally {await client.close();}
     }
     return {checkVersion:1,browser:{...BROWSER_IDENTITY,actualVersion},exactZip:true,routes};
