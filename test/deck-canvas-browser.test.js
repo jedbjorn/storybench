@@ -176,6 +176,13 @@ for (const type of [chromium, firefox]) test(`A7 ${type.name()}: the creator edi
   await page.click('.deck-canvas-block[data-select="copy"]');
   await inspector(page).getByRole('heading', { name: 'Title and text' }).waitFor();
   for (const name of ['Left of visual', 'Centred']) assert.equal(await inspector(page).getByRole('radio', { name }).getAttribute('aria-checked'), 'true');
+  // A redraw (here a resize) moves each block's own element: a click or focus taken mid-redraw is kept.
+  const copyBlock = await page.$('.deck-canvas-block[data-select="copy"]'), width = await copyBlock.evaluate(node => node.style.width);
+  await copyBlock.focus();
+  await page.setViewportSize({ width: 900, height: 1200 });
+  await page.waitForFunction(([node, before]) => node.isConnected && node.style.width !== before, [copyBlock, width]);
+  assert.ok(await copyBlock.evaluate(node => document.activeElement === node), 'the copy block keeps focus across the redraw');
+  await page.setViewportSize({ width: 1600, height: 1200 });
 
   // The next build matches the canvas: the same slide markup and the same palette and fonts.
   await page.click('[data-editor-close]');

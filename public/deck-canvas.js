@@ -153,13 +153,19 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
     const key = JSON.stringify([info?.blocks, area, scale]);
     if (key === drawn) return;
     drawn = key;
-    blocksLayer.replaceChildren(...Object.entries(info?.blocks || {}).map(([name, box]) => {
-      const block = doc.createElement('div');
-      block.className = 'deck-canvas-block';
-      block.dataset.select = name; block.dataset.selectLabel = BLOCKS[name];
+    // A block keeps its element, in place, across redraws: a click or keyboard focus on it survives the frame re-reporting.
+    const blocks = Object.entries(info?.blocks || {});
+    for (const block of [...blocksLayer.children]) if (!info?.blocks?.[block.dataset.select]) block.remove();
+    blocks.forEach(([name, box], i) => {
+      let block = [...blocksLayer.children].find((node) => node.dataset.select === name);
+      if (!block) {
+        block = doc.createElement('div');
+        block.className = 'deck-canvas-block';
+        block.dataset.select = name; block.dataset.selectLabel = BLOCKS[name];
+      }
+      if (blocksLayer.children[i] !== block) blocksLayer.insertBefore(block, blocksLayer.children[i] || null);
       Object.assign(block.style, { left: `${(box.left - area.left) * scale}px`, top: `${(box.top - area.top) * scale}px`, width: `${box.width * scale}px`, height: `${box.height * scale}px` });
-      return block;
-    }));
+    });
     surface.refresh();
   }
   new ResizeObserver(() => { drawn = ''; place(); }).observe(viewport);
