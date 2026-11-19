@@ -3,6 +3,7 @@
 // or remove a candidate). Pure functions over the saved slides and library items, so the browser and the
 // tests share them; the server re-validates every save (src/deck-data.js validateSlides).
 import { SLIDE_TYPES, visualKind } from './slide-types.js';
+import { drawingParts } from './drawing-parts.js';
 
 export { visualKind };
 export const slideNumber = index => String(index + 1).padStart(2, '0');
@@ -136,12 +137,14 @@ export function startGallery(slide, item) {
 
 /** The parts a step reveals that a drawing lacks; `stages` default to the slide's own. */
 export function missingParts(drawing, stages) {
-  const parts = drawing?.asset?.metadata?.svgGroupIds;
+  const parts = drawingParts(drawing?.asset?.metadata);
   if (!parts) return [];
   return [...new Set((stages ?? []).flatMap(stage => stage.svgGroupIds ?? []))].filter(id => !parts.includes(id));
 }
 /** The warning beside a picked drawing that lacks a stepped part (spec #46 'Candidates'). */
-export const missingPartText = (drawing, partId) => `v${drawing.iteration ?? 1} has no part ${partId}, so a step reveals nothing.`;
+export const missingPartText = (drawing, partId) => drawing.asset?.metadata?.svgGroupIds?.includes(partId)
+  ? `Part ${partId} cannot be revealed. Replace or remove it from its step.`
+  : `v${drawing.iteration ?? 1} has no part ${partId}, so a step reveals nothing.`;
 // Ask for another from a slide's Visual card (spec #46 Iterations): the composer note names the slide, the
 // picked asset and its iteration, so the deck guidance's slide route applies (an unstarred candidate of that
 // slide). The asset preview's Ask names no slide and keeps the result in the group (library-workspace.js).

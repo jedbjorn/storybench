@@ -611,6 +611,31 @@ $("#episodeTitle").oninput = $("#episodeNotes").oninput = () => {
 // the deck design and slide overrides in place, then saves like any slide field.
 const markDeckDirty = () => { dirty = true; $("#saveState").textContent = "Unsaved changes"; };
 const deckLibrary = () => (episode && boardItemsEpisode === episode.id ? boardItems : null);
+// A drawing pick changes the slide only after the server accepts the pick and its stage mappings.
+async function saveDrawingPick({ episodeId, revision }, next) {
+  if (episode?.id !== episodeId || episode.revision !== revision)
+    throw Object.assign(new Error('The deck changed'), { status: 409 });
+  if (dirty || saveRequested || saveInFlight) throw new Error('Finish saving the current edits, then try the drawing pick again.');
+  const slides = episode.cards.map(slide => slide.id === next.id ? next : slide);
+  $("#saveState").textContent = "Saving…";
+  saveInFlight = api(`/api/episodes/${episodeId}/slides`, {
+    method: "PUT", body: JSON.stringify({ expectedRevision: revision, slides }),
+  });
+  try {
+    const updated = await saveInFlight;
+    state.episodes = state.episodes.map(value => value.id === episodeId ? updated : value);
+    if (episode?.id === episodeId) {
+      ++loadGeneration;
+      episode = updated;
+    }
+  } finally {
+    saveInFlight = null;
+    if (episode?.id === episodeId) {
+      $("#saveState").textContent = `Saved · r${episode.revision}`;
+      render();
+    }
+  }
+}
 // Open asset (the visual's toolbar and card): the library's asset preview, over the slide editor.
 async function openDeckAsset(id) {
   if (!libraryWorkspace.item(id)) await libraryWorkspace.open();
@@ -624,7 +649,8 @@ const deckCanvas = createDeckCanvas($("#deckCanvas"), { channel: () => channelId
   getItems: deckLibrary, onOpenAsset: openDeckAsset });
 const slideEditor = createSlideEditor($("#slideEditor"), { canvas: deckCanvas, channel: () => channelId, getEpisode: () => episode, getItems: deckLibrary,
   getSections: () => (episode && boardItemsEpisode === episode.id ? boardSections : []), saveState: $("#saveState"),
-  onDirty: markDeckDirty, onSave: () => save(), onClose: () => renderCards(), onOpenAsset: openDeckAsset, onAskForAnother: fillChatDraft });
+  onDirty: markDeckDirty, onSave: () => save(), onSaveDrawing: saveDrawingPick,
+  onClose: () => renderCards(), onOpenAsset: openDeckAsset, onAskForAnother: fillChatDraft });
 // One card is open at a time; its inline preview is the saved slide, so it waits for pending edits to save.
 let openSlideId = null, slideListShown = null, slidePreview = null;
 function renderSlideList() {

@@ -25,6 +25,7 @@ test('shared profile preserves useful geometry, semantics and isolated local def
   assert.equal(parsed.profile, SVG_PROFILE);
   assert.deepEqual(parsed.fonts, ['Manrope']);
   assert.ok(parsed.groupIds.includes('observe'));
+  assert.deepEqual(parsed.revealGroupIds, ['landscape', 'observe', 'connect', 'plan']);
   assert.match(parsed.svg, /id="instance-title"/);
   assert.match(parsed.svg, /aria-labelledby="instance-title instance-description"/);
   assert.match(parsed.svg, /url\(#instance-sky\)/);
@@ -130,8 +131,14 @@ test('cross-channel SVG reuse and reopen preserve ownership; invalid builds reta
   const run = async () => { const j = decks.enqueue({ episodeId: second.id, expectedRevision: store.getDeck(second.id).revision }); await queue.draining; return decks.getJob(second.id, j.id); };
   const good = await run(); assert.equal(good.state, 'completed', good.error);
   const zip = await readFile(path.join(root, good.outputPath));
-  store.saveDeck(second.id, store.getDeck(second.id).revision, [{ id: 'art', title: 'Art', layout: 'process',
-    vector: { itemId: reused.item.id, alt: 'Art' }, stages: [{ id: 'tree-stage', title: 'Tree', svgGroupIds: ['tree'] }] }]);
+  const before = store.getDeck(second.id);
+  const invalid = [{ id: 'art', title: 'Art', layout: 'process',
+    vector: { itemId: reused.item.id, alt: 'Art' }, stages: [{ id: 'tree-stage', title: 'Tree', svgGroupIds: ['tree'] }] }];
+  assert.throws(() => store.saveDeck(second.id, before.revision, invalid), /Stage tree-stage: SVG group tree.*definitions/);
+  assert.deepEqual(store.getDeck(second.id).slides, before.slides);
+  assert.equal(store.getDeck(second.id).revision, before.revision);
+  // Simulate a deck saved when registration and save both accepted definition IDs.
+  store.db.prepare('UPDATE episodes SET cards=? WHERE id=?').run(JSON.stringify(invalid), second.id);
   const badMapping = await run(); assert.equal(badMapping.state, 'failed');
   assert.match(badMapping.error, /Slide art.*stage group tree.*not a definition/);
   assert.equal(badMapping.outputPath, null);

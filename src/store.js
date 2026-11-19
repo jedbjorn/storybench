@@ -4,12 +4,15 @@ import { DatabaseSync } from "node:sqlite";
 import {
   copyFileSync,
   closeSync,
+  constants,
   existsSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -20,6 +23,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { STARTER_STORY, storySectionHeadings } from "./story-markdown.js";
 import { createChannelDeletion } from "./services/channel-deletion.js";
+import { parseSvg, SVG_LIMITS, svgProbe } from "./svg.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix) => `${prefix}_${crypto.randomUUID()}`;
@@ -378,6 +382,7 @@ export class Store {
   } = {}) {
     this.workspace = path.resolve(workspace);
     this.dataRoot = this.workspace;
+    this.drawingPartsCache = new Map();
     this.afterMigrationCommit = afterMigrationCommit;
     this.beforeStoryPublish = beforeStoryPublish;
     this.afterStoryRename = afterStoryRename;
@@ -1722,8 +1727,37 @@ export class Store {
       a.metadata,a.thumbnail_path,a.created_at AS asset_created_at
       FROM library_items l JOIN assets a ON a.id=l.asset_id
       WHERE l.episode_id=? ORDER BY l.created_at,l.id`).all(episodeId).map((row) =>
-        libraryItemRow({ ...row, id: row.id, created_at: row.created_at })
+        this.withDrawingParts(libraryItemRow(row))
       );
+  }
+  // Assets registered before reveal eligibility was recorded keep their IDs and original metadata.
+  // Project the new fields from the same immutable bytes, without writing a deck or an asset row.
+  withDrawingParts(item) {
+    const asset = item?.asset, metadata = asset?.metadata;
+    if (!metadata?.svgProfile || metadata.svgRevealGroupIds !== undefined) return item;
+    let parts = this.drawingPartsCache.get(asset.hash);
+    if (!parts) {
+      try {
+        const root = realpathSync(this.workspace), source = path.resolve(root, asset.path);
+        if (!source.startsWith(root + path.sep) || realpathSync(source) !== source) throw new Error('Unsafe drawing path');
+        const fd = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        let bytes;
+        try {
+          const stat = fstatSync(fd);
+          if (!stat.isFile() || stat.size > SVG_LIMITS.bytes) throw new Error('Invalid drawing source');
+          bytes = Buffer.alloc(stat.size);
+          if (readSync(fd, bytes, 0, bytes.length, 0) !== bytes.length) throw new Error('Drawing source changed');
+        } finally { closeSync(fd); }
+        if (hash(bytes) !== asset.hash) throw new Error('Drawing source changed');
+        const { svgGroupIds, svgGroups, svgRevealGroupIds, svgRevealAncestors } = svgProbe(parseSvg(bytes));
+        parts = { svgGroupIds, svgGroups, svgRevealGroupIds, svgRevealAncestors };
+        if (this.drawingPartsCache.size === 128) this.drawingPartsCache.delete(this.drawingPartsCache.keys().next().value);
+        this.drawingPartsCache.set(asset.hash, parts);
+      } catch {
+        parts = { svgRevealGroupIds: null };
+      }
+    }
+    return { ...item, asset: { ...asset, metadata: { ...metadata, ...parts } } };
   }
   normalizeLegacyCards(episodeId, cards) {
     const findMembership = this.db.prepare("SELECT id FROM library_items WHERE episode_id=? AND asset_id=? ORDER BY created_at,id LIMIT 1");
@@ -1754,7 +1788,7 @@ export class Store {
     const row = this.db.prepare(`SELECT l.*,a.channel_id,a.name,a.hash,a.kind,a.path,a.duration,a.width,a.height,
       a.metadata,a.thumbnail_path,a.created_at AS asset_created_at
       FROM library_items l JOIN assets a ON a.id=l.asset_id WHERE l.episode_id=? AND l.id=?`).get(episodeId, itemId);
-    return libraryItemRow(row);
+    return this.withDrawingParts(libraryItemRow(row));
   }
   findLibraryItemByAsset(episodeId, assetId, sourceKind) {
     const row = this.db.prepare("SELECT id FROM library_items WHERE episode_id=? AND asset_id=? AND source_kind=? ORDER BY created_at,id LIMIT 1")

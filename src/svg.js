@@ -36,6 +36,7 @@ const enums = {
 const presentation = new Set(('fill stroke color stop-color flood-color opacity fill-opacity stroke-opacity stop-opacity flood-opacity stroke-width stroke-dasharray stroke-dashoffset stroke-miterlimit font-family font-size letter-spacing word-spacing clip-path mask filter ' + Object.keys(enums).filter(k => k.includes('-') || ['display', 'visibility', 'overflow'].includes(k)).join(' ')).split(' '));
 const globalAttrs = new Set(['id', 'class', 'transform', 'style', 'role', 'aria-label', 'aria-labelledby', 'aria-describedby', 'data-stage', 'data-story-step', ...presentation]);
 const containers = new Set(['svg', 'g', 'defs', 'clipPath', 'mask']);
+const definitionContainer = 'defs,clipPath,mask,pattern';
 function validChild(parent, child) {
   if (['title', 'desc'].includes(child)) return !['title', 'desc', 'style'].includes(parent);
   if (parent === 'filter') return ['feGaussianBlur', 'feOffset', 'feFlood', 'feComposite', 'feMerge'].includes(child);
@@ -246,7 +247,20 @@ export function parseSvg(bytes, { namespace = null, stages = null } = {}) {
     const dimension = (name, index) => root.hasAttribute(name) ? length(root.getAttribute(name), name, 0.01, SVG_LIMITS.dimension) : box?.[index];
     const width = dimension('width', 2), height = dimension('height', 3);
     if (![width, height].every(n => Number.isFinite(n) && n > 0 && n <= SVG_LIMITS.dimension) || ['width', 'height'].some(n => root.getAttribute(n)?.endsWith('%'))) fail('root needs finite pixel dimensions or a viewBox, at most 4096 per side');
-    const groupIds = nodes.filter(n => n.localName === 'g' && n.id).map(n => n.id);
+    const namedGroups = nodes.filter(n => n.localName === 'g' && n.id);
+    const groupIds = namedGroups.map(n => n.id);
+    const reused = references.filter(ref => !ref.accessibility && ref.node.localName === 'use');
+    const hasExternalUse = node => reused.some(ref => !node.contains(ref.node) &&
+      (ids.get(ref.id).contains(node) || node.contains(ids.get(ref.id))));
+    const revealGroups = namedGroups.filter(node => !node.closest(definitionContainer) && !hasExternalUse(node));
+    const revealGroupIds = revealGroups.map(node => node.id);
+    const eligible = new Set(revealGroupIds);
+    const revealAncestors = Object.fromEntries(revealGroups.flatMap(node => {
+      const ancestors = [];
+      for (let parent = node.parentElement; parent; parent = parent.parentElement)
+        if (eligible.has(parent.id)) ancestors.push(parent.id);
+      return ancestors.length ? [[node.id, ancestors]] : [];
+    }));
     // Stroke cascade of this closed profile: inline style, then #id and .class rules, then the
     // attribute, else inherited. Lets an author choose `draw` knowingly; the runtime draws the same shapes.
     const stroke = node => {
@@ -267,19 +281,19 @@ export function parseSvg(bytes, { namespace = null, stages = null } = {}) {
       return 'none';
     };
     const shapes = 'path,rect,circle,ellipse,line,polyline,polygon';
-    const groups = groupIds.map(id => ({ id, stroked: [...ids.get(id).querySelectorAll(shapes)].some(n => !n.closest('defs,clipPath,mask') && stroke(n) !== 'none') }));
+    const groups = groupIds.map(id => ({ id, stroked: [...ids.get(id).querySelectorAll(shapes)].some(n => !n.closest(definitionContainer) && stroke(n) !== 'none') }));
     const mapped = [];
     if (stages !== null) {
       validateVectorStages(stages, groupIds, groups.filter(group => group.stroked).map(group => group.id));
       for (const [index, stage] of stages.entries()) for (const id of stage.svgGroupIds ?? []) {
         const node = ids.get(id);
-        if (node.closest('defs,clipPath,mask,pattern')) fail(`stage group ${id} must be visible geometry, not a definition`);
+        if (node.closest(definitionContainer)) fail(`stage group ${id} must be visible geometry, not a definition`);
         mapped.push({ node, index });
       }
       for (const { node } of mapped) {
         if (mapped.some(other => other.node !== node && other.node.contains(node))) fail(`stage group ${node.id} cannot nest inside another mapped group`);
         // Internal uses reveal with this wrapper; external copies bypass its visibility.
-        if (references.some(ref => !ref.accessibility && ref.node.localName === 'use' && !node.contains(ref.node) && (ids.get(ref.id).contains(node) || node.contains(ids.get(ref.id))))) fail(`stage group ${node.id} cannot be reused by use; map independent visible groups`);
+        if (hasExternalUse(node)) fail(`stage group ${node.id} cannot be reused by use; map independent visible groups`);
       }
     }
     if (namespace !== null) {
@@ -305,13 +319,14 @@ export function parseSvg(bytes, { namespace = null, stages = null } = {}) {
       wrapper.setAttribute('data-vector-group', namespace === null ? node.id : node.id.slice(namespace.length + 1));
       node.replaceWith(wrapper); wrapper.append(node);
     }
-    return { profile: SVG_PROFILE, width, height, groupIds, groups, fonts: [...fonts], source, svg: root.outerHTML };
+    return { profile: SVG_PROFILE, width, height, groupIds, groups, revealGroupIds, revealAncestors, fonts: [...fonts], source, svg: root.outerHTML };
   } finally { dom.window.close(); }
 }
 
 export function svgProbe(parsed) {
   return { kind: 'image', duration: null, width: parsed.width, height: parsed.height, hasAudio: false,
     contentType: 'image/svg+xml', svgProfile: parsed.profile, svgGroupIds: parsed.groupIds, svgGroups: parsed.groups,
+    svgRevealGroupIds: parsed.revealGroupIds, svgRevealAncestors: parsed.revealAncestors,
     streams: [{ codec_type: 'video', codec_name: 'svg', width: parsed.width, height: parsed.height }], format: { format_name: 'svg' } };
 }
 

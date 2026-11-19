@@ -12,6 +12,7 @@
 import { icons } from './icons.js';
 import { SLIDE_TYPES, visualKind } from './slide-types.js';
 import { askFromSlideText, missingParts, missingPartText, removeCandidate, slideOffers, startGallery, unstar, useOnSlide } from './deck-library.js';
+import { drawingParts, unclaimedDrawingParts, validateDrawingParts } from './drawing-parts.js';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const count = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
@@ -59,7 +60,11 @@ const picks = slide => [slide.media?.itemId, slide.vector?.itemId, ...(slide.sub
 const version = item => `v${item?.iteration ?? 1}`;
 const nameOf = item => item ? `${item.label} ${version(item)}` : 'Missing media';
 const drawingOf = (slide, items) => slide.vector ? items.find(item => item.id === slide.vector.itemId) || null : null;
-const partsOf = drawing => drawing?.asset?.metadata?.svgGroupIds || [];
+const partsOf = drawing => drawingParts(drawing?.asset?.metadata);
+const noPartsText = drawing => partsOf(drawing) === null
+  ? 'Drawing parts are unavailable. Check the registered drawing or choose another.'
+  : 'This drawing has no parts that can be revealed. Choose another drawing.';
+const newStep = () => ({ id: `stage_${crypto.randomUUID()}`, title: 'New step', body: '' });
 
 // ---- Markup
 
@@ -147,7 +152,9 @@ function askButton(picked, items) {
 // step). A part can be in one step only.
 function partsTable(slide, drawing) {
   const stages = slide.stages || [], owner = id => stages.findIndex(stage => (stage.svgGroupIds || []).includes(id));
-  const rows = partsOf(drawing).map(id => `<tr><th scope="row">${esc(id)}</th><td><select data-part-appears="${esc(id)}" aria-label="${esc(id)} appears">${options([['', 'From the start'],
+  const parts = partsOf(drawing);
+  if (!parts?.length) return `<p class="element-note">${noPartsText(drawing)}</p>`;
+  const rows = parts.map(id => `<tr><th scope="row">${esc(id)}</th><td><select data-part-appears="${esc(id)}" aria-label="${esc(id)} appears">${options([['', 'From the start'],
     ...stages.map((stage, i) => [String(i), `Step ${i + 1}: ${stage.title}`])], owner(id) < 0 ? '' : String(owner(id)))}</select></td></tr>`).join('');
   return `<table class="element-parts" data-parts-table><caption>Drawing parts</caption><thead><tr><th scope="col">Part</th><th scope="col">Appears</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
@@ -158,8 +165,14 @@ function stepCard(slide, stage, i, items, ctx) {
   const style = effective(design, slide, 'stageText', 'style') ?? (slide.vector ? 'chips' : 'steps');
   const summary = [STARTS.find(([, value]) => value === starts)[0], speed, drawing ? (reveals.length ? `reveals ${reveals.join(', ')}` : 'reveals nothing') : ''].filter(Boolean).join(' · ');
   const claimed = new Set((slide.stages || []).flatMap(value => value.svgGroupIds || []));
+  const parts = partsOf(drawing) ?? [];
+  const replace = reveals.some(id => !parts.includes(id));
+  const addLabel = replace ? 'Replace unavailable parts' : 'Add part';
+  const addAria = replace ? `${addLabel} in step ${i + 1}` : `Add part to step ${i + 1}`;
+  const available = unclaimedDrawingParts(drawing?.asset?.metadata, claimed);
   const revealRow = drawing ? `<div class="element-row" data-reveals><span class="element-label">Reveals</span><div class="element-chips">${reveals.map(id => `<span class="element-chip">${esc(id)}<button type="button" data-reveal-remove="${esc(id)}" aria-label="Remove ${esc(id)} from step ${i + 1}" title="Remove">×</button></span>`).join('') || '<span class="element-note">Nothing</span>'}</div>
-      <select data-reveal-add aria-label="Add part to step ${i + 1}"><option value="">Add part…</option>${options(partsOf(drawing).filter(id => !claimed.has(id)).map(id => [id, id]), '')}</select></div>` : '';
+      ${parts.length ? `<select data-reveal-add aria-label="${addAria}"><option value="">${addLabel}…</option>${options(available.map(id => [id, id]), '')}</select>`
+    : `<span class="element-note">${noPartsText(drawing)}</span>`}</div>` : '';
   const title = `<span class="element-grip" data-step-grip draggable="true" title="Drag to reorder" aria-hidden="true">${icons.grip}</span>Step ${i + 1}: ${esc(stage.title)}`;
   const body = `${noticeHTML(ctx.notice, `step:${stage.id}`)}${field('title', 'Button label', stage.title)}
     ${field('body', style === 'chips' ? 'Step text (not shown in chips style)' : 'Step text', stage.body, 'textarea')}
@@ -217,7 +230,7 @@ const stageFields = ['trigger', 'afterMs', 'durationMs', 'holdMs', 'easing', 'mo
  *  `onPlayStep(index)` plays it now; `onOpenAsset(itemId)` opens the asset preview; `onAskForAnother(text)`
  *  hands the Visual card's Ask for another note to the chat composer. */
 export function bindElementCards(root, { getSlides, getItems = () => [], onDirty, onSave, render, notify = () => {}, onReplay = () => {}, onPlayStep = () => {},
-  onOpenAsset = () => {}, onAskForAnother = () => {}, onToggle = () => {}, isGallery = () => false, onGalleryMode = () => {} }) {
+  onOpenAsset = () => {}, onAskForAnother = () => {}, onToggle = () => {}, isGallery = () => false, onGalleryMode = () => {}, onDrawingPick }) {
   const at = target => {
     const index = Number(target.closest('[data-slide-index]')?.dataset.slideIndex);
     return { index, slide: getSlides()[index] };
@@ -263,26 +276,44 @@ export function bindElementCards(root, { getSlides, getItems = () => [], onDirty
       return;
     }
     if ('partAppears' in data) return appears(index, slide, data.partAppears, value === '' ? -1 : Number(value), 'visual');
-    if ('revealAdd' in data && value) appears(index, slide, value, stageAt(event.target), `step:${slide.stages[stageAt(event.target)].id}`);
+    if ('revealAdd' in data && value) {
+      const stageIndex = stageAt(event.target), stage = slide.stages[stageIndex];
+      const parts = partsOf(drawingOf(slide, getItems() ?? []));
+      if (!parts?.includes(value)) return;
+      const invalid = (stage.svgGroupIds ?? []).filter(id => !parts.includes(id));
+      if (invalid.length) {
+        stage.svgGroupIds = [...stage.svgGroupIds.filter(id => parts.includes(id)), value];
+        return commit();
+      }
+      appears(index, slide, value, stageIndex, `step:${stage.id}`);
+    }
   });
   root.addEventListener('toggle', event => {
     const key = event.target.dataset?.card;
     if (key) onToggle(key, event.target.open);
   }, true);
 
-  // Star = pick. A drawing whose parts lack one a step reveals is refused here with the spec's line, and
-  // one onto a slide with a step that would reveal nothing with the server's (the server refuses both);
-  // everything else goes to the server and its rules.
+  // Both editor entry points use the same drawing pick and step assignment.
   function star(index, slide, id) {
     const value = item(id);
     if (!value) return;
     if (picks(slide).includes(id)) return replace(index, unstar(slide, id));
     const kind = visualKind(value);
     if (kind === 'drawing') {
+      if (!slideOffers(slide, value) || slide.subnav?.length)
+        return notify('visual', 'Choose a slide layout with a drawing slot and remove any gallery views first.');
       const missing = missingParts(value, slide.stages);
       if (missing.length) return notify('visual', missing.map(part => missingPartText(value, part)).join(' '));
-      const empty = (slide.stages || []).find(stage => !stage.svgGroupIds?.length && !stage.changes?.length);
-      if (empty) return notify('visual', `Stage ${empty.id}: select at least one SVG group`);
+      const parts = partsOf(value);
+      if (!parts?.length) return notify('visual', noPartsText(value));
+      const next = useOnSlide(slide, value), stages = slide.stages ?? [];
+      if (!stages.length) next.stages = [{ ...newStep(), svgGroupIds: [parts[0]] }];
+      if (slide.vector) {
+        try { validateDrawingParts(stages, value.asset.metadata); }
+        catch (error) { return notify('visual', error.message); }
+      }
+      if (onDrawingPick) return onDrawingPick(slide, next, value);
+      return replace(index, next);
     }
     const gallery = kind !== 'drawing' && !slide.subnav?.length && SLIDE_TYPES[slide.layout]?.visual.includes('gallery') && isGallery(slide.id);
     replace(index, gallery ? startGallery(slide, value) : useOnSlide(slide, value));
@@ -290,11 +321,15 @@ export function bindElementCards(root, { getSlides, getItems = () => [], onDirty
   // Add element > Step. On a drawing slide every step reveals a part (the server refuses one that reveals
   // none), so the new step takes the drawing's first part no step claims; with none free it is refused.
   function addStep(slide) {
-    const stage = { id: `stage_${crypto.randomUUID()}`, title: 'New step', body: '' };
+    const stage = newStep();
     if (slide.vector) {
+      const drawing = item(slide.vector.itemId), parts = partsOf(drawing);
+      if (!parts?.length) return notify('visual', noPartsText(drawing));
       const claimed = new Set((slide.stages || []).flatMap(value => value.svgGroupIds || []));
-      const part = partsOf(item(slide.vector.itemId)).find(id => !claimed.has(id));
-      if (!part) return notify('visual', 'Every part already appears in a step; free one first');
+      const [part] = unclaimedDrawingParts(drawing.asset.metadata, claimed);
+      if (!part) return notify('visual', parts.every(id => claimed.has(id))
+        ? 'Every part already appears in a step; free one first'
+        : 'The remaining parts overlap parts already in steps. Free one or choose another drawing.');
       stage.svgGroupIds = [part];
     }
     (slide.stages ||= []).push(stage);

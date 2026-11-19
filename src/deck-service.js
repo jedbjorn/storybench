@@ -28,7 +28,8 @@ const CANVAS_FRAME = readFileSync(new URL('./deck-template/canvas-frame.js', imp
 // else the channel's current Brand Standards, else the template's.
 export function deckSnapshot(store, episodeId, deck = store.getDeck(episodeId)) {
   const theme = effectiveDeckTheme(store.getBrandStandards(deck.channelId), deck.design), { colors, fonts } = themeBuildValues(theme);
-  const valid = store.validateDeckSlides(episodeId,deck.slides,deck.design), { theme:_theme, ...defaults } = deck.design ?? {};
+  // Publication checks the retained SVG itself, including for older saved mappings.
+  const valid = store.validateDeckSlides(episodeId,deck.slides,deck.design,{checkRevealParts:false}), { theme:_theme, ...defaults } = deck.design ?? {};
   // Layout primitives: the deck defaults and each slide's effective values (slide, else deck, else template).
   const design = { deck:defaults, slides:Object.fromEntries(valid.map(slide => [slide.id,effectiveSlideDesign(defaults,slide.design,{hasVisual:slideHasVisual(slide)})])) };
   // The build reads only the picks in today's fields (decision #123): candidates and pickSetBy stay out.

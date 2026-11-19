@@ -72,7 +72,7 @@ async function setup(t, slides = SLIDES) {
   const plain = await register(Buffer.from(source.replace(/<g id="tree">[\s\S]*?<\/g>/, '').replace(/<use href="#tree"[^>]*\/>/g, '')), 'process.svg', 'Graphics');
   const red = await register(png([200, 30, 30]), 'red.png', 'B-roll'), blue = await register(png([30, 30, 200]), 'blue.png', 'B-roll');
   app.store.saveDeck(episode.id, 1, slides({ svg: svg.id, lacking: lacking.id, plain: plain.id, red: red.id, blue: blue.id }), 'human');
-  return { app, episode, items: { svg, lacking, plain, red, blue }, url: `${base}/?channel=${episode.channelId}&episode=${episode.id}` };
+  return { app, episode, register, items: { svg, lacking, plain, red, blue }, url: `${base}/?channel=${episode.channelId}&episode=${episode.id}` };
 }
 const settled = page => page.waitForFunction(() => document.querySelector('#saveState')?.textContent.startsWith('Saved'));
 // The editor's canvas frame for a slide (optionally of one revision), once its runtime is there.
@@ -323,26 +323,209 @@ for (const type of [chromium, firefox]) test(`E4, E5, E6, E8 ${type.name()}: ele
   assert.deepEqual(errors, []);
 });
 
+const FIRST_PICKS = ({ svg, plain, red }) => [
+  { id: 'star', title: 'Pick with the star', layout: 'full-media', candidates: [{ itemId: svg, alt: 'Landscape drawing' }, { itemId: plain, alt: 'Alternate' }] },
+  { id: 'add', title: 'Pick with Add element', layout: 'title' },
+  { id: 'text', title: 'Existing text steps', layout: 'full-media', media: { itemId: red, alt: 'Original image' },
+    candidates: [{ itemId: svg, alt: 'New drawing' }],
+    stages: [{ id: 'intro', title: 'Introduce', body: 'Authored opening', trigger: 'manual', afterMs: 300, durationMs: 800, holdMs: 120, easing: 'linear', motion: 'fade' },
+      { id: 'conclude', title: 'Conclude', body: 'Authored ending', trigger: 'auto', afterMs: 100, durationMs: 400 }] },
+  { id: 'unavailable', title: 'Unavailable drawings', layout: 'title' },
+];
+for (const type of [chromium, firefox]) test(`#100 ${type.name()}: first drawing picks, assignment, conflict, reload and exported Preview`, { timeout: 90000 }, async t => {
+  const browser = await launch(type);
+  if (!browser) return t.skip(`No launchable ${type.name()} on this seat`);
+  t.after(() => browser.close());
+  const { app, episode, items, register, url } = await setup(t, FIRST_PICKS);
+  const svgSource = body => Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24">${body}</svg>`);
+  const empty = await register(svgSource('<defs><g id="symbol"><rect width="8" height="8"/></g></defs><use href="#symbol"/>'), 'definitions.svg', 'Graphics');
+  const unavailable = await register(svgSource('<g id="only"><circle cx="6" cy="6" r="4"/></g>'), 'unavailable.svg', 'Graphics');
+  const { svgGroupIds: _, svgRevealGroupIds: __, svgProfile: ___, ...missingPartsData } = unavailable.asset.metadata;
+  app.store.db.prepare('UPDATE assets SET metadata=? WHERE id=?').run(JSON.stringify(missingPartsData), unavailable.assetId);
+  const deck = () => app.store.getDeck(episode.id), slide = id => deck().slides.find(entry => entry.id === id);
+  const page = await browser.newPage({ viewport: { width: 1600, height: 1100 } }); page.setDefaultTimeout(10000);
+  const puts = [], errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const isPick = request => request.method() === 'PUT' && new URL(request.url()).pathname === `/api/episodes/${episode.id}/slides`;
+  page.on('request', request => { if (request.method() === 'PUT') puts.push(request.postDataJSON()); });
+  const pickResponse = () => page.waitForResponse(response => isPick(response.request()));
+  const add = page.locator('#slideEditor [data-add-element]'), visual = cardOf(page, 'visual');
+  const star = item => visual.locator(`[data-candidate-star="${item.id}"]`);
+  const form = page.getByRole('dialog', { name: 'Assign drawing parts' });
+  const confirm = form.getByRole('button', { name: 'Pick drawing' });
+  const choose = async (step, part) => {
+    await form.getByRole('combobox', { name: new RegExp(`^Part for step ${step}:`) }).click();
+    await form.getByRole('option', { name: part, exact: true }).click();
+  };
+  const expectPick = async (id, action) => {
+    const before = deck().revision, requests = puts.length, response = pickResponse();
+    await action();
+    assert.equal((await response).status(), 200);
+    await settled(page);
+    assert.equal(deck().revision, before + 1);
+    assert.equal(puts.length, requests + 1, 'the pick and its stage are one request');
+    assert.equal(puts.at(-1).expectedRevision, before);
+    assert.deepEqual(puts.at(-1).slides.find(entry => entry.id === id).stages.map(stage => stage.svgGroupIds),
+      slide(id).stages.map(stage => stage.svgGroupIds));
+    assert.equal(slide(id).vector.itemId, items.svg.id);
+  };
+  await page.goto(url);
+  await openEditor(page, 0);
+  await openCard(page, 'visual');
+  await page.waitForFunction(id => document.querySelector(`[data-candidate-star="${id}"]`)?.getAttribute('aria-label')?.includes('plan'), items.svg.id);
+  await expectPick('star', () => star(items.svg).click());
+  const firstStage = slide('star').stages[0];
+  assert.match(firstStage.id, /^stage_/);
+  assert.deepEqual(firstStage, { id: firstStage.id, title: 'New step', body: '', svgGroupIds: ['landscape'] });
+  assert.deepEqual(slide('star').vector, { itemId: items.svg.id, alt: 'Landscape drawing' });
+  assert.deepEqual(slide('star').candidates, [{ itemId: items.plain.id, alt: 'Alternate' }]);
+  await openEditor(page, 1);
+  await expectPick('add', () => add.selectOption(`visual:${items.svg.id}`));
+  assert.deepEqual(slide('add').stages.map(stage => stage.svgGroupIds), [['landscape']]);
+
+  await openEditor(page, 3);
+  const unchanged = deck(), requests = puts.length;
+  await add.selectOption(`visual:${empty.id}`);
+  await visual.getByRole('alert').filter({ hasText: 'has no parts that can be revealed' }).waitFor();
+  await add.selectOption(`visual:${unavailable.id}`);
+  await visual.getByRole('alert').filter({ hasText: 'Drawing parts are unavailable' }).waitFor();
+  assert.equal(puts.length, requests);
+  assert.equal(deck().revision, unchanged.revision);
+  assert.deepEqual(deck().slides, unchanged.slides);
+
+  await openEditor(page, 2);
+  await openCard(page, 'visual');
+  const original = slide('text'), base = deck().revision;
+  await star(items.svg).click();
+  await form.waitFor();
+  assert.deepEqual(await form.locator('[data-drawing-steps] strong').allTextContents(), ['Step 1: Introduce', 'Step 2: Conclude']);
+  assert.deepEqual(await form.locator('.drawing-step-copy').allTextContents(), ['Authored opening', 'Authored ending']);
+  assert.ok(await confirm.isDisabled());
+  assert.deepEqual(await form.locator('select').first().locator('option').allTextContents(), ['Choose part…', 'landscape', 'observe', 'connect', 'plan']);
+  await choose(1, 'observe');
+  await choose(2, 'observe');
+  assert.ok(await confirm.isDisabled());
+  assert.match(await form.getByRole('alert').textContent(), /different part/);
+  await choose(2, 'connect');
+  assert.ok(await confirm.isEnabled());
+  await evidence(page, `drawing-assignment-${type.name()}.png`);
+  await form.getByRole('button', { name: 'Cancel' }).click();
+  await form.waitFor({ state: 'hidden' });
+  assert.equal(deck().revision, base);
+  assert.deepEqual(slide('text'), original);
+  assert.equal(puts.length, requests);
+
+  await star(items.svg).click();
+  await choose(1, 'observe'); await choose(2, 'connect');
+  app.store.saveDeck(episode.id, base, deck().slides.map(entry => entry.id === 'text' ? { ...entry, notes: 'Concurrent edit' } : entry));
+  const conflicted = pickResponse();
+  await confirm.click();
+  assert.equal((await conflicted).status(), 409);
+  await form.waitFor({ state: 'hidden' });
+  await visual.getByRole('alert').filter({ hasText: 'The deck changed. Reload' }).waitFor();
+  assert.equal(await star(items.red).getAttribute('aria-pressed'), 'true');
+  assert.equal(deck().revision, base + 1);
+  assert.deepEqual(slide('text'), { ...original, notes: 'Concurrent edit' });
+
+  await page.reload();
+  await openEditor(page, 2);
+  await openCard(page, 'visual');
+  await star(items.svg).click();
+  await choose(1, 'observe'); await choose(2, 'connect');
+  await expectPick('text', () => confirm.click());
+  assert.deepEqual(slide('text').stages, original.stages.map((stage, index) => ({ ...stage, svgGroupIds: [index ? 'connect' : 'observe'] })));
+  assert.deepEqual(slide('text').candidates, [{ itemId: items.red.id, alt: 'Original image' }]);
+  assert.equal(slide('text').media, null);
+
+  await page.reload();
+  await openEditor(page, 0);
+  await frameIn(page, 'star', deck().revision);
+  await openCard(page, 'visual');
+  const replacement = pickResponse(), priorRevision = deck().revision;
+  await star(items.plain).click();
+  assert.equal((await replacement).status(), 200);
+  await settled(page);
+  assert.equal(deck().revision, priorRevision + 1);
+  assert.deepEqual(slide('star').stages, [firstStage], 'replacing the drawing preserves valid mappings');
+  assert.deepEqual(slide('star').candidates, [{ itemId: items.svg.id, alt: 'Landscape drawing' }]);
+
+  await page.click('[data-editor-close]');
+  await page.click('#buildDeck');
+  const revision = deck().revision;
+  const build = () => app.store.listJobs(episode.id).find(job => job.kind === 'deck' && job.revision === revision);
+  for (let i = 0; i < 200 && (!build() || ['queued', 'running'].includes(build().state)); i++) await page.waitForTimeout(25);
+  assert.equal(build()?.state, 'completed', build()?.error || 'Deck build should complete');
+  const preview = page.getByRole('link', { name: `Preview revision ${deck().revision}` });
+  const download = await page.getByRole('link', { name: `Download revision ${deck().revision} bundle (ZIP)` }).getAttribute('href');
+  await preview.click();
+  const frame = page.frameLocator('#previewModal [data-preview-frame]').frameLocator('#viewer iframe');
+  await frame.locator('#star [data-vector-group="landscape"]').waitFor({ state: 'attached' });
+  await frame.locator('[data-go="1"]').click();
+  const landscape = '#add [data-vector-group="landscape"]';
+  await frame.locator('#add [data-stage="0"]').click();
+  const trees = frame.locator(`${landscape}[aria-hidden="false"] use[href$="-tree"]`);
+  await trees.first().waitFor();
+  assert.equal(await trees.count(), 2);
+  await evidence(page, `drawing-preview-${type.name()}.png`);
+  assert.equal(await frame.locator('#text [data-vector-group="observe"][data-vector-step="0"]').count(), 1);
+  assert.equal(await frame.locator('#text [data-vector-group="connect"][data-vector-step="1"]').count(), 1);
+  const zip = Buffer.from(await (await fetch(new URL(download, url))).arrayBuffer());
+  assert.equal(zip.readUInt32LE(), 0x04034b50);
+  assert.ok(zip.includes(Buffer.from('data-vector-step="1" data-vector-group="connect"')));
+  assert.ok(zip.includes(Buffer.from('<use href="#tree"')), 'bundle retains the source definition uses');
+  assert.deepEqual(errors, []);
+});
+
 // Spec #46 task #134 (REV1 conformance F1, flag #95). E4: on a Process slide, Add element > Step reveals the
 // drawing's first part no step claims, in the drawing's part order, and the step is saved with it.
 // Step 1 reveals connect, so the first free part comes before it in the drawing's order.
-const PROCESS = ({ plain }) => [{ id: 'process', title: 'A process', layout: 'process', body: 'Step by step.', vector: { itemId: plain, alt: 'A plan' },
+const PROCESS = ({ svg }) => [{ id: 'process', title: 'A process', layout: 'process', body: 'Step by step.', vector: { itemId: svg, alt: 'A plan' },
   stages: [{ id: 'connect', title: 'Connect', svgGroupIds: ['connect'] }] }];
 for (const type of [chromium, firefox]) test(`E4 ${type.name()}: Add element > Step on a Process slide reveals a free part and is saved with it`, { timeout: 90000 }, async t => {
   const browser = await launch(type);
   if (!browser) return t.skip(`No launchable ${type.name()} on this seat`);
   t.after(() => browser.close());
   const { app, episode, items, url } = await setup(t, PROCESS);
-  const stages = () => app.store.getDeck(episode.id).slides[0].stages;
-  const parts = items.plain.asset.metadata.svgGroupIds, free = parts[0];
+  const deck = () => app.store.getDeck(episode.id), stages = () => deck().slides[0].stages;
+  const { svgRevealGroupIds: parts, svgRevealAncestors: _, ...oldMetadata } = items.svg.asset.metadata, free = parts[0];
   assert.deepEqual(parts, ['landscape', 'observe', 'connect', 'plan'], 'the drawing\'s parts, in order');
+  assert.ok(oldMetadata.svgGroupIds.includes('tree'));
+  if (type === firefox)
+    app.store.db.prepare('UPDATE assets SET metadata=? WHERE id=?').run(JSON.stringify(oldMetadata), items.svg.assetId);
+  const endpoint = new URL(`/api/episodes/${episode.id}/slides?channel=${episode.channelId}`, url);
+  const put = (expectedRevision, slides) => fetch(endpoint, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedRevision, slides }) });
+  const before = deck();
+  const invalid = [{ ...before.slides[0], stages: [{ ...stages()[0], svgGroupIds: ['tree'] }] }];
+  const refused = await put(before.revision, invalid);
+  assert.equal(refused.status, 400);
+  assert.match((await refused.json()).error, /Stage connect: SVG group tree.*definitions/);
+  assert.deepEqual(deck().slides, before.slides);
+  assert.equal(deck().revision, before.revision);
+  if (type === firefox)
+    app.store.db.prepare('UPDATE episodes SET cards=? WHERE id=?').run(JSON.stringify(invalid), episode.id);
   const page = await browser.newPage({ viewport: { width: 1600, height: 1100 } }); page.setDefaultTimeout(10000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(url);
   await openEditor(page, 0);
   // The library has loaded once the Visual card lists the drawing's parts.
   await openCard(page, 'visual');
-  await cardOf(page, 'visual').locator('[data-parts-table]').waitFor();
+  const visual = cardOf(page, 'visual'), table = visual.locator('[data-parts-table]');
+  await table.waitFor();
+  assert.deepEqual(await table.locator('tbody th').allTextContents(), parts);
+  await openCard(page, 'step:connect');
+  const add = cardOf(page, 'step:connect').locator('[data-reveal-add]');
+  if (type === firefox) {
+    assert.match(await visual.locator('[data-missing-part]').textContent(), /tree cannot be revealed/);
+    assert.deepEqual(stages()[0].svgGroupIds, ['tree'], 'opening preserves the invalid mapping for correction');
+    assert.equal(deck().revision, before.revision);
+    assert.deepEqual(await add.locator('option').allTextContents(), ['Replace unavailable parts…', ...parts]);
+    await add.selectOption('connect');
+    await settled(page);
+    assert.equal(deck().revision, before.revision + 1);
+    assert.deepEqual(stages()[0].svgGroupIds, ['connect']);
+  }
+  assert.deepEqual(await add.locator('option').allTextContents(), ['Add part…', 'landscape', 'observe', 'plan']);
   const revision = app.store.getDeck(episode.id).revision;
   await page.selectOption('#slideEditor [data-add-element]', 'step');
   await settled(page);
@@ -353,11 +536,22 @@ for (const type of [chromium, firefox]) test(`E4 ${type.name()}: Add element > S
   // On reload the step is there with its part, and the canvas shows the slide built from it.
   await page.reload();
   await openEditor(page, 0);
-  await frameIn(page, 'process', revision + 1);
+  const frame = await frameIn(page, 'process', revision + 1);
+  assert.equal(await frame.locator('[data-vector-group="landscape"] use[href$="-tree"]').count(), 2);
   const added = stages()[1].id;
   assert.match(await cardOf(page, `step:${added}`).locator('.element-card-summary').textContent(), new RegExp(`reveals ${free}$`));
   await openCard(page, 'visual');
   assert.equal(await cardOf(page, 'visual').locator(`[data-part-appears="${free}"]`).inputValue(), '1', `${free} appears at step 2`);
   await evidence(page, `e4-add-step-drawing-${type.name()}.png`);
+  await openCard(page, 'step:connect');
+  await add.selectOption('observe');
+  await settled(page);
+  await add.selectOption('plan');
+  await settled(page);
+  const full = deck();
+  await page.selectOption('#slideEditor [data-add-element]', 'step');
+  await visual.getByRole('alert').filter({ hasText: 'Every part already appears' }).waitFor();
+  assert.equal(deck().revision, full.revision, 'an exhausted drawing leaves the revision fixed');
+  assert.deepEqual(deck().slides, full.slides);
   assert.deepEqual(errors, []);
 });
