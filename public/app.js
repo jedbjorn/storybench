@@ -223,7 +223,7 @@ document.addEventListener("click", (event) => {
   previewModal.open({ url: link.getAttribute("href") });
 });
 const libraryWorkspace = new LibraryWorkspace({ api, toast, preview: previewModal, getEpisode: () => episode, refreshState: () => load(episode?.id), beforeDelete: flushDraft, onMutation: () => refreshJobs().catch((error) => toast(error.message)), onAskForAnother: fillChatDraft });
-// Ask for another (deck asset preview): the request waits in the chat composer for the creator's direction.
+// Ask for another (deck asset preview and the slide editor's Visual card): the request waits in the chat composer for the creator's direction.
 function fillChatDraft(text) {
   const field = chatWorkspace.draftField();
   if (!field) return;
@@ -624,7 +624,7 @@ const deckCanvas = createDeckCanvas($("#deckCanvas"), { channel: () => channelId
   getItems: deckLibrary, onOpenAsset: openDeckAsset });
 const slideEditor = createSlideEditor($("#slideEditor"), { canvas: deckCanvas, channel: () => channelId, getEpisode: () => episode, getItems: deckLibrary,
   getSections: () => (episode && boardItemsEpisode === episode.id ? boardSections : []), saveState: $("#saveState"),
-  onDirty: markDeckDirty, onSave: () => save(), onClose: () => renderCards(), onOpenAsset: openDeckAsset });
+  onDirty: markDeckDirty, onSave: () => save(), onClose: () => renderCards(), onOpenAsset: openDeckAsset, onAskForAnother: fillChatDraft });
 // One card is open at a time; its inline preview is the saved slide, so it waits for pending edits to save.
 let openSlideId = null, slideListShown = null, slidePreview = null;
 function renderSlideList() {
