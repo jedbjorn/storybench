@@ -1,3 +1,4 @@
+import { createVideoMoments } from './video-moments.js';
 import { previewMetadata, previewTarget } from './preview.js';
 import { renderSvg } from './svg-render.js';
 import { projectContentType, downloadDisposition } from './project-files.js';
@@ -122,8 +123,9 @@ function contained(base, relative) {
     throw new StoreError("Invalid registered file path", 403);
   return value;
 }
-async function streamFile(req, res, file, contentType, status = 200) {
-  const info = await stat(file);
+async function streamFile(req, res, file, contentType, status = 200, handle) {
+  const info = handle ? await handle.stat() : await stat(file);
+  if (res.destroyed) return;
   if (!info.isFile()) throw new StoreError("File not found", 404);
   const range = req.headers.range;
   const selectedType =
@@ -131,12 +133,13 @@ async function streamFile(req, res, file, contentType, status = 200) {
   const headers = {
     "content-type": selectedType,
     "accept-ranges": "bytes",
-    "cache-control": /^(text\/html|text\/css|text\/javascript)/.test(selectedType)
+    "cache-control": handle || /^(text\/html|text\/css|text\/javascript)/.test(selectedType)
       ? "no-store"
       : "private, max-age=3600",
   };
   const pipe = (opts) => {
-    const stream = createReadStream(file, opts);
+    const stream = handle ? handle.createReadStream({ start: 0, ...opts }) : createReadStream(file, opts);
+    res.once("close", () => stream.destroy());
     stream.on("error", () => res.destroy());
     stream.pipe(res);
   };
@@ -172,6 +175,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
   await startDeckReadiness(releaseFromEnv());
   const store = dataRoot ? openDataRoot(dataRoot, { startup: true, storeOptions }) : new Store(workspaceOption, storeOptions);
   const workspace = store.workspace;
+  const moments = createVideoMoments(store);
   const listeners = new Map();
   const notify = (episodeId, detail = {}) => listeners.get(episodeId)?.forEach((fn) => fn(detail));
   const library = createLibraryService({ workspace, store });
@@ -198,7 +202,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
   let closePromise;
   let activeMutations = 0;
   let activeFileReads = 0;
-  const streamProjectFile = async (req, res, file, asset = {}, label) => {
+  const streamProjectFile = async (req, res, file, asset = {}, label, handle) => {
     const type = projectContentType(asset, file);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     if (!res.hasHeader('Content-Disposition')) res.setHeader('Content-Disposition',
@@ -209,7 +213,7 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
     let released = false;
     const release = () => { if (!released) { released = true; activeFileReads--; } };
     res.once("close", release);
-    try { return await streamFile(req, res, file, type); }
+    try { return await streamFile(req, res, file, type, 200, handle); }
     catch (error) { release(); throw error; }
   };
   const health = createHealth({ store, getState: () => (closing ? "draining" : "ready") });
@@ -238,6 +242,11 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
       // default is only a fallback for navigation entry; it never retargets an explicitly scoped request.
       const requestedChannel = url.searchParams.get("channel") || String(req.headers["x-storybench-channel"] || "") || null;
       const viewChannel = () => requestedChannel ? store.requireChannel(requestedChannel) : store.getDefaultChannel();
+      if (req.method === 'GET' && url.pathname === '/api/moments') {
+        const params = url.searchParams;
+        return send(res, 200, moments.list({ channelIds: params.getAll('channel'), query: params.get('q') ?? '',
+          offset: Number(params.get('offset') ?? 0), limit: Number(params.get('limit') ?? 30) }));
+      }
       if (req.method === 'POST' && parts[0] === 'api' && parts[1] === 'preview' && parts.at(-1) === 'redline') {
         // The redline popup's upload: pinned to the previewed asset, so a deleted asset or unavailable channel refuses it.
         const { metadata } = await previewTarget(store, workspace, parts.slice(2, -1), requestedChannel);
@@ -423,6 +432,25 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
         // Every episode-scoped route validates the caller's channel together with the episode ID.
         if (!store.getEpisode(episodeId)) throw new StoreError("Episode not found", 404);
         if (requestedChannel) store.assertEpisodeChannel(episodeId, requestedChannel);
+        if (parts[3] === 'moments') {
+          const origin = { episodeId, channelId: requestedChannel };
+          const id = parts[4];
+          if (parts.length === 4 && req.method === 'POST')
+            return send(res, 200, await moments.create(origin, await jsonBody(req)));
+          if (parts.length === 5) {
+            if (req.method === 'GET') return send(res, 200, await moments.get(origin, id));
+            if (req.method === 'PUT') return send(res, 200, await moments.update(origin, id, await jsonBody(req)));
+            if (req.method === 'DELETE') return send(res, 200, await moments.remove(origin, id, (await jsonBody(req))?.expectedRevision));
+          }
+          if (parts.length === 6 && parts[5] === 'file' && ['GET', 'HEAD'].includes(req.method)) {
+            const { handle, contentType } = await moments.openMedia(origin, id);
+            if (res.destroyed) return await handle.close();
+            res.once('close', () => handle.close());
+            // Revalidate the pin even when a player retries a byte range after cleanup.
+            return await streamProjectFile(req, res, id, { metadata: { contentType } }, id, handle);
+          }
+          throw new StoreError('Moment route not found', 404);
+        }
         if (parts[3] === 'events' && parts.length === 4 && req.method === 'GET') {
           res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
           eventStreams.add(res);
