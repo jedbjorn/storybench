@@ -150,6 +150,44 @@ test('an oriented separate panel fits its moved bounds and preserves the explici
   checkBackingAudio(shot.outputPath, input, shot.background.start);
 });
 
+test('offset picture covers only 1–3 seconds of the four-second source clock', async t => {
+  const dir = await workspace(t);
+  const input = dashboard(dir), offset = join(dir, 'offset.mp4');
+  ffmpeg('-itsoffset', '1', '-i', input, '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=4',
+    '-map', '0:v:0', '-map', '1:a:0', '-af', "volume=0.25:enable='lt(t,1.75)'", '-c:v', 'copy', '-c:a', 'aac', offset);
+  for (const field of ['background', 'foreground']) {
+    const shot = { ...recipe(dir, input), background: { path: input }, duration: 2,
+      entranceStart: 0, landAt: 0, holdUntil: 2, dim: 0, outputPath: join(dir, field + '.mp4') };
+    shot[field] = { ...shot[field], path: offset, start: 0 };
+    const invalid = { ...shot, outputPath: join(dir, field + '-invalid.mp4') };
+    await assert.rejects(renderSaved(invalid), new RegExp(field + '\\.start'));
+    assert.ok(!(await readdir(dir)).includes(field + '-invalid.mp4'));
+    shot[field].start = 1;
+    await renderSaved(shot);
+    for (const n of [0, 1, 8, 15]) {
+      const frame = sample(shot.outputPath, n, 160);
+      assert.equal(counter(frame, 80, 48, 2), n, field + ' detail');
+      assert.equal(counter(frame, 0, 0, 1), n, field + ' context');
+    }
+    checkBackingAudio(shot.outputPath, shot.background.path, shot.background.start ?? 0);
+  }
+
+  // Shift the whole recording three seconds on its media clock. Matroska
+  // supplies an absolute end tag, or just packet timing on a live recording.
+  for (const live of ['0', '1']) {
+    const path = join(dir, `offset-${live}.mkv`);
+    ffmpeg('-i', offset, '-map', '0', '-c:v', 'copy', '-c:a', 'pcm_s16le',
+      '-output_ts_offset', '3', '-live', live, path);
+    const shot = { ...recipe(dir, input), background: { path, start: 1 }, duration: 2,
+      outputPath: join(dir, `matroska-${live}.mp4`) };
+    await renderSaved(shot);
+    assert.equal(counter(sample(shot.outputPath, 15, 160), 0, 0, 1), 15);
+    for (const start of [0, 1.125]) {
+      await assert.rejects(renderForegroundDetail({ ...shot, background: { path, start } }), /background\.start/);
+    }
+  }
+});
+
 test('still backing holds silently and invalid fields leave no shot behind', async t => {
   const dir = await workspace(t);
   const video = dashboard(dir), still = join(dir, 'dashboard.png');

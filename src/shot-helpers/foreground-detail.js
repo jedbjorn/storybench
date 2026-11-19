@@ -1,7 +1,9 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { link, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
 import { probeMedia } from '../media.js';
 
@@ -29,6 +31,33 @@ function pixels(rect, width, height, field) {
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
+async function pictureInterval(path, video, signal) {
+  const start = Number(video.start_time), duration = Number(video.duration);
+  if (Number.isFinite(start)) {
+    if (Number.isFinite(duration)) return [start, start + duration];
+    // Matroska DURATION tags contain the end timestamp, including any offset.
+    const tag = video.tags?.DURATION?.split(':').map(Number);
+    if (tag?.length === 3 && tag.every(Number.isFinite)) {
+      return [start, tag[0] * 3600 + tag[1] * 60 + tag[2]];
+    }
+  }
+
+  // Some containers have no per-stream timing metadata. Read just the video
+  // packet timestamps so trailing audio cannot extend the picture interval.
+  const probe = spawn('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries',
+    'packet=pts_time,duration_time', '-of', 'csv=p=0', path], { signal, stdio: ['ignore', 'pipe', 'inherit'] });
+  let first = Infinity, end = -Infinity;
+  createInterface({ input: probe.stdout }).on('line', line => {
+    const [pts, duration] = line.split(',').map(parseFloat);
+    if (!Number.isFinite(pts)) return;
+    first = Math.min(first, pts);
+    end = Math.max(end, pts + (Number.isFinite(duration) ? duration : 0));
+  });
+  const [code] = await once(probe, 'close');
+  if (code !== 0) throw new Error('Unable to read video packet timestamps');
+  return [first, end];
+}
+
 async function source(input, field, length, signal) {
   if (typeof input?.path !== 'string' || !input.path) throw new Error(`${field}.path is required`);
   const path = resolve(input.path);
@@ -37,13 +66,14 @@ async function source(input, field, length, signal) {
   if (!video) throw new Error(`${field}.path needs a visual stream`);
   const start = number(input.start ?? 0, `${field}.start`, 0);
   const still = info.kind === 'image';
-  // Matroska/WebM often stores individual stream lengths in DURATION tags.
-  // The container duration can include audio that outlasts the picture.
-  const tag = video.tags?.DURATION?.split(':').map(Number);
-  const taggedDuration = tag?.length === 3 ? tag[0] * 3600 + tag[1] * 60 + tag[2] : null;
-  const duration = Number(video.duration ?? taggedDuration ?? info.duration);
-  if (still ? start !== 0 : !(start + length <= duration + 1e-6)) {
-    throw new Error(`${field}.start and shot range exceed the source`);
+  if (still && start !== 0) throw new Error(`${field}.start must be zero for a still`);
+  if (!still) {
+    // Input -ss is relative to the container start, including when audio leads.
+    const [first, end] = await pictureInterval(path, video, signal);
+    const inPoint = Math.round((Number(info.format.start_time ?? 0) + start) * 1e6) / 1e6;
+    if (!(inPoint >= first && inPoint + length <= end + 1e-6)) {
+      throw new Error(`${field}.start and shot range exceed the source picture`);
+    }
   }
   // FFmpeg autorotates before the filter graph. Crop in that raster and fit
   // with its display aspect (including non-square source pixels).
@@ -108,7 +138,9 @@ export async function renderForegroundDetail({
     const clock = i === 1 ? `settb=AVTB,setpts=PTS+${entranceStart}/TB,` : '';
     const label = i === 1 ? '[detail]' : '[context]';
     const branch = separate ? label : ',split[context][detail]';
-    filters.push(`[${i}:v:0]${extend}${clock}fps=${fps}:start_time=0:round=up${branch}`);
+    // Drop preroll after sampling. fps with start_time=0 would also pad a
+    // late first frame backwards, inventing picture before it was available.
+    filters.push(`[${i}:v:0]${extend}${clock}fps=${fps}:round=up,trim=start_pts=0${branch}`);
   }
 
   const active = `gte(t,${entranceStart})*lt(t,${holdUntil})`;
@@ -123,7 +155,7 @@ export async function renderForegroundDetail({
   const temporary = `${outputPath}.${randomUUID()}.tmp.mp4`;
   try {
     await run('ffmpeg', [...args, '-filter_complex', filters.join(';'), '-map', '[v]', '-map', '0:a:0?',
-      '-af', 'atrim=start=0', '-t', String(duration), '-c:v', 'libx264', '-threads', '2', '-crf', '18', '-c:a', 'aac',
+      '-af', 'atrim=start=0', '-fps_mode:v', 'passthrough', '-t', String(duration), '-c:v', 'libx264', '-threads', '2', '-crf', '18', '-c:a', 'aac',
       '-b:a', '192k', '-movflags', '+faststart', temporary], { signal });
     signal?.throwIfAborted();
     // Publish atomically without overwriting a source or an earlier revision.
