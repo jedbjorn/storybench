@@ -10,6 +10,7 @@
   const deck = window.storybenchDeck, slide = document.querySelector('.slide');
   const presentation = document.getElementById('presentation');
   if (!deck || !slide || window.parent === window) return;
+  const standardsRevision = Number(document.currentScript.dataset.standardsRevision);
   const BLOCKS = { copy: '.copy', stageText: '.stage-text', visual: '.visual' };
   let stage = null, playing = null;
   // How long Play waits before clicking an On click stage, as a person would.
@@ -34,7 +35,7 @@
       const box = union(boxes(slide.querySelector(selector)));
       if (box) blocks[key] = box;
     }
-    window.parent.postMessage({ type: 'storybench-canvas', version: 1, slideId: slide.id, stage,
+    window.parent.postMessage({ type: 'storybench-canvas', version: 1, slideId: slide.id, standardsRevision, stage,
       playing: Boolean(playing), pulse: playing?.pulse ?? null, stages: deck.timeline().stages.length, area: { left: area.left, top: area.top, width: area.width, height: area.height }, blocks,
       scroll: { top: presentation.scrollTop, max: presentation.scrollHeight - presentation.clientHeight } }, '*');
   }

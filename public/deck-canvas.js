@@ -130,9 +130,11 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
   playButton.addEventListener('click', () => frame?.contentWindow.postMessage({ type: 'storybench-canvas-play' }, '*'));
 
   // ---- Frame: the saved slide as the build renders it. A new frame replaces the old once it reports.
-  const frameUrl = () => slide() ? slideFrameUrl(episode, slideId, standards?.revision ?? 0) : null;
+  // Advance the request key only when the displayed frame actually used older standards.
+  let minimumStandardsRevision = 0;
   async function load() {
-    const url = frameUrl();
+    if (info?.standardsRevision < standards?.revision) minimumStandardsRevision = standards.revision;
+    const url = slide() ? slideFrameUrl(episode, slideId, minimumStandardsRevision) : null;
     // A new revision waits for the open text edit; the edit's commit then saves over it.
     if (!url || url === shown || editing) return;
     shown = url;
@@ -157,6 +159,7 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
     } else if (!frame || event.source !== frame.contentWindow) return;
     const before = info && Object.keys(info.blocks).join();
     info = data;
+    if (data.standardsRevision < standards?.revision) load();
     // While Play runs, the step bar follows the frame; when it ends the frame holds the full reveal.
     if (data.playing || playing) { playing = Boolean(data.playing); stage = data.stage; }
     // A stage the slide no longer has is the full reveal, as the bridge shows it; ask again only for a stage it has not applied yet.
@@ -561,15 +564,17 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
   // ---- Data the theme needs: the channel's standards (with the template's own roles) and the font catalogue.
   async function loadStandards() {
     const id = channel() || '';
-    if (standardsFor === id) return;
-    standardsFor = id;
+    if (standardsFor?.id === id) return;
+    const request = { id };
+    standardsFor = request;
     const headers = id ? { 'x-storybench-channel': id } : {};
     const [value, catalogue] = await Promise.all(['/api/brand-standards', '/api/fonts'].map((url) => fetch(url, { headers }).then((r) => r.ok ? r.json() : null).catch(() => null)));
+    if (standardsFor !== request || !episode) return;
     standards = value; fonts = catalogue || [];
     for (const font of fonts.filter((item) => item.available)) for (const [weight, file] of [[400, 'regular'], [700, 'bold']]) {
       if (![...doc.fonts].some((face) => face.family === font.family && face.weight === String(weight))) doc.fonts.add(new FontFace(font.family, `url("${font.urls[file]}")`, { weight: String(weight) }));
     }
-    shown = ''; load(); renderInspector();
+    load(); renderInspector();
   }
 
   function open(id) {
@@ -583,7 +588,9 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
     // The production as the editor now holds it; a new revision reloads the frame.
     // The editor opens a slide with show(episode) then open(slideId).
     show(next) {
-      if (episode?.id !== next.id) { slideId = null; standardsFor = null; scope = 'slide'; }
+      if (episode?.id !== next.id) {
+        slideId = null; standardsFor = null; standards = null; minimumStandardsRevision = 0; scope = 'slide';
+      }
       episode = next;
       loadStandards();
       if (!slide()) return;
