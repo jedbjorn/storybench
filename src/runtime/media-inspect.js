@@ -21,7 +21,7 @@ export const CONTACT_SHEET_LIMITS = Object.freeze({ minFrames: 2, maxFrames: 16 
 // path string is accepted for app-owned temporary files only.
 const INPUT_FD = "/proc/self/fd/3";
 
-function runMedia(command, args, { source = null, capture = false, timeoutMs = MEDIA_TIMEOUT_MS, failure = "Could not decode an image from this file" } = {}) {
+function runMedia(command, args, { source = null, capture = false, timeoutMs = MEDIA_TIMEOUT_MS, empty = "No frame exists at that timestamp", failure = "Could not decode an image from this file" } = {}) {
   return new Promise((resolve, reject) => {
     const stdio = ["ignore", capture ? "pipe" : "ignore", "pipe", ...(source != null ? [source] : [])];
     const child = spawn(command, command === "ffmpeg" ? ["-v", "error", "-nostdin", ...args] : args, { stdio });
@@ -36,7 +36,7 @@ function runMedia(command, args, { source = null, capture = false, timeoutMs = M
       clearTimeout(timer);
       if (timedOut) return reject(new RuntimeError("FRAME_TIMEOUT", `${command} did not finish within ${Math.round(timeoutMs / 1000)} s`));
       if (code !== 0) return reject(new RuntimeError("FRAME_FAILED", failure));
-      if (capture && !size) return reject(new RuntimeError("FRAME_FAILED", "No frame exists at that timestamp"));
+      if (capture && !size) return reject(new RuntimeError("FRAME_FAILED", empty));
       if (size > MAX_IMAGE_BYTES) return reject(new RuntimeError("FRAME_TOO_LARGE", "Decoded image is too large"));
       resolve(capture ? Buffer.concat(chunks) : null);
     });
@@ -64,6 +64,67 @@ export async function frameAt(source, atSeconds = null, { maxWidth = 1024, timeo
   if (atSeconds != null) args.push("-ss", String(assertTimestamp(atSeconds)));
   args.push("-i", input, "-frames:v", "1", "-vf", `scale='min(${maxWidth},iw)':-2`, "-f", "image2pipe", "-vcodec", "png", "-");
   return ffmpeg(args, { capture: true, source: fd, timeoutMs });
+}
+
+// Analyze stereo PCM in 20 ms windows. Keeping both channels avoids cancelling
+// out-of-phase stereo onsets. Summarize the level every half second for the agent.
+export const MAX_AUDIO_SECONDS = 30;
+const AUDIO_RATE = 24000;
+const WINDOW_FRAMES = AUDIO_RATE / 50;
+const LEVEL_FRAMES = AUDIO_RATE / 2;
+const FLOOR_DBFS = -96;
+const dbfs = (energy, frames) => Math.max(FLOOR_DBFS, 10 * Math.log10(energy / (2 * frames)));
+const tenth = (value) => Math.round(value * 10) / 10;
+
+export async function inspectAudio(handle, startSeconds, endSeconds) {
+  assertTimestamp(startSeconds, "startSeconds");
+  assertTimestamp(endSeconds, "endSeconds");
+  const duration = endSeconds - startSeconds;
+  if (duration <= 0 || duration > MAX_AUDIO_SECONDS)
+    throw new RuntimeError("INVALID_RANGE", `Inspect a positive range of at most ${MAX_AUDIO_SECONDS} seconds`);
+
+  // Give the demuxer only the scoped descriptor, including for nested media inputs.
+  const pcm = await ffmpeg([
+    "-ss", String(startSeconds), "-protocol_whitelist", "fd", "-fd", "3", "-i", "fd:",
+    "-map", "0:a:0", "-t", String(duration), "-af", `aresample=${AUDIO_RATE}:async=1:first_pts=0`,
+    "-ac", "2", "-c:a", "pcm_s16le", "-f", "s16le", "-",
+  ], { source: handle.fd, capture: true, failure: "Could not decode the first audio stream in this source",
+    empty: "The requested range contains no audio samples" });
+
+  const frames = pcm.length / 4;
+  const timeAt = (frame) => Math.min(endSeconds, startSeconds + frame / AUDIO_RATE);
+  const levels = [];
+  const candidateAccents = [];
+  let previousDb = null;
+  let levelEnergy = 0;
+  let levelStart = 0;
+  for (let start = 0; start < frames; start += WINDOW_FRAMES) {
+    const end = Math.min(frames, start + WINDOW_FRAMES);
+    let energy = 0;
+    for (let offset = start * 4; offset < end * 4; offset += 2) {
+      const sample = pcm.readInt16LE(offset) / 32768;
+      energy += sample * sample;
+    }
+    const rms = dbfs(energy, end - start);
+    // The first window establishes the baseline, even if the selection opens mid-note.
+    if (previousDb !== null && rms >= -30 && rms - previousDb >= 8) {
+      const atSeconds = timeAt(start);
+      if (!candidateAccents.length || atSeconds - candidateAccents.at(-1).atSeconds >= 0.08)
+        candidateAccents.push({ atSeconds, rmsDbfs: tenth(rms), riseDb: tenth(rms - previousDb) });
+    }
+    previousDb = rms;
+    levelEnergy += energy;
+    if (end - levelStart === LEVEL_FRAMES || end === frames) {
+      const rmsDbfs = tenth(dbfs(levelEnergy, end - levelStart));
+      const previousLevel = levels.at(-1);
+      levels.push({ startSeconds: timeAt(levelStart), endSeconds: timeAt(end), rmsDbfs,
+        changeDb: previousLevel ? tenth(rmsDbfs - previousLevel.rmsDbfs) : null });
+      levelStart = end;
+      levelEnergy = 0;
+    }
+  }
+  return { startSeconds, endSeconds: timeAt(frames), measurements: { mix: "stereo", floorDbfs: FLOOR_DBFS, levels },
+    candidateAccents, interpretation: "Candidates mark abrupt measured rises on the source clock. Review candidates in the mix to choose an editorial cue." };
 }
 
 // Evenly spaced sample times within [start, end]: the centre of each of `count` spans.

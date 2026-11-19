@@ -29,7 +29,7 @@ export function imageRouteStatus(harness, release) {
 // Not provided by Storybench to either production harness in this release.
 export const NOT_AVAILABLE = Object.freeze([
   "image generation services",
-  "audio listening/understanding (metadata only via inspect_media)",
+  "direct audio playback to the model",
   "web browsing or external stock/publishing services",
   "direct database or managed-output writes (use the Storybench tools)",
 ]);

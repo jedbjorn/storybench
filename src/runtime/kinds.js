@@ -13,7 +13,7 @@ export const SHARED_TOOLS = Object.freeze([
 ]);
 export const KIND_REGISTRY = Object.freeze({
   video: Object.freeze({ templates: 'video', tools: Object.freeze([
-    'search_video_moments', 'get_video_moment',
+    'search_video_moments', 'get_video_moment', 'inspect_audio',
     'get_operation_guide', 'update_story', 'update_cards', 'validate_render', 'create_draft',
     'declare_final_request', 'create_final', 'get_job', 'await_job', 'cancel_job',
     'move_final_to_drafts', 'list_graphic_recipes', 'get_graphic_recipe',
