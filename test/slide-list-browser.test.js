@@ -210,8 +210,8 @@ for (const type of [chromium, firefox]) test(`E2, E5 and E3 ${type.name()}: the 
   assert.equal(await heading(), 'Slide 02 of 8 Observe, connect, plan');
   const canvas = await frameIn(page, '.deck-canvas-viewport', 'diagram');
   assert.equal(await editor.locator('[data-editor-elements] [data-slot="copy"] [data-slide-field="title"]').inputValue(), 'Observe, connect, plan');
-  // The header leaves the Markup and Send to chat slots for task #130.
-  assert.equal(await editor.locator('[data-editor-slot]').count(), 2);
+  // The header's Markup and Send to chat (task #130; E10 in slide-redline-browser.test.js).
+  assert.deepEqual(await editor.locator('header [data-editor-redline]').allTextContents(), ['Markup', 'Send to chat']);
 
   // E5: Play slide runs the slide's timeline from Start: each step in order, an On click step pulses before
   // it is clicked, the step bar follows, and the slide ends at the full reveal.
