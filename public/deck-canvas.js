@@ -35,9 +35,9 @@ const DENSITIES = [['compact', 'Compact'], ['standard', 'Standard'], ['spacious'
 const AREA = { left: 224, top: 0, width: 1056, height: 648 };
 
 // The canvas build of one saved slide; null until the production has a saved revision.
-export function slideFrameUrl(episode, slideId, standards = 0) {
+export function slideFrameUrl(episode, slideId) {
   if (!episode || !Number.isInteger(episode.revision)) return null;
-  return `/api/episodes/${encodeURIComponent(episode.id)}/deck-canvas/${episode.revision}/${encodeURIComponent(slideId)}/index.html?standards=${standards}`;
+  return `/api/episodes/${encodeURIComponent(episode.id)}/deck-canvas/${episode.revision}/${encodeURIComponent(slideId)}/index.html`;
 }
 // An inert, sandboxed canvas frame of `url`; its bridge reports to the caller's message listener.
 function canvasFrame(doc, url, title) {
@@ -130,7 +130,7 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
   playButton.addEventListener('click', () => frame?.contentWindow.postMessage({ type: 'storybench-canvas-play' }, '*'));
 
   // ---- Frame: the saved slide as the build renders it. A new frame replaces the old once it reports.
-  const frameUrl = () => slide() ? slideFrameUrl(episode, slideId, standards?.revision ?? 0) : null;
+  const frameUrl = () => slide() ? slideFrameUrl(episode, slideId) : null;
   async function load() {
     const url = frameUrl();
     // A new revision waits for the open text edit; the edit's commit then saves over it.
@@ -141,7 +141,7 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
     status.textContent = refusal || '';
     if (refusal) return;
     pending?.remove();
-    pending = canvasFrame(doc, `${url}&${new URLSearchParams({ ...(stage === null ? {} : { stage }), scroll: Math.round(info?.scroll?.top || 0) })}`, 'Slide as built');
+    pending = canvasFrame(doc, `${url}?${new URLSearchParams({ ...(stage === null ? {} : { stage }), scroll: Math.round(info?.scroll?.top || 0) })}`, 'Slide as built');
     Object.assign(pending.dataset, { slideId, revision: episode.revision });
     viewport.append(pending);
     place();
@@ -569,7 +569,8 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
     for (const font of fonts.filter((item) => item.available)) for (const [weight, file] of [[400, 'regular'], [700, 'bold']]) {
       if (![...doc.fonts].some((face) => face.family === font.family && face.weight === String(weight))) doc.fonts.add(new FontFace(font.family, `url("${font.urls[file]}")`, { weight: String(weight) }));
     }
-    shown = ''; load(); renderInspector();
+    // The frame was built with the channel’s saved standards. Only the inspector needs this response.
+    renderInspector();
   }
 
   function open(id) {

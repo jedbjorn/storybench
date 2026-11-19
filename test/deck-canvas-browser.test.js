@@ -78,8 +78,17 @@ for (const type of [chromium, firefox]) test(`A7 ${type.name()}: the creator edi
   const page = await browser.newPage({ viewport: { width: 1600, height: 1200 } }); page.setDefaultTimeout(10000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(url);
+  // The editor can open before its inspector receives the channel theme.
+  const themeResponse = Promise.withResolvers();
+  await page.route('**/api/brand-standards', async route => { await themeResponse.promise; await route.continue(); }, { times: 1 });
   await openEditor(page, 0);
   await page.waitForSelector('.deck-canvas-block[data-select="copy"]');
+  const originalPath = new URL((await frameShows(page, 'diagram', () => true)).url()).pathname;
+  const repeatedLoads = [];
+  page.on('request', request => {
+    if (request.method() === 'HEAD' && new URL(request.url()).pathname === originalPath) repeatedLoads.push(request.url());
+  });
+  themeResponse.resolve();
 
   // Click the copy block: it shows selected and the toolbar shows its arguments.
   await page.click('.deck-canvas-block[data-select="copy"]');
@@ -93,6 +102,7 @@ for (const type of [chromium, firefox]) test(`A7 ${type.name()}: the creator edi
   await toolbar(page, 'copy').getByRole('radio', { name: 'Left of visual' }).click(); await settled(page);
   await chooseAlignment(page, 'copy', 'Centred'); await settled(page);
   assert.deepEqual(deck(app.store, episode.id).slides[0].design, { copy: { position: 'left', align: 'center', valign: 'center' } });
+  assert.deepEqual(repeatedLoads, [], 'receiving the inspector theme keeps the already-built canvas');
   await frameShows(page, 'diagram', () => document.querySelector('.composition.placed > .arrange[data-side="left"] > .copy') !== null
     && document.querySelector('.composition').dataset.copyAlign === 'center');
   assert.equal(app.store.listJobs(episode.id).filter(job => job.kind === 'deck').length, 0, 'no build was needed');
