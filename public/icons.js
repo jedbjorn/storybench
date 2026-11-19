@@ -9,7 +9,10 @@ export const icons = {
   download: svg('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>'),
   edit: svg('<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4zM13.5 6.5l4 4"/>'),
   grip: svg('<circle cx="9" cy="6" r="1.2"/><circle cx="15" cy="6" r="1.2"/><circle cx="9" cy="12" r="1.2"/><circle cx="15" cy="12" r="1.2"/><circle cx="9" cy="18" r="1.2"/><circle cx="15" cy="18" r="1.2"/>'),
+  left: svg('<path d="M15 6l-6 6 6 6"/>'),
+  play: svg('<path d="M8 5.5v13l10.5-6.5z"/>'),
   preview: svg('<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'),
+  right: svg('<path d="M9 6l6 6-6 6"/>'),
   trash: svg('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>'),
   up: svg('<path d="M12 19V5M6 11l6-6 6 6"/>'),
 };

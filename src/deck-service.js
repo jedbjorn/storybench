@@ -81,14 +81,15 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
     return job;
   };
   // The Slides canvas: one slide of the saved deck, built exactly as the bundle builds it, plus the
-  // canvas bridge. One build per production is kept for the frame's follow-up requests.
+  // canvas bridge. One build per slide is kept for the frame's follow-up requests, so the slide list's
+  // preview and the editor's canvas do not evict each other.
   const canvases = new Map();
   async function canvasFile(episodeId, revision, slideId, name) {
     const deck = store.getDeck(episodeId);
     if (deck.revision !== revision) throw new StoreError('The deck changed; reload the canvas', 409);
     if (!deck.slides.some(slide => slide.id === slideId)) throw new StoreError('Slide not found', 404);
-    const key = `${revision}:${slideId}:${store.getBrandStandards(deck.channelId).revision}`;
-    let entry = canvases.get(episodeId);
+    const key = `${revision}:${slideId}:${store.getBrandStandards(deck.channelId).revision}`, slot = `${episodeId}\n${slideId}`;
+    let entry = canvases.get(slot);
     if (entry?.key !== key) {
       const snapshot = deckSnapshot(store, episodeId, deck);
       entry = { key, files: assembleDeck(store, snapshot, snapshot.slides.filter(slide => slide.id === slideId)).then(({ files }) => {
@@ -96,9 +97,9 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
         files.set('canvas-frame.js', CANVAS_FRAME);
         return files;
       }, error => { throw new StoreError(`This slide cannot be shown yet: ${error.message}`, 422); }) };
-      canvases.delete(episodeId); canvases.set(episodeId, entry);
+      canvases.delete(slot); canvases.set(slot, entry);
       while (canvases.size > 4) canvases.delete(canvases.keys().next().value);
-      entry.files.catch(() => { if (canvases.get(episodeId) === entry) canvases.delete(episodeId); });
+      entry.files.catch(() => { if (canvases.get(slot) === entry) canvases.delete(slot); });
     }
     const files = await entry.files;
     if (!files.has(name)) throw new StoreError('Canvas file not found', 404);

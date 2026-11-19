@@ -84,6 +84,12 @@ for (const type of [chromium, firefox]) test(`E8 ${type.name()}: a pre-change de
     const shown = await frame.evaluate(id => [...document.getElementById(id).querySelectorAll('img')].map(image => image.getAttribute('src')), slideId);
     return { shot: await page.locator('#viewer iframe').screenshot(), shown, html: await frame.content() };
   };
+  // The canvas is in the slide editor (spec #46 task #126): open the first slide's card, then the editor.
+  const openCanvas = async () => {
+    await page.locator('#deckSlides [data-slide-index="0"] .slide-card-summary').click();
+    await page.locator('#deckSlides [data-slide-edit]').click();
+    await page.waitForSelector('.deck-canvas-block');
+  };
   const canvasShows = async (slideId, expected) => {
     for (let i = 0; i < 200; i++) {
       const frame = page.frames().find(item => item.url().includes('/deck-canvas/') && item.url().includes(`/${slideId}/`) && !item.isDetached());
@@ -96,7 +102,7 @@ for (const type of [chromium, firefox]) test(`E8 ${type.name()}: a pre-change de
 
   // The pre-change deck loads: the Slides canvas shows its pick.
   await page.goto(`${base}/${scope}&episode=${episode.id}`);
-  await page.waitForSelector('.deck-canvas-block');
+  await openCanvas();
   await canvasShows('hero', [src(red)]);
   await evidence(`e8-${type.name()}-1-canvas-legacy.png`, await page.screenshot());
   const before = await build();
@@ -128,7 +134,7 @@ for (const type of [chromium, firefox]) test(`E8 ${type.name()}: a pre-change de
   assert.equal(refused.status(), 400);
   assert.match((await refused.json()).error, new RegExp(`${blue.id} is starred on this slide and cannot be removed`));
   await page.goto(`${base}/${scope}&episode=${episode.id}`);
-  await page.waitForSelector('.deck-canvas-block');
+  await openCanvas();
   await canvasShows('hero', [src(blue)]);
   await evidence(`e8-${type.name()}-4-canvas-starred.png`, await page.screenshot());
   const next = await build();

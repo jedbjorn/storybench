@@ -10,6 +10,15 @@ import { listenInRange } from '../test-support/loopback-port.js';
 import { createLibraryService } from '../src/library.js';
 import { motionSvg } from '../test-support/motion-deck.js';
 
+// Slides (spec #46): a slide's fields are in the slide editor, opened from its card in the slide list.
+async function openEditor(page, index) {
+  if (await page.locator('#slideEditor[open]').count()) await page.click('[data-editor-close]');
+  const card = page.locator(`#deckSlides [data-slide-index="${index}"]`);
+  if (!(await card.evaluate(node => node.classList.contains('is-open')))) await card.locator('.slide-card-summary').click();
+  await card.locator('[data-slide-action="edit"]').click();
+  await page.locator(`#slideEditor .deck-slide[data-slide-index="${index}"]`).waitFor();
+}
+
 test('deck workspace creates, edits, reopens and keeps video controls separate', {timeout:20000}, async t => {
   let browser;
   try { browser = await chromium.launch(); }
@@ -27,7 +36,8 @@ test('deck workspace creates, edits, reopens and keeps video controls separate',
   await page.click('#episodeRailToggle');
   await page.selectOption('#productionKind','deck');
   await page.click('#newEpisode');
-  await page.waitForFunction(()=>document.querySelector('#addCard').textContent.includes('Add slide'));
+  await page.locator('#addSlide').waitFor();
+  assert.equal(await page.locator('#addCard').isVisible(),false);
   assert.equal(await page.locator('#preview').isVisible(),false);
   assert.equal(await page.locator('[data-tab="final"]').isVisible(),false);
   assert.equal(await page.locator('#productionReferencesLabel').textContent(), 'Deck references');
@@ -39,10 +49,10 @@ test('deck workspace creates, edits, reopens and keeps video controls separate',
   await page.click('[data-tab="board"]');
   const savedResponse = () => page.waitForResponse(response => response.request().method() === 'PUT' && /\/api\/episodes\/[^/]+$/.test(new URL(response.url()).pathname));
   const added = savedResponse();
-  await page.click('#addCard');
+  await page.click('#addSlide');
   assert.equal((await added).status(),200);
   await page.waitForFunction(()=>document.querySelector('#saveState').textContent.startsWith('Saved'));
-  await page.locator('[data-slide-field="title"]').waitFor();
+  await openEditor(page, 0);
   const titleSaved = savedResponse();
   await page.fill('[data-slide-field="title"]','A clear opening');
   await page.locator('[data-slide-field="title"]').press('Tab');
@@ -65,7 +75,9 @@ test('deck workspace creates, edits, reopens and keeps video controls separate',
   const deck=app.store.listEpisodes().find(p=>p.kind==='deck');
   assert.equal(app.store.getDeck(deck.id).slides[0].title,'A clear opening');
   await page.reload();
-  await page.locator('[data-slide-field="notes"]').waitFor();
+  await page.locator('#deckSlides [data-slide-index="0"]').waitFor();
+  assert.match(await page.locator('#deckSlides [data-slide-index="0"]').textContent(), /01\s*A clear opening\s*A small idea becomes a clear story\./, 'the card shows number, title and the body first line');
+  await openEditor(page, 0);
   assert.equal(await page.inputValue('[data-slide-field="notes"]'),'Invite a question');
   assert.equal(await page.locator('[data-part="stages"]').count(),1);
   if (process.env.STORYBENCH_DECK_EVIDENCE) {
@@ -77,11 +89,12 @@ test('deck workspace creates, edits, reopens and keeps video controls separate',
     await page.setViewportSize({ width, height: 1000 });
     const availableWidth = width - (await page.locator('#episodeRailToggle').boundingBox()).width;
     assert.ok((await page.locator('.workspace').boundingBox()).width >= availableWidth - 16, 'Deck workspace uses the available width beside the rail');
-    assert.ok((await page.locator('.deck-slide > label > [data-slide-field="body"]').boundingBox()).width >= availableWidth * .75, 'Slide text has room to edit');
+    assert.ok((await page.locator('#slideEditor [data-slot="copy"] [data-slide-field="body"]').boundingBox()).width >= (await page.locator('#slideEditor').boundingBox()).width * .75, 'Slide text has room to edit');
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     if (process.env.STORYBENCH_DECK_EVIDENCE) await page.screenshot({ path: path.join(process.env.STORYBENCH_DECK_EVIDENCE, `ui-polish-r2-synthetic-deck-${width}.png`), fullPage: true });
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.click('[data-editor-close]');
   await page.click('#episodeRailToggle');
   await page.click(`#episodes [data-id="${video.id}"] [data-episode-select]`);
   assert.equal(await page.locator('#preview').isVisible(),true);
@@ -116,9 +129,11 @@ test('slide editor edits stage timing and motion and keeps from and changes', {t
   const page=await browser.newPage({viewport:{width:1440,height:1000}});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(`http://127.0.0.1:${port}/episodes?channel=${deck.channelId}&episode=${deck.id}`);
-  const stage=(slide,index,field)=>page.locator(`[data-slide-index="${slide}"] [data-part="stages"][data-part-index="${index}"] [data-slide-${field.includes('-')?'action':'field'}="${field}"]`);
-  // The board renders again once the library arrives; the group options mark that render.
+  const stage=(slide,index,field)=>page.locator(`#slideEditor .deck-slide[data-slide-index="${slide}"] [data-part="stages"][data-part-index="${index}"] [data-slide-${field.includes('-')?'action':'field'}="${field}"]`);
+  // The editor renders again once the library arrives; the group options mark that render.
   const ready=()=>page.locator('[data-slide-field="svgGroupIds"] option').first().waitFor({state:'attached'});
+  await page.locator('#deckSlides [data-slide-index="0"]').waitFor();
+  await openEditor(page,0);
   await ready();
   const saved=()=>page.waitForFunction(()=>document.querySelector('#saveState').textContent.startsWith('Saved'));
   const slides=()=>app.store.getDeck(deck.id).slides;
@@ -126,14 +141,17 @@ test('slide editor edits stage timing and motion and keeps from and changes', {t
   const kept=[{title:'Draw',from:undefined,changes:undefined},{title:'Arrive',from,changes:undefined},{title:'Travel',from:undefined,changes:travel},{title:'Settle',from:undefined,changes:settle}];
 
   // The saved values are shown; an unset field shows its standard choice; changes are counted, not edited.
-  const shown=async(slide,index)=>Object.fromEntries(await Promise.all(['trigger','afterMs','durationMs','holdMs','easing','motion'].map(async field=>[field,await stage(slide,index,field).inputValue()])));
+  const shown=async(slide,index)=>{ if (!(await stage(slide,index,'trigger').count())) await openEditor(page,slide); return Object.fromEntries(await Promise.all(['trigger','afterMs','durationMs','holdMs','easing','motion'].map(async field=>[field,await stage(slide,index,field).inputValue()]))); };
   assert.deepEqual(await shown(0,0),{trigger:'auto',afterMs:'300',durationMs:'1000',holdMs:'200',easing:'linear',motion:'draw'});
   assert.deepEqual(await shown(0,3),{trigger:'',afterMs:'500',durationMs:'1000',holdMs:'250',easing:'ease-in-out',motion:''});
   assert.deepEqual(await shown(1,0),{trigger:'',afterMs:'',durationMs:'',holdMs:'',easing:'',motion:''});
-  const notes=()=>page.locator('[data-slide-index="0"] [data-part="stages"]').evaluateAll(rows=>rows.map(row=>row.querySelector('[data-stage-changes]')?.dataset.stageChanges ?? null));
+  await openEditor(page,0);
+  const notes=()=>page.locator('#slideEditor [data-slide-index="0"] [data-part="stages"]').evaluateAll(rows=>rows.map(row=>row.querySelector('[data-stage-changes]')?.dataset.stageChanges ?? null));
   assert.deepEqual(await notes(),[null,'0','1','2']);
-  assert.match(await page.locator('[data-slide-index="0"] [data-part-index="3"] [data-stage-changes]').textContent(),/2 changes/);
+  assert.match(await page.locator('#slideEditor [data-slide-index="0"] [data-part-index="3"] [data-stage-changes]').textContent(),/2 changes/);
+  await openEditor(page,1);
   assert.deepEqual(await stage(1,0,'motion').locator('option').allTextContents(),['Fade'],'a text-only stage can only fade');
+  await openEditor(page,0);
 
   // Every timing and motion-kind field edits and saves.
   const type=async(slide,index,field,value)=>{ await stage(slide,index,field).fill(value); await stage(slide,index,field).press('Tab'); await saved(); };
@@ -141,6 +159,7 @@ test('slide editor edits stage timing and motion and keeps from and changes', {t
   await type(0,0,'afterMs','400'); await type(0,0,'durationMs','1500'); await type(0,0,'holdMs','350');
   await pick(0,0,'easing','ease-out'); await pick(0,0,'trigger','manual'); await pick(0,0,'motion','');
   await pick(0,2,'easing','ease-in'); await type(0,3,'holdMs',''); await pick(0,3,'trigger','auto');
+  await page.click('[data-editor-nav="1"]'); await page.locator('#slideEditor .deck-slide[data-slide-index="1"]').waitFor();
   await pick(1,0,'trigger','auto'); await type(1,0,'afterMs','0'); await type(1,0,'durationMs','800');
   let now=slides();
   assert.deepEqual(now[0].stages[0],{id:'draw',svgGroupIds:['track'],title:'Draw',body:'',afterMs:400,durationMs:1500,holdMs:350,trigger:'manual',easing:'ease-out'});
@@ -151,9 +170,11 @@ test('slide editor edits stage timing and motion and keeps from and changes', {t
   assert.deepEqual(motion(now[0]),kept,'saving keeps from and changes');
 
   // Reordering stages and slides, then duplicating, moves and copies them untouched.
+  await page.click('[data-editor-nav="-1"]'); await page.locator('#slideEditor .deck-slide[data-slide-index="0"]').waitFor();
   await stage(0,3,'part-up').click(); await saved();
-  await page.click('[data-slide-index="0"] > header [data-slide-action="down"]'); await saved();
-  await page.click('[data-slide-index="1"] > header [data-slide-action="duplicate"]'); await saved();
+  await page.click('[data-editor-close]');
+  await page.click('#deckSlides [data-slide-index="0"] [data-slide-action="down"]'); await saved();
+  await page.click('#deckSlides [data-slide-index="1"] [data-slide-action="duplicate"]'); await saved();
   now=slides();
   const reordered=[kept[0],kept[1],kept[3],kept[2]];
   assert.deepEqual(now.map(slide=>slide.title),['Plain','Moving','Moving (copy)']);
@@ -162,7 +183,8 @@ test('slide editor edits stage timing and motion and keeps from and changes', {t
   assert.deepEqual(now[2].stages.map(({id,...rest})=>rest),now[1].stages.map(({id,...rest})=>rest));
 
   // Removing the staged SVG drops what only SVG groups can carry, so the slide still saves; timing stays.
-  await page.selectOption('[data-slide-index="2"] [data-slide-field="vectorItemId"]',''); await saved();
+  await openEditor(page,2);
+  await page.selectOption('#slideEditor [data-slide-index="2"] [data-slide-field="vectorItemId"]',''); await saved();
   now=slides();
   assert.equal(now[2].vector,undefined);
   assert.deepEqual(now[2].stages.map(({id,body,...rest})=>rest),[
@@ -173,11 +195,14 @@ test('slide editor edits stage timing and motion and keeps from and changes', {t
   assert.deepEqual(motion(now[1]),reordered,'the slide that kept its SVG is untouched');
 
   await page.reload();
+  await page.locator('#deckSlides [data-slide-index="1"]').waitFor();
+  await openEditor(page,1);
   await ready();
   assert.deepEqual(await shown(1,0),{trigger:'manual',afterMs:'400',durationMs:'1500',holdMs:'350',easing:'ease-out',motion:''});
   assert.deepEqual(await shown(2,2),{trigger:'auto',afterMs:'500',durationMs:'1000',holdMs:'',easing:'ease-in-out',motion:''});
   if (process.env.STORYBENCH_DECK_EVIDENCE) {
     mkdirSync(process.env.STORYBENCH_DECK_EVIDENCE, { recursive: true });
+    await openEditor(page,1);
     await stage(1,1,'durationMs').scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(process.env.STORYBENCH_DECK_EVIDENCE, 'slide-editor-motion-desktop.png') });
   }

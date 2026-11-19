@@ -96,7 +96,7 @@ test('editable eight-slide demo: manual DOM edit, fake-agent bridge save/build, 
  const { Readable } = await import('node:stream');
  const { createLibraryService } = await import('../src/library.js');
  const { JSDOM }=await import('jsdom');
- const { deckBoardHTML,bindDeckBoard }=await import('../public/deck-workspace.js');
+ const { slideFieldsHTML,bindSlideFields }=await import('../public/deck-workspace.js');
  const { startBridge }=await import('../src/runtime/bridge.js');
  const { mergeTools }=await import('../src/runtime/app-runtime.js');
  const { selectKindTools }=await import('../src/runtime/kinds.js');
@@ -157,8 +157,8 @@ test('editable eight-slide demo: manual DOM edit, fake-agent bridge save/build, 
  slides[5].vector = { itemId: vector.id, alt: 'An editable landscape and planning diagram' };
  slides[5].stages = ['landscape','observe','connect','plan'].map((id, i) => ({ id: `stage_${id}`, title: id, afterMs: i ? 400 : 0, svgGroupIds: [id] }));
  assert.equal(slides.length,8);assert.equal(new Set(slides.map(s=>s.layout)).size,7);
- const dom=new JSDOM('<main></main>'),board=dom.window.document.querySelector('main'); board.innerHTML=deckBoardHTML(slides,app.store.listEpisodeLibrary(deck.id),[]);
- bindDeckBoard(board,{getSlides:()=>slides,onDirty(){},onSave(){},render(){}});
+ const dom=new JSDOM('<main></main>'),board=dom.window.document.querySelector('main'); board.innerHTML=slideFieldsHTML(slides[0],0,app.store.listEpisodeLibrary(deck.id),[]);
+ bindSlideFields(board,{getSlides:()=>slides,onDirty(){},onSave(){},render(){}});
  const notes=board.querySelector('[data-slide-field="notes"]');notes.value='Manual notes: welcome and pause.';notes.dispatchEvent(new dom.window.Event('input',{bubbles:true}));dom.window.close();
  const manual=await fetch(`${base}/api/episodes/${deck.id}/slides`,{method:'PUT',body:JSON.stringify({expectedRevision:deck.revision,slides})});assert.equal(manual.status,200);
  // All three production adapters use these same scoped handlers and MCP bridge;
