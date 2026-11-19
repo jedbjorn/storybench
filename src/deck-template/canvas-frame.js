@@ -49,6 +49,7 @@
   }
   // Play: the runtime's own clock runs the slide. Each tick reports the stage it reached; where the
   // timeline waits for a person, the next stage's control is clicked (pulse names it for the editor).
+  // Showing a stage, the end included, stops it.
   function stop() { if (playing) { clearTimeout(playing.timer); playing = null; } }
   function play() {
     stop();
@@ -58,29 +59,20 @@
   }
   function tick() {
     if (!playing) return;
-    const now = deck.timeline(), following = now.stages[(now.stage ?? -1) + 1];
+    const now = deck.timeline(), next = (now.stage ?? -1) + 1, following = now.stages[next];
     stage = now.stage ?? 0;
     const key = `${stage}:${playing.pulse}`;
     if (key !== playing.reported) { playing.reported = key; post(); }
-    if (now.state === 'complete' || (now.state === 'waiting' && !following)) return finish();
-    if (now.state === 'waiting' && !playing.clicking) {
-      // A manual stage waits for the pause; an automatic one held back by an earlier click waits its own gap.
-      const wait = following.trigger === 'manual' ? CLICK_PAUSE_MS : Math.max(0, following.startMs - now.timeMs);
-      playing.clicking = true;
-      if (following.trigger === 'manual') { playing.pulse = now.stages.indexOf(following); post(); }
-      playing.timer = setTimeout(() => {
-        if (!playing) return;
-        playing.clicking = false; playing.pulse = null;
-        slide.querySelector(`[data-stage="${now.stages.indexOf(following)}"]`)?.click();
-        tick();
-      }, wait);
-      return;
-    }
-    if (!playing.clicking) playing.timer = setTimeout(tick, 40);
-  }
-  function finish() {
-    stop();
-    show(null);
+    if (now.state === 'complete' || (now.state === 'waiting' && !following)) return show(null);
+    if (now.state !== 'waiting') { playing.timer = setTimeout(tick, 40); return; }
+    // A manual stage waits for the pause; an automatic one held back by an earlier click waits its own gap.
+    const manual = following.trigger === 'manual';
+    if (manual) { playing.pulse = next; post(); }
+    playing.timer = setTimeout(() => {
+      playing.pulse = null;
+      slide.querySelector(`[data-stage="${next}"]`)?.click();
+      tick();
+    }, manual ? CLICK_PAUSE_MS : Math.max(0, following.startMs - now.timeMs));
   }
   // No media plays on the canvas.
   document.addEventListener('play', (event) => event.target.pause(), true);
@@ -90,7 +82,6 @@
     if (event.source !== window.parent || !data) return;
     if (data.type === 'storybench-canvas-show') show(data.stage);
     else if (data.type === 'storybench-canvas-play') play();
-    else if (data.type === 'storybench-canvas-stop' && playing) finish();
     else if (data.type === 'storybench-canvas-scroll' && Number.isFinite(data.by)) presentation.scrollTop += data.by;
     else if (data.type === 'storybench-canvas-reveal' && Object.hasOwn(BLOCKS, data.block)) {
       const box = union(boxes(slide.querySelector(BLOCKS[data.block]))), area = presentation.getBoundingClientRect();

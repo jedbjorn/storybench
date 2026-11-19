@@ -30,7 +30,7 @@ export function slideFrameUrl(episode, slideId, standards = 0) {
   if (!episode || !Number.isInteger(episode.revision)) return null;
   return `/api/episodes/${encodeURIComponent(episode.id)}/deck-canvas/${episode.revision}/${encodeURIComponent(slideId)}/index.html?standards=${standards}`;
 }
-// Adds an inert, sandboxed canvas frame of `url` to `host`; the bridge reports to the caller's message listener.
+// An inert, sandboxed canvas frame of `url`; its bridge reports to the caller's message listener.
 function canvasFrame(doc, url, title) {
   const frame = doc.createElement('iframe');
   Object.assign(frame, { title, tabIndex: -1, inert: true });
@@ -65,7 +65,6 @@ export function createSlidePreview(viewport, { channel = () => null, onStatus = 
     frame.classList.remove('is-loading');
     if (!ready && wantsPlay) frame.contentWindow.postMessage({ type: 'storybench-canvas-play' }, '*');
     ready = true; wantsPlay = false;
-    viewport.dataset.playing = String(Boolean(data.playing));
     place();
   }
   doc.defaultView.addEventListener('message', receive);
