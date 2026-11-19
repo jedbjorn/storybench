@@ -6,6 +6,7 @@
 const PHASE_TOOLS = {
   research: [
     'read_reference_excerpt', 'search_project', 'read_research', 'save_research', 'get_context', 'get_capabilities',
+    'search_video_moments', 'get_video_moment',
     'read_conversation_history', 'get_operation_guide', 'read_deck', 'list_graphic_recipes', 'get_graphic_recipe', 'list_branding',
     'Read', 'Grep', 'Glob', 'LS', 'WebSearch', 'WebFetch', 'web_search', 'webfetch', 'read', 'grep', 'glob', 'list',
   ],

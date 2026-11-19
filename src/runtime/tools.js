@@ -11,6 +11,7 @@ import { mkdir, open, rm } from "node:fs/promises";
 import path from "node:path";
 import { importMedia } from "../media.js";
 import { StoreError } from "../store.js";
+import { createVideoMoments } from "../video-moments.js";
 import { describeCapabilities } from "./capabilities.js";
 import { CONTACT_SHEET_LIMITS, assertTimestamp, contactSheet, frameAt, mediaSummary, sheetTimestamps } from "./media-inspect.js";
 import { getItem, isReferenceItem, originOf, readExcerpt, resolveTarget, searchProject } from "./project-catalog.js";
@@ -71,6 +72,24 @@ const directionProp = {
 };
 
 export const TOOL_DEFINITIONS = Object.freeze([
+  {
+    name: "search_video_moments",
+    description: "Search all episodes in the current channel for saved moments by source label or words from the creator's note. Returns a page of candidates with origin, range and a short creator-note excerpt. Use get_video_moment for one chosen match.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["query"], properties: {
+      query: { type: "string", description: "Text to match in the label or note." },
+      limit: { type: "integer", minimum: 1, maximum: 20 },
+      offset: { type: "integer", minimum: 0 },
+    } },
+  },
+  {
+    name: "get_video_moment",
+    description: "Read one selected moment, its pinned source, saved range, full creator note and range playback link if available. The creator's words express a preference. Direct use of footage or sound requires creator direction.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["id", "channelId", "episodeId"], properties: {
+      id: { type: "string", description: "Stable moment ID returned by search_video_moments." },
+      channelId: { type: "string", description: "The match's origin channel." },
+      episodeId: { type: "string", description: "The match's origin episode." },
+    } },
+  },
   {
     name: "inspect_image",
     description: "See a still image, or one video frame at an explicit timestamp, from any Storybench project (current episode, other episodes or channels). Returns the actual image plus its origin (channel/episode/item).",
@@ -214,11 +233,25 @@ function refusePad(file) {
 // `library` its library service; storage/mutation rules stay in those services.
 export function createScopedTools(scope, { store, library = null, isShortcutMessage = defaultIsShortcutMessage, release = null, upstream = {}, assertAuthoringContext = () => { throw new RuntimeError('RESEARCH_CONTEXT_REQUIRED', 'Read complete current research in an active request before assigning media to cards', { status: 409 }); } } = {}) {
   const qa = createDeckQaTools(scope, { store });
+  const moments = createVideoMoments(store);
   // upstream: { screenCredential } from the request; tests add a GitHub stand-in.
   const reports = createUpstreamTools(scope, { store, ...upstream });
   const definitions = [...TOOL_DEFINITIONS, ...DECK_QA_DEFINITIONS, ...UPSTREAM_DEFINITIONS];
   let served = definitions;
   const handlers = {
+    search_video_moments({ query, offset = 0, limit = 8 }) {
+      if (typeof query !== "string" || !Number.isInteger(limit) || limit < 1 || limit > 20)
+        throw new StoreError("Supply search text and a page size from 1 to 20");
+      const page = moments.list({ query, channelIds: [scope.channelId], offset, limit });
+      return json({ moments: page.moments.map(({ noteExcerpt, ...match }) => ({ ...match, creatorNoteExcerpt: noteExcerpt })), nextOffset: page.nextOffset });
+    },
+    async get_video_moment({ id, channelId, episodeId }) {
+      if (![id, channelId, episodeId].every(value => typeof value === "string" && value))
+        throw new StoreError("Identify one moment with its id, channelId and episodeId");
+      const { note, mediaUrl, ...moment } = await moments.get({ channelId, episodeId }, id);
+      return json({ ...moment, reference: true, creatorNote: note,
+        playbackUrl: mediaUrl ? `${mediaUrl}#t=${moment.startSeconds},${moment.endSeconds}` : null });
+    },
     async inspect_image(args = {}) {
       const at = args.atSeconds == null ? null : assertTimestamp(args.atSeconds);
       const target = await resolveTarget(store, scope, args);

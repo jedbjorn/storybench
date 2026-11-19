@@ -25,6 +25,8 @@ Episode references apply across the episode; card references inform only that ca
 
 Consult a saved moment if the creator points to it or it helps answer a question about the cut. A whole video can be made without one. Describe the moment you observed, quote the creator's own words when they gave a preference, and identify any interpretation as yours. You can express the idea with a different shot or leave it aside. The same feel-reference rule covers the moment's picture and soundtrack.
 
+Use `search_video_moments` with a source label or a phrase from the creator's note to search across episodes in the current channel. Compare the source, origin, time range and note excerpts. If the brief could mean several moments, offer the candidates to the creator. An empty page leaves you free to continue. Pass the selected `id`, `channelId` and `episodeId` to `get_video_moment` for the full creator note and a playback link to that interval. If playback is unavailable, report that and attribute only what the creator wrote.
+
 Text (pasted text, PDF, web page — extracted by the app):
 
 ```json
