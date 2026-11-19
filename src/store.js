@@ -1765,13 +1765,14 @@ export class Store {
   listRedlineItems(episodeId) {
     return this.listEpisodeLibrary(episodeId).filter((item) => item.sourceKind === "redline");
   }
-  // In use = referenced by a card or slide (output media, deck media/vector/subnav, card references) or the production's references.
+  // In use = referenced by a card or slide (output media, deck media/vector/subnav/candidates, card references) or the production's references.
   libraryItemInUse(episodeId, itemId) {
     const episode = this.getEpisode(episodeId);
     if (!episode) throw new StoreError("Episode not found", 404);
     return episode.referenceItemIds.includes(itemId) || episode.cards.some((card) => card.itemId === itemId
       || card.media?.itemId === itemId || card.vector?.itemId === itemId
-      || (card.subnav || []).some((entry) => entry.itemId === itemId) || (card.referenceItemIds || []).includes(itemId));
+      || (card.subnav || []).some((entry) => entry.itemId === itemId) || (card.candidates || []).some((entry) => entry.itemId === itemId)
+      || (card.referenceItemIds || []).includes(itemId));
   }
   // Whether anything besides this library item depends on the asset row or its file.
   assetSharedBeyond(assetId, itemId) {
