@@ -215,7 +215,7 @@ const storyEditor = new StoryEditor({
   onSaved: () => refreshJobs().catch((error) => toast(error.message)),
 });
 const researchEditor = new ResearchEditor({ root: $("#researchPanel"), api, renderMarkdown: createStoryRenderer() });
-installMomentCollection($("#momentCollection"), $("#openMoments"));
+installMomentCollection($("#momentCollection"), $("#openMoments"), () => channelId);
 const previewModal = new PreviewModal($("#previewModal"));
 // Every Preview link opens the popup; a modified click still opens a browser tab.
 document.addEventListener("click", (event) => {

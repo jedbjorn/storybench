@@ -19,21 +19,24 @@ test('save two marked intervals in preview, replay and manage pinned moments fro
   const page = await browser.newPage();
   page.setDefaultTimeout(7000);
   const { store } = app;
-  const episode = store.createEpisode({ title: 'Opening sequence' });
+  const episode = store.createEpisode({ title: 'Opening sequence', channelId: store.createChannel('Film studio').id });
   const { id: episodeId, channelId } = episode;
   const origin = { episodeId, channelId };
   const api = createVideoMoments(store);
   const list = () => api.list({ channelIds: [channelId] }).moments;
-  const url = (id, tab, channel = channelId) => base + '/?channel=' + channel + '&episode=' + id + '#' + tab;
+  const url = (id, tab) => base + '/?channel=' + channelId + '&episode=' + id + '#' + tab;
   const bytesPath = path.join(workspace, 'fixture.webm');
   execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=80x64:rate=10',
     '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '3', '-c:v', 'libvpx', '-c:a', 'libopus', bytesPath]);
   const bytes = await readFile(bytesPath);
-  const upload = await fetch(base + '/api/episodes/' + episodeId + '/library/files?channel=' + channelId, {
-    method: 'POST', headers: { 'x-file-name': 'Opening.webm', 'content-type': 'video/webm' }, body: bytes,
-  });
-  assert.equal(upload.status, 201, await upload.clone().text());
-  const item = await upload.json();
+  async function importOpening(target) {
+    const upload = await fetch(base + '/api/episodes/' + target.id + '/library/files?channel=' + target.channelId, {
+      method: 'POST', headers: { 'x-file-name': 'Opening.webm', 'content-type': 'video/webm' }, body: bytes,
+    });
+    assert.equal(upload.status, 201, await upload.clone().text());
+    return upload.json();
+  }
+  const item = await importOpening(episode);
   const preview = page.frameLocator('[data-preview-frame]');
   const closePreview = () => page.click('#previewModal header [data-preview-close]');
   async function seekMark(seconds, mark) {
@@ -93,12 +96,19 @@ test('save two marked intervals in preview, replay and manage pinned moments fro
     await closePreview();
   }
 
-  const brief = store.createEpisode({ title: 'Next brief', channelId: store.createChannel('Other productions').id });
-  await page.goto(url(brief.id, 'media', brief.channelId));
+  const elsewhere = store.createEpisode({ title: 'Other channel opening', channelId: store.getDefaultChannel().id });
+  assert.notEqual(elsewhere.channelId, channelId);
+  const otherItem = await importOpening(elsewhere);
+  const otherMoment = await api.create({ channelId: elsewhere.channelId, episodeId: elsewhere.id }, {
+    requestId: 'other-opening', source: { type: 'library', id: otherItem.id },
+    startSeconds: first.startSeconds, endSeconds: first.endSeconds, note: first.note,
+  });
+  const brief = store.createEpisode({ title: 'Next brief', channelId });
+  await page.goto(url(brief.id, 'media'));
   await page.getByRole('button', { name: 'Saved moments', exact: true }).click();
   const collection = page.locator('#momentCollection');
-  await collection.getByRole('combobox', { name: 'Source channel' }).click();
-  await collection.getByRole('option', { name: store.getChannel(channelId).name, exact: true }).click();
+  await collection.locator('[data-id="' + first.id + '"]').waitFor();
+  assert.equal(await collection.locator('[data-id="' + otherMoment.id + '"]').count(), 0);
   async function replay(saved) {
     await collection.getByRole('button', { name: 'Replay range' }).click();
     await page.waitForFunction(end => {
@@ -109,7 +119,6 @@ test('save two marked intervals in preview, replay and manage pinned moments fro
       [new URL(v.currentSrc).pathname, v.muted, v.webkitAudioDecodedByteCount > 0]),
       [new URL(saved.mediaUrl, base).pathname, false, true]);
   }
-  await collection.getByRole('button', { name: 'Search moments' }).click();
   await collection.locator('[data-id="' + savedDraft.id + '"]').click();
   await replay(savedDraft);
   await collection.getByRole('button', { name: 'Back to collection' }).click();

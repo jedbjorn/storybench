@@ -1,6 +1,6 @@
 import { momentRequest, momentUrl, mountMomentEditor } from './moment-editor.js';
 
-export function installMomentCollection(dialog, opener) {
+export function installMomentCollection(dialog, opener, currentChannel) {
   const $ = selector => dialog.querySelector(selector);
   const search = $('[data-search]'), results = $('[data-results]'), more = $('[data-more]');
   const detail = $('[data-detail]'), browse = $('[data-browse]'), status = $('[data-status]');
@@ -33,7 +33,7 @@ export function installMomentCollection(dialog, opener) {
     clearDetail();
     if (!offset) {
       results.replaceChildren();
-      query = new URLSearchParams({ channel: search.elements.channel.value, q: search.elements.query.value.trim() });
+      query = new URLSearchParams({ channel: currentChannel(), q: search.elements.query.value.trim() });
     }
     more.hidden = true;
     status.textContent = 'Loading moments…';
@@ -83,19 +83,9 @@ export function installMomentCollection(dialog, opener) {
   $('[data-back]').onclick = () => list();
   $('[data-close]').onclick = () => dialog.close();
   dialog.addEventListener('close', () => { ++generation; clearDetail(); });
-  opener.onclick = async () => {
-    const turn = ++generation;
+  opener.onclick = () => {
     search.reset();
-    results.replaceChildren();
-    search.elements.channel.length = 1;
-    more.hidden = true;
-    status.textContent = 'Loading channels…';
     dialog.showModal();
-    try {
-      const { channels } = await momentRequest('/api/channels');
-      if (generation !== turn) return;
-      for (const channel of channels) search.elements.channel.add(new Option(channel.name, channel.id));
-      status.textContent = '';
-    } catch (error) { if (generation === turn) status.textContent = error.message; }
+    void list();
   };
 }
