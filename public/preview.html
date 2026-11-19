@@ -5,15 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Storybench Preview</title>
   <link rel="stylesheet" href="/preview.css">
+  <link rel="stylesheet" href="/moments.css">
   <script type="module" src="/preview.js"></script>
 </head>
 <body>
   <header>
     <div class="identity"><small id="production">Storybench Preview</small><h1 id="label">Loading preview…</h1><p id="details"></p></div>
-    <nav aria-label="Preview actions"><button id="markup" type="button" hidden>Markup</button><button id="actual-size" type="button" aria-pressed="false" hidden>Actual size</button><a id="download" hidden>Download</a></nav>
+    <nav aria-label="Preview actions"><button id="capture-moment" aria-expanded="false" aria-controls="moment-panel" type="button" hidden>Save a moment</button><button id="markup" type="button" hidden>Markup</button><button id="actual-size" type="button" aria-pressed="false" hidden>Actual size</button><a id="download" hidden>Download</a></nav>
   </header>
   <p id="newer" role="status" hidden>Newer version available — <a id="latest">View latest</a></p>
   <main id="viewer" aria-label="Media preview"></main>
+  <section id="moment-panel" aria-label="Capture moment" hidden></section>
   <p id="message" role="status"></p>
 </body>
 </html>

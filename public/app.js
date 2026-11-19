@@ -15,6 +15,7 @@ import { linkReference, referencePanelHTML, unlinkReference } from "/reference-w
 import { ChatWorkspace } from "/chat-workspace.js";
 import { formatBytes, jobsForOutputView, refreshJobStatus, releasePlayer, renderJobList } from "/job-status.js";
 import { cleanupRowsHTML, selectedTotal, toggleSelection } from "/draft-cleanup.js";
+import { installMomentCollection } from "/moment-collection.js";
 import { PreviewModal } from "/preview-modal.js";
 import { icons } from "/icons.js";
 
@@ -214,6 +215,7 @@ const storyEditor = new StoryEditor({
   onSaved: () => refreshJobs().catch((error) => toast(error.message)),
 });
 const researchEditor = new ResearchEditor({ root: $("#researchPanel"), api, renderMarkdown: createStoryRenderer() });
+installMomentCollection($("#momentCollection"), $("#openMoments"), () => channelId);
 const previewModal = new PreviewModal($("#previewModal"));
 // Every Preview link opens the popup; a modified click still opens a browser tab.
 document.addEventListener("click", (event) => {

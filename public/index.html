@@ -6,6 +6,7 @@
     <title>Storybench</title>
     <link rel="stylesheet" href="/styles.css" />
     <link rel="stylesheet" href="/ui/ui.css" />
+    <link rel="stylesheet" href="/moments.css" />
   </head>
   <body>
     <header>
@@ -130,7 +131,7 @@
             <section id="deckOutputs" class="deck-toolbar" aria-label="Preview and export" hidden><button id="addSlide" class="primary">＋ Add slide</button><button id="buildDeck">Build saved deck</button><div id="deckJobs"></div><p id="deckBuildError" role="alert"></p></section><div id="cards"></div><div id="deckSlides" class="slide-list" hidden></div>
           </div>
           <div id="mediaPanel" hidden>
-            <div class="panel-heading"><div><h2>Episode library</h2><p>References and media stay grouped here until you explicitly add them to cards.</p></div><button id="openLibraryImport" class="primary">＋ Import</button></div>
+            <div class="panel-heading"><div><h2>Episode library</h2><p>References and media stay grouped here until you explicitly add them to cards.</p></div><div><button type="button" id="openMoments">Saved moments</button> <button id="openLibraryImport" class="primary">＋ Import</button></div></div>
             <div id="libraryDeckBar" class="library-deck-bar" hidden><button id="openLibraryCleanup" type="button">Clean up…</button></div>
             <div id="libraryProgress" class="library-progress" aria-live="polite"></div>
             <div id="libraryGroups"></div>
@@ -236,6 +237,20 @@
           </div>
         </form>
       </dialog>
+    </dialog>
+    <dialog id="momentCollection" class="library-modal" aria-labelledby="momentCollectionTitle">
+      <div class="modal-heading"><h2 id="momentCollectionTitle">Saved moments</h2><button type="button" aria-label="Close saved moments" data-close>×</button></div>
+      <section data-browse>
+        <form data-search>
+          <label>Source or creator note<input type="search" name="query"></label>
+          <button>Search moments</button>
+        </form>
+        <div data-results></div><button type="button" data-more hidden>Show more</button>
+      </section>
+      <section data-detail hidden><button type="button" data-back>Back to collection</button>
+        <h3></h3><p data-origin></p><div data-player></div><div data-editor></div>
+      </section>
+      <p data-status role="status"></p>
     </dialog>
     <dialog id="previewModal" class="preview-modal" closedby="none" aria-labelledby="previewTitle">
       <header class="modal-heading"><h2 id="previewTitle" data-preview-title>Preview</h2><button type="button" class="icon-button" data-preview-close aria-label="Close" title="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
