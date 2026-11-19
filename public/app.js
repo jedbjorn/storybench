@@ -222,7 +222,14 @@ document.addEventListener("click", (event) => {
   event.preventDefault();
   previewModal.open({ url: link.getAttribute("href") });
 });
-const libraryWorkspace = new LibraryWorkspace({ api, toast, preview: previewModal, getEpisode: () => episode, refreshState: () => load(episode?.id), beforeDelete: flushDraft, onMutation: () => refreshJobs().catch((error) => toast(error.message)) });
+const libraryWorkspace = new LibraryWorkspace({ api, toast, preview: previewModal, getEpisode: () => episode, refreshState: () => load(episode?.id), beforeDelete: flushDraft, onMutation: () => refreshJobs().catch((error) => toast(error.message)), onAskForAnother: fillChatDraft });
+// Ask for another (deck asset preview): the request waits in the chat composer for the creator's direction.
+function fillChatDraft(text) {
+  const field = chatWorkspace.draftField();
+  if (!field) return;
+  field.value = text; field.dispatchEvent(new Event("input", { bubbles: true }));
+  field.focus(); field.setSelectionRange(text.length, text.length);
+}
 const chatWorkspace = new ChatWorkspace({ root: $("#chatWorkspace"), api, renderMarkdown: createChatRenderer(), toast, getEpisode: () => episode, onBusyChange: setProductionBusy, beforeSend: async () => { if (!(await leaveStory())) throw new Error("Save or discard story edits before sending"); await flushDraft(); } });
 async function syncChat() {
   if (episode?.id === chatWorkspace.episodeId) return;

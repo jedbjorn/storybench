@@ -122,22 +122,16 @@ test('B1: bad timing and motion input is refused at save and at build, naming sl
   assert.doesNotThrow(() => store.saveDeck(deck.id, 1, saved(oldItem, [{ id: 'draw', title: 'Draw', svgGroupIds: ['dot'], motion: 'draw' }])));
 });
 
-test('deleting the library SVG behind a moving slide leaves a deck that saves and builds', async t => {
+test('deleting the starred library SVG behind a moving slide is refused; the deck still saves and builds', async t => {
   const { store, decks, queue, deck, item } = await fixture(t);
   const list = stages(); list[1].motion = 'fade';
   // A layout that needs no media, so the build's verdict is about the stages alone.
   const before = store.saveDeck(deck.id, 1, saved(item, list).map(slide => ({ ...slide, layout: 'process' })));
-  const cards = store.deleteLibraryItem(deck.id, item.id, item.revision, before.revision).cards;
-  assert.equal(cards[0].vector, null);
-  // Group-only fields go; timing, easing and an explicit fade stay.
-  assert.deepEqual(cards[0].stages, [
-    { id: 'draw', title: 'Draw', body: '', trigger: 'auto', afterMs: 0, durationMs: 1000, holdMs: 200, easing: 'linear' },
-    { id: 'arrive', title: 'Arrive', body: '', trigger: 'auto', afterMs: 0, durationMs: 400, motion: 'fade' },
-    { id: 'travel', title: 'Travel', body: '', trigger: 'auto', afterMs: 0, durationMs: 2000, easing: 'ease-in-out' },
-  ]);
+  // Delete guard (spec #46): the starred drawing stays, with every stage's groups and motion.
+  assert.throws(() => store.deleteLibraryItem(deck.id, item.id, item.revision, before.revision), /is starred on slide 01; star another there first/);
   const after = store.getDeck(deck.id);
+  assert.deepEqual(after.slides, before.slides);
   const resaved = store.saveDeck(deck.id, after.revision, after.slides);
-  assert.deepEqual(resaved.slides[0].stages, cards[0].stages);
   const job = decks.enqueue({ episodeId: deck.id, expectedRevision: resaved.revision });
   await queue.draining;
   const done = decks.getJob(deck.id, job.id); assert.equal(done.state, 'completed', done.error);

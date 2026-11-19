@@ -1084,3 +1084,30 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
 #researchPanel label { display: block; margin-block: .75rem; }
 #researchPanel textarea, #researchPanel input { width: 100%; box-sizing: border-box; }
 #researchPanel [data-research-sources] li { margin-block: .75rem; overflow-wrap: anywhere; }
+
+/* Deck Media Library (spec #46): By slide / By type, tile states, iterations, the asset preview's slides. */
+.library-deck-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 12px; }
+.library-deck-bar > button { margin-left: auto; }
+.library-slide-number { display: inline-block; min-width: 26px; color: var(--muted); font: 600 13px system-ui; }
+.library-version { margin-left: 6px; padding: 1px 6px; border-radius: 9px; background: var(--pale); color: var(--deep); font: 600 11px system-ui; vertical-align: 1px; }
+.library-status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.library-status button { padding: 3px 9px; font-size: 12px; }
+.library-state { padding: 2px 7px; border-radius: 9px; background: #edf1ee; color: var(--muted); font-size: 12px; }
+.library-state.on { background: #fff3cc; color: #6b4c00; font-weight: 600; }
+.library-state.candidate { background: var(--pale); color: var(--deep); }
+.library-item.library-dimmed { opacity: .55; }
+.library-item.library-dimmed:hover, .library-item.library-dimmed:focus-within { opacity: 1; }
+.library-asset-deck { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.library-asset-deck h3 { margin: 12px 0 6px; }
+.library-asset-deck .help { margin: 4px 0; color: var(--muted); font-size: 12px; }
+.library-iteration-strip { display: flex; flex-wrap: wrap; gap: 6px; }
+.library-iteration-strip button { padding: 4px 10px; }
+.library-iteration-strip button[aria-pressed="true"] { border-color: var(--deep); background: var(--pale); font-weight: 600; }
+.library-on-slides, .library-parts { margin: 0 0 8px; padding: 0; list-style: none; display: grid; gap: 6px; }
+.library-on-slides li { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.library-on-slides li > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.library-on-slides button { padding: 3px 9px; font-size: 12px; }
+.library-add-candidate { display: flex; gap: 6px; margin-top: 6px; }
+.library-parts li { padding: 4px 8px; border: 1px solid var(--line); border-radius: 7px; font: 12px ui-monospace, monospace; }
+.asset .library-version, .asset .library-state { display: inline-block; }
+.asset .library-status { padding: 0; }

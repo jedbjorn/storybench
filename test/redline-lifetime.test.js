@@ -207,3 +207,33 @@ test('a redline that becomes in use during removal keeps its file as an ordinary
   assert.ok(existsSync(path.join(workspace, kept.asset.path)), 'Its bytes stay on disk');
   assert.equal((await fetch(`${base}/api/episodes/${episode.id}/library/${mark.id}/file${scope}`)).status, 200, 'The file is still served');
 });
+
+// Spec #46: a redline the creator made a slide candidate is in use; a new chat keeps it as an ordinary item, so the
+// slide never lists a missing candidate and the deck still saves.
+test('a redline that is a slide candidate survives a new chat and the deck still saves', async t => {
+  const workspace = await mkdtemp(path.join(tmpdir(), 'sb-redline-candidate-'));
+  const app = await createApp({ workspace });
+  await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await app.close(); await rm(workspace, { recursive: true, force: true }); });
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const folder = path.join(workspace, 'fixtures');
+  await mkdir(folder, { recursive: true });
+  const { store } = app;
+  const deck = store.createEpisode({ title: 'Candidate redline', kind: 'deck' });
+  const scope = `?channel=${deck.channelId}`;
+  const source = await (await fetch(`${base}/api/episodes/${deck.id}/library/files${scope}`, { method: 'POST', headers: { 'x-file-name': 'white.png', 'content-type': 'image/png' }, body: await colourPNG(folder, 'white') })).json();
+  const mark = await (await fetch(`${base}/api/preview/library/${deck.id}/${source.id}/redline${scope}`, { method: 'POST', headers: { 'content-type': 'image/png' }, body: await colourPNG(folder, 'red') })).json();
+  assert.equal(mark.sourceKind, 'redline');
+  store.saveDeck(deck.id, store.getDeck(deck.id).revision, [
+    { id: 's1', title: 'Slide', layout: 'text-media', media: { itemId: source.id, alt: 'Source' }, candidates: [{ itemId: mark.id, alt: 'Marked up' }] },
+  ]);
+  assert.equal((await fetch(`${base}/api/episodes/${deck.id}/chats${scope}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 201);
+  const kept = store.getLibraryItem(deck.id, mark.id);
+  assert.equal(kept.sourceKind, 'file', 'The candidate redline is kept as an ordinary item');
+  assert.ok(existsSync(path.join(workspace, kept.asset.path)), 'Its bytes stay on disk');
+  const saved = store.getDeck(deck.id);
+  assert.deepEqual(saved.slides[0].candidates.map(entry => entry.itemId), [mark.id]);
+  store.saveDeck(deck.id, saved.revision, saved.slides);
+  store.saveDeck(deck.id, store.getDeck(deck.id).revision, saved.slides.map(({ candidates, ...slide }) => slide));
+  assert.deepEqual(store.getDeck(deck.id).slides[0].candidates.map(entry => entry.itemId), [mark.id], 'Both saves succeed and keep the candidate');
+});

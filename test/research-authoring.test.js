@@ -65,6 +65,10 @@ test('deleted gallery items survive read/edit/save under the shared schema and a
     const saved = await native.call('save_deck', { expectedRevision: f.store.getDeck(f.p.id).revision,
       slides: [{ ...slide(), subnav: [{ id: 'detail', label: 'Detail', itemId: item.id }] }] });
     assert.equal(saved.failed, false, saved.text);
+    // A gallery view whose item was deleted before the delete guard (spec #46) holds itemId null; a starred
+    // asset can no longer be deleted, so that saved state is written directly.
+    const legacy = f.store.getDeck(f.p.id).slides.map(value => ({ ...value, subnav: value.subnav.map(view => ({ ...view, itemId: null })) }));
+    f.store.db.prepare('UPDATE episodes SET cards=? WHERE id=?').run(JSON.stringify(legacy), f.p.id);
     f.store.deleteLibraryItem(f.p.id, item.id, item.revision, f.store.getDeck(f.p.id).revision);
     const read = await native.call('read_deck');
     assert.equal(read.failed, false, read.text);

@@ -1,4 +1,4 @@
-import { validateSlides, validateDeckDesign, emptyDesign, validateSlideTiming, effectiveSlideDesign } from './deck-data.js';
+import { validateSlides, slidePicks, validateDeckDesign, emptyDesign, validateSlideTiming, effectiveSlideDesign } from './deck-data.js';
 import { fontForFamily } from './fonts.js';
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -1765,13 +1765,14 @@ export class Store {
   listRedlineItems(episodeId) {
     return this.listEpisodeLibrary(episodeId).filter((item) => item.sourceKind === "redline");
   }
-  // In use = referenced by a card or slide (output media, deck media/vector/subnav, card references) or the production's references.
+  // In use = referenced by a card or slide (output media, deck media/vector/subnav/candidates, card references) or the production's references.
   libraryItemInUse(episodeId, itemId) {
     const episode = this.getEpisode(episodeId);
     if (!episode) throw new StoreError("Episode not found", 404);
     return episode.referenceItemIds.includes(itemId) || episode.cards.some((card) => card.itemId === itemId
       || card.media?.itemId === itemId || card.vector?.itemId === itemId
-      || (card.subnav || []).some((entry) => entry.itemId === itemId) || (card.referenceItemIds || []).includes(itemId));
+      || (card.subnav || []).some((entry) => entry.itemId === itemId) || (card.candidates || []).some((entry) => entry.itemId === itemId)
+      || (card.referenceItemIds || []).includes(itemId));
   }
   // Whether anything besides this library item depends on the asset row or its file.
   assetSharedBeyond(assetId, itemId) {
@@ -1906,14 +1907,21 @@ export class Store {
     const tags = changes.tags == null ? current.tags : changes.tags;
     if (!Array.isArray(tags) || tags.some((tag) => typeof tag !== "string"))
       throw new StoreError("tags must be an array of strings");
-    const stamp = now();
-    const result = this.db.prepare(`UPDATE library_items SET category=?,label=?,tags=?,notes=?,section_id=?,revision=revision+1,updated_at=?
-      WHERE id=? AND episode_id=? AND revision=?`).run(
-      category, changes.label == null ? current.label : String(changes.label).trim() || current.asset.name,
-      JSON.stringify(tags.map((tag) => tag.trim()).filter(Boolean)), changes.notes == null ? current.notes : String(changes.notes),
-      sectionId, stamp, itemId, episodeId, expectedRevision,
-    );
-    if (!result.changes) throw new StoreError("Stale library revision", 409);
+    const stamp = now(), label = changes.label == null ? current.label : String(changes.label).trim() || current.asset.name;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.db.prepare(`UPDATE library_items SET category=?,label=?,tags=?,notes=?,section_id=?,revision=revision+1,updated_at=?
+        WHERE id=? AND episode_id=? AND revision=?`).run(
+        category, label, JSON.stringify(tags.map((tag) => tag.trim()).filter(Boolean)), changes.notes == null ? current.notes : String(changes.notes),
+        sectionId, stamp, itemId, episodeId, expectedRevision,
+      );
+      if (!result.changes) throw new StoreError("Stale library revision", 409);
+      // The label is shared by the iteration group (spec #46 'Asset preview'): renaming one renames all.
+      if (label !== current.label)
+        this.db.prepare("UPDATE library_items SET label=?,revision=revision+1,updated_at=? WHERE episode_id=? AND COALESCE(iteration_group,id)=? AND id<>?")
+          .run(label, stamp, episodeId, current.iterationGroup, itemId);
+      this.db.exec("COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
     return this.getLibraryItem(episodeId, itemId);
   }
   deleteLibraryItem(episodeId, itemId, expectedRevision, expectedEpisodeRevision) {
@@ -1924,13 +1932,12 @@ export class Store {
     const episode = this.getEpisode(episodeId);
     if (!Number.isInteger(expectedEpisodeRevision) || expectedEpisodeRevision !== episode.revision)
       throw new StoreError(`Stale episode revision: expected ${episode.revision}`, 409);
+    // Delete guard (spec #46): an asset starred on any slide stays; an unpicked candidate leaves the lists.
+    const starredOn = episode.kind === "deck" ? episode.cards.findIndex((card) => slidePicks(card).includes(itemId)) : -1;
+    if (starredOn >= 0)
+      throw new StoreError(`“${current.label}” is starred on slide ${String(starredOn + 1).padStart(2, "0")}; star another there first`, 409);
     const cards = episode.cards.map((card) => ({ ...card,
-      ...(episode.kind === "deck" ? { media: card.media?.itemId === itemId ? null : card.media,
-        // Without its vector the slide is text: drop what only SVG groups can carry, keep the timing.
-        ...(card.vector?.itemId === itemId ? { vector: null, stages: (card.stages || []).map(({ svgGroupIds, changes, from, motion, ...stage }) =>
-          ({ ...stage, ...(motion === undefined || motion === "draw" || motion === "enter" ? {} : { motion }) })) } : {}),
-        subnav: (card.subnav || []).map(entry => entry.itemId === itemId ? { ...entry, itemId: null } : entry),
-        ...(card.candidates ? { candidates: card.candidates.filter(entry => entry.itemId !== itemId) } : {}) } : {}),
+      ...(card.candidates ? { candidates: card.candidates.filter(entry => entry.itemId !== itemId) } : {}),
       itemId: card.itemId === itemId ? null : card.itemId,
       referenceItemIds: (card.referenceItemIds || []).filter((id) => id !== itemId),
     }));
