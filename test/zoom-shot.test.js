@@ -80,6 +80,33 @@ for (const name of ['still', 'moving']) {
   });
 }
 
+for (const [format, origin] of [['mp4', 0], ['mp4', 5], ['mkv', 5]]) {
+  test(`clip ranges follow delayed picture in ${format} when the container clock starts at ${origin}s`, async () => {
+    const source = join(dir, `delayed-picture-${origin}.${format}`);
+    execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=duration=4',
+      '-itsoffset', '1', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=8:duration=2',
+      '-map', '1:v', '-map', '0:a', '-fps_mode', 'passthrough', '-c:v', 'libx264', '-threads:v', '2',
+      '-c:a', 'alac', '-output_ts_offset', String(origin), source]);
+    const [picture, sound] = streams(source);
+    assert.deepEqual([picture.start_time, sound.start_time].map(Number), [origin + 1, origin]);
+    if (format === 'mp4') assert.deepEqual([picture.duration, sound.duration].map(Number), [2, 4]);
+    else assert.equal(picture.duration, undefined);
+    const recipe = { ...recipes.moving, source };
+    const out = join(dir, `offset-shot-${format}-${origin}.mp4`);
+    for (const sourceRange of [[0, 2], [1.01, 3.01]]) {
+      await assert.rejects(renderZoomShot({ ...recipe, sourceRange }, out), /^Error: sourceRange:/);
+    }
+    await renderZoomShot({ ...recipe, sourceRange: [1, 3] }, out);
+    const [video, audio] = streams(out);
+    assert.deepEqual([video.start_time, video.nb_frames, audio.start_time].map(Number), [0, 16, 0]);
+    assert.ok(Math.abs(Number(audio.duration) - 2) < 0.025);
+    const actual = rgb(out), original = rgb(source, ['-fps_mode', 'passthrough']);
+    for (const [index, progress] of [[0, 0], [6, 0.5], [15, 1]]) {
+      checkFrame({ actual, source: original, index, srcIndex: index, progress, recipe });
+    }
+  });
+}
+
 test('a range beginning between source frames samples the frame on screen, including its last fraction', async () => {
   const recipe = { ...recipes.moving, source: join(dir, 'dashboard.mp4'), sourceRange: [2.8125, 3],
     startCrop: recipes.moving.endCrop, moveStart: 0, land: 0, hold: 0.1875 };

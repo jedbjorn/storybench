@@ -28,7 +28,7 @@ function rectangle(value, field) {
 }
 
 async function inspect(source) {
-  const entries = 'format=format_name,duration:stream=index,width,height,sample_aspect_ratio,duration:' +
+  const entries = 'format=format_name,start_time:stream=index,width,height,sample_aspect_ratio,start_time,duration:' +
     'stream_side_data=rotation:frame=width,height:frame_side_data=rotation';
   const { stdout } = await run('ffprobe', ['-v', 'error', '-select_streams', 'V:0', '-read_intervals', '%+#1',
     '-show_entries', entries, '-of', 'json', source]).catch(error => invalid('source', error.stderr || error.message));
@@ -40,11 +40,22 @@ async function inspect(source) {
   if (rotation % 90 !== 0) invalid('source', 'requires a right-angle display orientation');
   const [sw, sh] = (stream.sample_aspect_ratio ?? '').split(':').map(Number);
   const aspect = stream.width / stream.height * (sw && sh ? sw / sh : 1);
+  // FFmpeg's input -ss is relative to the container's start timestamp.
+  const pictureStart = Number(stream.start_time ?? format.start_time ?? 0) - Number(format.start_time ?? 0);
   return {
     index: stream.index, aspect: rotation % 180 ? 1 / aspect : aspect,
     still: format.format_name === 'image2' || format.format_name.endsWith('_pipe'),
-    duration: Number(stream.duration ?? format.duration),
+    pictureStart,
+    pictureEnd: stream.duration == null ? undefined : pictureStart + Number(stream.duration),
   };
+}
+
+// Some containers omit per-stream duration. Look for one video packet whose
+// presentation interval reaches the out-point, without decoding or buffering the clip.
+async function pictureReaches(source, index, end, signal) {
+  const { stdout } = await run('ffmpeg', [...ffmpeg, '-i', source, '-map', `0:${index}`, '-c', 'copy',
+    '-bsf:v', `noise=drop='lt((pts+duration)*tb+0.000001,${end})'`, '-frames:v', '1', '-f', 'framecrc', '-'], { signal });
+  return /^0,/m.test(stdout);
 }
 
 function zoomFilter(start, end, { fps, moveStart, land, easing }) {
@@ -82,10 +93,17 @@ export async function renderZoomShot(recipe, outputPath, { signal } = {}) {
   if (await realpath(output).catch(() => null) === source) invalid('output', 'would overwrite source');
   const media = await inspect(source);
   if (media.still && sourceRange !== undefined) invalid('sourceRange', 'omit for a still');
-  if (!media.still && (!Array.isArray(sourceRange) || sourceRange.length !== 2 || !sourceRange.every(Number.isFinite)
-      || sourceRange[0] < 0 || sourceRange[1] <= sourceRange[0] || sourceRange[1] > media.duration + 1e-6
-      || Math.abs(sourceRange[1] - sourceRange[0] - duration) > 1e-6)) {
-    invalid('sourceRange', 'expected [in, out] within the video, spanning land + hold seconds');
+  if (!media.still) {
+    if (!Array.isArray(sourceRange) || sourceRange.length !== 2 || !sourceRange.every(Number.isFinite)
+        || sourceRange[0] < 0 || sourceRange[1] <= sourceRange[0]
+        || Math.abs(sourceRange[1] - sourceRange[0] - duration) > 1e-6) {
+      invalid('sourceRange', 'expected [in, out] spanning land + hold seconds');
+    }
+    if (sourceRange[0] < media.pictureStart - 1e-6) invalid('sourceRange', 'video starts after the requested in-point');
+    const covered = media.pictureEnd == null
+      ? await pictureReaches(source, media.index, sourceRange[1], signal)
+      : sourceRange[1] <= media.pictureEnd + 1e-6;
+    if (!covered) invalid('sourceRange', 'video ends before the requested out-point');
   }
 
   const pixels = frame.map((v, i) => Math.round(v * (i % 2 ? height : width)));
