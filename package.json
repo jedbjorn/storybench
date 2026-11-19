@@ -34,7 +34,7 @@
     "playwright-core": "1.63.0"
   },
   "devDependencies": {
-    "esbuild": "0.25.10",
+    "esbuild": "0.28.2",
     "painterro": "1.2.92"
   }
 }
