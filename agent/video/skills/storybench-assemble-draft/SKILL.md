@@ -15,7 +15,11 @@ Before composing or revising this work, read the complete current saved producti
 
 Decide what the viewer should notice in each shot. Give a detail enough space to read, keep related elements in view when the comparison matters, or reveal a change when it moves the story forward. Choose the framing and timing from the creator's brief.
 
+For a silent brief, omit the music card and honor the creator’s choice about narration and source audio. For a scored brief, use a supplied track or an explicitly authorized fixture. If the recording is missing, ask for it, continue independent picture work and report the score as pending. Treat a feel reference as direction about rhythm unless the creator authorizes its audio.
+
 When the piece calls for music, favor natural, instrument-like tones such as plucked strings or felt piano unless the creator asks for another sound. Pick a few musical moments to shape the major transitions. A phrase change can open a section, a swell can carry a reveal, or a resolution can land as the picture settles. Let ordinary cuts follow the action and hold a detail as long as it takes to read, even across beats. Make these choices from the brief without requiring a shot list, tempo or cue times.
+
+Keep a creator’s exact mark, or inspect a short passage on demand, e.g. `inspect_audio { "itemId": "…", "startSeconds": 5, "endSeconds": 9 }`. Its source-clock levels and candidate accents are measurements. A quiet passage may yield none. Choose what the moment means for this cut, whether starting from the track or scoring existing picture. In `update_cards`, preserve the board and add the chosen mark to the recording’s card: `cues: [{ "assetId": "…", "sourceSeconds": 8, "label": "Resolution", "visualMoment": "The face comes into the light" }]`. Use the asset ID of the recording.
 
 ## Validate
 
@@ -26,6 +30,8 @@ validate_render {}
 ```
 
 A failing validation is a tool error listing every problem as `<card title>: <message>` (codes such as `unassigned-card`, `missing-visual`, `invalid-duration`, `trim-out-of-range`, `missing-audio-anchor`, `invalid-audio-fade`, `missing-visual-spine`, or a stale pinned recipe). Fix through `update_cards` (or make the missing asset) and validate again. `renderRevision` is a fingerprint of exactly what would render; it changes whenever cards, story, pinned items or recipes change.
+
+Read `cuePlacements` for each intended event. If the track starts at 2 s in the cut and its trim starts at 5 s in the source, an 8 s mark lands at 5 s in the cut. Use the returned `cutFrame` after every anchor, trim or picture change. For a `trimmed-away`, `source-changed` or `not-in-cut` mark, revise the edit or report the missing event.
 
 ## Enqueue a draft
 
@@ -49,7 +55,7 @@ Wait inside your turn with `await_job { "jobId": "…", "timeoutSeconds": 120 }`
 
 ## Look at the result
 
-The completed file is a project path: `inspect_contact_sheet { "path": "outputs/drafts/….mp4", "startSeconds": 0, "endSeconds": 60, "count": 12 }`, `inspect_image { "path": "…", "atSeconds": 8.2 }`, `ffprobe`. The creator sees the same draft in Storybench's Drafts view with a player.
+The completed file is a project path: `inspect_contact_sheet { "path": "outputs/drafts/….mp4", "startSeconds": 0, "endSeconds": 60, "count": 12 }`, `inspect_image { "path": "…", "atSeconds": 8.2 }`, `ffprobe`. Check the chosen passage in the completed MP4 with the original mix, narration and fades. For a precise sync claim, decode the picture around the intended frame and inspect the mix around its actual timestamp (e.g. `inspect_audio` on the output path). A planned position alone cannot confirm the reveal. Give the creator the draft and passage time for sound-on judgment in the Drafts player.
 
 ## Revise
 
