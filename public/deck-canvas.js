@@ -4,7 +4,8 @@
 // boxes the bridge reports, using the shared UI primitives; changes edit the deck design or the slide's
 // overrides and are saved through the normal save, after which the frame shows the new revision.
 // The slide editor (spec #46) hosts this canvas: Play slide runs the slide's timeline in the frame and
-// the step bar (Start, 1 … n−1, All) follows it.
+// the step bar (Start, 1 … n−1, All) follows it. Double-clicking text on the slide edits it in the
+// frame itself (Text on the slide): the frame is live only for that edit, and a commit is one save.
 import { createSelectionSurface } from './ui/selection-surface.js';
 import { createInspectorPanel } from './ui/inspector-panel.js';
 import { createSegmentedChoice } from './ui/segmented-choice.js';
@@ -91,7 +92,9 @@ export function createSlidePreview(viewport, { channel = () => null, onStatus = 
 }
 
 // `inspectorHost` places the inspector outside the canvas (the slide editor's Elements panel).
-export function createDeckCanvas(section, { channel = () => null, onChange = () => {}, inspectorHost = null } = {}) {
+// `onChange` saves; a text commit reads its promise, false when the save was refused. `onReload`
+// replaces the production with the latest saved revision, for retrying a refused text commit.
+export function createDeckCanvas(section, { channel = () => null, onChange = () => {}, onReload = async () => {}, inspectorHost = null } = {}) {
   const doc = section.ownerDocument;
   section.innerHTML = `<div class="deck-canvas-body"><div class="deck-canvas-surface" tabindex="-1" aria-label="Slide canvas" data-canvas-surface><div class="deck-canvas-viewport"></div><div class="deck-canvas-blocks"></div></div></div>
     <div class="deck-canvas-bar"><button type="button" class="primary" data-canvas-play>Play slide</button><div class="deck-canvas-stages" data-canvas-stages></div></div>
@@ -104,6 +107,8 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
 
   let episode = null, slideId = null, stage = null, scope = 'slide', selected = null, playing = false;
   let standards = null, fonts = [], standardsFor = null, frame = null, pending = null, info = null, shown = '', drawn = '';
+  // The open text edit ({field, text}: text is what a click-off would save, or null), and a refused commit kept for retry.
+  let editing = null, kept = null;
   const slide = () => episode?.cards.find((item) => item.id === slideId) || null;
   const design = () => (episode.design ||= { theme: { colors: {}, fonts: {}, setBy: { colors: {}, fonts: {} } } });
 
@@ -114,7 +119,8 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
   const frameUrl = () => slide() ? slideFrameUrl(episode, slideId, standards?.revision ?? 0) : null;
   async function load() {
     const url = frameUrl();
-    if (!url || url === shown) return;
+    // A new revision waits for the open text edit; the edit's commit then saves over it.
+    if (!url || url === shown || editing) return;
     shown = url;
     const refusal = await canvasRefusal(url, channel());
     if (shown !== url) return;
@@ -127,6 +133,7 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
   }
   function receive(event) {
     const data = event.data;
+    if (data?.type === 'storybench-canvas-text' && data.version === 1 && frame && event.source === frame.contentWindow) return textEvent(data);
     if (!data || data.type !== 'storybench-canvas' || data.version !== 1) return;
     if (pending && event.source === pending.contentWindow) {
       frame?.remove(); frame = pending; pending = null; frame.classList.remove('is-loading');
@@ -181,6 +188,63 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
     const block = event.target.dataset?.select;
     if (block && frame) frame.contentWindow.postMessage({ type: 'storybench-canvas-reveal', block }, '*');
   });
+
+  // ---- Text on the slide. A double-click makes the frame live and asks it for the text at that point;
+  // the frame reports the edit's start, each change, and its end (with the text to save, or null).
+  surfaceRoot.addEventListener('dblclick', (event) => {
+    if (!frame || pending || playing || editing) return;
+    const area = info?.area || AREA, box = viewport.getBoundingClientRect(), scale = Math.min(1, box.width / area.width);
+    live(true);
+    frame.focus();
+    frame.contentWindow.postMessage({ type: 'storybench-canvas-edit', x: (event.clientX - box.left) / scale + area.left, y: (event.clientY - box.top) / scale + area.top }, '*');
+  });
+  function live(on) {
+    frame.inert = !on;
+    frame.toggleAttribute('aria-hidden', !on);
+    surfaceRoot.classList.toggle('is-editing', on);
+  }
+  function textEvent({ phase, field, text }) {
+    if (phase === 'start') { editing = { field, text: null }; kept = null; status.textContent = ''; return; }
+    if (phase === 'input' && editing) { editing.text = text; return; }
+    if (phase !== 'end' && phase !== 'none') return;
+    const done = editing;
+    editing = null;
+    live(false);
+    // Escape or Enter leaves focus in the frame: it returns to the selection. A click elsewhere keeps its focus.
+    if (doc.activeElement === frame) (blocksLayer.querySelector(`[data-select="${CSS.escape(selected || '')}"]`) || surfaceRoot).focus({ preventScroll: true });
+    if (done && text !== null) commitText(done.field, text);
+    load();
+  }
+  // A commit writes the field and saves once; a refused save keeps the text, with Reload and retry.
+  async function commitText(field, text) {
+    const [key, part] = field.name.split('.'), owner = part ? slide()?.[key]?.[field.index] : slide();
+    if (!owner) return keep(field, text, 'This text is no longer on the slide, so it was not saved.');
+    owner[part || key] = text;
+    renderInspector();
+    if (await onChange() === false) keep(field, text, 'Your text was not saved.');
+  }
+  function keep(field, text, message) {
+    kept = { slideId, field, text };
+    const retry = Object.assign(doc.createElement('button'), { type: 'button', className: 'deck-canvas-retry', textContent: 'Reload and retry' });
+    retry.addEventListener('click', async () => {
+      const held = kept;
+      if (!held) return;
+      kept = null; status.textContent = 'Reloading…';
+      await onReload();
+      if (slideId !== held.slideId) return;
+      status.textContent = '';
+      commitText(held.field, held.text);
+    });
+    status.replaceChildren(`${message} It is kept: “${text}”. `, retry);
+  }
+  // Closing the editor or moving to another slide commits an open edit as a click-off would.
+  function finishEdit() {
+    if (!editing) return;
+    const { field, text } = editing;
+    editing = null;
+    if (frame) live(false);
+    if (text !== null) commitText(field, text);
+  }
 
   // ---- Step bar: Start (the slide as it opens), each later stage, and All (the full reveal, the default).
   // Choosing one holds the slide there and stops Play; during Play it follows, and the stage Play is
@@ -364,6 +428,7 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
 
   function open(id) {
     if (id === slideId || !episode?.cards.some((item) => item.id === id)) return;
+    finishEdit(); kept = null; status.textContent = '';
     slideId = id; stage = null; selected = null; info = null; drawn = ''; playing = false;
     surface.select(null); blocksLayer.replaceChildren(); renderStages();
     load(); renderInspector();
@@ -381,6 +446,7 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
     open,
     // Closing the editor drops the frame, so a hidden canvas loads and plays nothing.
     hide() {
+      finishEdit(); kept = null; status.textContent = '';
       episode = null; slideId = null; shown = ''; info = null; drawn = ''; playing = false;
       frame?.remove(); pending?.remove(); frame = pending = null;
       surface.select(null); blocksLayer.replaceChildren(); renderStages();
