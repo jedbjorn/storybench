@@ -200,7 +200,7 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
   });
   function live(on) {
     frame.inert = !on;
-    frame.toggleAttribute('aria-hidden', !on);
+    if (on) frame.removeAttribute('aria-hidden'); else frame.setAttribute('aria-hidden', 'true');
     surfaceRoot.classList.toggle('is-editing', on);
   }
   function textEvent({ phase, field, text }) {

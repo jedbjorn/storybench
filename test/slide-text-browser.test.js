@@ -94,7 +94,7 @@ for (const type of [chromium, firefox]) test(`E7 ${type.name()}: text is edited 
   // The title: double-click edits it in place; the box moves at most 2 px; Enter commits one save; a reload shows it.
   const view = await boxes(frame, '.copy > h1');
   await edit(frame, '.copy > h1');
-  assert.equal(await iframe.evaluate(node => node.inert), false, 'the frame is live during the edit');
+  assert.equal(await iframe.evaluate(node => node.inert || node.hasAttribute('aria-hidden')), false, 'the frame is live during the edit');
   const editing = await boxes(frame, '.copy > h1');
   assert.ok(moved(view, editing) <= 2, `the title box moved ${moved(view, editing)} px entering edit (${JSON.stringify([view, editing])})`);
   await evidence(page, `e7-title-editing-${type.name()}.png`);
@@ -104,6 +104,7 @@ for (const type of [chromium, firefox]) test(`E7 ${type.name()}: text is edited 
   await page.keyboard.press('Enter');
   // The edit ends: the frame is inert again and focus is back in the app.
   await page.waitForFunction(() => document.querySelector('#slideEditor .deck-canvas-viewport iframe:not(.is-loading)')?.inert === true);
+  assert.equal(await iframe.evaluate(node => node.getAttribute('aria-hidden')), 'true');
   assert.equal(await appHasFocus(), true, 'focus returned to the app');
   await firstSave; await settled();
   assert.equal(saved('opening').title, 'A new opening');
