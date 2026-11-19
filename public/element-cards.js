@@ -258,7 +258,7 @@ export function bindElementCards(root, { getSlides, getItems = () => [], onDirty
     }
     if ('addElement' in data) {
       event.target.value = '';
-      if (value === 'step') { (slide.stages ||= []).push({ id: `stage_${crypto.randomUUID()}`, title: 'New step', body: '' }); return commit(); }
+      if (value === 'step') return addStep(slide);
       if (value.startsWith('visual:')) return star(index, slide, value.slice(7));
       return;
     }
@@ -270,8 +270,9 @@ export function bindElementCards(root, { getSlides, getItems = () => [], onDirty
     if (key) onToggle(key, event.target.open);
   }, true);
 
-  // Star = pick. A drawing whose parts lack one a step reveals is refused here with the spec's line (the
-  // server refuses it too); everything else goes to the server and its rules.
+  // Star = pick. A drawing whose parts lack one a step reveals is refused here with the spec's line, and
+  // one onto a slide with a step that would reveal nothing with the server's (the server refuses both);
+  // everything else goes to the server and its rules.
   function star(index, slide, id) {
     const value = item(id);
     if (!value) return;
@@ -280,9 +281,24 @@ export function bindElementCards(root, { getSlides, getItems = () => [], onDirty
     if (kind === 'drawing') {
       const missing = missingParts(value, slide.stages);
       if (missing.length) return notify('visual', missing.map(part => missingPartText(value, part)).join(' '));
+      const empty = (slide.stages || []).find(stage => !stage.svgGroupIds?.length && !stage.changes?.length);
+      if (empty) return notify('visual', `Stage ${empty.id}: select at least one SVG group`);
     }
     const gallery = kind !== 'drawing' && !slide.subnav?.length && SLIDE_TYPES[slide.layout]?.visual.includes('gallery') && isGallery(slide.id);
     replace(index, gallery ? startGallery(slide, value) : useOnSlide(slide, value));
+  }
+  // Add element > Step. On a drawing slide every step reveals a part (the server refuses one that reveals
+  // none), so the new step takes the drawing's first part no step claims; with none free it is refused.
+  function addStep(slide) {
+    const stage = { id: `stage_${crypto.randomUUID()}`, title: 'New step', body: '' };
+    if (slide.vector) {
+      const claimed = new Set((slide.stages || []).flatMap(value => value.svgGroupIds || []));
+      const part = partsOf(item(slide.vector.itemId)).find(id => !claimed.has(id));
+      if (!part) return notify('visual', 'Every part already appears in a step; free one first');
+      stage.svgGroupIds = [part];
+    }
+    (slide.stages ||= []).push(stage);
+    commit();
   }
   // One part, one place: a step, or from the start (-1). A step left revealing nothing is refused, as
   // the server refuses it.
@@ -333,7 +349,8 @@ export function bindElementCards(root, { getSlides, getItems = () => [], onDirty
     if (!action || !(action.startsWith('add-') || action.startsWith('part-'))) return;
     if (action.startsWith('add-')) {
       const key = action.slice(4);
-      (slide[key] ||= []).push(key === 'stages' ? { id: `stage_${crypto.randomUUID()}`, title: 'New step', body: '' } : { title: 'New column', body: '' });
+      if (key === 'stages') return addStep(slide);
+      (slide[key] ||= []).push({ title: 'New column', body: '' });
     } else {
       const row = target.closest('[data-part]'), values = slide[row.dataset.part], from = Number(row.dataset.partIndex);
       if (action === 'part-delete') values.splice(from, 1); else move(values, from, from + (action === 'part-up' ? -1 : 1));

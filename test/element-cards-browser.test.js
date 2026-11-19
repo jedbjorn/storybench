@@ -7,6 +7,7 @@
 // onto Right sets its position and the canvas shows it after save, and All slides writes the deck
 // default. E8 (editor half): adding a candidate and starring it switches the canvas; removing the starred
 // candidate is refused; starring a drawing that lacks a stepped part is refused with the spec's line.
+// Task #134 (flag #95), E4: Add element > Step on a Process slide's drawing reveals a part, saved with it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -55,7 +56,7 @@ const SLIDES = ({ svg, lacking, red, blue }) => [
   { id: 'together', title: 'Together', layout: 'statement', body: 'Two at once.', stages: [
     { id: 'a', title: 'First', body: 'One' }, { id: 'b', title: 'Second', body: 'Two', trigger: 'auto' }, { id: 'c', title: 'Third', body: 'Three', trigger: 'manual', durationMs: 800 }] },
 ];
-async function setup(t) {
+async function setup(t, slides = SLIDES) {
   const workspace = await mkdtemp(path.join(tmpdir(), 'sb-element-cards-'));
   const app = await createApp({ workspace });
   t.after(async () => { await app.close(); await rm(workspace, { recursive: true, force: true }); });
@@ -67,9 +68,11 @@ async function setup(t) {
   const source = await readFile(new URL('../src/runtime/fixtures/svg-illustration.svg', import.meta.url), 'utf8');
   const svg = await register(Buffer.from(source), 'plan.svg', 'Graphics');
   const lacking = await register(Buffer.from(source.replace(/<g id="plan">[\s\S]*?<\/g>/, '')), 'sketch.svg', 'Graphics');
+  // The plan without its <defs> group (tree): every part it lists is visible geometry the build accepts.
+  const plain = await register(Buffer.from(source.replace(/<g id="tree">[\s\S]*?<\/g>/, '').replace(/<use href="#tree"[^>]*\/>/g, '')), 'process.svg', 'Graphics');
   const red = await register(png([200, 30, 30]), 'red.png', 'B-roll'), blue = await register(png([30, 30, 200]), 'blue.png', 'B-roll');
-  app.store.saveDeck(episode.id, 1, SLIDES({ svg: svg.id, lacking: lacking.id, red: red.id, blue: blue.id }), 'human');
-  return { app, episode, items: { svg, lacking, red, blue }, url: `${base}/?channel=${episode.channelId}&episode=${episode.id}` };
+  app.store.saveDeck(episode.id, 1, slides({ svg: svg.id, lacking: lacking.id, plain: plain.id, red: red.id, blue: blue.id }), 'human');
+  return { app, episode, items: { svg, lacking, plain, red, blue }, url: `${base}/?channel=${episode.channelId}&episode=${episode.id}` };
 }
 const settled = page => page.waitForFunction(() => document.querySelector('#saveState')?.textContent.startsWith('Saved'));
 // The editor's canvas frame for a slide (optionally of one revision), once its runtime is there.
@@ -317,5 +320,44 @@ for (const type of [chromium, firefox]) test(`E4, E5, E6, E8 ${type.name()}: ele
   await settled(page);
   assert.equal(slide('together').stages[1].durationMs, 1600);
   playsStep2(await sample(page, await frameIn(page, 'together', sped + 1)), 'Speed Slow');
+  assert.deepEqual(errors, []);
+});
+
+// Spec #46 task #134 (REV1 conformance F1, flag #95). E4: on a Process slide, Add element > Step reveals the
+// drawing's first part no step claims, in the drawing's part order, and the step is saved with it.
+// Step 1 reveals connect, so the first free part comes before it in the drawing's order.
+const PROCESS = ({ plain }) => [{ id: 'process', title: 'A process', layout: 'process', body: 'Step by step.', vector: { itemId: plain, alt: 'A plan' },
+  stages: [{ id: 'connect', title: 'Connect', svgGroupIds: ['connect'] }] }];
+for (const type of [chromium, firefox]) test(`E4 ${type.name()}: Add element > Step on a Process slide reveals a free part and is saved with it`, { timeout: 90000 }, async t => {
+  const browser = await launch(type);
+  if (!browser) return t.skip(`No launchable ${type.name()} on this seat`);
+  t.after(() => browser.close());
+  const { app, episode, items, url } = await setup(t, PROCESS);
+  const stages = () => app.store.getDeck(episode.id).slides[0].stages;
+  const parts = items.plain.asset.metadata.svgGroupIds, free = parts[0];
+  assert.deepEqual(parts, ['landscape', 'observe', 'connect', 'plan'], 'the drawing\'s parts, in order');
+  const page = await browser.newPage({ viewport: { width: 1600, height: 1100 } }); page.setDefaultTimeout(10000);
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto(url);
+  await openEditor(page, 0);
+  // The library has loaded once the Visual card lists the drawing's parts.
+  await openCard(page, 'visual');
+  await cardOf(page, 'visual').locator('[data-parts-table]').waitFor();
+  const revision = app.store.getDeck(episode.id).revision;
+  await page.selectOption('#slideEditor [data-add-element]', 'step');
+  await settled(page);
+  for (let i = 0; i < 200 && stages().length < 2; i++) await page.waitForTimeout(25);
+  assert.equal(app.store.getDeck(episode.id).revision, revision + 1, 'one save');
+  assert.deepEqual(stages().map(stage => stage.svgGroupIds), [['connect'], [free]], `the new step reveals ${free}`);
+  assert.equal(await page.locator('#saveState').textContent().then(text => text.startsWith('Saved')), true, 'saved, not stuck');
+  // On reload the step is there with its part, and the canvas shows the slide built from it.
+  await page.reload();
+  await openEditor(page, 0);
+  await frameIn(page, 'process', revision + 1);
+  const added = stages()[1].id;
+  assert.match(await cardOf(page, `step:${added}`).locator('.element-card-summary').textContent(), new RegExp(`reveals ${free}$`));
+  await openCard(page, 'visual');
+  assert.equal(await cardOf(page, 'visual').locator(`[data-part-appears="${free}"]`).inputValue(), '1', `${free} appears at step 2`);
+  await evidence(page, `e4-add-step-drawing-${type.name()}.png`);
   assert.deepEqual(errors, []);
 });
