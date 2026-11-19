@@ -50,9 +50,13 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: paste, drop an
       stage = name;
       await page.locator('[data-chat-attachments] .chat-attachment').waitFor({ state: 'detached' });
       if (method === 'paperclip') {
-        const chooser = page.waitForEvent('filechooser');
+        // Firefox on CI sometimes misses Playwright's filechooser event (flag #92). Prove the paperclip opens the
+        // file input (default prevented, so no native picker), then set the input's files directly.
+        const input = page.locator('[data-chat-files]');
+        await input.evaluate(element => element.addEventListener('click', event => { event.preventDefault(); element.dataset.opened = 'true'; }, { once: true }));
         await page.click('[data-chat-attach]');
-        await (await chooser).setFiles({ name, mimeType: 'image/png', buffer: previewPNG });
+        await page.locator('[data-chat-files][data-opened="true"]').waitFor({ state: 'attached', timeout: 5_000 });
+        await input.setInputFiles({ name, mimeType: 'image/png', buffer: previewPNG });
       } else {
         await page.evaluate(({ method, name, bytes }) => {
           const transfer = new DataTransfer();
