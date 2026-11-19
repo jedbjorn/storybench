@@ -81,7 +81,7 @@ export function buildDeck(input, { assets = {} } = {}) {
   if (!slides.length) throw new Error('slides must not be empty');
   const files = new Map();
   const ids = new Set();
-  const vectors = new Map(), svgFonts = new Set();
+  const vectors = new Map(), svgFonts = new Set(), svgStyles = [];
   let instance = 0;
   function asset(path, type) {
     const extensions = type === 'video' ? /\.(mp4|webm)$/i : /\.(svg|png|jpe?g|webp|gif)$/i;
@@ -100,10 +100,11 @@ export function buildDeck(input, { assets = {} } = {}) {
     const alt = text(value.alt, 'media.alt');
     if (stages !== null && !vectors.has(value.src)) throw new Error('Vector composition requires SVG media');
     if (vectors.has(value.src)) {
-      const vector = parseSvg(assets[value.src], { namespace: `_sbv${++instance}`, stages });
+      const vector = parseSvg(assets[value.src], { namespace: `_sbv${++instance}`, stages, externalizeStyles: true });
       for (const family of vector.fonts) svgFonts.add(family);
+      if (vector.css) svgStyles.push(vector.css);
       // Inline validated geometry can load the bundle's fonts. Retain original editable
-      // bytes alongside it; each use gets isolated definitions and presentation styles.
+      // bytes alongside it; instance styles load through the sandbox's allowed stylesheet.
       return `<div class="vector-media" role="img" aria-label="${alt}">${vector.svg}</div>`;
     }
     if (value.type === 'image') return `<img src="${src}" alt="${alt}">`;
@@ -209,5 +210,6 @@ export function buildDeck(input, { assets = {} } = {}) {
   files.set('styles.css', Buffer.from(files.get('styles.css') + '\n.vector-media{width:100%;height:100%;display:flex;align-items:center;justify-content:center}.vector-media>svg{max-width:100%;max-height:60svh;height:auto;font-family:Manrope}\n'));
   if (fontCSS) files.set('styles.css', Buffer.from(files.get('styles.css') + '\n' + fontCSS));
   if (palette.length) files.set('styles.css', Buffer.from(files.get('styles.css') + `\n:root{${palette.map(([name, value]) => `${name}:${value}`).join(';')}}\n`));
+  if (svgStyles.length) files.set('styles.css', Buffer.concat([files.get('styles.css'), Buffer.from(`\n${svgStyles.join('\n')}\n`)]));
   return files;
 }

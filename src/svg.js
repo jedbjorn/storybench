@@ -111,7 +111,8 @@ export async function readSvgSource(source) {
   } finally { if (owned) await handle.close(); }
 }
 
-export function parseSvg(bytes, { namespace = null, stages = null } = {}) {
+export function parseSvg(bytes, { namespace = null, stages = null, externalizeStyles = false } = {}) {
+  if (externalizeStyles && namespace === null) fail('external styles require an instance namespace');
   if (Buffer.byteLength(bytes) > SVG_LIMITS.bytes) fail(`source exceeds ${SVG_LIMITS.bytes} bytes`);
   let source;
   try { source = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(bytes)); } catch { fail('source must be UTF-8 XML'); }
@@ -126,7 +127,7 @@ export function parseSvg(bytes, { namespace = null, stages = null } = {}) {
     if (nodes.length > SVG_LIMITS.elements) fail('too many elements');
     const walker = doc.createTreeWalker(doc, 64); // Processing instructions, including xml-stylesheet.
     if (walker.nextNode()) fail('processing instructions are forbidden');
-    const styles = [];
+    const styles = [], inlineStyles = new Map();
     const reference = (node, id, allowed, accessibility = false) => { references.push({ node, id, allowed, accessibility }); };
     function value(node, name, val) {
       try { return validateValue(node, name, val); }
@@ -206,7 +207,8 @@ export function parseSvg(bytes, { namespace = null, stages = null } = {}) {
         if (attr.name === 'xmlns:xlink' && node === root && attr.value === 'http://www.w3.org/1999/xlink') continue;
         const name = attr.name === 'xlink:href' && attr.namespaceURI === 'http://www.w3.org/1999/xlink' ? 'href' : attr.name;
         if ((attr.namespaceURI && name !== 'href') || (!globalAttrs.has(name) && !elements[tag].split(' ').includes(name))) fail(`unsupported attribute ${attr.name} on ${tag}`);
-        if (name === 'style') declarations(node, attr.value); else value(node, name, attr.value.trim());
+        if (name === 'style') inlineStyles.set(node, declarations(node, attr.value));
+        else value(node, name, attr.value.trim());
       }
       if (tag === 'style') {
         if (node.children.length) fail('style must contain CSS text');
@@ -271,10 +273,7 @@ export function parseSvg(bytes, { namespace = null, stages = null } = {}) {
           if (level < rank || !(level === 2 ? n.id === name : n.classList.contains(name))) continue;
           for (const [key, val] of rule.declarations) if (key === 'stroke') { found = val; rank = level; }
         }
-        for (const part of (n.getAttribute('style') ?? '').split(';')) {
-          const m = /^\s*stroke\s*:\s*(.*?)\s*$/.exec(part);
-          if (m) { found = m[1]; rank = 3; }
-        }
+        for (const [key, val] of inlineStyles.get(n) ?? []) if (key === 'stroke') found = val;
         found ??= n.getAttribute('stroke')?.trim();
         if (found && found !== 'inherit') return found;
       }
@@ -296,20 +295,42 @@ export function parseSvg(bytes, { namespace = null, stages = null } = {}) {
         if (hasExternalUse(node)) fail(`stage group ${node.id} cannot be reused by use; map independent visible groups`);
       }
     }
+    const css = [];
     if (namespace !== null) {
       if (!ID.test(namespace)) fail('invalid instance namespace');
       const renamed = id => `${namespace}-${id}`;
+      const renameUrls = value => value.replace(/url\(#([^)]*)\)/g, (_, id) => `url(#${renamed(id)})`);
+      const ruleText = (selectors, declarations) => `${selectors.join(',')}{${declarations.map(([key, value]) => `${key}:${renameUrls(value)}`).join(';')}}`;
       for (const node of nodes) {
         for (const attr of [...node.attributes]) {
           let val = attr.value.trim();
           if (attr.name === 'id') val = renamed(val);
           else if (attr.name === 'class' || attr.name === 'aria-labelledby' || attr.name === 'aria-describedby') val = val.split(/\s+/).map(renamed).join(' ');
           else if (attr.localName === 'href') val = `#${renamed(val.slice(1))}`;
-          else val = val.replace(/url\(#([^)]*)\)/g, (_, id) => `url(#${renamed(id)})`);
+          else val = renameUrls(val);
           node.setAttributeNS(attr.namespaceURI, attr.name, val);
         }
       }
-      for (const node of nodes.filter(n => n.localName === 'style')) node.textContent = styles.filter(s => s.node === node).map(rule => `${rule.selectors.map(s => s[0] + renamed(s.slice(1))).join(',')}{${rule.declarations.map(([k, v]) => `${k}:${v.replace(/url\(#([^)]*)\)/g, (_, id) => `url(#${renamed(id)})`)}`).join(';')}}`).join('\n');
+      for (const node of nodes.filter(n => n.localName === 'style')) {
+        const rules = styles.filter(rule => rule.node === node)
+          .map(rule => ruleText(rule.selectors.map(selector => selector[0] + renamed(selector.slice(1))), rule.declarations));
+        if (externalizeStyles) {
+          for (const rule of rules) css.push(rule);
+          node.remove();
+        }
+        else node.textContent = rules.join('\n');
+      }
+      if (externalizeStyles) {
+        let generated = 0;
+        for (const [node, declarations] of inlineStyles) {
+          node.removeAttribute('style');
+          if (!declarations.length || node.localName === 'style') continue;
+          // Two IDs outrank the profile's single-ID and class selectors. The generated ID
+          // cannot collide with a renamed source ID, because source IDs cannot begin with "-".
+          if (!node.id) node.id = `${namespace}--${++generated}`;
+          css.push(ruleText([`#${node.id}#${node.id}`], declarations));
+        }
+      }
     }
     // Trusted wrappers preserve the author's opacity, transforms and selector IDs.
     // Runtime attributes are never accepted from source SVG.
@@ -319,7 +340,7 @@ export function parseSvg(bytes, { namespace = null, stages = null } = {}) {
       wrapper.setAttribute('data-vector-group', namespace === null ? node.id : node.id.slice(namespace.length + 1));
       node.replaceWith(wrapper); wrapper.append(node);
     }
-    return { profile: SVG_PROFILE, width, height, groupIds, groups, revealGroupIds, revealAncestors, fonts: [...fonts], source, svg: root.outerHTML };
+    return { profile: SVG_PROFILE, width, height, groupIds, groups, revealGroupIds, revealAncestors, fonts: [...fonts], source, svg: root.outerHTML, css: css.join('\n') };
   } finally { dom.window.close(); }
 }
 
