@@ -14,13 +14,18 @@ import { createDeckQa } from '../src/deck-qa.js';
 import { extractBuild } from '../src/deck-qa-bundle.js';
 import { createDeckCapture, validateCaptureState, validateCanvasState, CAPTURE_BUSY, CAPTURE_REBUILD } from '../src/deck-capture.js';
 
+// A teardown hook has no timeout of its own, and a hung one stops the test from ever reporting, which holds
+// the CI job to its cap (flag #84). Hooks run in registration order, so browser tests launch before the
+// fixture: the browser closes first, then the server has no client holding a connection open.
+const TEARDOWN = { timeout: 15_000 };
+
 const DECK_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'none'";
 
 async function fixture(t) {
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'sb-deck-capture-'));
   const app = await createApp({ workspace });
   await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => { await app.close(); await rm(workspace, { recursive: true, force: true }); });
+  t.after(async () => { await app.close(); await rm(workspace, { recursive: true, force: true }); }, TEARDOWN);
   const episode = app.store.createEpisode({ kind: 'deck', title: 'Capture proof' });
   app.store.ensureEpisodeDirectories(episode.id);
   const library = createLibraryService({ workspace, store: app.store });
@@ -135,11 +140,11 @@ test('one creator capture at a time; a capture that cannot start within its limi
 });
 
 test('framed runtime reports position only, on change and on request; standalone bundle posts nothing', { timeout: 60000 }, async t => {
-  const f = await fixture(t);
-  const job = await f.build();
   const browser = await launchOrSkip(t);
   if (!browser) return;
-  t.after(() => browser.close());
+  t.after(() => browser.close(), TEARDOWN);
+  const f = await fixture(t);
+  const job = await f.build();
   const page = await browser.newPage();
   await page.addInitScript(() => { window.__deck = []; addEventListener('message', event => { if (event.data?.type === 'storybench-deck-state') window.__deck.push(event.data); }); });
   await page.goto(`${f.base}/preview/deck/${job.id}${f.channel}`);
@@ -193,13 +198,13 @@ test('framed runtime reports position only, on change and on request; standalone
 });
 
 test('server capture matches an agent QA screenshot of the same state and leaves the QA session working', { timeout: 90000 }, async t => {
-  const f = await fixture(t);
-  const job = await f.build();
   const browser = await launchOrSkip(t);
   if (!browser) return;
-  t.after(() => browser.close());
+  t.after(() => browser.close(), TEARDOWN);
+  const f = await fixture(t);
+  const job = await f.build();
   const qa = createDeckQa({ store: f.app.store, scope: { episodeId: f.episode.id, requestId: 'qa-capture', conversationId: 'qa-capture', harness: 'codex', model: 'automated-fixture' } });
-  t.after(() => qa.close());
+  t.after(() => qa.close(), TEARDOWN);
   const data = async (name, args) => JSON.parse((await qa.call(name, args)).text);
   const viewport = { width: 960, height: 540 };
   const { sessionId } = await data('open_deck_qa', { jobId: job.id, viewport });
