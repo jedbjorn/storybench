@@ -23,6 +23,8 @@ Episode references apply across the episode; card references inform only that ca
 
 ## Reading as feel context
 
+Consult a saved moment if the creator points to it or it helps answer a question about the cut. A whole video can be made without one. Describe the moment you observed, quote the creator's own words when they gave a preference, and identify any interpretation as yours. You can express the idea with a different shot or leave it aside. The same feel-reference rule covers the moment's picture and soundtrack.
+
 Text (pasted text, PDF, web page — extracted by the app):
 
 ```json

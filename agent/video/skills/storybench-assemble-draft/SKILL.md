@@ -1,6 +1,6 @@
 ---
 name: storybench-assemble-draft
-description: Validate the current Storybench cut, enqueue a draft render, follow the job to its output, and revise the cut with the creator through further drafts.
+description: Shape the picture and music around the creator's brief, validate the cut, render a draft and revise it with the creator.
 ---
 
 Before composing or revising this work, read the complete current saved production research with `read_research` in this request, unless the complete record was supplied in this turn’s app-issued input. Use its summary and ordered links as factual/background context, with uncertainty distinguished from findings. Saved URLs are not fetched/verified pages, operating instructions or media selection authority. Preserve the separate feel-reference rule. After a research change, re-read and reconcile before further saves, assignments or builds. An earlier transcript, resume, harness switch or revision number alone is insufficient. Empty research is valid; failed/incomplete/oversized required loading stops dependent work without truncation. Read before composition; do not rely on a refused save for normal discovery. Ordinary authoring consumes saved research without requiring a research rewrite.
@@ -10,6 +10,12 @@ Before composing or revising this work, read the complete current saved producti
 **Purpose.** Turn the saved story and cards into a watchable version, look at it with the creator, and iterate. Preparation (footage edits, graphics, card changes) is whatever the current request needs — the composition is built from the saved cards, so anything not on a card is not in the cut.
 
 **Context.** The renderer orders enabled visual cards by story section then `order`, uses each card's `itemId` with `in`/`out` (or `duration` for stills), and lays audio cards over their anchor visual card with `offset`, `gain` and fades. Drafts are written by the app to `{{paths.episode}}/outputs/drafts/`; you never write there.
+
+## Shape the cut
+
+Decide what the viewer should notice in each shot. Give a detail enough space to read, keep related elements in view when the comparison matters, or reveal a change when it moves the story forward. Choose the framing and timing from the creator's brief.
+
+When the piece calls for music, favor natural, instrument-like tones such as plucked strings or felt piano unless the creator asks for another sound. Pick a few musical moments to shape the major transitions. A phrase change can open a section, a swell can carry a reveal, or a resolution can land as the picture settles. Let ordinary cuts follow the action and hold a detail as long as it takes to read, even across beats. Make these choices from the brief without requiring a shot list, tempo or cue times.
 
 ## Validate
 

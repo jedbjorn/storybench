@@ -429,10 +429,12 @@ test("A8: channel deletion ends the deleted channel's jobs and waits for their w
   const deleted = await post("/api/channel-deletions", { channelIds: [doomed.id], token: preview.token, operationId: `delete_${randomUUID()}` });
   assert.equal(deleted.status, 200, deleted.body.error);
   assert.equal(deleted.body.state, "completed");
-  assert.ok(fake.launches[0].closed > 0, "the deleted channel's job worker was removed first");
+  const deletedWorker = fake.launches.find(worker => worker.job.id === jobs[0].job.jobId);
+  const retainedWorker = fake.launches.find(worker => worker.job.id === jobs[1].job.jobId);
+  assert.ok(deletedWorker.closed > 0, "the deleted channel's job worker was removed first");
   assert.equal(app.store.db.prepare("SELECT COUNT(*) n FROM agent_jobs WHERE id=?").get(jobs[0].job.jobId).n, 0, "its rows went with the channel");
   assert.equal(app.chat.get(jobs[1].episode.id, jobs[1].conversation.id).agentJobs[0].state, "running", "the other channel's job keeps running");
-  assert.equal(fake.launches[1].closed, 0);
+  assert.equal(retainedWorker.closed, 0);
 });
 
 test("A8: a job in a retained channel that ends during a pending deletion starts its wake once the deletion completes", async (t) => {
