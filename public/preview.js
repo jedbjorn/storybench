@@ -1,3 +1,4 @@
+import { mountMomentEditor } from './moment-editor.js';
 import { formatBytes } from './job-status.js';
 
 const $ = selector => document.querySelector(selector);
@@ -17,6 +18,7 @@ if (embedded) document.addEventListener('keydown', event => {
 
 function unavailable(message = 'This item is no longer available.') {
   events?.close();
+  $('#capture-moment').hidden = $('#moment-panel').hidden = true;
   $('#viewer').replaceChildren();
   $('#download').hidden = true;
   $('#actual-size').hidden = true;
@@ -107,9 +109,25 @@ async function open() {
     media.onload = () => { current.width = media.naturalWidth; current.height = media.naturalHeight; details(); $('#markup').hidden = false; };
   } else {
     media.controls = true;
-    media.onloadedmetadata = () => { current.width = media.videoWidth; current.height = media.videoHeight; current.duration = media.duration; details(); $('#markup').hidden = false; };
+    media.onloadedmetadata = () => {
+      current.width = media.videoWidth; current.height = media.videoHeight; current.duration = media.duration;
+      details();
+      $('#markup').hidden = false;
+      if (Number.isFinite(media.duration) && media.duration > 0 &&
+          (current.source === 'library' || ['draft', 'legacy_draft', 'final'].includes(current.outputClass))) {
+        const toggle = $('#capture-moment'), panel = $('#moment-panel');
+        toggle.hidden = false;
+        toggle.onclick = () => {
+          if (!panel.firstChild) mountMomentEditor(panel, { video: media, origin: current, duration: media.duration,
+            source: { type: current.source, id: current.itemId || current.jobId } });
+          panel.hidden = !panel.hidden;
+          toggle.setAttribute('aria-expanded', String(!panel.hidden));
+        };
+      }
+    };
   }
   media.onerror = async () => {
+    $('#capture-moment').hidden = $('#moment-panel').hidden = true;
     $('#markup').hidden = true;
     const response = await fetch(metadataUrl);
     if ([404, 410].includes(response.status)) unavailable();
