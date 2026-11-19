@@ -1,7 +1,7 @@
 // Slide editor (spec #46, Slide Editor): a modal around the Feature #25 canvas. The header holds
 // previous and next, "Slide NN of N" and the title, the save state, Layout, the Markup and Send to chat
 // slots (task #130) and close. Left: the canvas with Play slide and the step bar. Right: the Elements
-// panel (the canvas inspector, then the fields of the slots the slide's type has; task #127 turns these
+// panel (the fields of the slots the slide's type has, then the canvas inspector; task #127 turns these
 // into element cards). Escape steps back one layer per press: an open menu, then the selection, then
 // the editor. ✕ closes at any time.
 import { icons } from './icons.js';
@@ -42,6 +42,8 @@ export function createSlideEditor(dialog, { canvas, getEpisode, getItems, getSec
     if (canvas.selected) return canvas.deselect();
     close();
   }, true);
+  // Selecting on the canvas brings its controls into view.
+  dialog.addEventListener('sb-selectionchange', (event) => { if (event.detail.key) $('[data-editor-inspector]').scrollIntoView({ block: 'nearest' }); });
   dialog.addEventListener('close', () => { slideId = null; fieldsHTML = ''; canvas.hide(); onClose(); });
 
   // Re-renders keep the focused field, its caret and the panel's scroll.
