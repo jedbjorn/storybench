@@ -1,6 +1,7 @@
 import { previewUrl, withChannel } from "/preview-links.js";
-import { newSlide, deckBoardHTML, bindDeckBoard } from "/deck-workspace.js";
-import { createDeckCanvas } from "/deck-canvas.js";
+import { newSlide, slideListHTML, bindSlideList } from "/deck-workspace.js";
+import { createDeckCanvas, createSlidePreview, slideFrameUrl } from "/deck-canvas.js";
+import { createSlideEditor } from "/slide-editor.js";
 import { installSelectControls } from "/select-control.js";
 import { installWorkspaceChrome } from "/workspace-chrome.js";
 import { installProductionSearch } from "/production-search.js";
@@ -128,7 +129,7 @@ function render() {
   }
   $("#deckOutputs").hidden = !deck;
   $("#productionReferencesLabel").textContent = deck ? "Deck references" : "Episode references";
-  $("#addCard").classList.toggle("primary", deck && !episode.cards.length);
+  $("#addCard").hidden = deck;
   if (deck && (!$("#draftsPanel").hidden || !$("#finalPanel").hidden)) {
     for (const name of ['story','board','media','research','drafts','final']) $(`#${name}Panel`).hidden = name !== 'board';
     document.querySelectorAll('.tabs > button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'board'));
@@ -139,7 +140,6 @@ function render() {
   $("#episodeTitle").setAttribute('aria-label', deck ? 'Deck title' : 'Episode title');
   $("#mediaPanel h2").textContent = deck ? 'Deck library' : 'Episode library';
   $("#mediaPanel .panel-heading p").textContent = deck ? 'Import media here, then choose it in a slide.' : 'References and media stay grouped here until you explicitly add them to cards.';
-  $("#addCard").textContent = deck ? "＋ Add slide" : "＋ Add card";
   $("#episodeTitle").value = episode.title;
   $("#episodeNotes").value = episode.notes;
   renderEpisodeReferences();
@@ -264,8 +264,7 @@ function renderCards() {
   if (!episode) return;
   const deck = episode.kind === "deck";
   $("#deckSlides").hidden = !deck; $("#cards").hidden = deck;
-  if (deck) deckCanvas.show(episode); else deckCanvas.hide();
-  if (deck) { $("#deckSlides").innerHTML = deckBoardHTML(episode.cards, boardItemsEpisode === episode.id ? boardItems : [], boardItemsEpisode === episode.id ? boardSections : []); return; }
+  if (deck) { if (slideEditor.isOpen) slideEditor.render(); else renderSlideList(); return; }
   if (cardCollapseEpisode !== episode.id) {
     collapsedCardIds.clear();
     cardCollapseEpisode = episode.id;
@@ -606,13 +605,38 @@ $("#episodeTitle").oninput = $("#episodeNotes").oninput = () => {
   clearTimeout(fieldTimer);
   fieldTimer = setTimeout(() => save(), 500);
 };
-// The Slides canvas edits the deck design and slide overrides in place, then saves like any slide field.
-const deckCanvas = createDeckCanvas($("#deckCanvas"), { channel: () => channelId, onChange: () => { dirty = true; $("#saveState").textContent = "Unsaved changes"; save(); } });
-// Working on a slide's fields opens that slide on the canvas.
-$("#deckSlides").addEventListener("focusin", (event) => { const index = event.target.closest("[data-slide-index]")?.dataset.slideIndex; if (index != null && episode?.cards[index]) deckCanvas.open(episode.cards[index].id); });
-bindDeckBoard($("#deckSlides"), { getSlides: () => episode.cards, onDirty: () => { dirty = true; $("#saveState").textContent = "Unsaved changes"; }, onSave: () => save(), render: renderCards });
+// Slides (spec #46): the list of slide cards, and the slide editor around the canvas. The canvas edits
+// the deck design and slide overrides in place, then saves like any slide field.
+const markDeckDirty = () => { dirty = true; $("#saveState").textContent = "Unsaved changes"; };
+const deckCanvas = createDeckCanvas($("#deckCanvas"), { channel: () => channelId, onChange: () => { markDeckDirty(); save(); }, inspectorHost: $("[data-editor-inspector]") });
+const deckLibrary = () => (episode && boardItemsEpisode === episode.id ? boardItems : null);
+const slideEditor = createSlideEditor($("#slideEditor"), { canvas: deckCanvas, getEpisode: () => episode, getItems: deckLibrary,
+  getSections: () => (episode && boardItemsEpisode === episode.id ? boardSections : []), saveState: $("#saveState"),
+  onDirty: markDeckDirty, onSave: () => save(), onClose: () => renderCards() });
+// One card is open at a time; its inline preview is the saved slide, so it waits for pending edits to save.
+let openSlideId = null, slideListShown = null, slidePreview = null;
+function renderSlideList() {
+  if (!episode.cards.some((slide) => slide.id === openSlideId)) openSlideId = null;
+  const html = slideListHTML(episode.cards, deckLibrary(), openSlideId);
+  if (html !== slideListShown) {
+    slidePreview?.destroy(); slidePreview = null;
+    $("#deckSlides").innerHTML = slideListShown = html;
+  }
+  const viewport = $("#deckSlides [data-slide-preview]");
+  if (!viewport) return;
+  slidePreview ||= createSlidePreview(viewport, { channel: () => channelId, onStatus: (text) => { $("#deckSlides [data-slide-preview-status]").textContent = text; } });
+  if (!dirty && !saveRequested && !saveInFlight) slidePreview.load(slideFrameUrl(episode, openSlideId));
+}
+bindSlideList($("#deckSlides"), { getSlides: () => episode.cards, getOpenId: () => openSlideId,
+  setOpenId(id) { openSlideId = id; renderSlideList(); },
+  onPlay(id) { openSlideId = id; renderSlideList(); slidePreview?.play(); },
+  onEdit: (id) => slideEditor.open(id),
+  onChange() { markDeckDirty(); renderCards(); save(); } });
+$("#addSlide").onclick = () => {
+  const slide = newSlide();
+  episode.cards.push(slide); openSlideId = slide.id; markDeckDirty(); renderCards(); save();
+};
 $("#addCard").onclick = () => {
-  if (episode.kind === "deck") { episode.cards.push(newSlide()); dirty = true; renderCards(); save(); return; }
   episode.cards.push({
     id: crypto.randomUUID(),
     title: "New scene",

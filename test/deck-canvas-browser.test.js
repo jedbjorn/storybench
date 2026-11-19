@@ -40,7 +40,9 @@ const canvasFrame = page => page.frames().find(frame => frame.url().includes('/d
 async function frameShows(page, slideId, check, arg) {
   await page.waitForFunction(() => !document.querySelector('.deck-canvas-frame.is-loading'));
   for (let i = 0; i < 100; i++) {
-    const frame = page.frames().find(item => item.url().includes(`/deck-canvas/`) && item.url().includes(`/${slideId}/`) && !item.isDetached());
+    // The editor's canvas frame (the slide list's inline preview behind the editor is another canvas frame).
+    const frame = await (await page.$('.deck-canvas-viewport iframe:not(.is-loading)'))?.contentFrame().catch(() => null);
+    if (frame && !frame.url().includes(`/${slideId}/`)) { await page.waitForTimeout(50); continue; }
     if (frame && await frame.evaluate(check, arg).catch(() => false)) return frame;
     await page.waitForTimeout(50);
   }
@@ -49,6 +51,14 @@ async function frameShows(page, slideId, check, arg) {
 const settled = page => page.waitForFunction(() => document.querySelector('#saveState')?.textContent.startsWith('Saved'));
 const pressed = page => page.$$eval('.deck-canvas-block[aria-pressed="true"]', nodes => nodes.map(node => node.dataset.select));
 const inspector = page => page.locator('.sb-inspector');
+// The canvas is in the slide editor (spec #46), opened from the slide's card in the slide list.
+async function openEditor(page, index) {
+  if (await page.locator('#slideEditor[open]').count()) await page.click('[data-editor-close]');
+  const card = page.locator(`#deckSlides [data-slide-index="${index}"]`);
+  if (!(await card.evaluate(node => node.classList.contains('is-open')))) await card.locator('.slide-card-summary').click();
+  await card.locator('[data-slide-edit]').click();
+  await page.locator(`#slideEditor .deck-slide[data-slide-index="${index}"]`).waitFor();
+}
 
 for (const type of [chromium, firefox]) test(`A7 ${type.name()}: the creator edits slides and the deck theme by selection on the canvas`, { timeout: 120000 }, async t => {
   const browser = await launch(type);
@@ -62,6 +72,7 @@ for (const type of [chromium, firefox]) test(`A7 ${type.name()}: the creator edi
   const page = await browser.newPage({ viewport: { width: 1600, height: 1200 } }); page.setDefaultTimeout(10000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(url);
+  await openEditor(page, 0);
   await page.waitForSelector('.deck-canvas-block[data-select="copy"]');
 
   // Click the copy block: it shows selected and the inspector shows its arguments.
@@ -86,17 +97,16 @@ for (const type of [chromium, firefox]) test(`A7 ${type.name()}: the creator edi
   await inspector(page).getByRole('button', { name: 'List', exact: true }).click(); await settled(page);
   assert.deepEqual(deck(app.store, episode.id).design.stageText, { style: 'list' });
   assert.equal(deck(app.store, episode.id).slides[1].design, undefined, 'no override on the other slide');
-  await page.locator('.deck-canvas-bar .sb-select-trigger').click();
-  await page.getByRole('option', { name: '2. Clarity creates momentum' }).click();
+  await page.click('[data-editor-nav="1"]');
   await frameShows(page, 'steps', () => document.querySelector('.stage-list') !== null);
-  // The stage stepper holds the slide at a stage without motion; full reveal is the default.
-  assert.equal(await page.locator('.deck-canvas-stages [aria-pressed="true"]').textContent(), 'Full reveal');
-  await page.locator('.deck-canvas-stages').getByRole('button', { name: 'Stage 1' }).click();
+  // The step bar holds the slide at a step without motion; All (the full reveal) is the default.
+  assert.equal(await page.locator('.deck-canvas-stages [aria-pressed="true"]').textContent(), 'All');
+  await page.locator('.deck-canvas-stages').getByRole('button', { name: 'Start' }).click();
   await frameShows(page, 'steps', () => document.querySelector('.stage-list > li[aria-current]') === document.querySelector('.stage-list > li')
     && document.querySelector('.stage-list > li:nth-child(2)').dataset.pending === 'true' && window.storybenchDeck.timeline().state === 'paused');
   // The last stage holds too, and the canvas exchange settles: no message crosses once it is shown.
   await page.evaluate(() => { window.canvasMessages = 0; window.addEventListener('message', event => { if (event.data?.type === 'storybench-canvas') window.canvasMessages++; }); });
-  await page.locator('.deck-canvas-stages').getByRole('button', { name: 'Stage 2' }).click();
+  await page.locator('.deck-canvas-stages').getByRole('button', { name: '1', exact: true }).click();
   await frameShows(page, 'steps', () => document.querySelector('.stage-list > li[aria-current]') === document.querySelector('.stage-list > li:nth-child(2)')
     && document.querySelector('.stage-list > li:nth-child(2)').dataset.pending === 'false' && window.storybenchDeck.timeline().state === 'paused'
     && window.storybenchDeck.timeline().stage === 1);
@@ -105,8 +115,8 @@ for (const type of [chromium, firefox]) test(`A7 ${type.name()}: the creator edi
   await page.waitForTimeout(300);
   assert.equal(await page.evaluate(() => window.canvasMessages), before, 'no canvas messages after the last stage is shown');
   assert.ok(before < 10, `the last stage settled in ${before} canvas messages`);
-  assert.equal(await page.locator('.deck-canvas-stages [aria-pressed="true"]').textContent(), 'Stage 2');
-  await page.locator('.deck-canvas-stages').getByRole('button', { name: 'Full reveal' }).click();
+  assert.equal(await page.locator('.deck-canvas-stages [aria-pressed="true"]').textContent(), '1');
+  await page.locator('.deck-canvas-stages').getByRole('button', { name: 'All' }).click();
   await frameShows(page, 'steps', () => document.querySelector('.stage-list > li:nth-child(2)').dataset.pending === 'false');
 
   // Deselect: a click on empty canvas, and separately Escape.
@@ -120,8 +130,8 @@ for (const type of [chromium, firefox]) test(`A7 ${type.name()}: the creator edi
   await page.keyboard.press('Escape');
   assert.deepEqual(await pressed(page), [], 'Escape deselects');
 
-  // Tab reaches each element and Enter selects it.
-  await page.locator('.deck-canvas-stages button').last().focus();
+  // Tab reaches each element and Enter selects it (the canvas follows the editor's header).
+  await page.locator('[data-editor-close]').focus();
   for (const key of ['copy', 'stageText']) {
     await page.keyboard.press('Tab');
     assert.equal(await page.evaluate(() => document.activeElement.dataset.select), key);
@@ -153,6 +163,8 @@ for (const type of [chromium, firefox]) test(`A7 ${type.name()}: the creator edi
 
   // Save, reload: every value shows.
   await page.reload();
+  await page.locator('#deckSlides [data-slide-index="0"]').waitFor();
+  await openEditor(page, 0);
   await page.waitForSelector('.deck-canvas-block[data-select="copy"]');
   assert.match(await row('theme.colors.accent').textContent(), /#2E7D4F.*This deck/);
   assert.match(await row('theme.colors.base').textContent(), /#1A2B6D.*From Brand Standards/);
@@ -163,6 +175,7 @@ for (const type of [chromium, firefox]) test(`A7 ${type.name()}: the creator edi
   for (const name of ['Left of visual', 'Centred']) assert.equal(await inspector(page).getByRole('radio', { name }).getAttribute('aria-checked'), 'true');
 
   // The next build matches the canvas: the same slide markup and the same palette and fonts.
+  await page.click('[data-editor-close]');
   await page.click('#buildDeck');
   let job;
   for (let i = 0; i < 400 && !['completed', 'failed'].includes((job = app.store.listJobs(episode.id).find(item => item.kind === 'deck'))?.state); i++) await page.waitForTimeout(25);
@@ -206,7 +219,7 @@ test('A7b chromium: each slide on the canvas at full reveal matches the built sl
   // Wide enough that the canvas shows the slide area at scale 1.
   const editor = await browser.newPage({ viewport: { width: 2400, height: 1400 } });
   const built = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-  await editor.goto(url); await editor.waitForSelector('.deck-canvas-block');
+  await editor.goto(url); await openEditor(editor, 0); await editor.waitForSelector('.deck-canvas-block');
   const compare = (a, b) => editor.evaluate(async ([left, right]) => {
     const pixels = async source => {
       const image = new Image(); image.src = `data:image/png;base64,${source}`; await image.decode();
@@ -228,8 +241,7 @@ test('A7b chromium: each slide on the canvas at full reveal matches the built sl
     const area = await built.evaluate(() => { const box = document.getElementById('presentation').getBoundingClientRect(); return { x: box.left, y: box.top, width: box.width, height: box.height }; });
     const expected = await built.screenshot({ clip: area });
 
-    await editor.locator('.deck-canvas-bar .sb-select-trigger').click();
-    await editor.getByRole('option', { name: `${index + 1}. ${slide.title}` }).click();
+    if (index) await editor.click('[data-editor-nav="1"]');
     const frame = await frameShows(editor, slide.id, () => document.fonts.ready.then(() => true));
     await frame.evaluate(() => document.fonts.ready);
     await editor.waitForFunction(() => document.querySelector('.deck-canvas-viewport').clientWidth === 1056);

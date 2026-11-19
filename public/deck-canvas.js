@@ -3,6 +3,8 @@
 // deck-canvas), held at a stage by its bridge script. Selection is drawn over the frame from the block
 // boxes the bridge reports, using the shared UI primitives; changes edit the deck design or the slide's
 // overrides and are saved through the normal save, after which the frame shows the new revision.
+// The slide editor (spec #46) hosts this canvas: Play slide runs the slide's timeline in the frame and
+// the step bar (Start, 1 … n−1, All) follows it.
 import { createSelectionSurface } from './ui/selection-surface.js';
 import { createInspectorPanel } from './ui/inspector-panel.js';
 import { createSegmentedChoice } from './ui/segmented-choice.js';
@@ -23,51 +25,104 @@ const DENSITIES = [['compact', 'Compact'], ['standard', 'Standard'], ['spacious'
 // Until the frame reports it, assume the bundle's slide area at 1280 x 720 (rail 224 px, footer 72 px).
 const AREA = { left: 224, top: 0, width: 1056, height: 648 };
 
-export function createDeckCanvas(section, { channel = () => null, onChange = () => {} } = {}) {
+// The canvas build of one saved slide; null until the production has a saved revision.
+export function slideFrameUrl(episode, slideId, standards = 0) {
+  if (!episode || !Number.isInteger(episode.revision)) return null;
+  return `/api/episodes/${encodeURIComponent(episode.id)}/deck-canvas/${episode.revision}/${encodeURIComponent(slideId)}/index.html?standards=${standards}`;
+}
+// Adds an inert, sandboxed canvas frame of `url` to `host`; the bridge reports to the caller's message listener.
+function canvasFrame(doc, url, title) {
+  const frame = doc.createElement('iframe');
+  Object.assign(frame, { title, tabIndex: -1, inert: true });
+  frame.setAttribute('sandbox', 'allow-scripts');
+  frame.setAttribute('aria-hidden', 'true');
+  frame.className = 'deck-canvas-frame is-loading';
+  frame.src = url;
+  return frame;
+}
+// The build can refuse a slide the editor holds mid-way (for example columns with one item): say why.
+async function canvasRefusal(url, channel) {
+  const headers = channel ? { 'x-storybench-channel': channel } : {};
+  const response = await fetch(url, { method: 'HEAD', headers }).catch(() => null);
+  if (response?.ok) return null;
+  return (response && (await fetch(url, { headers }).then((r) => r.json()).catch(() => ({}))).error) || 'This slide could not be shown. Save, then reopen it.';
+}
+
+// The slide list's inline preview (spec #46, Slide List): the slide as the canvas renders it, held at
+// the full reveal and cropped to the slide area, with Play running its timeline. Nothing is selectable.
+export function createSlidePreview(viewport, { channel = () => null, onStatus = () => {} } = {}) {
+  const doc = viewport.ownerDocument;
+  let frame = null, url = null, area = AREA, ready = false, wantsPlay = false;
+  function place() {
+    const scale = Math.min(1, (viewport.clientWidth || area.width) / area.width);
+    viewport.style.height = `${Math.round(area.height * scale)}px`;
+    if (frame) frame.style.transform = `translate(${-area.left * scale}px, ${-area.top * scale}px) scale(${scale})`;
+  }
+  function receive(event) {
+    const data = event.data;
+    if (!frame || event.source !== frame.contentWindow || data?.type !== 'storybench-canvas' || data.version !== 1) return;
+    area = data.area || AREA;
+    frame.classList.remove('is-loading');
+    if (!ready && wantsPlay) frame.contentWindow.postMessage({ type: 'storybench-canvas-play' }, '*');
+    ready = true; wantsPlay = false;
+    viewport.dataset.playing = String(Boolean(data.playing));
+    place();
+  }
+  doc.defaultView.addEventListener('message', receive);
+  const observer = new ResizeObserver(place);
+  observer.observe(viewport);
+  place();
+  return {
+    async load(next) {
+      if (!next || next === url) return;
+      url = next;
+      const refusal = await canvasRefusal(next, channel());
+      if (url !== next) return;
+      onStatus(refusal || '');
+      if (refusal) return;
+      frame?.remove(); ready = false;
+      frame = canvasFrame(doc, next, 'Slide preview');
+      viewport.append(frame);
+      place();
+    },
+    // Before the frame first reports, Play waits for it.
+    play() { if (ready) frame.contentWindow.postMessage({ type: 'storybench-canvas-play' }, '*'); else wantsPlay = true; },
+    destroy() { doc.defaultView.removeEventListener('message', receive); observer.disconnect(); frame?.remove(); frame = null; url = null; },
+  };
+}
+
+// `inspectorHost` places the inspector outside the canvas (the slide editor's Elements panel).
+export function createDeckCanvas(section, { channel = () => null, onChange = () => {}, inspectorHost = null } = {}) {
   const doc = section.ownerDocument;
-  section.innerHTML = `<div class="deck-canvas-bar"><label>Slide on canvas <select data-canvas-slide></select></label><div class="deck-canvas-stages" data-canvas-stages></div></div>
-    <div class="deck-canvas-body"><div class="deck-canvas-surface" tabindex="-1" aria-label="Slide canvas" data-canvas-surface><div class="deck-canvas-viewport"></div><div class="deck-canvas-blocks"></div></div></div>
+  section.innerHTML = `<div class="deck-canvas-body"><div class="deck-canvas-surface" tabindex="-1" aria-label="Slide canvas" data-canvas-surface><div class="deck-canvas-viewport"></div><div class="deck-canvas-blocks"></div></div></div>
+    <div class="deck-canvas-bar"><button type="button" class="primary" data-canvas-play>Play slide</button><div class="deck-canvas-stages" data-canvas-stages></div></div>
     <p class="deck-canvas-status" role="status" data-canvas-status></p>`;
-  const picker = section.querySelector('[data-canvas-slide]'), stagesBar = section.querySelector('[data-canvas-stages]');
+  const stagesBar = section.querySelector('[data-canvas-stages]'), playButton = section.querySelector('[data-canvas-play]');
   const surfaceRoot = section.querySelector('[data-canvas-surface]'), viewport = section.querySelector('.deck-canvas-viewport');
   const blocksLayer = section.querySelector('.deck-canvas-blocks'), status = section.querySelector('[data-canvas-status]');
   const inspector = createInspectorPanel({ emptyTitle: 'Slide and deck', doc });
-  section.querySelector('.deck-canvas-body').append(inspector.element);
+  (inspectorHost || section.querySelector('.deck-canvas-body')).append(inspector.element);
 
-  let episode = null, slideId = null, stage = null, scope = 'slide', selected = null;
+  let episode = null, slideId = null, stage = null, scope = 'slide', selected = null, playing = false;
   let standards = null, fonts = [], standardsFor = null, frame = null, pending = null, info = null, shown = '', drawn = '';
   const slide = () => episode?.cards.find((item) => item.id === slideId) || null;
   const design = () => (episode.design ||= { theme: { colors: {}, fonts: {}, setBy: { colors: {}, fonts: {} } } });
 
   const surface = createSelectionSurface(surfaceRoot, { onChange(key) { selected = key; renderInspector(); } });
-  picker.addEventListener('change', () => open(picker.value));
+  playButton.addEventListener('click', () => frame?.contentWindow.postMessage({ type: 'storybench-canvas-play' }, '*'));
 
   // ---- Frame: the saved slide as the build renders it. A new frame replaces the old once it reports.
-  function frameUrl() {
-    const value = slide();
-    if (!value || !Number.isInteger(episode.revision)) return null;
-    return `/api/episodes/${encodeURIComponent(episode.id)}/deck-canvas/${episode.revision}/${encodeURIComponent(value.id)}/index.html?standards=${standards?.revision ?? 0}`;
-  }
+  const frameUrl = () => slide() ? slideFrameUrl(episode, slideId, standards?.revision ?? 0) : null;
   async function load() {
     const url = frameUrl();
     if (!url || url === shown) return;
     shown = url;
-    // The build can refuse a slide the editor holds mid-way (for example columns with one item): say why.
-    const response = await fetch(url, { method: 'HEAD', headers: channel() ? { 'x-storybench-channel': channel() } : {} }).catch(() => null);
+    const refusal = await canvasRefusal(url, channel());
     if (shown !== url) return;
-    if (!response?.ok) {
-      const reason = response && (await fetch(url).then((r) => r.json()).catch(() => ({}))).error;
-      status.textContent = reason || 'The canvas could not show this slide. Save, then reopen it.';
-      return;
-    }
-    status.textContent = '';
+    status.textContent = refusal || '';
+    if (refusal) return;
     pending?.remove();
-    pending = doc.createElement('iframe');
-    Object.assign(pending, { title: 'Slide as built', tabIndex: -1, inert: true });
-    pending.setAttribute('sandbox', 'allow-scripts');
-    pending.setAttribute('aria-hidden', 'true');
-    pending.className = 'deck-canvas-frame is-loading';
-    pending.src = `${url}&${new URLSearchParams({ ...(stage === null ? {} : { stage }), scroll: Math.round(info?.scroll?.top || 0) })}`;
+    pending = canvasFrame(doc, `${url}&${new URLSearchParams({ ...(stage === null ? {} : { stage }), scroll: Math.round(info?.scroll?.top || 0) })}`, 'Slide as built');
     viewport.append(pending);
     place();
   }
@@ -79,9 +134,11 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
     } else if (!frame || event.source !== frame.contentWindow) return;
     const before = info && Object.keys(info.blocks).join();
     info = data;
+    // While Play runs, the step bar follows the frame; when it ends the frame holds the full reveal.
+    if (data.playing || playing) { playing = Boolean(data.playing); stage = data.stage; }
     // A stage the slide no longer has is the full reveal, as the bridge shows it; ask again only for a stage it has not applied yet.
     if (stage !== null && !(stage < data.stages)) stage = null;
-    if (stage !== null && data.stage !== stage) return frame.contentWindow.postMessage({ type: 'storybench-canvas-show', stage }, '*');
+    if (!playing && stage !== null && data.stage !== stage) return frame.contentWindow.postMessage({ type: 'storybench-canvas-show', stage }, '*');
     place(); renderStages();
     if (before !== Object.keys(info.blocks).join()) { surface.refresh(); renderInspector(); }
   }
@@ -120,20 +177,25 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
     if (block && frame) frame.contentWindow.postMessage({ type: 'storybench-canvas-reveal', block }, '*');
   });
 
-  // ---- Stage stepper: the full reveal by default, or the slide held at one stage. No motion plays.
+  // ---- Step bar: Start (the slide as it opens), each later stage, and All (the full reveal, the default).
+  // Choosing one holds the slide there and stops Play; during Play it follows, and the stage Play is
+  // about to click pulses.
   let stepper = null;
   function renderStages() {
     const count = info?.stages ?? 0, key = `${count}`;
     if (count < 2) { stagesBar.replaceChildren(); stepper = null; return; }
     if (stepper?.key !== key) {
-      const choice = createSegmentedChoice({ label: 'Show stage', doc, value: stage ?? 'all',
-        options: [{ value: 'all', label: 'Full reveal' }, ...Array.from({ length: count }, (_, i) => ({ value: i, label: `Stage ${i + 1}` }))],
-        onChange(value) { stage = value === 'all' ? null : value; frame?.contentWindow.postMessage({ type: 'storybench-canvas-show', stage }, '*'); } });
-      const label = doc.createElement('span'); label.textContent = 'Show';
+      const choice = createSegmentedChoice({ label: 'Show step', doc, value: stage ?? 'all',
+        options: [...Array.from({ length: count }, (_, i) => ({ value: i, label: i ? `${i}` : 'Start' })), { value: 'all', label: 'All' }],
+        onChange(value) { stage = value === 'all' ? null : value; playing = false; frame?.contentWindow.postMessage({ type: 'storybench-canvas-show', stage }, '*'); } });
+      const label = doc.createElement('span'); label.textContent = 'Showing';
       stagesBar.replaceChildren(label, choice.element);
       stepper = { key, choice };
     }
     stepper.choice.value = stage ?? 'all';
+    const pulse = playing ? info?.pulse : null;
+    stepper.choice.element.querySelectorAll('button').forEach((button, i) => button.classList.toggle('is-pulsing', i === pulse));
+    playButton.setAttribute('aria-pressed', String(playing));
   }
 
   // ---- Values: in This slide scope the effective value (slide, else deck); in All slides the deck default.
@@ -297,26 +359,30 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
 
   function open(id) {
     if (id === slideId || !episode?.cards.some((item) => item.id === id)) return;
-    slideId = id; stage = null; selected = null; info = null; drawn = '';
-    if (picker.value !== id) picker.value = id;
+    slideId = id; stage = null; selected = null; info = null; drawn = ''; playing = false;
     surface.select(null); blocksLayer.replaceChildren(); renderStages();
     load(); renderInspector();
   }
   return {
     // The production as the editor now holds it; a new revision reloads the frame.
+    // The editor opens a slide with show(episode) then open(slideId).
     show(next) {
       if (episode?.id !== next.id) { slideId = null; standardsFor = null; scope = 'slide'; }
       episode = next;
-      section.hidden = !episode.cards.length;
-      if (!episode.cards.length) return;
-      picker.replaceChildren(...episode.cards.map((item, i) => new Option(`${i + 1}. ${item.title}`, item.id)));
       loadStandards();
-      if (!slide()) return open(episode.cards[0].id);
-      picker.value = slideId;
+      if (!slide()) return;
       load(); renderInspector(false);
     },
     open,
-    hide() { section.hidden = true; episode = null; },
+    // Closing the editor drops the frame, so a hidden canvas loads and plays nothing.
+    hide() {
+      episode = null; slideId = null; shown = ''; info = null; drawn = ''; playing = false;
+      frame?.remove(); pending?.remove(); frame = pending = null;
+      surface.select(null); blocksLayer.replaceChildren(); renderStages();
+    },
+    // Escape steps back through the selection before it closes the editor.
+    get selected() { return selected; },
+    deselect() { surface.select(null); },
     get slideId() { return slideId; },
   };
 }
