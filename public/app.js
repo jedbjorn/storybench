@@ -612,7 +612,7 @@ $("#episodeTitle").oninput = $("#episodeNotes").oninput = () => {
 const markDeckDirty = () => { dirty = true; $("#saveState").textContent = "Unsaved changes"; };
 const deckCanvas = createDeckCanvas($("#deckCanvas"), { channel: () => channelId, onChange: () => { markDeckDirty(); save(); }, inspectorHost: $("[data-editor-inspector]") });
 const deckLibrary = () => (episode && boardItemsEpisode === episode.id ? boardItems : null);
-const slideEditor = createSlideEditor($("#slideEditor"), { canvas: deckCanvas, getEpisode: () => episode, getItems: deckLibrary,
+const slideEditor = createSlideEditor($("#slideEditor"), { canvas: deckCanvas, channel: () => channelId, getEpisode: () => episode, getItems: deckLibrary,
   getSections: () => (episode && boardItemsEpisode === episode.id ? boardSections : []), saveState: $("#saveState"),
   onDirty: markDeckDirty, onSave: () => save(), onClose: () => renderCards() });
 // One card is open at a time; its inline preview is the saved slide, so it waits for pending edits to save.

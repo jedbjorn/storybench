@@ -84,7 +84,7 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
   // canvas bridge. One build per slide is kept for the frame's follow-up requests, so the slide list's
   // preview and the editor's canvas do not evict each other.
   const canvases = new Map();
-  async function canvasFile(episodeId, revision, slideId, name) {
+  async function canvasFiles(episodeId, revision, slideId) {
     const deck = store.getDeck(episodeId);
     if (deck.revision !== revision) throw new StoreError('The deck changed; reload the canvas', 409);
     if (!deck.slides.some(slide => slide.id === slideId)) throw new StoreError('Slide not found', 404);
@@ -101,12 +101,17 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
       while (canvases.size > 4) canvases.delete(canvases.keys().next().value);
       entry.files.catch(() => { if (canvases.get(slot) === entry) canvases.delete(slot); });
     }
-    const files = await entry.files;
+    return entry.files;
+  }
+  async function canvasFile(episodeId, revision, slideId, name) {
+    const files = await canvasFiles(episodeId, revision, slideId);
     if (!files.has(name)) throw new StoreError('Canvas file not found', 404);
     return files.get(name);
   }
   return {
     canvasFile,
+    // The whole canvas build of one saved slide, for the slide editor's Markup capture.
+    canvasFiles,
     hasActiveWork: () => Boolean(queue.active || queue.pending.length || queue.draining),
     getJob,
     enqueue({ episodeId, expectedRevision, requestId = null }) {

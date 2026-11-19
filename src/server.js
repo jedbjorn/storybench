@@ -3,7 +3,7 @@ import { renderSvg } from './svg-render.js';
 import { projectContentType, downloadDisposition } from './project-files.js';
 import { createDeckService } from './deck-service.js';
 import { TEMPLATE_COLORS, TEMPLATE_FONT } from './deck-data.js';
-import { createDeckCapture, reportsState, validateCaptureState, CAPTURE_REBUILD } from './deck-capture.js';
+import { createDeckCapture, reportsState, validateCaptureState, validateCanvasState, CAPTURE_REBUILD } from './deck-capture.js';
 import { controlRequest } from './runtime/channel.js';
 import { FONTS, fontPath, fontCatalog } from './fonts.js';
 import { validateSelection } from './runtime/conversation-runtime.js';
@@ -17,7 +17,7 @@ import { importMedia } from "./media.js";
 import { createChatService } from "./chat.js";
 import { createModelCatalog, createWorkerHarnessFactory } from "./runtime/app-runtime.js";
 import { conversationPersistenceFor } from "./runtime/conversation-persistence.js";
-import { startDeckReadiness } from "./runtime/deck-readiness.js";
+import { getDeckReadiness, startDeckReadiness } from "./runtime/deck-readiness.js";
 import { createHealth, releaseFromEnv } from "./runtime/health.js";
 import { createLibraryService } from "./library.js";
 import { renderGraphic, validateGraphicRecipe } from "./graphics.js";
@@ -93,6 +93,9 @@ async function jsonBody(req, limit = 6_500_000) {
 }
 // Deck bundles (and the Slides canvas frame) run with an opaque origin: no app storage, network or script authority.
 const DECK_SANDBOX = "sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'none'";
+// The Slides canvas frame's response headers, as served and as the slide editor's Markup capture serves them.
+const canvasHeaders = (name) => ({ "content-type": mime[path.extname(name)] || "application/octet-stream", "cache-control": "no-store",
+  "content-security-policy": DECK_SANDBOX, "x-content-type-options": "nosniff", ...(path.extname(name) === ".ttf" ? { "access-control-allow-origin": "*" } : {}) });
 function send(res, status, data, headers = {}) {
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -450,12 +453,34 @@ export async function createApp({ workspace: workspaceOption, dataRoot, onListen
             notify(episodeId); return send(res, 200, value);
           }
         }
+        // The slide editor's Markup and Send to chat (spec #46 'Redlines'): `capture` renders the saved slide's
+        // canvas at the shown step, as Preview's deck capture does, without a deck build; `redline` keeps the
+        // sent image as Preview's redline upload does, labelled with the slide and saved revision.
+        if (parts[3] === "deck-canvas" && parts.length === 7 && req.method === "POST" && ["capture", "redline"].includes(parts[6])) {
+          store.requireProductionKind(episodeId, "deck");
+          const revision = Number(parts[4]), slideId = decodeURIComponent(parts[5]);
+          const slides = store.getDeck(episodeId).slides, index = slides.findIndex((slide) => slide.id === slideId);
+          if (index < 0) throw new StoreError("Slide not found", 404);
+          if (parts[6] === "capture") {
+            const state = validateCanvasState(slides[index], await jsonBody(req));
+            const browser = getDeckReadiness(releaseFromEnv()).browser;
+            if (browser.state !== "ready") throw new StoreError(browser.reason, 409);
+            const png = await deckCapture.captureCanvas(await decks.canvasFiles(episodeId, revision, slideId), state, canvasHeaders);
+            res.writeHead(200, { "content-type": "image/png", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-length": png.length });
+            return res.end(png);
+          }
+          if (!/^image\/png(;|$)/i.test(String(req.headers["content-type"] || ""))) throw new StoreError("A redline must be a PNG image", 415);
+          if (!Number.isInteger(revision) || revision < 1) throw new StoreError("Invalid deck revision", 400);
+          const value = await library.registerRedline({ episodeId, readable: req,
+            label: `Redline — Saved deck revision ${revision} slide ${index + 1}`, signal: AbortSignal.timeout(60_000) });
+          notify(episodeId);
+          return send(res, value.created ? 201 : 200, value.item);
+        }
         // The Slides canvas frame: one saved slide built as the bundle builds it, under the bundle's sandbox.
         if (parts[3] === "deck-canvas" && parts.length >= 6 && ["GET", "HEAD"].includes(req.method)) {
           const name = decodeURIComponent(parts.slice(6).join("/")) || "index.html";
           const bytes = await decks.canvasFile(episodeId, Number(parts[4]), decodeURIComponent(parts[5]), name);
-          res.writeHead(200, { "content-type": mime[path.extname(name)] || "application/octet-stream", "content-length": bytes.byteLength, "cache-control": "no-store",
-            "content-security-policy": DECK_SANDBOX, "x-content-type-options": "nosniff", ...(path.extname(name) === ".ttf" ? { "access-control-allow-origin": "*" } : {}) });
+          res.writeHead(200, { ...canvasHeaders(name), "content-length": bytes.byteLength });
           return res.end(req.method === "HEAD" ? undefined : bytes);
         }
         if (parts[3] === "story" && parts.length === 4 && req.method === "GET")

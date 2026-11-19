@@ -12,7 +12,7 @@ import { createApp } from '../src/server.js';
 import { createLibraryService } from '../src/library.js';
 import { createDeckQa } from '../src/deck-qa.js';
 import { extractBuild } from '../src/deck-qa-bundle.js';
-import { createDeckCapture, validateCaptureState, CAPTURE_BUSY, CAPTURE_REBUILD } from '../src/deck-capture.js';
+import { createDeckCapture, validateCaptureState, validateCanvasState, CAPTURE_BUSY, CAPTURE_REBUILD } from '../src/deck-capture.js';
 
 const DECK_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'none'";
 
@@ -248,4 +248,14 @@ test('server capture matches an agent QA screenshot of the same state and leaves
   const after = await data('act_deck_qa', { sessionId, action: 'key', key: 'ArrowDown' });
   assert.equal(after.state.slideId, 'gallery');
   await data('close_deck_qa', { sessionId });
+});
+
+test('the slide editor capture accepts only a step the saved slide has, and clamps scroll (spec #46 Redlines)', () => {
+  const slide = { id: 'plan', stages: [{ id: 'a' }, { id: 'b' }] };
+  assert.deepEqual(validateCanvasState(slide, { stage: null }), { slideId: 'plan', stage: null, scroll: 0 });
+  assert.deepEqual(validateCanvasState(slide, { stage: 1, scroll: 120.6 }), { slideId: 'plan', stage: 1, scroll: 121 });
+  assert.deepEqual(validateCanvasState(slide, { scroll: -5 }), { slideId: 'plan', stage: null, scroll: 0 });
+  for (const body of [{ stage: 2 }, { stage: -1 }, { stage: '1' }, { stage: 0.5 }, { scroll: 'top' }, { scroll: Infinity }])
+    assert.throws(() => validateCanvasState(slide, body), error => error.statusCode === 400, JSON.stringify(body));
+  assert.throws(() => validateCanvasState({ id: 'still' }, { stage: 0 }), error => error.statusCode === 400);
 });

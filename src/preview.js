@@ -5,6 +5,7 @@ import { projectContentType } from './project-files.js';
 import { reportsState, CAPTURE_REBUILD } from './deck-capture.js';
 import { getDeckReadiness } from './runtime/deck-readiness.js';
 import { releaseFromEnv } from './runtime/health.js';
+import { usage, slideNumber } from '../public/deck-library.js';
 
 // Metadata never exposes disk paths. Every lookup is pinned to the URL's channel.
 export async function previewMetadata(store, workspace, parts, channelId) {
@@ -16,7 +17,7 @@ export async function previewTarget(store, workspace, parts, channelId) {
   const [source, id, itemId] = parts;
   const unavailable = () => { throw new StoreError('This item is no longer available.', 404); };
   if (!channelId || !['library', 'output', 'deck'].includes(source)) unavailable();
-  let episode, asset, job, label, relative, media;
+  let episode, asset, job, label, relative, media, iteration;
   if (source === 'library') {
     if (parts.length !== 3) unavailable();
     episode = store.getEpisode(id);
@@ -24,6 +25,10 @@ export async function previewTarget(store, workspace, parts, channelId) {
     const item = store.getLibraryItem(id, itemId);
     if (!item) unavailable();
     asset = item.asset; label = item.label; relative = asset.path;
+    // A deck asset's redline note names its iteration and the slides it is a candidate for (spec #46 'Redlines').
+    if (episode.kind === 'deck') iteration = { number: item.iteration,
+      of: store.listEpisodeLibrary(id).filter(other => other.iterationGroup === item.iterationGroup).length,
+      slides: usage(store.getDeck(id).slides, itemId).map(({ slide, index, state }) => ({ number: slideNumber(index), title: slide.title, starred: state === 'on' })) };
     media = `/api/episodes/${encodeURIComponent(id)}/library/${encodeURIComponent(itemId)}/file`;
   } else {
     if (parts.length !== 2) unavailable();
@@ -68,7 +73,7 @@ export async function previewTarget(store, workspace, parts, channelId) {
     capture: !reportsState(job) ? { available: false, reason: CAPTURE_REBUILD }
       : browser.state !== 'ready' ? { available: false, reason: browser.reason } : { available: true, reason: null } } : undefined;
   const metadata = { source, episodeId: episode.id, channelId, production: episode.title, label, kind, contentType, deck,
-    ...(source === 'library' ? { itemId } : { jobId: id, outputClass: job.outputClass }),
+    ...(source === 'library' ? { itemId, ...(iteration ? { iteration } : {}) } : { jobId: id, outputClass: job.outputClass }),
     bytes: info.size, width: asset?.width ?? null, height: asset?.height ?? null, duration: asset?.duration ?? null,
     latestUrl: latest ? `/preview/${source}/${encodeURIComponent(latest.id)}${scope}` : null,
     mediaUrl: media + scope,
