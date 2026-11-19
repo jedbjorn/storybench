@@ -160,6 +160,13 @@ for (const type of [chromium, firefox]) test(`E9 ${type.name()}: the deck Media 
   const draft = await page.locator('[data-chat-draft]').inputValue();
   assert.match(draft, new RegExp(`Make another iteration of “Floor plan” \\(library item ${plan[0].id}, v1\\)\\. Register it with iterationOf ${plan[0].id}`));
   await page.locator('[data-chat-draft]').fill('');
+  // The label is shared by the iteration group: renaming v1 in its preview renames v2 and v3.
+  await tile('slide-plan', plan[0].id).locator('.library-thumb').click();
+  await page.locator('#libraryEditForm [name="label"]').fill('Ground floor');
+  await page.locator('#libraryEditForm button.primary').click();
+  await page.locator('#previewModal').waitFor({ state: 'hidden' });
+  await section('slide-plan').locator('[data-library-item] b').filter({ hasText: 'Ground floor' }).nth(2).waitFor();
+  assert.deepEqual(plan.map(value => app.store.getLibraryItem(deck.id, value.id).label), ['Ground floor', 'Ground floor', 'Ground floor']);
 
   // Use on slide from a Candidate tile: sky becomes the hero pick, hero returns to the candidates.
   await tile('slide-hero', sky.id).locator('[data-library-use]').click();
@@ -196,7 +203,7 @@ for (const type of [chromium, firefox]) test(`E9 ${type.name()}: the deck Media 
   const refused = await page.request.fetch(`${base}/api/episodes/${deck.id}/library/${plan[0].id}${scope}`, { method: 'DELETE',
     data: { expectedRevision: item(plan[0].id).revision, expectedEpisodeRevision: app.store.getDeck(deck.id).revision } });
   assert.equal(refused.status(), 409);
-  assert.match((await refused.json()).error, /“Floor plan” is starred on slide 01; star another there first/);
+  assert.match((await refused.json()).error, /“Ground floor” is starred on slide 01; star another there first/);
   await tile('slide-plan', plan[0].id).locator('[data-library-delete]').click();
   await page.locator('#toast').filter({ hasText: 'is starred on slide 01' }).waitFor();
   assert.ok(item(plan[0].id), 'the starred asset stays');

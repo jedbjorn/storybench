@@ -5,6 +5,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addCandidate, bySlide, cleanupEligible, iterationGroups, notOnSlide, removeCandidate, slideOffers, tileState, typeOf, usageText, useOnSlide } from '../public/deck-library.js';
 import { validateSlides } from '../src/deck-data.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { Store } from '../src/store.js';
 
 const image = (id, extra = {}) => ({ id, label: id, iterationGroup: id, iteration: 1, asset: { kind: 'image', metadata: { contentType: 'image/png' } }, ...extra });
 const drawing = (id, extra = {}) => ({ ...image(id, extra), asset: { kind: 'image', metadata: { contentType: 'image/svg+xml', svgGroupIds: ['a', 'b'], svgGroups: [{ id: 'a', stroked: true }, { id: 'b', stroked: true }] } } });
@@ -85,4 +89,25 @@ test('Candidate for a slide adds an unstarred candidate where the type has a slo
     [true, false, true, false, false]);
   assert.deepEqual(removeCandidate(slides[0], 'plan1').candidates, []);
   assert.throws(() => removeCandidate(slides[0], 'plan2'), /starred on the slide; star another first/);
+});
+
+test('The label is shared by the iteration group: renaming one iteration renames the group, and nothing outside it', t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'sb-deck-library-'));
+  const store = new Store(root);
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  const deck = store.createEpisode({ kind: 'deck' });
+  const asset = n => store.saveAsset({ name: `plan-${n}.svg`, hash: `plan-${n}`, kind: 'image', path: `media/plan-${n}.svg`, metadata: { contentType: 'image/svg+xml' } });
+  const v1 = store.attachLibraryItem(deck.id, asset(1).id, { category: 'Graphics', label: 'Floor plan' });
+  const v2 = store.attachLibraryItem(deck.id, asset(2).id, { category: 'Graphics', iterationOf: v1.id });
+  const other = store.attachLibraryItem(deck.id, asset(3).id, { category: 'Graphics', label: 'Floor plan' });
+  const renamed = store.updateLibraryItem(deck.id, v2.id, v2.revision, { label: 'Ground floor', notes: 'Wider door' });
+  assert.deepEqual([renamed.label, renamed.notes, renamed.revision], ['Ground floor', 'Wider door', 2]);
+  const first = store.getLibraryItem(deck.id, v1.id);
+  assert.deepEqual([first.label, first.notes, first.revision], ['Ground floor', '', 2], 'v1 takes the label, keeps its notes, and its revision moves');
+  assert.equal(store.getLibraryItem(deck.id, other.id).label, 'Floor plan', 'another group keeps its label');
+  // Notes and tags stay per iteration; an unchanged label touches no other item.
+  store.updateLibraryItem(deck.id, v2.id, renamed.revision, { notes: 'Again' });
+  assert.equal(store.getLibraryItem(deck.id, v1.id).revision, 2);
+  assert.throws(() => store.updateLibraryItem(deck.id, v1.id, 1, { label: 'Stale' }), /Stale library revision/);
+  assert.equal(store.getLibraryItem(deck.id, v2.id).label, 'Ground floor', 'a refused rename changes nothing');
 });

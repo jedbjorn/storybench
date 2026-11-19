@@ -1906,14 +1906,21 @@ export class Store {
     const tags = changes.tags == null ? current.tags : changes.tags;
     if (!Array.isArray(tags) || tags.some((tag) => typeof tag !== "string"))
       throw new StoreError("tags must be an array of strings");
-    const stamp = now();
-    const result = this.db.prepare(`UPDATE library_items SET category=?,label=?,tags=?,notes=?,section_id=?,revision=revision+1,updated_at=?
-      WHERE id=? AND episode_id=? AND revision=?`).run(
-      category, changes.label == null ? current.label : String(changes.label).trim() || current.asset.name,
-      JSON.stringify(tags.map((tag) => tag.trim()).filter(Boolean)), changes.notes == null ? current.notes : String(changes.notes),
-      sectionId, stamp, itemId, episodeId, expectedRevision,
-    );
-    if (!result.changes) throw new StoreError("Stale library revision", 409);
+    const stamp = now(), label = changes.label == null ? current.label : String(changes.label).trim() || current.asset.name;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.db.prepare(`UPDATE library_items SET category=?,label=?,tags=?,notes=?,section_id=?,revision=revision+1,updated_at=?
+        WHERE id=? AND episode_id=? AND revision=?`).run(
+        category, label, JSON.stringify(tags.map((tag) => tag.trim()).filter(Boolean)), changes.notes == null ? current.notes : String(changes.notes),
+        sectionId, stamp, itemId, episodeId, expectedRevision,
+      );
+      if (!result.changes) throw new StoreError("Stale library revision", 409);
+      // The label is shared by the iteration group (spec #46 'Asset preview'): renaming one renames all.
+      if (label !== current.label)
+        this.db.prepare("UPDATE library_items SET label=?,revision=revision+1,updated_at=? WHERE episode_id=? AND iteration_group=? AND id<>?")
+          .run(label, stamp, episodeId, current.iterationGroup, itemId);
+      this.db.exec("COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
     return this.getLibraryItem(episodeId, itemId);
   }
   deleteLibraryItem(episodeId, itemId, expectedRevision, expectedEpisodeRevision) {
