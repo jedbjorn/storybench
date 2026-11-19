@@ -13,7 +13,7 @@ import { importMedia } from "../media.js";
 import { StoreError } from "../store.js";
 import { createVideoMoments } from "../video-moments.js";
 import { describeCapabilities } from "./capabilities.js";
-import { CONTACT_SHEET_LIMITS, assertTimestamp, contactSheet, frameAt, mediaSummary, sheetTimestamps } from "./media-inspect.js";
+import { CONTACT_SHEET_LIMITS, MAX_AUDIO_SECONDS, inspectAudio, assertTimestamp, contactSheet, frameAt, mediaSummary, sheetTimestamps } from "./media-inspect.js";
 import { getItem, isReferenceItem, originOf, readExcerpt, resolveTarget, searchProject } from "./project-catalog.js";
 import { RuntimeError, resolveWorkFile } from "./validate.js";
 
@@ -104,6 +104,15 @@ export const TOOL_DEFINITIONS = Object.freeze([
       endSeconds: { type: "number", minimum: 0, description: "Range end in seconds (greater than start)." },
       count: { type: "integer", minimum: CONTACT_SHEET_LIMITS.minFrames, maximum: CONTACT_SHEET_LIMITS.maxFrames, description: "Number of frames (default 8)." },
       columns: { type: "integer", minimum: 1, maximum: 8, description: "Tiles per row (default up to 4)." },
+    } },
+  },
+  {
+    name: "inspect_audio",
+    description: `Inspect up to ${MAX_AUDIO_SECONDS} seconds of the first audio stream in supplied media. Returns source-relative RMS levels and possible accent times from abrupt rises. A passage may have no candidate.`,
+    inputSchema: { type: "object", additionalProperties: false, required: ["startSeconds", "endSeconds"], properties: {
+      ...targetProps,
+      startSeconds: { type: "number", minimum: 0, maximum: 86400, description: "Start time in the source, in seconds." },
+      endSeconds: { type: "number", minimum: 0, maximum: 86400, description: "Exclusive end time in the source, in seconds." },
     } },
   },
   {
@@ -267,6 +276,11 @@ export function createScopedTools(scope, { store, library = null, isShortcutMess
       try { sheet = await contactSheet(target.handle, times, { columns }); } finally { await target.handle.close(); }
       const layout = times.map((at, index) => ({ tile: index + 1, row: Math.floor(index / sheet.columns) + 1, column: (index % sheet.columns) + 1, atSeconds: at }));
       return { text: JSON.stringify({ origin: target.origin, reference: target.reference, columns: sheet.columns, rows: sheet.rows, labelled: sheet.labelled, frames: layout }), images: [png(sheet.png)] };
+    },
+    async inspect_audio(args = {}) {
+      const target = await resolveTarget(store, scope, args);
+      try { return json({ origin: target.origin, reference: target.reference, ...(await inspectAudio(target.handle, args.startSeconds, args.endSeconds)) }); }
+      finally { await target.handle.close(); }
     },
     async inspect_media(args = {}) {
       const target = await resolveTarget(store, scope, args);

@@ -16,6 +16,7 @@ import { importMedia } from "../src/media.js";
 import { createScopedTools, TOOL_DEFINITIONS } from "../src/runtime/tools.js";
 import { contactSheet, frameAt, sheetTimestamps } from "../src/runtime/media-inspect.js";
 import { describeCapabilities } from "../src/runtime/capabilities.js";
+import { selectKindTools } from "../src/runtime/kinds.js";
 import { mergeTools } from "../src/runtime/app-runtime.js";
 
 const exec = promisify(execFile);
@@ -95,6 +96,41 @@ test("frames and contact sheets deliver real pixels that distinguish scenes at k
   assert.ok(Math.abs(info.duration - 6) < 0.2);
   assert.equal(info.streams[0].width, 160);
   await assert.rejects(frameAt(path.join(f.scratch, "note.png")), { code: "FRAME_FAILED" });
+});
+
+test("video worker inspects supplied audio on its source clock and can return no accent", async (t) => {
+  const f = await fixture(t);
+  const tools = selectKindTools(f.tools(), "video", { supportsImages: false });
+  const file = path.join(f.scratch, "known-cue.wav");
+  // Quiet until 4s, swell for 2s, hold until 8s, then one loud 100ms accent.
+  const amplitude = "0.002+0.12*clip((t-4)/2,0,1)+0.65*between(t,8,8.1)";
+  await exec("ffmpeg", ["-v", "error", "-f", "lavfi", "-i",
+    `aevalsrc='(${amplitude})*sin(2*PI*400*t)':s=48000:d=10`, file]);
+  const imported = await importMedia({ workspace: f.root, sourcePath: file, mediaDirectory: f.store.channelMediaDirectory(f.a.id) });
+  const asset = f.store.saveAsset({ ...imported, channelId: f.a.id });
+  const item = f.store.attachLibraryItem(f.epA.id, asset.id, { category: "Narration", label: "Known cue" });
+  const inspect = (startSeconds, endSeconds) => call(tools, "inspect_audio", { itemId: item.id, startSeconds, endSeconds });
+
+  const result = await inspect(5.31, 9);
+  assert.equal(result.origin.item.id, item.id);
+  assert.deepEqual([result.startSeconds, result.endSeconds], [5.31, 9]);
+  assert.equal(result.candidateAccents.length, 1);
+  const [accent] = result.candidateAccents;
+  assert.ok(Math.abs(accent.atSeconds - 8) <= 0.02, JSON.stringify(accent));
+  assert.ok(accent.riseDb >= 8);
+  const levels = result.measurements.levels;
+  assert.equal(levels[0].startSeconds, 5.31);
+  assert.equal(levels[0].changeDb, null);
+  assert.equal(levels.at(-1).endSeconds, 9);
+  assert.ok(levels.find(level => level.startSeconds <= 8 && level.endSeconds > 8).rmsDbfs > levels[0].rmsDbfs + 6);
+  assert.ok(levels.some(level => level.changeDb > 6));
+  for (const [start, end] of [[1, 2], [3.75, 6.25], [6.25, 7.75], [8.02, 8.08]])
+    assert.deepEqual((await inspect(start, end)).candidateAccents, [], `unexpected accent in ${start}–${end}s`);
+  assert.equal((await inspect(9.75, 11)).endSeconds, 10, "measurements stop at EOF");
+  await assert.rejects(inspect(11, 12), /no audio samples/i);
+  for (const [start, end] of [[2, 2], [4, 3], [0, 31]]) await assert.rejects(inspect(start, end), { code: "INVALID_RANGE" });
+  await assert.rejects(inspect(-1, 1), { code: "INVALID_TIMESTAMP" });
+  await assert.rejects(tools.call("inspect_audio", { itemId: f.clipItem.id, startSeconds: 0, endSeconds: 1 }), /first audio stream/);
 });
 
 test("cross-project reads are allowed and labelled; the database is never readable", async (t) => {
