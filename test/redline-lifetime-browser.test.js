@@ -60,7 +60,9 @@ for (const engine of [chromium, firefox]) test(`${engine.name()}: a new chat lea
 
   fileRequests.length = 0;
   await page.locator('[data-chat-history-toggle]').click();
-  await page.locator(`[data-chat-id="${old.id}"]`).click();
+  // The library event can arrive before the first tab finishes selecting the new chat.
+  // Reopen the old conversation once history shows that the switch has completed.
+  await page.locator(`[data-chat-id="${old.id}"][aria-current="false"]`).click();
   const placeholder = page.locator('.chat-image-removed');
   await placeholder.waitFor();
   assert.equal(await placeholder.textContent(), 'Redline image removed');
