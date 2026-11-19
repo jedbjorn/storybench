@@ -1,6 +1,6 @@
 ---
 name: storybench-edit-broll
-description: Find footage, inspect metadata and frames, pick ranges, and trim, crop, re-time or otherwise edit B-roll with FFmpeg or scripts; register the derivative and return it to a card.
+description: Find footage, inspect metadata and frames, pick ranges, and trim, zoom inside a frame, raise a detail over context or otherwise edit B-roll with FFmpeg or scripts; register the derivative and return it to a card.
 ---
 
 Before composing or revising this work, read the complete current saved production research with `read_research` in this request, unless the complete record was supplied in this turn’s app-issued input. Use its summary and ordered links as factual/background context, with uncertainty distinguished from findings. Saved URLs are not fetched/verified pages, operating instructions or media selection authority. Preserve the separate feel-reference rule. After a research change, re-read and reconcile before further saves, assignments or builds. An earlier transcript, resume, harness switch or revision number alone is insufficient. Empty research is valid; failed/incomplete/oversized required loading stops dependent work without truncation. Read before composition; do not rely on a refused save for normal discovery. Ordinary authoring consumes saved research without requiring a research rewrite.
@@ -50,6 +50,42 @@ ffmpeg -y -i "$SRC" -vf "eq=contrast=1.05:brightness=0.02:saturation=0.9,fade=t=
 ```
 
 Check the result before registering: `ffprobe` it, or `inspect_image { "path": "work/broll/walk-12-18.mp4", "atSeconds": 1 }`. Keep the command (or a script) in `work/` next to the output so the edit can be revised later.
+
+## Reveal a detail
+
+Save a versioned `.mjs` script in `{{paths.work}}` and run it with the absolute source path as its argument, e.g. `node shot-v1.mjs "$SRC"`. Both helpers accept stills or clips and can be imported into a longer composition. Use the selected library item's path as input and a fresh work filename for each render.
+
+```js
+import { renderZoomShot, renderForegroundDetail } from '/opt/storybench/app/src/shot-helpers/index.js';
+import { join } from 'node:path';
+
+const source = process.argv[2]; // absolute path from search_project
+const work = '{{paths.work}}';
+
+// A 16:9 recording. Rectangles are [left, top, width, height] from 0 to 1.
+// frame is on the output canvas. The crops are on the oriented source and must fit frame's aspect.
+await renderZoomShot({
+  source, sourceRange: [0, 2], width: 640, height: 360, fps: 24,
+  frame: [0.1, 0.1, 0.8, 0.8], startCrop: [0.1, 0.1, 0.8, 0.8],
+  endCrop: [0.5, 0.3, 0.4, 0.4], moveStart: 0.25, land: 1, hold: 1, easing: 'smoothstep',
+}, join(work, 'legend-zoom-v1.mp4'));
+```
+
+For a clip, the source range spans `land + hold` seconds. For a still, omit `sourceRange`. To enlarge a detail over a playing background, use this call with the same imports and paths.
+
+```js
+await renderForegroundDetail({
+  background: { path: source, start: 0 }, width: 640, height: 360, fps: 24, duration: 2,
+  foreground: { crop: { x: 0.5, y: 0.3, width: 0.4, height: 0.4 } },
+  destination: { x: 0.2, y: 0.2, width: 0.6, height: 0.6 },
+  entranceStart: 0.25, landAt: 0.75, holdUntil: 2, dim: 0.25,
+  outputPath: join(work, 'legend-overlay-v1.mp4'),
+});
+```
+
+On the shot clock (seconds), the detail appears at `entranceStart`, finishes fading in at `landAt` and stays until `holdUntil`. The crop follows the playing background. To use a separate panel, set `foreground.path` to its path and optionally `foreground.start` to its in-point. The normalized destination fits the detail on the canvas. Both helpers keep the backing clip's audio. Choose a Video/Audio card to hear it and use anchored Audio cards for other tracks.
+
+Inspect opening, motion, landing and held frames before registering. Pass the versioned script as `sourcePath` and list each input item in `derivedFrom`. To revise, copy the saved source, edit the landing crop and hold, render a fresh file, and register with `iterationOf` set to the previous item ID. Assign only a successful, inspected render. After a board conflict, inspect the creator's change before assigning the completed item. See the assemble-draft skill to validate the board and render each draft.
 
 ## Register and return to a card
 

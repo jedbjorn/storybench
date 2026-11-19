@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="144" viewBox="0 0 320 144">
+  <rect width="320" height="144" fill="#172f38"/>
+  <g font-family="DejaVu Sans,sans-serif" fill="#fff">
+    <text x="20" y="32" font-size="16">STATION 04   /   NORTH BANK</text>
+    <path d="M20 47H300" stroke="#63968f"/>
+    <circle cx="32" cy="78" r="7" fill="#62ddbb"/>
+    <text x="52" y="86" font-size="24">River level</text>
+    <circle cx="32" cy="114" r="7" fill="#f5bd62"/>
+    <text x="52" y="122" font-size="24">Rainfall</text>
+  </g>
+</svg>
