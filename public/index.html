@@ -131,6 +131,7 @@
           </div>
           <div id="mediaPanel" hidden>
             <div class="panel-heading"><div><h2>Episode library</h2><p>References and media stay grouped here until you explicitly add them to cards.</p></div><button id="openLibraryImport" class="primary">＋ Import</button></div>
+            <div id="libraryDeckBar" class="library-deck-bar" hidden><button id="openLibraryCleanup" type="button">Clean up…</button></div>
             <div id="libraryProgress" class="library-progress" aria-live="polite"></div>
             <div id="libraryGroups"></div>
           </div>
@@ -180,9 +181,18 @@
         <div class="modal-actions"><button type="button" data-cleanup-close>Close</button><button id="draftCleanupSubmit" class="danger" disabled>Delete selected drafts</button></div>
       </form>
     </dialog>
+    <dialog id="libraryCleanupModal" class="library-modal">
+      <form id="libraryCleanupForm">
+        <div class="modal-heading"><h2>Clean up iterations</h2><button type="button" data-library-cleanup-close aria-label="Close">×</button></div>
+        <p>Iterations that are not starred, not a candidate and not an assistant reference on any slide. Only the ones you tick are deleted; references and audio are never listed.</p>
+        <div id="libraryCleanupRows" class="cleanup-rows"></div>
+        <div class="modal-actions"><button type="button" data-library-cleanup-close>Close</button><button id="libraryCleanupSubmit" class="danger" disabled>Delete selected</button></div>
+        <div class="error" data-library-cleanup-error role="alert"></div>
+      </form>
+    </dialog>
     <dialog id="libraryImportModal" class="library-modal">
       <form method="dialog"><div class="modal-heading"><h2>Import to library</h2><button value="cancel" aria-label="Close">×</button></div></form>
-      <label>Category <select id="libraryImportCategory"><option>Reference</option><option>B-roll</option><option>Narration</option><option>Graphics</option></select></label>
+      <label id="libraryImportCategoryField">Category <select id="libraryImportCategory"><option>Reference</option><option>B-roll</option><option>Narration</option><option>Graphics</option></select></label>
       <div id="libraryDropzone" class="library-dropzone" tabindex="0">Drop files or folders here, <button id="pickLibraryFiles" type="button">choose files</button>, or <button id="pickLibraryFolder" type="button">choose a folder</button><input id="libraryFiles" type="file" multiple hidden><input id="libraryFolder" type="file" webkitdirectory multiple hidden></div>
       <div id="libraryImportQueue" class="library-import-queue"></div>
       <div class="modal-actions"><button id="cancelLibraryFiles" type="button" hidden>Cancel imports</button><button id="startLibraryFiles" type="button" class="primary" hidden>Import files</button></div>
@@ -199,8 +209,9 @@
         <iframe data-preview-frame title="Media preview" hidden></iframe>
         <div class="preview-file" data-preview-file hidden></div>
         <aside class="preview-aside" data-preview-aside hidden>
+          <div id="libraryAssetDeck" class="library-asset-deck" hidden></div>
           <form id="libraryEditForm"><h3>Details</h3>
-            <label>Label <input name="label" required></label><label>Category <select name="category"><option>Reference</option><option>B-roll</option><option>Narration</option><option>Graphics</option></select></label>
+            <label>Label <input name="label" required></label><label data-library-category-field>Category <select name="category"><option>Reference</option><option>B-roll</option><option>Narration</option><option>Graphics</option></select></label>
             <label>Tags <input name="tags" placeholder="interview, opening"></label><label>Notes <textarea name="notes"></textarea></label>
             <div class="modal-actions"><button type="button" data-preview-close>Cancel</button><button class="primary">Save</button></div><div class="error" data-library-edit-error></div>
           </form>

@@ -94,15 +94,19 @@ test('manual board edits content, notes, layouts, reveals, columns and subnav wi
   assert.ok(dirty>0 && saved>0); dom.window.close();
 });
 
-test('deck media uses registered membership and survives reorder; deletion unlinks while keeping source asset', t => {
+test('deck media uses registered membership and survives reorder; deletion is refused while starred, then unlinks the candidate and keeps the source asset', t => {
   const {store:s} = fixture(t), source = s.createEpisode(), deck = s.createEpisode({kind:'deck'});
   const asset = s.saveAsset({name:'image.png',hash:'synthetic-image',kind:'image',path:'media/image.png',metadata:{}});
   const original = s.attachLibraryItem(source.id,asset.id,{category:'B-roll'});
-  const item = s.attachLibraryItem(deck.id,asset.id,{category:'B-roll',provenance:{sourceItemId:original.id}});
+  const item = s.attachLibraryItem(deck.id,asset.id,{category:'B-roll',label:'Plan',provenance:{sourceItemId:original.id}});
   const saved = s.saveDeck(deck.id,1,[{...slide(),media:{itemId:item.id,alt:'Synthetic visual'},subnav:[{id:'view',label:'Detail',itemId:item.id}]}]);
   assert.equal(saved.slides[0].media.itemId,item.id);
-  const deleted = s.deleteLibraryItem(deck.id,item.id,item.revision,saved.revision);
-  assert.equal(deleted.cards[0].media,null); assert.equal(deleted.cards[0].subnav[0].itemId,null);
+  // Delete guard (spec #46): a starred asset stays, and nothing changes.
+  assert.throws(() => s.deleteLibraryItem(deck.id,item.id,item.revision,saved.revision), error => error.statusCode === 409 && /“Plan” is starred on slide 01/.test(error.message));
+  assert.deepEqual(s.getDeck(deck.id).slides, saved.slides); assert.ok(s.getLibraryItem(deck.id,item.id));
+  const unstarred = s.saveDeck(deck.id,saved.revision,[{...saved.slides[0],media:null,subnav:[],candidates:[{itemId:item.id,alt:'Synthetic visual'}]}]);
+  const deleted = s.deleteLibraryItem(deck.id,item.id,item.revision,unstarred.revision);
+  assert.equal(deleted.cards[0].candidates.length,0); assert.equal(s.getLibraryItem(deck.id,item.id),null);
   assert.ok(s.getLibraryItem(source.id,original.id)); assert.equal(s.getAsset(asset.id).path,'media/image.png');
 });
 test('new deck chats use deck defaults while existing video selections remain intact', t => {
@@ -229,10 +233,9 @@ test('staged vector editor persists group mappings, reorder/duplicate identity a
   assert.notEqual(slides[0].stages[0].id, slides[1].stages[0].id);
   const saved = s.saveDeck(deck.id, 1, slides);
   assert.deepEqual(f.reopen().getDeck(deck.id).slides, saved.slides);
-  const unlinked = f.store.deleteLibraryItem(deck.id, item.id, item.revision, saved.revision);
-  assert.equal(unlinked.cards[0].vector, null);
-  assert.equal(unlinked.cards[0].stages[0].svgGroupIds, undefined);
-  assert.equal(unlinked.cards[0].stages[0].id, 'second');
+  // The starred SVG cannot be deleted (spec #46 delete guard); its mappings stay.
+  assert.throws(() => f.store.deleteLibraryItem(deck.id, item.id, item.revision, saved.revision), /is starred on slide 01/);
+  assert.deepEqual(f.store.getDeck(deck.id).slides, saved.slides);
   assert.ok(f.store.getAsset(asset.id));
 });
 

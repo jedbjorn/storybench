@@ -1,4 +1,4 @@
-import { validateSlides, validateDeckDesign, emptyDesign, validateSlideTiming, effectiveSlideDesign } from './deck-data.js';
+import { validateSlides, slidePicks, validateDeckDesign, emptyDesign, validateSlideTiming, effectiveSlideDesign } from './deck-data.js';
 import { fontForFamily } from './fonts.js';
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -1924,13 +1924,12 @@ export class Store {
     const episode = this.getEpisode(episodeId);
     if (!Number.isInteger(expectedEpisodeRevision) || expectedEpisodeRevision !== episode.revision)
       throw new StoreError(`Stale episode revision: expected ${episode.revision}`, 409);
+    // Delete guard (spec #46): an asset starred on any slide stays; an unpicked candidate leaves the lists.
+    const starredOn = episode.kind === "deck" ? episode.cards.findIndex((card) => slidePicks(card).includes(itemId)) : -1;
+    if (starredOn >= 0)
+      throw new StoreError(`“${current.label}” is starred on slide ${String(starredOn + 1).padStart(2, "0")}; star another there first`, 409);
     const cards = episode.cards.map((card) => ({ ...card,
-      ...(episode.kind === "deck" ? { media: card.media?.itemId === itemId ? null : card.media,
-        // Without its vector the slide is text: drop what only SVG groups can carry, keep the timing.
-        ...(card.vector?.itemId === itemId ? { vector: null, stages: (card.stages || []).map(({ svgGroupIds, changes, from, motion, ...stage }) =>
-          ({ ...stage, ...(motion === undefined || motion === "draw" || motion === "enter" ? {} : { motion }) })) } : {}),
-        subnav: (card.subnav || []).map(entry => entry.itemId === itemId ? { ...entry, itemId: null } : entry),
-        ...(card.candidates ? { candidates: card.candidates.filter(entry => entry.itemId !== itemId) } : {}) } : {}),
+      ...(card.candidates ? { candidates: card.candidates.filter(entry => entry.itemId !== itemId) } : {}),
       itemId: card.itemId === itemId ? null : card.itemId,
       referenceItemIds: (card.referenceItemIds || []).filter((id) => id !== itemId),
     }));
