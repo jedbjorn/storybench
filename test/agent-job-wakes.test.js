@@ -9,7 +9,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { JSDOM } from "jsdom";
-import { Store } from "../src/store.js";
+import { Store, SCHEMA_VERSION } from "../src/store.js";
 import { createApp } from "../src/server.js";
 import { createChatService } from "../src/chat.js";
 import { createV9ConversationPersistence } from "../src/runtime/conversation-persistence.js";
@@ -534,7 +534,7 @@ test("schema 20 widens a populated v19 production_runs to the wake origin and ke
   store.close();
   store = new Store(root);
   t.after(() => store.close());
-  assert.equal(Number(store.db.prepare("PRAGMA user_version").get().user_version), 21);
+  assert.equal(Number(store.db.prepare("PRAGMA user_version").get().user_version), SCHEMA_VERSION);
   assert.equal(store.getProductionRun(run.id).originatingMessageId, message.id, "rows survive the rebuild");
   assert.equal(store.getJob(job.id).requestId, run.id, "job references survive");
   const line = store.addConversationMessage({ conversationId, role: "system", text: "Agent results: Facts (Done)", state: "queued" });

@@ -1,6 +1,8 @@
 // Saved composition data, shared by manual editing and runtime tools. No executable markup.
 import { fontForFamily } from './fonts.js';
-export const DECK_LAYOUTS = ['title', 'section', 'statement', 'text-media', 'columns', 'full-media', 'process'];
+import { SLIDE_TYPES, SLIDE_TYPE_NAMES, typeHasVisual, visualKind } from '../public/slide-types.js';
+export { SLIDE_TYPES, visualKind };
+export const DECK_LAYOUTS = SLIDE_TYPE_NAMES;
 export const STAGE_TRIGGERS = ['auto', 'manual'];
 export const STAGE_EASINGS = ['linear', 'ease-in', 'ease-out', 'ease-in-out'];
 export const STAGE_MOTIONS = ['fade', 'draw', 'enter'];
@@ -78,7 +80,17 @@ export function validateVectorStages(stages, groupIds, strokedIds = null) {
     }
   }
 }
-export function validateSlides(slides, { libraryItems = [], sections = [], design: deckDesign = {} } = {}) {
+// The library items a slide shows today (its picks): media, vector and gallery views, in that order.
+export const slidePicks = slide => [slide.media?.itemId, slide.vector?.itemId, ...(slide.subnav ?? []).map(view => view.itemId)].filter(Boolean);
+const PICK_SETTERS = ['creator', 'agent'];
+/** Validates saved slides. Candidates (spec #46): the picked assets stay in media, vector and subnav;
+ *  `candidates` lists the slide's unpicked ones, each {itemId, alt, label?}. With `previous` (the saved
+ *  slides) and `setBy` (creator|agent), this is a save: a slide that omits `candidates` keeps its saved
+ *  list (less any asset it now picks), a supplied list replaces it, and a supplied list may not drop a
+ *  saved pick (unstar it into candidates first, remove it later). A save that changes a slide's picks
+ *  records `pickSetBy`; an unchanged one keeps it. Without `setBy` (undo, build) the recorded
+ *  `pickSetBy` is kept as saved. */
+export function validateSlides(slides, { libraryItems = [], sections = [], design: deckDesign = {}, previous = null, setBy = null } = {}) {
   const fail = (message) => { throw new Error(message); };
   const text = (value, name, required = false) => {
     if (typeof value !== 'string' || (required && !value.trim())) fail(`${name} must be ${required ? 'nonempty ' : ''}text`);
@@ -99,6 +111,8 @@ export function validateSlides(slides, { libraryItems = [], sections = [], desig
   if (!Array.isArray(slides)) fail('slides must be an array');
   if (slides.some(s => !s || typeof s !== 'object')) fail('Each slide must be an object');
   ids(slides, 'slide');
+  if (setBy !== null && !PICK_SETTERS.includes(setBy)) fail('setBy must be creator or agent');
+  const saved = new Map((previous ?? []).map(value => [value.id, value]));
   return slides.map((slide) => {
     if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(slide.id)) fail("Slide IDs must be safe identifiers");
     if (!DECK_LAYOUTS.includes(slide.layout)) fail(`Unknown layout on slide ${slide.id}`);
@@ -136,7 +150,7 @@ export function validateSlides(slides, { libraryItems = [], sections = [], desig
       const selected = item(slide.vector.itemId);
       if (selected.asset?.kind !== 'image' || selected.asset.metadata?.contentType !== 'image/svg+xml') fail(`Slide ${slide.id}: vector must reference a registered SVG image`);
       if (slide.media || result.subnav.length) fail(`Slide ${slide.id}: vector composition cannot also contain media or gallery views`);
-      if (!['title', 'text-media', 'full-media', 'process'].includes(slide.layout)) fail(`Slide ${slide.id}: vector requires title, text-media, full-media or process layout`);
+      if (!typeHasVisual(slide.layout, 'drawing')) fail(`Slide ${slide.id}: vector requires ${DRAWING_TYPES} layout`);
       const groups = selected.asset.metadata.svgGroups;
       try { validateVectorStages(result.stages, selected.asset.metadata.svgGroupIds ?? [], groups ? groups.filter(group => group.stroked).map(group => group.id) : null); }
       catch (error) { fail(`Slide ${slide.id}: ${error.message}`); }
@@ -152,8 +166,45 @@ export function validateSlides(slides, { libraryItems = [], sections = [], desig
       fail(`Slide ${slide.id}: design.${name}.position needs a visual (media on a text-media or full-media slide, a vector or a gallery)`);
     if (Object.keys(design).length) result.design = design;
     validateSlideTiming(result, effectiveSlideDesign(deckDesign, design));
+    const before = setBy === null ? null : saved.get(slide.id);
+    const candidates = validateCandidates(slide, before, result, { item, fail, text, saving: setBy !== null });
+    if (candidates.length) result.candidates = candidates;
+    const pickSetBy = setBy === null ? recordedSetter(slide, fail)
+      : (before ? pickKey(before) !== pickKey(result) : slidePicks(result).length > 0) ? setBy : before?.pickSetBy;
+    if (pickSetBy) result.pickSetBy = pickSetBy;
     return result;
   });
+}
+const DRAWING_TYPES = (names => `${names.slice(0, -1).join(', ')} or ${names.at(-1)}`)(SLIDE_TYPE_NAMES.filter(name => typeHasVisual(name, 'drawing')));
+const pickKey = slide => JSON.stringify(slidePicks(slide));
+function recordedSetter(slide, fail) {
+  if (slide.pickSetBy == null) return undefined;
+  if (!PICK_SETTERS.includes(slide.pickSetBy)) fail(`Slide ${slide.id}: pickSetBy must be creator or agent`);
+  return slide.pickSetBy;
+}
+// One slide's unpicked candidates. `result` holds the slide's validated picks; `before` is the saved
+// slide when this is a save.
+function validateCandidates(slide, before, result, { item, fail, text, saving }) {
+  const picks = slidePicks(result);
+  if (slide.candidates != null && !Array.isArray(slide.candidates)) fail(`Slide ${slide.id}: candidates must be an array of {itemId, alt, label}`);
+  // Omitted on a save: the saved list stays, less anything this save picks (starring moves it out).
+  const supplied = slide.candidates != null || !saving;
+  const values = supplied ? slide.candidates ?? [] : (before?.candidates ?? []).filter(value => !picks.includes(value.itemId));
+  const seen = new Set();
+  const candidates = values.map(value => {
+    if (!value || typeof value !== 'object' || typeof value.itemId !== 'string' || !value.itemId) fail(`Slide ${slide.id}: each candidate needs an itemId`);
+    const found = item(value.itemId);
+    if (seen.has(found.id)) fail(`Slide ${slide.id}: candidate ${found.id} is listed twice`);
+    seen.add(found.id);
+    if (picks.includes(found.id)) fail(`Slide ${slide.id}: candidate ${found.id} is also the slide's pick; a starred asset is saved in media, vector or subnav only`);
+    if (!visualKind(found)) fail(`Slide ${slide.id}: candidate ${found.id} is ${found.asset?.kind ?? 'not media'}; candidates are images, video or SVG drawings`);
+    const label = value.label == null ? '' : text(value.label, 'candidate label');
+    return { itemId: found.id, alt: text(value.alt ?? '', 'candidate alt'), ...(label.trim() ? { label } : {}) };
+  });
+  // A starred candidate is never removed: a supplied list must keep each saved pick, picked or unpicked.
+  if (saving && supplied && before) for (const itemId of slidePicks(before))
+    if (!picks.includes(itemId) && !seen.has(itemId)) fail(`Slide ${slide.id}: ${itemId} is starred on this slide and cannot be removed; star another or keep it in candidates, then remove it`);
+  return candidates;
 }
 
 // Deck design (spec #44). `theme` holds per-deck colour and font roles; a role with no deck
@@ -215,7 +266,7 @@ export function effectiveSlideDesign(deckDesign = {}, slideDesign = {}, { hasVis
   return result;
 }
 // A visual is what the build places text around: rendered media, a vector or a gallery.
-export const slideHasVisual = slide => Boolean(slide.vector || slide.subnav?.length || (slide.media && ['text-media', 'full-media'].includes(slide.layout)));
+export const slideHasVisual = slide => Boolean(slide.vector || slide.subnav?.length || (slide.media && typeHasVisual(slide.layout, 'image')));
 /** With a slide-wide gap, every stage after the first starts timing.betweenMs after the previous
  *  stage's motion ends, so its own afterMs, holdMs and a manual trigger are refused. */
 export function validateSlideTiming(slide, design) {

@@ -28,7 +28,7 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 // Shared persistence/UI/tool limits: 1 MiB summary, 100 links, 200-byte IDs, 8 KiB URLs,
 // 512-byte titles, 2 KiB notes, 2 MiB complete normalized JSON (including escaping).
 // All text limits use UTF-8 bytes. Oversize input is rejected, never truncated.
@@ -321,6 +321,8 @@ function libraryItemRow(row) {
     extractedText: row.extracted_text,
     extractionStatus: row.extraction_status,
     provenance: parse(row.provenance, {}),
+    iterationGroup: row.iteration_group ?? row.id,
+    iteration: row.iteration ?? 1,
     revision: row.revision,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -471,6 +473,7 @@ export class Store {
     if (version < 19) this.migrateV19();
     if (version < 20) this.migrateV20();
     if (version < 21) this.migrateV21();
+    if (version < 22) this.migrateV22();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -631,6 +634,20 @@ export class Store {
       this.db.exec("PRAGMA user_version=21; COMMIT");
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
+  // Iteration groups (spec #46 'Iterations'): versions of one asset share iteration_group (the id of
+  // the group's first item) and are numbered 1..n. Existing items each become a one-iteration group.
+  migrateV22() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const columns = this.columns("library_items");
+      if (!columns.has("iteration_group")) this.db.exec("ALTER TABLE library_items ADD COLUMN iteration_group TEXT");
+      if (!columns.has("iteration")) this.db.exec("ALTER TABLE library_items ADD COLUMN iteration INTEGER NOT NULL DEFAULT 1");
+      this.db.exec(`UPDATE library_items SET iteration_group=id,iteration=1 WHERE iteration_group IS NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS library_items_iteration ON library_items(episode_id,iteration_group,iteration);`);
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(22,?)").run(now());
+      this.db.exec("PRAGMA user_version=22; COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
   upstreamReportRow(row) {
     return row ? { reportId: row.id, episodeId: row.episode_id, conversationId: row.conversation_id, requestId: row.request_id,
       kind: row.kind, title: row.title, body: row.body, createdAt: row.created_at, openedAt: row.opened_at ?? null } : null;
@@ -702,8 +719,9 @@ export class Store {
     return this.getDeck(episodeId);
   }
   // `design` is the deck design whose defaults apply (timing.betweenMs); the saved one when omitted.
-  validateDeckSlides(episodeId, slides, design = this.getDeck(episodeId).design) {
-    try { return validateSlides(slides, { libraryItems: this.listEpisodeLibrary(episodeId), sections: this.getStory(episodeId).sections, design }); }
+  // A save passes `save` = { previous: the saved slides, setBy: creator|agent } (candidates and pick setBy).
+  validateDeckSlides(episodeId, slides, design = this.getDeck(episodeId).design, save = {}) {
+    try { return validateSlides(slides, { libraryItems: this.listEpisodeLibrary(episodeId), sections: this.getStory(episodeId).sections, design, ...save }); }
     catch (error) { throw new StoreError(error.message); }
   }
   migrateV5(backupLegacy) {
@@ -1556,8 +1574,10 @@ export class Store {
       catch (error) { throw new StoreError(error.message); }
     }
     // Slides are checked against the design being saved (its defaults reach every slide).
+    // Undo restores recorded slides whole; other saves check candidates against the saved slides.
+    const save = actor === "undo" ? {} : { previous: current.cards, setBy: actor === "agent" ? "agent" : "creator" };
     const cards = changes.cards == null ? current.cards : current.kind === "deck"
-      ? this.validateDeckSlides(episodeId, changes.cards, design) : validateCards(changes.cards);
+      ? this.validateDeckSlides(episodeId, changes.cards, design, save) : validateCards(changes.cards);
     if (changes.cards == null && changes.design !== undefined)
       for (const slide of cards) try { validateSlideTiming(slide, effectiveSlideDesign(design, slide.design)); } catch (error) { throw new StoreError(error.message); }
     const videoCards = current.kind === "video" ? cards : [];
@@ -1853,17 +1873,22 @@ export class Store {
     const sectionId = details.sectionId == null || details.sectionId === "" ? null : String(details.sectionId);
     if (sectionId && !this.db.prepare("SELECT 1 FROM story_sections WHERE id=? AND episode_id=? AND retired_at IS NULL").get(sectionId, episodeId))
       throw new StoreError("Story section not found for this episode");
+    // iterationOf: an item of this production; the new item joins its group as the next iteration and
+    // shares the group's label. Without it the item starts its own group.
+    const group = details.iterationOf == null ? null : this.getLibraryItem(episodeId, String(details.iterationOf));
+    if (details.iterationOf != null && !group) throw new StoreError(`iterationOf must be a library item of this production: ${details.iterationOf}`, 404);
     const stamp = now();
     const itemId = id("library");
     this.db.prepare(`INSERT INTO library_items(
       id,episode_id,asset_id,category,label,tags,notes,section_id,source_kind,source_url,
-      extracted_text,extraction_status,provenance,revision,created_at,updated_at
-    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-      itemId, episodeId, assetId, category, String(details.label || asset.name),
+      extracted_text,extraction_status,provenance,revision,created_at,updated_at,iteration_group,iteration
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+      (SELECT COALESCE(MAX(iteration),0)+1 FROM library_items WHERE episode_id=? AND COALESCE(iteration_group,id)=?))`).run(
+      itemId, episodeId, assetId, category, String((group ? group.label : details.label) || asset.name),
       JSON.stringify(details.tags || []), String(details.notes || ""), sectionId,
       String(details.sourceKind || "file"), details.sourceUrl || null,
       String(details.extractedText || ""), String(details.extractionStatus || "not-applicable"),
-      JSON.stringify(details.provenance || {}), 1, stamp, stamp,
+      JSON.stringify(details.provenance || {}), 1, stamp, stamp, group?.iterationGroup ?? itemId, episodeId, group?.iterationGroup ?? itemId,
     );
     return this.getLibraryItem(episodeId, itemId);
   }
@@ -1904,7 +1929,8 @@ export class Store {
         // Without its vector the slide is text: drop what only SVG groups can carry, keep the timing.
         ...(card.vector?.itemId === itemId ? { vector: null, stages: (card.stages || []).map(({ svgGroupIds, changes, from, motion, ...stage }) =>
           ({ ...stage, ...(motion === undefined || motion === "draw" || motion === "enter" ? {} : { motion }) })) } : {}),
-        subnav: (card.subnav || []).map(entry => entry.itemId === itemId ? { ...entry, itemId: null } : entry) } : {}),
+        subnav: (card.subnav || []).map(entry => entry.itemId === itemId ? { ...entry, itemId: null } : entry),
+        ...(card.candidates ? { candidates: card.candidates.filter(entry => entry.itemId !== itemId) } : {}) } : {}),
       itemId: card.itemId === itemId ? null : card.itemId,
       referenceItemIds: (card.referenceItemIds || []).filter((id) => id !== itemId),
     }));

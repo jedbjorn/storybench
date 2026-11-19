@@ -31,7 +31,8 @@ export function deckSnapshot(store, episodeId, deck = store.getDeck(episodeId)) 
   const valid = store.validateDeckSlides(episodeId,deck.slides,deck.design), { theme:_theme, ...defaults } = deck.design ?? {};
   // Layout primitives: the deck defaults and each slide's effective values (slide, else deck, else template).
   const design = { deck:defaults, slides:Object.fromEntries(valid.map(slide => [slide.id,effectiveSlideDesign(defaults,slide.design,{hasVisual:slideHasVisual(slide)})])) };
-  return { title:deck.title, slides:valid, story:deck.story, sourceRevision:deck.revision, fonts, colors, theme, design, library:store.listEpisodeLibrary(episodeId) };
+  // The build reads only the picks in today's fields (decision #123): candidates and pickSetBy stay out.
+  return { title:deck.title, slides:valid.map(({ candidates:_candidates, pickSetBy:_pickSetBy, ...slide }) => slide), story:deck.story, sourceRevision:deck.revision, fonts, colors, theme, design, library:store.listEpisodeLibrary(episodeId) };
 }
 // Reads the registered media of `slides` (verified against its hash) and builds them with the snapshot's theme.
 async function assembleDeck(store, snapshot, slides, signal = null) {

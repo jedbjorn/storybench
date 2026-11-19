@@ -10,7 +10,7 @@ const notFound = (message) => Object.assign(new Error(message), { statusCode: 40
 export function createProductionReadTools({ store, renders, decks, episodeId, brandStandards }) {
   const episode = () => { const value = store.getEpisode(episodeId); if (!value) throw notFound("Episode not found"); return value; };
   const librarySummary = () => store.listEpisodeLibrary(episodeId).map((item) => ({ id: item.id, revision: item.revision, label: item.label,
-    category: item.category, sourceKind: item.sourceKind, extractionStatus: item.extractionStatus,
+    category: item.category, sourceKind: item.sourceKind, extractionStatus: item.extractionStatus, iterationGroup: item.iterationGroup, iteration: item.iteration,
     asset: item.asset && { id: item.asset.id, name: item.asset.name, kind: item.asset.kind, duration: item.asset.duration, width: item.asset.width, height: item.asset.height } }));
   const excerpt = (itemId, offset = 0, limit = 4000) => {
     const item = store.listEpisodeLibrary(episodeId).find((candidate) => candidate.id === itemId);
