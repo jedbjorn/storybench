@@ -482,16 +482,28 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
     const host = active.querySelector(`[data-control="${CSS.escape(control)}"]`);
     (host?.querySelector('[aria-pressed="true"], [aria-checked="true"], input, button, [tabindex="0"]') || host)?.focus?.();
   }
-  // Above the selected block, or below it when there is no room above; kept inside the canvas width.
+  // Above the selected block, or below it (over the step bar if need be) when there is no room above;
+  // kept inside the canvas width.
+  // "Room" also means not covering another selectable block, so the creator can still click it; when
+  // both sides would, the side covering less wins.
   function placeToolbar() {
     const block = selected && blocksLayer.querySelector(`[data-select="${selected}"]`);
     if (toolbar.hidden || !block) return;
     const host = toolbar.offsetParent?.getBoundingClientRect(), box = block.getBoundingClientRect();
     if (!host) return;
-    const above = box.top - host.top - toolbar.offsetHeight - 8;
-    toolbar.dataset.side = above >= 0 ? 'above' : 'below';
-    toolbar.style.top = `${above >= 0 ? above : box.bottom - host.top + 8}px`;
-    toolbar.style.left = `${Math.max(0, Math.min(box.left - host.left, host.width - toolbar.offsetWidth))}px`;
+    const width = toolbar.offsetWidth, height = toolbar.offsetHeight;
+    const left = Math.max(0, Math.min(box.left - host.left, host.width - width));
+    const others = [...blocksLayer.querySelectorAll('[data-select]')].filter((node) => node !== block).map((node) => node.getBoundingClientRect());
+    const covered = (top) => others.reduce((sum, rect) => sum
+      + Math.max(0, Math.min(rect.right, host.left + left + width) - Math.max(rect.left, host.left + left))
+      * Math.max(0, Math.min(rect.bottom, host.top + top + height) - Math.max(rect.top, host.top + top)), 0);
+    const sides = [['above', box.top - host.top - height - 8], ['below', box.bottom - host.top + 8]]
+      .map(([side, top]) => ({ side, top, fits: top >= 0, cover: covered(top) }));
+    const [best] = [...sides].sort((a, b) => (b.fits - a.fits) || (a.cover - b.cover));
+    const chosen = sides[0].fits && !sides[0].cover ? sides[0] : best;
+    toolbar.dataset.side = chosen.side;
+    toolbar.style.top = `${chosen.top}px`;
+    toolbar.style.left = `${left}px`;
   }
 
   // ---- Drag to snap: a selected copy or stage text block on a slide with a visual drags onto one of the

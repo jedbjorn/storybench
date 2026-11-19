@@ -242,6 +242,20 @@ for (const type of [chromium, firefox]) test(`E4, E5, E6, E8 ${type.name()}: ele
   const placed = await frameIn(page, 'diagram', deck().revision);
   await placed.waitForFunction(() => document.querySelector('.composition.placed > .arrange[data-side="right"] > .copy') !== null);
   await evidence(page, `e6-snapped-${type.name()}.png`);
+  // The toolbar never covers another block, so the creator can always click it: stage text selected at a
+  // width where the toolbar wraps, then the copy block is clicked through.
+  const overlaps = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+  for (const width of [1600, 1150]) {
+    await page.setViewportSize({ width, height: 1100 });
+    await page.click('.deck-canvas-block[data-select="stageText"]');
+    const stageBar = page.locator('.deck-canvas-toolbar[data-toolbar-block="stageText"]:not([hidden])');
+    await stageBar.waitFor();
+    const shown = await stageBar.boundingBox();
+    for (const other of ['copy', 'visual']) assert.ok(!overlaps(shown, await page.locator(`.deck-canvas-block[data-select="${other}"]`).boundingBox()), `${width}: the stage text toolbar leaves ${other} uncovered`);
+    await page.click('.deck-canvas-block[data-select="copy"]');
+    await toolbar.waitFor();
+  }
+  await page.setViewportSize({ width: 1600, height: 1100 });
   // All slides writes the deck default.
   await toolbar.getByRole('button', { name: 'All slides' }).click();
   await toolbar.getByRole('button', { name: /^Alignment/ }).click();
