@@ -169,9 +169,12 @@ for (const type of [chromium, firefox]) test(`A7 ${type.name()}: the creator edi
   assert.match(await row('theme.colors.accent').textContent(), /#2E7D4F.*This deck/);
   assert.match(await row('theme.colors.base').textContent(), /#1A2B6D.*From Brand Standards/);
   assert.match(await row('theme.fonts.base').textContent(), /Lato.*This deck/);
+  // Each read waits for the inspector to show the clicked block first, so it never reads the previous block's view.
   await page.click('.deck-canvas-block[data-select="stageText"]');
+  await inspector(page).getByRole('heading', { name: 'Stage text' }).waitFor();
   assert.equal(await inspector(page).getByRole('button', { name: 'List', exact: true }).getAttribute('aria-pressed'), 'true');
   await page.click('.deck-canvas-block[data-select="copy"]');
+  await inspector(page).getByRole('heading', { name: 'Title and text' }).waitFor();
   for (const name of ['Left of visual', 'Centred']) assert.equal(await inspector(page).getByRole('radio', { name }).getAttribute('aria-checked'), 'true');
 
   // The next build matches the canvas: the same slide markup and the same palette and fonts.
