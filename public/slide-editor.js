@@ -1,11 +1,12 @@
 // Slide editor (spec #46, Slide Editor): a modal around the Feature #25 canvas. The header holds
 // previous and next, "Slide NN of N" and the title, the save state, Layout, Markup and Send to chat
-// (see redline below) and close. Left: the canvas with Play slide and the step bar. Right: the Elements
-// panel (the fields of the slots the slide's type has, then the canvas inspector; task #127 turns these
-// into element cards). Escape steps back one layer per press: an open menu, then the selection, then
-// the editor. ✕ closes at any time.
+// (see redline below) and close. Left: the canvas with Play slide, the step bar and the selection toolbar.
+// Right: the Elements panel: element cards for the slots the slide's type has (element-cards.js), then
+// the slide-and-deck values. Selecting on the canvas highlights and opens the matching cards. Escape
+// steps back one layer per press: an open menu, then the selection, then the editor. ✕ closes at any time.
 import { icons } from './icons.js';
-import { slideFieldsHTML, bindSlideFields, layoutOptions, slideNumber } from './deck-workspace.js';
+import { layoutOptions, slideNumber } from './deck-workspace.js';
+import { elementCardsHTML, bindElementCards, cardsFor } from './element-cards.js';
 import { withChannel } from './preview-links.js';
 
 // The note's picked assets: the slide's picks in today's fields (decision #123), each with its iteration.
@@ -18,14 +19,17 @@ function pickedAssets(slide, items) {
   });
 }
 
-export function createSlideEditor(dialog, { canvas, channel = () => null, getEpisode, getItems, getSections, saveState, onDirty, onSave, onClose = () => {} }) {
+export function createSlideEditor(dialog, { canvas, channel = () => null, getEpisode, getItems, getSections, saveState, onDirty, onSave, onClose = () => {}, onOpenAsset = () => {} }) {
   const doc = dialog.ownerDocument, $ = (selector) => dialog.querySelector(selector);
   const root = $('[data-editor-root]'), elements = $('[data-editor-elements]'), scroller = $('[data-editor-scroll]');
   const count = $('[data-editor-count]'), title = $('[data-editor-title]'), saved = $('[data-editor-saved]'), layout = $('[data-editor-layout]');
   const previous = $('[data-editor-nav="-1"]'), next = $('[data-editor-nav="1"]');
   previous.innerHTML = icons.left; next.innerHTML = icons.right; $('[data-editor-close]').innerHTML = icons.close;
   const message = $('[data-editor-message]'), redlineButtons = [...dialog.querySelectorAll('[data-editor-redline]')];
-  let slideId = null, fieldsHTML = '', layoutHTML = '', redlining = null;
+  let slideId = null, fieldsHTML = '', layoutHTML = '', redlining = null, notice = null, shownId = null;
+  // Card state for the open slide: which cards are open, which match the canvas selection; and the
+  // slides whose Gallery mode was chosen before a view was starred.
+  const open_ = new Set(), active = new Set(), galleries = new Set();
   const slides = () => getEpisode()?.cards || [];
   const position = () => slides().findIndex((slide) => slide.id === slideId);
 
@@ -33,7 +37,15 @@ export function createSlideEditor(dialog, { canvas, channel = () => null, getEpi
   const mirror = () => { saved.textContent = saveState.textContent; };
   new MutationObserver(mirror).observe(saveState, { childList: true, characterData: true, subtree: true });
 
-  bindSlideFields(root, { getSlides: slides, onDirty, onSave, render });
+  bindElementCards(root, { getSlides: slides, getItems, onSave, render,
+    onDirty() { notice = null; onDirty(); },
+    notify(card, text) { syncOpen(); notice = { card, text }; open_.add(card); render(false); },
+    onReplay: (index) => canvas.replayStep(index),
+    onPlayStep: (index) => canvas.playStep(index),
+    onOpenAsset,
+    onToggle(key, isOpen) { if (isOpen) open_.add(key); else { open_.delete(key); active.delete(key); } },
+    isGallery: (id) => galleries.has(id),
+    onGalleryMode(id, on) { if (on) galleries.add(id); else galleries.delete(id); } });
   dialog.addEventListener('click', (event) => {
     if (event.target.closest('[data-editor-close]')) return close();
     const kind = event.target.closest('[data-editor-redline]')?.dataset.editorRedline;
@@ -58,12 +70,24 @@ export function createSlideEditor(dialog, { canvas, channel = () => null, getEpi
       return;
     }
     event.preventDefault(); event.stopPropagation();
+    if (canvas.closeMenu()) return;
     if (canvas.selected) return canvas.deselect();
     close();
   }, true);
-  // Selecting on the canvas brings its controls into view.
-  dialog.addEventListener('sb-selectionchange', (event) => { if (event.detail.key) $('[data-editor-inspector]').scrollIntoView({ block: 'nearest' }); });
-  dialog.addEventListener('close', () => { slideId = null; fieldsHTML = ''; message.textContent = ''; canvas.hide(); onClose(); });
+  // Selecting on the canvas highlights the matching element cards, opens them and brings them into view.
+  dialog.addEventListener('sb-selectionchange', (event) => {
+    const slide = slides()[position()];
+    active.clear(); notice = null;
+    if (!slide) return;
+    syncOpen();
+    const keys = cardsFor(event.detail.key, slide);
+    keys.forEach((key) => active.add(key));
+    // Copy opens Title and Body; stage text opens its first step.
+    (event.detail.key === 'stageText' ? keys.slice(0, 1) : keys).forEach((key) => open_.add(key));
+    render(false);
+    if (keys.length) elements.querySelector(`[data-card="${CSS.escape(keys[0])}"]`)?.scrollIntoView({ block: 'nearest' });
+  });
+  dialog.addEventListener('close', () => { slideId = null; shownId = null; fieldsHTML = ''; notice = null; message.textContent = ''; canvas.hide(); onClose(); });
 
   // Re-renders keep the focused field, its caret and the panel's scroll.
   function replaceFields(html) {
@@ -81,7 +105,16 @@ export function createSlideEditor(dialog, { canvas, channel = () => null, getEpi
     field?.focus({ preventScroll: true });
     if (field && caret) try { field.setSelectionRange(...caret); } catch { /* Not a text field. */ }
   }
-  function render() {
+  // The cards shown now are the truth for which are open: a toggle event arrives a task late, after an
+  // edit may already have re-rendered them.
+  function syncOpen() {
+    if (shownId !== slideId) return;
+    for (const node of elements.querySelectorAll('details[data-card]')) {
+      if (node.open) open_.add(node.dataset.card); else open_.delete(node.dataset.card);
+    }
+  }
+  // `sync` false: the caller has already read the shown cards and opened the ones it wants.
+  function render(sync = true) {
     if (!dialog.open) return;
     const episode = getEpisode(), index = position();
     // An open redline is never dropped: a slide removed meanwhile closes the editor once the popup closes.
@@ -94,8 +127,10 @@ export function createSlideEditor(dialog, { canvas, channel = () => null, getEpi
     next.disabled = index === slides().length - 1;
     const options = layoutOptions(slide.layout);
     if (options !== layoutHTML) layout.innerHTML = layoutHTML = options;
-    const html = slideFieldsHTML(slide, index, getItems(), getSections());
+    if (sync) syncOpen();
+    const html = elementCardsHTML(slide, index, { items: getItems(), sections: getSections(), design: episode.design, open: open_, active, notice, gallery: galleries.has(slide.id) });
     if (html !== fieldsHTML) replaceFields(html);
+    shownId = slide.id;
     mirror();
     canvas.show(episode);
     canvas.open(slide.id);
@@ -134,7 +169,7 @@ export function createSlideEditor(dialog, { canvas, channel = () => null, getEpi
   }
   function open(id) {
     if (!id || !slides().some((slide) => slide.id === id)) return;
-    if (id !== slideId) { fieldsHTML = ''; scroller.scrollTop = 0; message.textContent = ''; }
+    if (id !== slideId) { fieldsHTML = ''; scroller.scrollTop = 0; message.textContent = ''; open_.clear(); active.clear(); notice = null; }
     slideId = id;
     if (!dialog.open) dialog.showModal();
     render();

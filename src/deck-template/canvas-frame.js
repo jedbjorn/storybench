@@ -3,7 +3,8 @@
 // where its selectable blocks are, so the editor can draw selection over the frame without reaching
 // into it. The frame keeps the bundle's sandbox: everything crosses by postMessage.
 // Play (spec #46, Slide Editor: Play) runs the slide's own timeline from Start; an On click stage is
-// clicked after a short pause, and the slide ends held at the full reveal.
+// clicked after a short pause, and the slide ends held at the full reveal. Play step replays one stage
+// from its start state (the stages before it shown complete) and holds that stage when its motion ends.
 (() => {
   'use strict';
   const deck = window.storybenchDeck, slide = document.querySelector('.slide');
@@ -39,12 +40,12 @@
   }
   // A stage is shown at the end of its own motion, before the next stage begins; null is the full reveal.
   // Any stage index the slide has is kept as asked (the editor normalizes by the same rule), the last included.
+  const heldAt = (stages, i) => Math.max(stages[i].startMs, Math.min(stages[i].motionEndMs, (stages[i + 1]?.startMs ?? Infinity) - 0.5));
   function show(value) {
     stop();
     const { stages, durationMs } = deck.timeline();
     stage = Number.isInteger(value) && value >= 0 && value < stages.length ? value : null;
-    const time = stage === null ? durationMs : Math.max(stages[stage].startMs, Math.min(stages[stage].motionEndMs, (stages[stage + 1]?.startMs ?? Infinity) - 0.5));
-    deck.seek(time);
+    deck.seek(stage === null ? durationMs : heldAt(stages, stage));
     post();
   }
   // Play: the runtime's own clock runs the slide. Each tick reports the stage it reached; where the
@@ -57,12 +58,32 @@
     deck.replay();
     tick();
   }
+  function playStep(value) {
+    const { stages } = deck.timeline();
+    if (!Number.isInteger(value) || value < 0 || value >= stages.length) return;
+    // The first stage replays with the slide; a later one is clicked from the end of the one before it,
+    // which plays its motion once. An automatic stage that starts with the one before it is already
+    // current there, so it plays from its own start instead, with any stage that starts with it.
+    // Nothing is reported until it plays: the editor would hold a stage reported on the way.
+    stop();
+    if (value === 0) deck.replay();
+    else if ((deck.seek(heldAt(stages, value - 1)).stage ?? -1) >= value) { deck.seek(stages[value].startMs); deck.resume(); }
+    else slide.querySelector(`[data-stage="${value}"]`)?.click();
+    playing = { pulse: null, timer: null, reported: '', until: value };
+    tick();
+  }
   function tick() {
     if (!playing) return;
     const now = deck.timeline(), next = (now.stage ?? -1) + 1, following = now.stages[next];
     stage = now.stage ?? 0;
     const key = `${stage}:${playing.pulse}`;
     if (key !== playing.reported) { playing.reported = key; post(); }
+    if (playing.until !== undefined) {
+      // It holds at the stage's motion end, or where a later stage starts; one that starts with it plays along.
+      const { startMs, motionEndMs } = now.stages[playing.until], later = now.stages[now.stage ?? 0].startMs > startMs;
+      if (now.state === 'playing' && now.timeMs < motionEndMs && !((now.stage ?? 0) > playing.until && later)) { playing.timer = setTimeout(tick, 40); return; }
+      return show(playing.until);
+    }
     if (now.state === 'complete' || (now.state === 'waiting' && !following)) return show(null);
     if (now.state !== 'waiting') { playing.timer = setTimeout(tick, 40); return; }
     // A manual stage waits for the pause; an automatic one held back by an earlier click waits its own gap.
@@ -181,6 +202,7 @@
     if (data.type === 'storybench-canvas-show') show(data.stage);
     else if (data.type === 'storybench-canvas-play') play();
     else if (data.type === 'storybench-canvas-edit' && Number.isFinite(data.x) && Number.isFinite(data.y) && !editing) edit(data.x, data.y);
+    else if (data.type === 'storybench-canvas-play-step') playStep(data.stage);
     else if (data.type === 'storybench-canvas-scroll' && Number.isFinite(data.by)) presentation.scrollTop += data.by;
     else if (data.type === 'storybench-canvas-reveal' && Object.hasOwn(BLOCKS, data.block)) {
       const box = union(boxes(slide.querySelector(BLOCKS[data.block]))), area = presentation.getBoundingClientRect();

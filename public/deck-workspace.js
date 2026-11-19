@@ -1,11 +1,10 @@
 import { icons } from './icons.js';
 import { SLIDE_TYPES } from './slide-types.js';
+import { missingParts, missingPartText } from './deck-library.js';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export const layouts = Object.keys(SLIDE_TYPES);
 export const newSlide = () => ({ id: `slide_${crypto.randomUUID()}`, title: 'New slide', layout: 'statement', body: '', notes: '', targetMinutes: 1, stages: [], columns: [], subnav: [] });
 const iconButton = (action, label, icon, tone = '') => `<button type="button" class="icon-button ${tone}" data-slide-action="${action}" aria-label="${label}" title="${label}">${icons[icon]}</button>`;
-const stageFields = ['trigger', 'afterMs', 'durationMs', 'holdMs', 'easing', 'motion'];
-const partName = { columns: 'column', stages: 'reveal stage', subnav: 'navigation entry' };
 const count = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 export const slideNumber = index => String(index + 1).padStart(2, '0');
 
@@ -17,8 +16,8 @@ export function slideWarnings(slide, items) {
   const picked = [slide.media?.itemId, slide.vector?.itemId, ...(slide.subnav || []).map(view => view.itemId)].filter(Boolean);
   if (items && picked.some(id => !items.some(item => item.id === id))) warnings.push('Missing media');
   if (slide.vector) {
-    const parts = items?.find(item => item.id === slide.vector.itemId)?.asset?.metadata?.svgGroupIds;
-    if (parts && (slide.stages || []).some(stage => !(stage.svgGroupIds || []).some(id => parts.includes(id)))) warnings.push('A step reveals nothing');
+    const drawing = items?.find(item => item.id === slide.vector.itemId), missing = missingParts(drawing, slide.stages);
+    warnings.push(...missing.map(part => missingPartText(drawing, part)));
   }
   if (slide.candidates?.length && !picked.length) warnings.push('No pick for the visual');
   return warnings;
@@ -120,104 +119,6 @@ export function bindSlideList(root, { getSlides, getOpenId, setOpenId, onPlay, o
   root.addEventListener('dragend', () => { dragged = null; clear(); root.querySelectorAll('.is-dragging').forEach(node => node.classList.remove('is-dragging')); });
 }
 
-// ---- Slide fields (the editor's Elements panel): only the slots the slide's type has (spec #46, Slide
-// Types). Values the type has no slot for stay saved and hidden; the panel says how many.
-
-// The saved values the slide's type does not show, by plain name.
-export function hiddenValues(slide) {
-  const type = SLIDE_TYPES[slide.layout];
-  if (!type) return [];
-  const hidden = [];
-  if (slide.media && !type.visual.some(kind => kind === 'image' || kind === 'video')) hidden.push('media');
-  if (slide.vector && !type.visual.includes('drawing')) hidden.push('drawing');
-  if (slide.subnav?.length && !type.visual.includes('gallery')) hidden.push('gallery');
-  if (slide.columns?.length && !type.columns) hidden.push('columns');
-  return hidden;
-}
-// The slots the panel shows for a slide's type: copy, media, drawing, gallery, columns, steps.
-export function slideSlots(layout) {
-  const type = SLIDE_TYPES[layout] || SLIDE_TYPES.statement;
-  return ['copy', ...(type.visual.some(kind => kind === 'image' || kind === 'video') ? ['media'] : []), ...(type.visual.includes('drawing') ? ['drawing'] : []),
-    ...(type.visual.includes('gallery') ? ['gallery'] : []), ...(type.columns ? ['columns'] : []), 'steps'];
-}
-export function slideFieldsHTML(slide, index, items, sections) {
-  items ||= [];
-  const labels = { title: 'Title', eyebrow: 'Header label', body: 'Body', notes: 'Speaker notes', targetMinutes: 'Target duration (minutes)', mediaAlt: 'Media description', caption: 'Caption', vectorAlt: 'Drawing description', label: 'Label', afterMs: 'Delay before this stage (ms)', durationMs: 'Motion duration (ms)', holdMs: 'Hold after motion (ms)' };
-  const field = (key, value, type = 'text') => `<label>${esc(labels[key] || key)}${type === 'textarea' ? `<textarea data-slide-field="${key}">${esc(value)}</textarea>` : `<input data-slide-field="${key}" type="${type}" ${type === 'number' ? 'min="0" step="any"' : ''} value="${esc(value)}">`}</label>`;
-  const options = (values, selected) => values.map(([id, label]) => `<option value="${esc(id)}" ${id === selected ? 'selected' : ''}>${esc(label)}</option>`).join('');
-  const vectorGroups = slide => items.find(item => item.id === slide.vector?.itemId)?.asset?.metadata?.svgGroupIds || [];
-  const groupField = (slide, part) => `<label>SVG groups for this stage<select multiple data-slide-field="svgGroupIds">${vectorGroups(slide).map(id => `<option value="${esc(id)}" ${(part.svgGroupIds || []).includes(id) ? 'selected' : ''}>${esc(id)}</option>`).join('')}</select></label>`;
-  // Timing and motion of one reveal stage. An empty choice leaves the field unset, which keeps the standard behaviour.
-  const choice = (key, label, part, values) => `<label>${label}<select data-slide-field="${key}">${options(values, values.some(([id]) => id === part[key]) ? part[key] : '')}</select></label>`;
-  const stageMotion = (slide, part) => `<div class="stage-motion">
-    ${choice('trigger', 'Starts', part, [['', 'Automatically when a delay is set'], ['auto', 'Automatically'], ['manual', 'On click']])}
-    ${field('afterMs', part.afterMs ?? '', 'number')}${field('durationMs', part.durationMs ?? '', 'number')}${field('holdMs', part.holdMs ?? '', 'number')}
-    ${choice('easing', 'Easing', part, [['', 'Standard'], ['linear', 'Linear'], ['ease-in', 'Ease in'], ['ease-out', 'Ease out'], ['ease-in-out', 'Ease in and out']])}
-    ${choice('motion', 'Motion', part, [[part.motion === 'fade' ? 'fade' : '', 'Fade'], ...(slide.vector || ['draw', 'enter'].includes(part.motion) ? [['draw', 'Draw strokes'], ['enter', 'Enter from a start state']] : [])])}
-    </div>${part.from || part.changes?.length ? `<p class="stage-motion-note" data-stage-changes="${part.changes?.length || 0}">${[part.changes?.length ? `Moves ${count(part.changes.length, 'group')} already on the slide (${count(part.changes.length, 'change')})` : '', part.from ? 'Has a starting state' : ''].filter(Boolean).join('. ')}. Edit these through chat.</p>` : ''}`;
-  const mediaItems = items.filter(i => ['image','video'].includes(i.asset?.kind)).map(i => [i.id,i.label]);
-  const parts = key => `<section class="deck-parts" data-slot="${{ subnav: 'gallery', stages: 'steps' }[key] || key}"><h3>${key === 'stages' ? 'Steps' : key === 'subnav' ? 'Gallery / demo navigation' : 'Columns'}</h3>${(slide[key] || []).map((part, partIndex) => `<div data-part="${key}" data-part-index="${partIndex}">${key === 'subnav' ? field('label', part.label) + `<label>Gallery media<select data-slide-field="itemId">${options([['','No media'], ...mediaItems], part.itemId || '')}</select></label>` : field('title',part.title) + field('body',part.body,'textarea')}${key === 'stages' ? stageMotion(slide, part) + (slide.vector ? groupField(slide, part) : '') : ''}<div class="icon-actions">${iconButton('part-up', `Move ${partName[key]} up`, 'up')}${iconButton('part-down', `Move ${partName[key]} down`, 'down')}${iconButton('part-delete', `Remove ${partName[key]}`, 'trash', 'danger')}</div></div>`).join('')}<button type="button" data-slide-action="add-${key}">Add ${key === 'stages' ? 'reveal stage' : key === 'subnav' ? 'navigation entry' : 'column'}</button></section>`;
-  const slots = {
-    copy: () => `<section class="deck-slot" data-slot="copy"><h3>Title and text</h3>${field('title', slide.title)}${field('eyebrow', slide.eyebrow)}${field('body', slide.body, 'textarea')}${field('caption', slide.caption)}</section>`,
-    media: () => `<section class="deck-slot" data-slot="media"><h3>Media</h3><label>Media<select data-slide-field="mediaItemId">${options([['','No media'], ...mediaItems], slide.media?.itemId || '')}</select></label>
-      ${slide.media && !items.some(i => i.id === slide.media.itemId) ? '<p role="alert">Missing media: choose an available item from the library.</p>' : ''}${field('mediaAlt', slide.media?.alt)}</section>`,
-    drawing: () => `<section class="deck-slot" data-slot="drawing"><h3>Drawing</h3><label>Staged SVG<select data-slide-field="vectorItemId">${options([['','No staged vector'], ...items.filter(i => i.asset?.metadata?.contentType === 'image/svg+xml').map(i => [i.id,i.label])], slide.vector?.itemId || '')}</select></label>
-      ${slide.vector ? field('vectorAlt', slide.vector.alt) + '<p>A drawing needs no ordinary media or gallery views. Select groups for each step below; groups without a mapping stay visible. Use Ctrl/Command to select multiple groups.</p>' : ''}</section>`,
-    gallery: () => parts('subnav'),
-    columns: () => parts('columns'),
-    steps: () => parts('stages'),
-  };
-  const hidden = hiddenValues(slide);
-  return `<div class="deck-slide" data-slide-index="${index}">
-    ${hidden.length ? `<p class="deck-hidden-values" data-hidden-count="${hidden.length}">${count(hidden.length, 'saved value')} hidden by this layout (${hidden.join(', ')}). They are kept; choose a layout that shows them to edit them.</p>` : ''}
-    ${slideSlots(slide.layout).map(slot => slots[slot]()).join('')}
-    <section class="deck-slot" data-slot="more"><h3>More</h3>${field('notes', slide.notes, 'textarea')}${field('targetMinutes', slide.targetMinutes, 'number')}
-    <label>Story section<select data-slide-field="sectionId">${options([['','Unassigned'], ...(sections || []).map(s => [s.id,s.title])], slide.sectionId || '')}</select></label></section>
-  </div>`;
-}
 // The layout choice for the editor header, by plain name; a saved layout outside the declaration still shows.
 export const layoutOptions = selected => [...layouts, ...(layouts.includes(selected) ? [] : [selected])]
   .map(id => `<option value="${esc(id)}" ${id === selected ? 'selected' : ''}>${esc(SLIDE_TYPES[id]?.label || id)}</option>`).join('');
-// Field edits inside `root` change the slide under the nearest [data-slide-index]. Typing marks the
-// production dirty; a committed change saves. Changing layout or vector re-renders the slots at once.
-export function bindSlideFields(root, { getSlides, onDirty, onSave, render }) {
-  root.addEventListener('input', event => {
-    const field = event.target.dataset.slideField;
-    if (!field) return;
-    const slide = getSlides()[Number(event.target.closest('[data-slide-index]').dataset.slideIndex)];
-    const part = event.target.closest('[data-part]');
-    const target = part ? slide[part.dataset.part][Number(part.dataset.partIndex)] : slide;
-    const value = event.target.type === 'number' ? Number(event.target.value) : event.target.value;
-    // An emptied stage timing or motion field is unset, not zero: unset keeps the standard behaviour.
-    if (stageFields.includes(field) && event.target.value === '') delete target[field];
-    else if (field === 'svgGroupIds') target.svgGroupIds = [...event.target.selectedOptions].map(option => option.value);
-    else if (field === 'layout') { target.layout = value; onDirty(); render(); onSave(); return; }
-    else if (field === 'vectorItemId') {
-      target.vector = value ? { itemId: value, alt: target.vector?.alt || '' } : null;
-      // Without its vector the slide is text: drop what only SVG groups can carry, keep the timing.
-      if (!value) for (const stage of target.stages || []) {
-        delete stage.svgGroupIds; delete stage.changes; delete stage.from;
-        if (['draw', 'enter'].includes(stage.motion)) delete stage.motion;
-      }
-      onDirty(); render(); onSave(); return;
-    }
-    else if (field === 'vectorAlt') { if (target.vector) target.vector.alt = value; }
-    else if (field === 'mediaItemId') target.media = value ? { itemId: value, alt: target.media?.alt || '' } : null;
-    else if (field === 'mediaAlt') { if (target.media) target.media.alt = value; }
-    else target[field] = value;
-    onDirty();
-  });
-  root.addEventListener('change', event => { if (event.target.dataset.slideField && !['layout', 'vectorItemId'].includes(event.target.dataset.slideField)) onSave(); });
-  root.addEventListener('click', event => {
-    const action = event.target.closest('[data-slide-action]')?.dataset.slideAction;
-    if (!action || !(action.startsWith('add-') || action.startsWith('part-'))) return;
-    const slide = getSlides()[Number(event.target.closest('[data-slide-index]').dataset.slideIndex)];
-    if (action.startsWith('add-')) {
-      const key = action.slice(4); (slide[key] ||= []).push(key === 'subnav' ? {id: `nav_${crypto.randomUUID()}`, label: 'New view'} : { ...(key === 'stages' ? {id: `stage_${crypto.randomUUID()}`} : {}), title: 'New item', body: '' });
-    } else {
-      const row = event.target.closest('[data-part]'), values = slide[row.dataset.part], from = Number(row.dataset.partIndex);
-      if (action === 'part-delete') values.splice(from, 1); else move(values, from, from + (action === 'part-up' ? -1 : 1));
-    }
-    onDirty(); render(); onSave();
-  });
-}

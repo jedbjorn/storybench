@@ -209,7 +209,7 @@ for (const type of [chromium, firefox]) test(`E2, E5 and E3 ${type.name()}: the 
   await editor.getByRole('button', { name: 'Previous slide' }).click();
   assert.equal(await heading(), 'Slide 02 of 8 Observe, connect, plan');
   const canvas = await frameIn(page, '.deck-canvas-viewport', 'diagram');
-  assert.equal(await editor.locator('[data-editor-elements] [data-slot="copy"] [data-slide-field="title"]').inputValue(), 'Observe, connect, plan');
+  assert.equal(await editor.locator('[data-editor-elements] [data-card="title"] [data-slide-field="title"]').inputValue(), 'Observe, connect, plan');
   // The header's Markup and Send to chat (task #130; E10 in slide-redline-browser.test.js).
   assert.deepEqual(await editor.locator('header [data-editor-redline]').allTextContents(), ['Markup', 'Send to chat']);
 
@@ -251,16 +251,17 @@ for (const type of [chromium, firefox]) test(`E2, E5 and E3 ${type.name()}: the 
   await editor.getByRole('button', { name: 'Close slide editor' }).click();
   assert.equal(await editor.evaluate(node => node.open), false);
 
-  // E3 (two types): Text and media shows media, drawing and gallery; Title has only a drawing. Changing
-  // to Title hides the picked media and keeps it saved; changing back restores it.
+  // E3 (two types): Text and media's Visual card offers media, drawing and gallery; Title's only a drawing.
+  // Changing to Title hides the picked media and keeps it saved; changing back restores it.
   await card(page, 5).locator('.slide-card-summary').click();
   await page.locator('#deckSlides [data-slide-edit]').click();
   assert.equal(await heading(), 'Slide 06 of 8 A photo');
-  const slots = () => editor.locator('[data-editor-elements] [data-slot]').evaluateAll(nodes => nodes.map(node => node.dataset.slot));
-  assert.deepEqual(await slots(), ['copy', 'media', 'drawing', 'gallery', 'steps', 'more']);
+  const slots = () => editor.locator('[data-editor-elements] [data-card], [data-editor-elements] [data-card-group]').evaluateAll(nodes => nodes.map(node =>
+    node.dataset.visualKinds ? `visual: ${node.dataset.visualKinds}` : node.dataset.card || node.dataset.cardGroup));
+  assert.deepEqual(await slots(), ['title', 'body', 'visual: image video drawing gallery', 'steps', 'more']);
   const layout = async label => { await editor.locator('.slide-editor-layout .sb-select-trigger').click(); await page.getByRole('option', { name: label, exact: true }).click(); await settled(page); };
   await layout('Title');
-  assert.deepEqual(await slots(), ['copy', 'drawing', 'steps', 'more']);
+  assert.deepEqual(await slots(), ['title', 'body', 'visual: drawing', 'steps', 'more']);
   assert.match(await editor.locator('[data-hidden-count]').textContent(), /1 saved value hidden by this layout \(media\)/);
   const saved = () => app.store.getDeck(episode.id).slides.find(slide => slide.id === 'photo');
   assert.equal(saved().layout, 'title');
@@ -271,13 +272,14 @@ for (const type of [chromium, firefox]) test(`E2, E5 and E3 ${type.name()}: the 
   await page.locator('#deckSlides [data-slide-edit]').click();
   await editor.locator('[data-hidden-count]').waitFor();
   await layout('Text and media');
-  assert.deepEqual(await slots(), ['copy', 'media', 'drawing', 'gallery', 'steps', 'more']);
+  assert.deepEqual(await slots(), ['title', 'body', 'visual: image video drawing gallery', 'steps', 'more']);
   assert.equal(await editor.locator('[data-hidden-count]').count(), 0);
   assert.equal(await editor.locator('[data-slide-field="mediaAlt"]').inputValue(), 'A picture');
-  assert.equal(await editor.locator('[data-slide-field="mediaItemId"]').inputValue(), saved().media.itemId);
+  assert.deepEqual(await editor.locator('[data-candidate-star][aria-pressed="true"]').evaluateAll(nodes => nodes.map(node => node.dataset.candidateStar)), [saved().media.itemId]);
   assert.equal(saved().layout, 'text-media');
   // A field typed in and left by Escape commits and saves: closing never drops it.
-  await editor.locator('[data-slot="copy"] [data-slide-field="title"]').fill('A photo, retitled');
+  await editor.locator('[data-card="title"] summary').click();
+  await editor.locator('[data-card="title"] [data-slide-field="title"]').fill('A photo, retitled');
   await page.keyboard.press('Escape');
   assert.equal(await editor.evaluate(node => node.open), false);
   await settled(page);

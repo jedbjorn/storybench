@@ -51,6 +51,12 @@ async function frameShows(page, slideId, check, arg) {
 const settled = page => page.waitForFunction(() => document.querySelector('#saveState')?.textContent.startsWith('Saved'));
 const pressed = page => page.$$eval('.deck-canvas-block[aria-pressed="true"]', nodes => nodes.map(node => node.dataset.select));
 const inspector = page => page.locator('.sb-inspector');
+// The selection toolbar (spec #46): the selected block's arguments, above or below it on the canvas.
+const toolbar = (page, block) => page.locator(`.deck-canvas-toolbar[data-toolbar-block="${block}"]:not([hidden])`);
+async function chooseAlignment(page, block, name) {
+  await toolbar(page, block).getByRole('button', { name: /^Alignment/ }).click();
+  await toolbar(page, block).getByRole('radio', { name }).click();
+}
 // The canvas is in the slide editor (spec #46), opened from the slide's card in the slide list.
 async function openEditor(page, index) {
   if (await page.locator('#slideEditor[open]').count()) await page.click('[data-editor-close]');
@@ -75,26 +81,28 @@ for (const type of [chromium, firefox]) test(`A7 ${type.name()}: the creator edi
   await openEditor(page, 0);
   await page.waitForSelector('.deck-canvas-block[data-select="copy"]');
 
-  // Click the copy block: it shows selected and the inspector shows its arguments.
+  // Click the copy block: it shows selected and the toolbar shows its arguments.
   await page.click('.deck-canvas-block[data-select="copy"]');
   assert.deepEqual(await pressed(page), ['copy']);
-  await assert.doesNotReject(inspector(page).getByRole('heading', { name: 'Title and text' }).waitFor());
-  assert.equal(await inspector(page).getByRole('radiogroup').count(), 2, 'position picker and alignment grid');
+  await assert.doesNotReject(toolbar(page, 'copy').waitFor());
+  for (const name of [/^Position/, /^Alignment/]) assert.equal(await toolbar(page, 'copy').getByRole('button', { name }).count(), 1, 'the position picker and alignment grid are dropdowns');
+  assert.equal(await toolbar(page, 'copy').getByRole('group', { name: 'Size' }).count(), 1);
 
   // Change position and alignment: the saved slide override changes and the canvas shows it, with no build.
-  await inspector(page).getByRole('radio', { name: 'Left of visual' }).click(); await settled(page);
-  await inspector(page).getByRole('radio', { name: 'Centred' }).click(); await settled(page);
+  await toolbar(page, 'copy').getByRole('button', { name: /^Position/ }).click();
+  await toolbar(page, 'copy').getByRole('radio', { name: 'Left of visual' }).click(); await settled(page);
+  await chooseAlignment(page, 'copy', 'Centred'); await settled(page);
   assert.deepEqual(deck(app.store, episode.id).slides[0].design, { copy: { position: 'left', align: 'center', valign: 'center' } });
   await frameShows(page, 'diagram', () => document.querySelector('.composition.placed > .arrange[data-side="left"] > .copy') !== null
     && document.querySelector('.composition').dataset.copyAlign === 'center');
   assert.equal(app.store.listJobs(episode.id).filter(job => job.kind === 'deck').length, 0, 'no build was needed');
   assert.deepEqual(await pressed(page), ['copy'], 'the selection survives the canvas refresh');
-  await assert.doesNotReject(inspector(page).getByText('Changed on this slide').waitFor(), 'a slide override is marked');
+  await assert.doesNotReject(toolbar(page, 'copy').getByText('Changed on this slide').waitFor(), 'a slide override is marked');
 
   // All slides + stage text style: the deck default changes and the other slide follows.
   await page.click('.deck-canvas-block[data-select="stageText"]');
-  await inspector(page).getByRole('button', { name: 'All slides' }).click();
-  await inspector(page).getByRole('button', { name: 'List', exact: true }).click(); await settled(page);
+  await toolbar(page, 'stageText').getByRole('button', { name: 'All slides' }).click();
+  await toolbar(page, 'stageText').getByRole('button', { name: 'List', exact: true }).click(); await settled(page);
   assert.deepEqual(deck(app.store, episode.id).design.stageText, { style: 'list' });
   assert.equal(deck(app.store, episode.id).slides[1].design, undefined, 'no override on the other slide');
   await page.click('[data-editor-nav="1"]');
@@ -171,11 +179,12 @@ for (const type of [chromium, firefox]) test(`A7 ${type.name()}: the creator edi
   assert.match(await row('theme.fonts.base').textContent(), /Lato.*This deck/);
   // Each read waits for the inspector to show the clicked block first, so it never reads the previous block's view.
   await page.click('.deck-canvas-block[data-select="stageText"]');
-  await inspector(page).getByRole('heading', { name: 'Stage text' }).waitFor();
-  assert.equal(await inspector(page).getByRole('button', { name: 'List', exact: true }).getAttribute('aria-pressed'), 'true');
+  await toolbar(page, 'stageText').waitFor();
+  assert.equal(await toolbar(page, 'stageText').getByRole('button', { name: 'List', exact: true }).getAttribute('aria-pressed'), 'true');
   await page.click('.deck-canvas-block[data-select="copy"]');
-  await inspector(page).getByRole('heading', { name: 'Title and text' }).waitFor();
-  for (const name of ['Left of visual', 'Centred']) assert.equal(await inspector(page).getByRole('radio', { name }).getAttribute('aria-checked'), 'true');
+  await toolbar(page, 'copy').waitFor();
+  assert.equal(await toolbar(page, 'copy').getByRole('button', { name: /^Position/ }).getAttribute('aria-label'), 'Position: Left of visual');
+  assert.equal(await toolbar(page, 'copy').getByRole('button', { name: /^Alignment/ }).getAttribute('aria-label'), 'Alignment: Centred');
   // A redraw (here a resize) moves each block's own element: a click or focus taken mid-redraw is kept.
   const copyBlock = await page.$('.deck-canvas-block[data-select="copy"]'), width = await copyBlock.evaluate(node => node.style.width);
   await copyBlock.focus();

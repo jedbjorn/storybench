@@ -1099,7 +1099,28 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
 @media (prefers-reduced-motion: reduce) { .deck-canvas-stages .is-pulsing { animation: none; outline: 2px solid var(--deep); } }
 .deck-canvas-bar label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
 .deck-canvas-stages { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
-.deck-canvas-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+.deck-canvas-body { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+/* Selection toolbar (deck-canvas.js): above the selected block, or below it; the alignment dropdown; drop zones. */
+.deck-canvas-toolbar { position: absolute; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; max-width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); box-shadow: 0 8px 24px #0a1e1c29; }
+.deck-canvas-toolbar[hidden] { display: none; }
+/* Only the toolbar's controls take the pointer: its frame and label never block the canvas beneath. */
+.deck-canvas-toolbar { pointer-events: none; }
+.deck-canvas-toolbar > :not(.deck-canvas-toolbar-label) { pointer-events: auto; }
+.deck-canvas-toolbar-label { align-self: center; font-size: 12.5px; color: var(--deep); }
+.deck-canvas-toolbar .deck-canvas-field { gap: 4px; }
+/* One compact row: each control names itself (aria-label), so its caption is for screen readers only. */
+.deck-canvas-toolbar .deck-canvas-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.deck-canvas-toolbar .sb-segmented button { padding: 4px 8px; font-size: 12.5px; }
+.deck-canvas-toolbar .sb-scope { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.deck-canvas-in-use { align-self: center; font-size: 13px; }
+.deck-canvas-dropdown { position: relative; }
+.deck-canvas-dropdown-button { padding: 5px 10px; font-size: 13px; }
+.deck-canvas-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 4; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); box-shadow: 0 8px 24px #0a1e1c29; }
+.deck-canvas-menu[hidden] { display: none; }
+.deck-canvas-surface.is-dragging .deck-canvas-block[aria-pressed="true"] { opacity: .75; cursor: grabbing; }
+.deck-canvas-block[aria-pressed="true"] { cursor: grab; }
+.deck-canvas-zone { position: absolute; display: grid; place-items: center; border: 2px dashed var(--deep); border-radius: 8px; background: #e6f1eecc; color: var(--deep); font-size: 13px; font-weight: 600; pointer-events: none; }
+.deck-canvas-zone.is-over { background: var(--deep); color: #fff; }
 .deck-canvas-surface { position: relative; width: 100%; margin-inline: auto; min-width: 0; border: 1px solid var(--line); overflow: hidden; background: var(--paper); }
 .deck-canvas-surface:focus { outline: none; }
 .deck-canvas-viewport { position: relative; overflow: hidden; height: 360px; }
@@ -1122,6 +1143,48 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
 .deck-canvas-swatch span { width: 26px; height: 26px; border: 1px solid var(--line); border-radius: 4px; }
 .deck-canvas-source { font-size: 12px; color: var(--muted); }
 .deck-canvas-reset { padding: 4px 9px; font-size: 12px; }
+/* Element cards (element-cards.js): the slide editor's Elements panel. */
+.element-cards { display: grid; gap: 8px; }
+/* Grid items size to their content by default; nowrap summaries and tables must not widen the panel. */
+.slide-editor-scroll > *, .element-cards > *, .element-steps > *, .element-card { min-width: 0; }
+.element-card { border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.element-card.is-active { border-color: var(--deep); box-shadow: 0 0 0 2px var(--pale); }
+.element-card > summary { display: flex; align-items: baseline; gap: 8px; padding: 9px 12px; cursor: pointer; list-style-position: inside; }
+.element-card-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13.5px; white-space: nowrap; }
+.element-card-summary { min-width: 0; overflow: hidden; color: var(--muted); font-size: 12.5px; white-space: nowrap; text-overflow: ellipsis; }
+.element-card-body { display: grid; gap: 10px; padding: 4px 12px 12px; }
+.element-field { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
+.element-row { display: grid; gap: 4px; justify-items: start; }
+.element-label { font-size: 12px; color: var(--muted); }
+.element-note { margin: 0; font-size: 12px; color: var(--muted); }
+.element-notice, .element-warning { margin: 0; padding: 7px 9px; border-radius: 7px; background: #fbe9e4; color: #8a2b16; font-size: 12.5px; }
+.element-motion { margin: 0; font-size: 12px; color: var(--muted); font-style: italic; }
+.element-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.element-chip { display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px 2px 8px; border-radius: 999px; background: var(--pale); color: var(--deep); font-size: 12px; }
+.element-chip button { padding: 0 5px; border: 0; background: none; color: inherit; }
+.element-card-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.element-grip { display: inline-flex; cursor: grab; color: var(--muted); }
+.element-steps { display: grid; gap: 8px; }
+.element-steps h4 { margin: 6px 0 0; font-size: 13px; color: var(--deep); }
+.element-steps h4 small { color: var(--muted); font-weight: 500; }
+.element-steps [data-drop="before"] { box-shadow: 0 -3px 0 var(--deep); }
+.element-steps [data-drop="after"] { box-shadow: 0 3px 0 var(--deep); }
+.element-column, .element-view { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.element-views { display: grid; gap: 6px; }
+.element-view-item { font-size: 12px; color: var(--muted); }
+.element-add { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
+.candidate-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+.candidate-tile { flex: 0 0 96px; display: grid; gap: 4px; padding: 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.candidate-tile.is-starred { border-color: var(--deep); background: var(--pale); }
+.candidate-thumb { display: grid; place-items: center; height: 56px; overflow: hidden; border-radius: 5px; background: #fff; }
+.candidate-thumb img, .candidate-thumb video { max-width: 100%; max-height: 56px; object-fit: contain; }
+.candidate-name { overflow: hidden; font-size: 11.5px; white-space: nowrap; text-overflow: ellipsis; }
+.candidate-actions { display: flex; justify-content: space-between; }
+.candidate-star { padding: 0 6px; border: 0; background: none; color: var(--deep); font-size: 17px; line-height: 1; }
+.candidate-actions .icon-button { width: 24px; height: 24px; }
+.element-parts { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.element-parts caption { text-align: left; font-size: 12px; color: var(--muted); padding-bottom: 4px; }
+.element-parts th, .element-parts td { padding: 4px 6px; border-top: 1px solid var(--line); text-align: left; }
 .stage-motion { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; align-items: end; }
 .stage-motion-note { margin: 0; color: var(--muted); font-size: .9em; }
 .preview-modal { width: 90vw; height: 90vh; max-width: none; max-height: none; padding: 0; border: 0; border-radius: 14px; overflow: hidden; box-shadow: 0 20px 70px #17282255; }

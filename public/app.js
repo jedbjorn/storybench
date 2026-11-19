@@ -610,15 +610,21 @@ $("#episodeTitle").oninput = $("#episodeNotes").oninput = () => {
 // Slides (spec #46): the list of slide cards, and the slide editor around the canvas. The canvas edits
 // the deck design and slide overrides in place, then saves like any slide field.
 const markDeckDirty = () => { dirty = true; $("#saveState").textContent = "Unsaved changes"; };
+const deckLibrary = () => (episode && boardItemsEpisode === episode.id ? boardItems : null);
+// Open asset (the visual's toolbar and card): the library's asset preview, over the slide editor.
+async function openDeckAsset(id) {
+  if (!libraryWorkspace.item(id)) await libraryWorkspace.open();
+  libraryWorkspace.openEdit(id);
+}
 // A canvas change saves; its promise is false when the save was refused (the save state then asks for a reload).
 // Reload and retry (a refused text commit) drops the refused local state and loads the latest saved production.
 const deckCanvas = createDeckCanvas($("#deckCanvas"), { channel: () => channelId, inspectorHost: $("[data-editor-inspector]"),
   async onChange() { markDeckDirty(); renderCards(); await save().catch(() => {}); return !$("#saveState").textContent.includes("reload"); },
-  async onReload() { if (!episode || saveInFlight) return; dirty = false; saveRequested = false; await load(episode.id); } });
-const deckLibrary = () => (episode && boardItemsEpisode === episode.id ? boardItems : null);
+  async onReload() { if (!episode || saveInFlight) return; dirty = false; saveRequested = false; await load(episode.id); },
+  getItems: deckLibrary, onOpenAsset: openDeckAsset });
 const slideEditor = createSlideEditor($("#slideEditor"), { canvas: deckCanvas, channel: () => channelId, getEpisode: () => episode, getItems: deckLibrary,
   getSections: () => (episode && boardItemsEpisode === episode.id ? boardSections : []), saveState: $("#saveState"),
-  onDirty: markDeckDirty, onSave: () => save(), onClose: () => renderCards() });
+  onDirty: markDeckDirty, onSave: () => save(), onClose: () => renderCards(), onOpenAsset: openDeckAsset });
 // One card is open at a time; its inline preview is the saved slide, so it waits for pending edits to save.
 let openSlideId = null, slideListShown = null, slidePreview = null;
 function renderSlideList() {
