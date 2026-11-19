@@ -30,7 +30,7 @@ Use `update_story({expectedStoryRevision,source})`, then `save_deck({expectedRev
 - `subnav`: independent gallery views `{id,label,itemId?}`. Only image/video items can be shown. Do not use URLs or file paths.
 - `design`: this slide's overrides of the deck's layout primitives (below).
 
-Create graphics in the work area, inspect with `inspect_image`, then register the original with `register_work_file` or reuse a library asset with `reuse_project_item`. Assign its item ID to the slide or gallery. Prefer HTML ZIP. Export supports SVG, raster images and mp4/webm. SVG inspection returns PNG. Ship the editable SVG unless the creator requests raster artwork.
+Create graphics in the work area and inspect with `inspect_image`. Register the original with `register_work_file` or reuse an asset with `reuse_project_item`, then follow the pick and candidate rules below. Prefer HTML ZIP (SVG, raster, mp4/webm). SVG inspection returns PNG. Ship editable SVG unless the creator requests raster artwork.
 
 `storybench-svg-1` accepts UTF-8 SVG up to 512 KiB, 2000 elements and 4096 pixels per side. Set root dimensions in unitless pixels or `px`, or supply a viewBox. Use groups/transforms, paths/shapes, gradients, local use/clip/mask references and bounded blur/shadow filters. Set `font-family` (Manrope or a packaged font) and `font-size` separately. Use presentation attributes or simple local `.class`/`#id` styles. IDs must be unique. Scripts, events, external resources, embedded images, font URLs, DTDs, authored animation, CSS variables and HTML are forbidden.
 
@@ -117,13 +117,13 @@ save_deck({ expectedRevision: revision, slides: [{
 }] });
 ```
 
-Geometry accumulates and holds complete. Replay restarts the sequence. Manual stage selection (audience or Presenter) stops automatic progression; leaving the slide cancels it, hidden tabs pause it, and reduced motion/print show all geometry. Rebuild after changing mappings. On a missing/duplicate group diagnostic, correct the saved stage or register the corrected source, then save the current revision again.
+Geometry accumulates and holds complete. Replay restarts the sequence. Manual stage selection in either view stops progression. Leaving cancels it, hidden tabs pause it, and reduced motion/print show all geometry. For missing or duplicate groups, follow the correction loop below. Rebuild after changing mappings.
 
 Split crowded content into slides. Use gallery entries for alternate demo views. Check notes and captions. Do not claim aesthetic quality from structural tests.
 
 ### Building
 
-Call `build_deck({expectedRevision})` after save. The build snapshots the effective theme and design; selected regular/bold font files and licences ship in the offline bundle. Channel changes apply on the next build, leaving existing exports intact. Use `await_job({jobId})` and inspect failures, including their slide ID, before revising. Completed jobs expose a portable ZIP at `/api/jobs/<id>/deck/bundle.zip` and preview at `/api/jobs/<id>/deck/index.html`. Ask the creator to use the build's Preview / Download bundle buttons. Reopen saved slides, edit and build a new version; previous successes remain.
+After saving, call `build_deck({expectedRevision})` and `await_job({jobId})`. Inspect failures and slide IDs before revising. Builds snapshot effective theme and design and bundle selected regular/bold fonts and licences. Later channel changes apply on the next build. Completed jobs expose `/api/jobs/<id>/deck/bundle.zip` and `/api/jobs/<id>/deck/index.html` via Download bundle and Preview. Previous exports remain intact.
 
 ### Packaged browser tools
 
@@ -180,9 +180,11 @@ outputs without a digest must be rebuilt.
 
 ### Mandatory create and edit correction loop
 
-Creation: build the first representative composition early, inspect it, then repeat after meaningful content/layout/interaction batches. Editing: read the latest saved revision, preserve slide/stage IDs and notes, make the requested changes, rebuild and drive changed slides, adjacent transitions and affected Presenter/reveal/gallery/media states. Shared font/style/runtime changes require every affected state. Finish both workflows with full coverage of the actual delivered ZIP.
+Creation: build and inspect a representative composition early and after meaningful batches. Editing: read the latest revision, preserve slide/stage IDs and notes, make requested changes, rebuild and drive changed slides, adjacent transitions and affected Presenter/reveal/gallery/media states. Shared font/style/runtime changes require every affected state. Cover the exact delivered ZIP.
 
-Read brief, research, reference direction and channel standards. Assess each returned image for hierarchy, spacing, clipping, contrast, diagram clarity, reference adherence, consistency, copy, and note/narrative coherence. Record specific observations, not a generic “looks good”. Contact sheets establish overview; use full-resolution single-state images and crops for legibility. A contact sheet or cropped image alone cannot establish complete state coverage.
+Keep creator-directed picks through every QA pass and rebuild. “Use it” selects only the proposed iteration. Preserve the rest of the slide for a pick-only request. If a pick has a blocking defect, report it with `report_deck_qa` and propose a corrected unstarred iteration as a candidate. Register it with `iterationOf`. Star it only after a new creator instruction to use that iteration.
+
+Assess each image against the brief, research, references and standards. Record specific findings on hierarchy, spacing, clipping, contrast, diagram clarity, consistency, copy and note/narrative coherence. Use contact sheets for overview, full-resolution state images for coverage, and crops for legibility. A contact sheet or crop alone leaves state coverage incomplete.
 
 Concrete correction sequence (replace IDs and copy with actual observations):
 
@@ -197,7 +199,7 @@ report_deck_qa({sessionId:opened.sessionId,
     findings:[{severity:"blocking",description:"Opening title clips at 1280x720."}]}]});
 close_deck_qa({sessionId:opened.sessionId});
 const current = read_deck();
-// Edit saved source, not generated HTML. Preserve IDs, mappings and notes.
+// Correct the saved source within creator direction. Preserve picks, IDs, mappings and notes.
 current.slides[0].title = "A shorter title";
 const saved = save_deck({expectedRevision:current.revision, slides:current.slides});
 const rebuilt = build_deck({expectedRevision:saved.revision});
@@ -222,7 +224,7 @@ Inspect normal screen states with both audience and Presenter at a normal viewpo
 
 Exercise Presenter disconnect/reopen with `close-page` and `#presenter-open`, then check the newly returned page ID and notes. Click `#fullscreen`, check actual `fullscreen` state, and exit with Escape or the fullscreen toggle. Denied fullscreen remains unverified with its diagnostic. Inspect each slide under `emulate` with `reducedMotion:"reduce"`, and separately `media:"print"`, then restore normal screen/no-preference. Check complete geometry in these modes. Read errors and test affected recovery paths. A failed or skipped required operation leaves QA incomplete; retain the draft if blocked.
 
-A rebuild invalidates prior QA completion even at the same saved revision. Old findings remain useful history but never supply fresh coverage for a new build. Correct saved source/assets, preserve conflict handling (re-read on stale revisions), rebuild, repeat the checks and record what changed. Blocking visual findings require correction and a fresh build; do not erase the observation to manufacture a pass.
+A rebuild requires fresh QA even at the same revision. Retain prior findings as history. Correct saved source within creator direction, re-read on conflicts, rebuild, repeat checks and record changes. Blocking findings stay open until a fresh build confirms the fix. If a correction needs creator direction, retain a draft and report QA incomplete.
 
 `report_deck_qa` derives status; there is no caller-supplied complete flag. It retains build identity, coverage, images, assessments, findings and changes separately from successful export. Explicitly close each session before ending the request; closed-session evidence can be accumulated by reopening the same build for another batch. Cancellation, timeout, browser failure, missing/replaced screenshots and stale output cannot establish completion. Unknown/rejected image input permits draft editing/export only. Never switch models or rasterize output to conceal a missing capability.
 
