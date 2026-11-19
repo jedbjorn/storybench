@@ -224,15 +224,15 @@
           </aside>
         </div>
       </div>
-      <dialog aria-labelledby="drawingAssignmentTitle" data-drawing-assignment>
+      <dialog class="library-modal" aria-labelledby="drawingAssignmentTitle" data-drawing-assignment>
         <form>
-          <h2 id="drawingAssignmentTitle">Assign drawing parts</h2>
+          <div class="modal-heading"><h2 id="drawingAssignmentTitle">Assign drawing parts</h2></div>
           <p>Choose a different part for each step.</p>
           <div class="drawing-assignment-steps" data-drawing-steps></div>
           <p class="error" role="alert" data-drawing-error hidden></p>
           <div class="modal-actions">
             <button type="button" data-drawing-cancel>Cancel</button>
-            <button type="submit" data-drawing-confirm>Pick drawing</button>
+            <button type="submit" class="primary" data-drawing-confirm>Pick drawing</button>
           </div>
         </form>
       </dialog>

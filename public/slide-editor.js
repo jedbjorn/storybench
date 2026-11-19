@@ -111,9 +111,12 @@ export function createSlideEditor(dialog, { canvas, channel = () => null, getEpi
     drawingDraft = { base, next, metadata: asset.metadata };
     stepFields.replaceChildren(...slide.stages.map((stage, index) => {
       const field = doc.createElement('label');
-      field.append(`Step ${index + 1}: ${stage.title}`);
+      const heading = doc.createElement('strong');
+      heading.textContent = `Step ${index + 1}: ${stage.title}`;
+      field.append(heading);
       if (stage.body) {
         const body = doc.createElement('span');
+        body.className = 'drawing-step-copy';
         body.textContent = stage.body;
         field.append(body);
       }

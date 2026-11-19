@@ -398,7 +398,8 @@ for (const type of [chromium, firefox]) test(`#100 ${type.name()}: first drawing
   const original = slide('text'), base = deck().revision;
   await star(items.svg).click();
   await form.waitFor();
-  assert.match(await form.textContent(), /IntroduceAuthored opening[\s\S]*ConcludeAuthored ending/);
+  assert.deepEqual(await form.locator('[data-drawing-steps] strong').allTextContents(), ['Step 1: Introduce', 'Step 2: Conclude']);
+  assert.deepEqual(await form.locator('.drawing-step-copy').allTextContents(), ['Authored opening', 'Authored ending']);
   assert.ok(await confirm.isDisabled());
   assert.deepEqual(await form.locator('select').first().locator('option').allTextContents(), ['Choose part…', 'landscape', 'observe', 'connect', 'plan']);
   await choose(1, 'observe');
