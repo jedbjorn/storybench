@@ -81,7 +81,7 @@ export function buildDeck(input, { assets = {} } = {}) {
   if (!slides.length) throw new Error('slides must not be empty');
   const files = new Map();
   const ids = new Set();
-  const vectors = new Map(), svgFonts = new Set();
+  const vectors = new Map(), svgFonts = new Set(), svgStyles = [];
   let instance = 0;
   function asset(path, type) {
     const extensions = type === 'video' ? /\.(mp4|webm)$/i : /\.(svg|png|jpe?g|webp|gif)$/i;
@@ -100,10 +100,11 @@ export function buildDeck(input, { assets = {} } = {}) {
     const alt = text(value.alt, 'media.alt');
     if (stages !== null && !vectors.has(value.src)) throw new Error('Vector composition requires SVG media');
     if (vectors.has(value.src)) {
-      const vector = parseSvg(assets[value.src], { namespace: `_sbv${++instance}`, stages });
+      const vector = parseSvg(assets[value.src], { namespace: `_sbv${++instance}`, stages, externalizeStyles: true });
       for (const family of vector.fonts) svgFonts.add(family);
+      if (vector.css) svgStyles.push(vector.css);
       // Inline validated geometry can load the bundle's fonts. Retain original editable
-      // bytes alongside it; each use gets isolated definitions and presentation styles.
+      // bytes alongside it; instance styles load through the sandbox's allowed stylesheet.
       return `<div class="vector-media" role="img" aria-label="${alt}">${vector.svg}</div>`;
     }
     if (value.type === 'image') return `<img src="${src}" alt="${alt}">`;
@@ -199,9 +200,10 @@ export function buildDeck(input, { assets = {} } = {}) {
     const scale = attrs([['type', design.type?.scale], ['spacing', design.spacing?.density]]);
     return `<article class="slide layout-${slide.layout}" id="${slide.id}" data-title="${heading}" data-minutes="${minutes}"${scale} hidden><header>${text(slide.eyebrow, 'eyebrow', true) || 'Presentation'}<span>${minutes} min</span></header><div class="composition${placed ? ' placed' : ''}"${composition}>${content}</div><p class="speaker-notes" hidden>${notes}</p></article>`;
   });
-  const shell = (body, script) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="stylesheet" href="styles.css"><script src="${script}" defer></script></head><body>${body}</body></html>`;
+  const svgStylesheet = svgStyles.length ? '<link rel="stylesheet" href="svg.css">' : '';
+  const shell = (body, script, extraStylesheet = '') => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="stylesheet" href="styles.css">${extraStylesheet}<script src="${script}" defer></script></head><body>${body}</body></html>`;
   const buttons = '<button data-command="previous">Previous</button><button data-command="next">Next</button>';
-  files.set('index.html', shell(`<a class="skip" href="#presentation">Skip to slides</a><aside class="rail"><strong>${title}</strong><nav aria-label="Slides">${slides.map((slide, i) => `<button data-go="${i}">${String(i + 1).padStart(2, '0')} · ${escape(slide.title)}</button>`).join('')}</nav></aside><main id="presentation" tabindex="-1">${rendered.join('')}</main><footer>${buttons}<output id="counter" aria-live="polite"></output><button id="presenter-open">Presenter (N)</button><button id="fullscreen">Fullscreen</button></footer><p id="status" role="status"></p>`, 'audience.js'));
+  files.set('index.html', shell(`<a class="skip" href="#presentation">Skip to slides</a><aside class="rail"><strong>${title}</strong><nav aria-label="Slides">${slides.map((slide, i) => `<button data-go="${i}">${String(i + 1).padStart(2, '0')} · ${escape(slide.title)}</button>`).join('')}</nav></aside><main id="presentation" tabindex="-1">${rendered.join('')}</main><footer>${buttons}<output id="counter" aria-live="polite"></output><button id="presenter-open">Presenter (N)</button><button id="fullscreen">Fullscreen</button></footer><p id="status" role="status"></p>`, 'audience.js', svgStylesheet));
   files.set('presenter.html', shell(`<main class="presenter"><p id="connection" role="status">Connecting to audience…</p><output id="counter"></output><h1 id="current-title"></h1><p>Next: <span id="next-title"></span></p><label>Slide <select id="slide-select" disabled></select></label><div>${buttons}</div><h2>Speaker notes</h2><p id="notes"></p><label>Stage <select id="stage-select" disabled></select></label><div><button data-command="sub-previous">Previous stage</button><button data-command="sub-next">Next stage</button><button data-command="replay">Replay</button><button data-command="video-toggle">Play / pause</button><button data-command="video-restart">Restart video</button></div><p id="video-status"></p></main>`, 'presenter.js'));
   for (const name of ['audience.js', 'presenter.js', 'styles.css', 'assets/manrope-variable.ttf', 'assets/Manrope-OFL.txt']) files.set(name, readFileSync(new URL(name, import.meta.url)));
   const fontCSS = typography(files, input.fonts, [...svgFonts]);
@@ -209,5 +211,6 @@ export function buildDeck(input, { assets = {} } = {}) {
   files.set('styles.css', Buffer.from(files.get('styles.css') + '\n.vector-media{width:100%;height:100%;display:flex;align-items:center;justify-content:center}.vector-media>svg{max-width:100%;max-height:60svh;height:auto;font-family:Manrope}\n'));
   if (fontCSS) files.set('styles.css', Buffer.from(files.get('styles.css') + '\n' + fontCSS));
   if (palette.length) files.set('styles.css', Buffer.from(files.get('styles.css') + `\n:root{${palette.map(([name, value]) => `${name}:${value}`).join(';')}}\n`));
+  if (svgStylesheet) files.set('svg.css', Buffer.from(`${svgStyles.join('\n')}\n`));
   return files;
 }

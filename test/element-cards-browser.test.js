@@ -10,15 +10,17 @@
 // Task #134 (flag #95), E4: Add element > Step on a Process slide's drawing reveals a part, saved with it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { Readable } from 'node:stream';
 import { crc32, deflateSync } from 'node:zlib';
 import { chromium, firefox } from 'playwright-core';
 import { createApp } from '../src/server.js';
 import { createLibraryService } from '../src/library.js';
+import { extractBuild } from '../src/deck-qa-bundle.js';
 import { listenInRange } from '../test-support/loopback-port.js';
 
 async function launch(type) {
@@ -474,6 +476,133 @@ for (const type of [chromium, firefox]) test(`#100 ${type.name()}: first drawing
   assert.ok(zip.includes(Buffer.from('data-vector-step="1" data-vector-group="connect"')));
   assert.ok(zip.includes(Buffer.from('<use href="#tree"')), 'bundle retains the source definition uses');
   assert.deepEqual(errors, []);
+});
+
+// Sprint 15 WU63, flag #104: a visible <use> element can still be covered by a black outline fill.
+for (const type of [chromium, firefox]) test(`#104 ${type.name()}: the editor and Preview paint the same SVG as the ZIP under CSP`, { timeout: 60000 }, async t => {
+  const browser = await type.launch(type === chromium ? { channel: 'chromium' } : {});
+  t.after(() => browser.close());
+  const { app, episode, items, register, url } = await setup(t);
+  const source = await readFile(new URL('../src/runtime/fixtures/svg-illustration.svg', import.meta.url), 'utf8');
+  const styled = await register(Buffer.from(source
+    .replace('</style>', '#needle{fill:red}.sky{fill:url(#sky)}</style>')
+    .replace('fill="#4f9075"', 'id="needle" style="fill:#4f9075"')
+    .replace('fill="url(#sky)"', 'class="sky"')
+    .replace('clip-path="url(#viewport)"', 'style="clip-path:url(#viewport)"')), 'style-cascade.svg', 'Graphics');
+  const saved = app.store.saveDeck(episode.id, app.store.getDeck(episode.id).revision, [
+    { id: 'static', title: 'Static landscape', layout: 'full-media', media: { itemId: items.svg.id, alt: 'Landscape' } },
+    { id: 'paint', title: 'Revealed landscape', layout: 'full-media', vector: { itemId: styled.id, alt: 'Landscape' },
+      stages: [{ id: 'landscape', title: 'Landscape', svgGroupIds: ['landscape'] }] },
+  ]);
+  const page = await browser.newPage({ viewport: { width: 1600, height: 1100 }, reducedMotion: 'reduce' });
+  page.setDefaultTimeout(10000);
+  await page.addInitScript(() => {
+    window.policyViolations = [];
+    document.addEventListener('securitypolicyviolation', event => {
+      window.policyViolations.push([event.effectiveDirective, event.blockedURI]);
+    });
+  });
+  const responses = new Map();
+  page.on('response', response => { if (response.request().isNavigationRequest()) responses.set(response.url(), response); });
+  const zipPage = await browser.newPage({ viewport: { width: 1280, height: 720 }, reducedMotion: 'reduce' });
+  const evidenceDir = process.env.STORYBENCH_EVIDENCE_DIR;
+  if (evidenceDir) await mkdir(evidenceDir, { recursive: true });
+
+  async function paint(context, frame) {
+    const svg = frame.locator('#paint .vector-media svg');
+    const landscape = svg.locator('[data-vector-group="landscape"][aria-hidden="false"]');
+    await landscape.waitFor();
+    assert.equal(await landscape.locator('use[href$="-tree"]').count(), 2, context);
+    const paint = await svg.evaluate(node => {
+      const outline = getComputedStyle(node.querySelector('rect[class$="-outline"]'));
+      const bounds = node.getBoundingClientRect(), matrix = node.getScreenCTM();
+      const samples = [[240, 267], [558, 298], [210, 344], [300, 175], [167, 345]].map(([x, y]) => {
+        const point = new DOMPoint(x, y).matrixTransform(matrix);
+        return [(point.x - bounds.left) / bounds.width, (point.y - bounds.top) / bounds.height];
+      });
+      return { fill: outline.fill, stroke: outline.stroke, samples };
+    });
+    const screenshot = await svg.screenshot({ path: evidenceDir && path.join(evidenceDir, `svg-paint-${type.name()}-${context}.png`) });
+    const pixels = await zipPage.evaluate(async ({ png, samples }) => {
+      const image = new Image();
+      image.src = `data:image/png;base64,${png}`;
+      await image.decode();
+      const canvas = new OffscreenCanvas(image.width, image.height), ctx = canvas.getContext('2d');
+      ctx.drawImage(image, 0, 0);
+      return samples.map(([x, y]) => Array.from(ctx.getImageData(Math.round(x * image.width), Math.round(y * image.height), 1, 1).data).slice(0, 3));
+    }, { png: screenshot.toString('base64'), samples: paint.samples });
+    assert.equal(paint.fill, 'none', context);
+    assert.equal(paint.stroke, 'rgb(41, 75, 96)', context);
+    assert.deepEqual(pixels.slice(0, 3), [[79, 144, 117], [79, 144, 117], [179, 213, 183]], `${context}: both tree crowns and the hill paint`);
+    assert.ok(pixels[3][0] < 245 && pixels[3][2] > 230, `${context}: the sky gradient paints`);
+    assert.ok(pixels[4][0] > 245 && pixels[4][1] > 245, `${context}: the landscape clips at the viewport`);
+    return { fill: paint.fill, stroke: paint.stroke, pixels };
+  }
+  async function verifySandbox(iframe, frame) {
+    assert.equal(await iframe.getAttribute('sandbox'), 'allow-scripts');
+    const response = responses.get(frame.url().split('#')[0]);
+    assert.ok(response, `navigation response for ${frame.url()}`);
+    const headers = await response.allHeaders();
+    assert.equal(headers['content-security-policy'], "sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'none'");
+    assert.equal(headers['x-content-type-options'], 'nosniff');
+    const isolation = await frame.evaluate(async health => {
+      const attempt = async operation => { try { await operation(); return 'allowed'; } catch (error) { return error.name; } };
+      return {
+        origin: self.origin,
+        parent: await attempt(() => parent.document),
+        local: await attempt(() => localStorage.getItem('test')),
+        session: await attempt(() => sessionStorage.getItem('test')),
+        network: await attempt(() => fetch(health, { mode: 'no-cors' })),
+      };
+    }, new URL('/api/health', url).href);
+    assert.deepEqual(isolation, { origin: 'null', parent: 'SecurityError', local: 'SecurityError', session: 'SecurityError', network: 'TypeError' });
+    await frame.waitForFunction(() => window.policyViolations.some(([directive]) => directive === 'connect-src'));
+    const violations = await frame.evaluate(() => window.policyViolations);
+    assert.deepEqual(violations.filter(([directive]) => directive.startsWith('style-src')), []);
+    return { csp: headers['content-security-policy'], isolation, violations };
+  }
+
+  await page.goto(url);
+  await openEditor(page, 1);
+  const canvasIframe = page.locator('#slideEditor .deck-canvas-viewport iframe:not(.is-loading)');
+  const canvas = await frameIn(page, 'paint', saved.revision);
+  const editor = await paint('editor', canvas);
+  const editorPolicy = await verifySandbox(canvasIframe, canvas);
+
+  await page.click('[data-editor-close]');
+  await page.click('#buildDeck');
+  const previewLink = page.getByRole('link', { name: `Preview revision ${saved.revision}` });
+  await previewLink.waitFor();
+  const job = app.store.listJobs(episode.id).find(job => job.kind === 'deck' && job.revision === saved.revision && job.state === 'completed');
+  assert.ok(job);
+  const exported = await mkdtemp(path.join(tmpdir(), 'sb-svg-paint-'));
+  t.after(() => rm(exported, { recursive: true, force: true }));
+  const bundle = await extractBuild(app.store, episode.id, job.id, exported);
+  assert.equal(bundle.sourceRevision, saved.revision);
+  await zipPage.goto(pathToFileURL(path.join(exported, 'index.html')).href);
+  const showLandscape = async frame => {
+    await frame.locator('[data-go="1"]').click();
+    await frame.locator('#paint [data-stage="0"]').click();
+  };
+  await showLandscape(zipPage);
+  const zip = await paint('zip', zipPage);
+  await previewLink.click();
+  const iframe = page.frameLocator('#previewModal [data-preview-frame]').locator('#viewer iframe');
+  await iframe.waitFor();
+  const preview = await (await iframe.elementHandle()).contentFrame();
+  await showLandscape(preview);
+  assert.equal(new URL(preview.url()).pathname, `/api/jobs/${job.id}/deck/index.html`);
+  const served = await paint('preview', preview);
+  const previewPolicy = await verifySandbox(iframe, preview);
+  // The editor scales its 1280 x 720 frame, so compare color within rounding tolerance.
+  for (const [context, { pixels }] of [['editor', editor], ['preview', served]]) {
+    assert.ok(pixels.every((rgb, i) => rgb.every((channel, j) => Math.abs(channel - zip.pixels[i][j]) <= 5)),
+      `${context} matches ZIP: ${JSON.stringify(pixels)} vs ${JSON.stringify(zip.pixels)}`);
+  }
+  if (evidenceDir) {
+    const comparison = { revision: saved.revision, bundleSha256: bundle.bundleSha256, editor, preview: served, zip, editorPolicy, previewPolicy };
+    await writeFile(path.join(evidenceDir, `svg-paint-${type.name()}.json`), JSON.stringify(comparison, null, 2) + '\n');
+  }
 });
 
 // Spec #46 task #134 (REV1 conformance F1, flag #95). E4: on a Process slide, Add element > Step reveals the
