@@ -523,6 +523,8 @@ async function save(changes = {}) {
   } catch {
     saved = false;
   }
+  // The render inside the save ran while it was still in flight, so the open slide card skipped its load: load it now.
+  if (saved && episode?.id === target && episode.kind === "deck" && !dirty && !saveRequested && !saveInFlight && !slideEditor.isOpen) renderSlideList();
   if (saved) await refreshJobs(target).catch((error) => toast(error.message));
   if (saved && (dirty || saveRequested) && episode?.id === target)
     return save();

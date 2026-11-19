@@ -149,10 +149,15 @@ for (const type of [chromium, firefox]) test(`E1 ${type.name()}: the slide list 
   // Reorder by arrows and by dragging the grip; both save through the revision check and survive reload.
   const order = () => app.store.getDeck(episode.id).slides.map(slide => slide.id);
   const revision = app.store.getDeck(episode.id).revision;
-  await card(page, 0).hover();
-  await card(page, 0).getByRole('button', { name: 'Move slide down' }).click(); await settled(page);
+  // The open card moves up; once the move has saved, it shows its slide from the new revision at the full reveal.
+  await card(page, 1).hover();
+  await card(page, 1).getByRole('button', { name: 'Move slide up' }).click(); await settled(page);
   assert.deepEqual(order().slice(0, 3), ['diagram', 'opening', 'point']);
   assert.equal(app.store.getDeck(episode.id).revision, revision + 1);
+  assert.equal(await card(page, 0).evaluate(node => node.classList.contains('is-open')), true);
+  const moved = await frameIn(page, '#deckSlides [data-slide-preview]', `${revision + 1}/diagram`);
+  assert.ok(await atFullReveal(moved), 'the moved card holds the full reveal');
+  assert.equal(await article(moved), inline);
   const target = await card(page, 4).boundingBox();
   await card(page, 7).locator('[data-slide-grip]').dragTo(card(page, 4), { targetPosition: { x: 40, y: Math.round(target.height / 4) } });
   await settled(page);
@@ -278,5 +283,9 @@ for (const type of [chromium, firefox]) test(`E2, E5 and E3 ${type.name()}: the 
   await settled(page);
   assert.equal(saved().title, 'A photo, retitled');
   assert.equal(await card(page, 5).locator('.slide-card-summary strong').textContent(), 'A photo, retitled');
+  // The card left open shows the edited slide from the saved revision, at the full reveal.
+  const edited = await frameIn(page, '#deckSlides [data-slide-preview]', `${app.store.getDeck(episode.id).revision}/photo`);
+  assert.ok(await atFullReveal(edited), 'the edited card holds the full reveal');
+  assert.match(await article(edited), /A photo, retitled/);
   assert.deepEqual(errors, []);
 });
