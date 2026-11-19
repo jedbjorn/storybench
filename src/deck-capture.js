@@ -53,12 +53,13 @@ export function validateCanvasState(slide, body) {
   return { slideId: slide.id, stage, scroll: Math.max(0, Math.min(100_000, Math.round(scroll))) };
 }
 
-export function createDeckCapture({ store, launch = options => chromium.launch(options), limitMs = CAPTURE_LIMIT_MS }) {
+// `tmpRoot` holds each capture's short-lived temp directory (tests pass their own, so concurrent test files never share it).
+export function createDeckCapture({ store, launch = options => chromium.launch(options), limitMs = CAPTURE_LIMIT_MS, tmpRoot = os.tmpdir() }) {
   let running = false;
   // One short-lived browser; `serve` routes the context to exactly the files it allows (everything else is
   // refused) and `shoot` drives the page to the state and returns its PNG.
   async function render({ viewport, serve, shoot }, work) {
-    const temp = await mkdtemp(path.join(os.tmpdir(), 'storybench-capture-'));
+    const temp = await mkdtemp(path.join(tmpRoot, 'storybench-capture-'));
     try {
       // Same whitelisted environment and pinned full Chromium as agent QA.
       work.browser = await launch({ channel: 'chromium', headless: true, timeout: limitMs,

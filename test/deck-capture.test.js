@@ -115,9 +115,11 @@ test('one creator capture at a time; a capture that cannot start within its limi
   const job = await f.build();
   let release, closed = 0;
   const started = new Promise(resolve => { release = resolve; });
-  const slow = createDeckCapture({ store: f.app.store, limitMs: 300, launch: () => started });
+  // A private temp root: other test files capturing at the same time use the shared one.
+  const tmpRoot = await mkdtemp(path.join(os.tmpdir(), 'sb-capture-root-'));
+  t.after(() => rm(tmpRoot, { recursive: true, force: true }));
+  const slow = createDeckCapture({ store: f.app.store, limitMs: 300, launch: () => started, tmpRoot });
   const state = validateCaptureState(job, { slideId: 'opening', stage: null, gallery: null, width: 1280, height: 720 });
-  const before = (await readdir(os.tmpdir())).filter(name => name.startsWith('storybench-capture-'));
   const first = slow.capture(job, state);
   await assert.rejects(slow.capture(job, state), error => error.statusCode === 503 && error.message === CAPTURE_BUSY);
   await assert.rejects(first, error => error.statusCode === 503 && error.message === CAPTURE_BUSY);
@@ -126,7 +128,7 @@ test('one creator capture at a time; a capture that cannot start within its limi
   for (let i = 0; i < 100 && closed === 0; i++) await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(closed, 1, 'a browser that starts after the limit is closed');
   await new Promise(resolve => setTimeout(resolve, 50));
-  assert.deepEqual((await readdir(os.tmpdir())).filter(name => name.startsWith('storybench-capture-')).sort(), before.sort());
+  assert.deepEqual(await readdir(tmpRoot), [], 'the capture removed its temp directory');
   const failing = createDeckCapture({ store: f.app.store, launch: async () => { throw new Error('no browser here'); } });
   await assert.rejects(failing.capture(job, state), error => error.statusCode === 500 && /no browser here/.test(error.message));
   await assert.rejects(failing.capture(job, state), /no browser here/, 'slot released after a failure');
