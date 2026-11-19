@@ -1106,6 +1106,9 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
 .deck-canvas-blocks { position: absolute; inset: 0; }
 .deck-canvas-block { position: absolute; border-radius: 4px; }
 .deck-canvas-status:empty { display: none; }
+/* Text on the slide: while a text edit is open the frame takes the pointer and the selection outlines step aside. */
+.deck-canvas-surface.is-editing .deck-canvas-frame { pointer-events: auto; }
+.deck-canvas-surface.is-editing .deck-canvas-blocks { visibility: hidden; }
 .deck-canvas-status { margin: 0; color: var(--accent); }
 .deck-canvas-field { display: grid; gap: 6px; justify-items: start; }
 .deck-canvas-label { font-size: 12px; color: var(--muted); }
