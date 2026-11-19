@@ -12,7 +12,7 @@ import { createApp } from '../src/server.js';
 import { createLibraryService } from '../src/library.js';
 import { createDeckQa } from '../src/deck-qa.js';
 import { extractBuild } from '../src/deck-qa-bundle.js';
-import { createDeckCapture, validateCaptureState, CAPTURE_BUSY, CAPTURE_REBUILD } from '../src/deck-capture.js';
+import { createDeckCapture, validateCaptureState, validateCanvasState, CAPTURE_BUSY, CAPTURE_REBUILD } from '../src/deck-capture.js';
 
 const DECK_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'none'";
 
@@ -115,9 +115,11 @@ test('one creator capture at a time; a capture that cannot start within its limi
   const job = await f.build();
   let release, closed = 0;
   const started = new Promise(resolve => { release = resolve; });
-  const slow = createDeckCapture({ store: f.app.store, limitMs: 300, launch: () => started });
+  // A private temp root: other test files capturing at the same time use the shared one.
+  const tmpRoot = await mkdtemp(path.join(os.tmpdir(), 'sb-capture-root-'));
+  t.after(() => rm(tmpRoot, { recursive: true, force: true }));
+  const slow = createDeckCapture({ store: f.app.store, limitMs: 300, launch: () => started, tmpRoot });
   const state = validateCaptureState(job, { slideId: 'opening', stage: null, gallery: null, width: 1280, height: 720 });
-  const before = (await readdir(os.tmpdir())).filter(name => name.startsWith('storybench-capture-'));
   const first = slow.capture(job, state);
   await assert.rejects(slow.capture(job, state), error => error.statusCode === 503 && error.message === CAPTURE_BUSY);
   await assert.rejects(first, error => error.statusCode === 503 && error.message === CAPTURE_BUSY);
@@ -126,7 +128,7 @@ test('one creator capture at a time; a capture that cannot start within its limi
   for (let i = 0; i < 100 && closed === 0; i++) await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(closed, 1, 'a browser that starts after the limit is closed');
   await new Promise(resolve => setTimeout(resolve, 50));
-  assert.deepEqual((await readdir(os.tmpdir())).filter(name => name.startsWith('storybench-capture-')).sort(), before.sort());
+  assert.deepEqual(await readdir(tmpRoot), [], 'the capture removed its temp directory');
   const failing = createDeckCapture({ store: f.app.store, launch: async () => { throw new Error('no browser here'); } });
   await assert.rejects(failing.capture(job, state), error => error.statusCode === 500 && /no browser here/.test(error.message));
   await assert.rejects(failing.capture(job, state), /no browser here/, 'slot released after a failure');
@@ -248,4 +250,14 @@ test('server capture matches an agent QA screenshot of the same state and leaves
   const after = await data('act_deck_qa', { sessionId, action: 'key', key: 'ArrowDown' });
   assert.equal(after.state.slideId, 'gallery');
   await data('close_deck_qa', { sessionId });
+});
+
+test('the slide editor capture accepts only a step the saved slide has, and clamps scroll (spec #46 Redlines)', () => {
+  const slide = { id: 'plan', stages: [{ id: 'a' }, { id: 'b' }] };
+  assert.deepEqual(validateCanvasState(slide, { stage: null }), { slideId: 'plan', stage: null, scroll: 0 });
+  assert.deepEqual(validateCanvasState(slide, { stage: 1, scroll: 120.6 }), { slideId: 'plan', stage: 1, scroll: 121 });
+  assert.deepEqual(validateCanvasState(slide, { scroll: -5 }), { slideId: 'plan', stage: null, scroll: 0 });
+  for (const body of [{ stage: 2 }, { stage: -1 }, { stage: '1' }, { stage: 0.5 }, { scroll: 'top' }, { scroll: Infinity }])
+    assert.throws(() => validateCanvasState(slide, body), error => error.statusCode === 400, JSON.stringify(body));
+  assert.throws(() => validateCanvasState({ id: 'still' }, { stage: 0 }), error => error.statusCode === 400);
 });

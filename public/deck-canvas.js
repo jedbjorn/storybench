@@ -128,6 +128,7 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
     if (refusal) return;
     pending?.remove();
     pending = canvasFrame(doc, `${url}&${new URLSearchParams({ ...(stage === null ? {} : { stage }), scroll: Math.round(info?.scroll?.top || 0) })}`, 'Slide as built');
+    Object.assign(pending.dataset, { slideId, revision: episode.revision });
     viewport.append(pending);
     place();
   }
@@ -450,6 +451,12 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
       episode = null; slideId = null; shown = ''; info = null; drawn = ''; playing = false;
       frame?.remove(); pending?.remove(); frame = pending = null;
       surface.select(null); blocksLayer.replaceChildren(); renderStages();
+    },
+    // What the frame shows now, for Markup (spec #46 'Redlines'): its slide and saved revision, the step
+    // (null is All) and scroll. Null until the open slide's frame has reported.
+    get shown() {
+      if (!frame || !info || frame.dataset.slideId !== slideId) return null;
+      return { slideId, revision: Number(frame.dataset.revision), stage, scroll: Math.round(info.scroll?.top || 0) };
     },
     // Escape steps back through the selection before it closes the editor.
     get selected() { return selected; },

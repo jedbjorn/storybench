@@ -616,7 +616,7 @@ const deckCanvas = createDeckCanvas($("#deckCanvas"), { channel: () => channelId
   async onChange() { markDeckDirty(); renderCards(); await save().catch(() => {}); return !$("#saveState").textContent.includes("reload"); },
   async onReload() { if (!episode || saveInFlight) return; dirty = false; saveRequested = false; await load(episode.id); } });
 const deckLibrary = () => (episode && boardItemsEpisode === episode.id ? boardItems : null);
-const slideEditor = createSlideEditor($("#slideEditor"), { canvas: deckCanvas, getEpisode: () => episode, getItems: deckLibrary,
+const slideEditor = createSlideEditor($("#slideEditor"), { canvas: deckCanvas, channel: () => channelId, getEpisode: () => episode, getItems: deckLibrary,
   getSections: () => (episode && boardItemsEpisode === episode.id ? boardSections : []), saveState: $("#saveState"),
   onDirty: markDeckDirty, onSave: () => save(), onClose: () => renderCards() });
 // One card is open at a time; its inline preview is the saved slide, so it waits for pending edits to save.

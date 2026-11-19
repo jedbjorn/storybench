@@ -2,10 +2,16 @@ import Painterro from './painterro.js';
 import { withChannel, workspaceSelection } from './preview-links.js';
 
 // The redline popup: one still of the pinned asset, Painterro marks, a prompt, and Send to chat.
-// Loaded only when Markup is first pressed, so ordinary previews never fetch Painterro.
+// Loaded only when Markup is first pressed, so ordinary previews never fetch Painterro. Its stylesheet
+// loads with it, on the Preview page and in the slide editor alike.
+if (!document.querySelector('link[data-redline-style]')) await new Promise(resolve => {
+  const link = Object.assign(document.createElement('link'), { rel: 'stylesheet', href: '/redline.css', onload: resolve, onerror: resolve });
+  link.dataset.redlineStyle = '';
+  document.head.append(link);
+});
 const LIMIT = 20 * 1024 * 1024;
 const MIN_EDGE = 800, MAX_EDGE = 2560, SVG_EDGE = 1920;
-const NO_PROMPT = 'See the marks on the attached image.';
+const NO_PROMPT = 'See the marks on the attached image.', NO_MARKS = 'See the attached image.';
 const BUSY = 'A turn is active for this production. Let it finish or press Stop in the chat, then send.';
 const HIDDEN_TOOLS = ['select', 'crop', 'pixelize', 'eraser', 'rotate', 'resize', 'settings', 'zoomin', 'zoomout', 'bucket', 'filters', 'clear', 'save', 'open', 'close'];
 const working = state => ['queued', 'running', 'interrupting'].includes(state);
@@ -17,11 +23,29 @@ export function timecode(seconds) {
   return `${Math.floor(tenths / 600)}:${((tenths % 600) / 10).toFixed(1).padStart(4, '0')}`;
 }
 
-// `shown` is the deck state the Preview page trusted (slideId, index, stage and gallery of the pinned build) and the frame size.
+const quoted = list => list.length < 2 ? list.join('') : `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`;
+const version = ({ iteration, of }) => `v${iteration}${of > 1 ? ` of ${of}` : ''}`;
+// A deck asset (spec #46 'Redlines'): its iteration and the slides it is a candidate for, the starred one marked.
+function assetSuffix({ number, of, slides }) {
+  const where = slides.map(slide => `slide ${slide.number} “${slide.title}”${slide.starred ? ' (starred)' : ''}`);
+  return `, iteration ${version({ iteration: number, of })}, ${where.length ? `a candidate for ${quoted(where)}` : 'not a candidate for any slide'}`;
+}
+// The slide editor's canvas (spec #46 'Redlines'): slide number and title, the shown step, the saved revision
+// and the picked assets with their iterations. `shown.stage` is the canvas's step: null is All, 0 is Start.
+function slideLine({ revision, slide, picks }, { stage }) {
+  const count = slide.steps.length, named = index => slide.steps[index] ? ` “${slide.steps[index]}”` : '';
+  const step = count < 2 ? '' : stage === null ? ', all steps shown' : stage === 0 ? `, at Start${named(0)}` : `, step ${stage} of ${count - 1}${named(stage)}`;
+  const picked = picks.length ? `showing ${quoted(picks.map(pick => `“${pick.label}” ${version(pick)} (${pick.itemId})`))}` : 'no asset picked';
+  return `Redline on slide ${slide.number} “${slide.title}” (${slide.id}) in the slide editor, saved revision ${revision}${step}, ${picked}.`;
+}
+
+// `shown` is the deck state the Preview page trusted (slideId, index, stage and gallery of the pinned build) and the frame size,
+// or the slide editor canvas's shown step.
 export function contextLine(metadata, seconds, shown) {
   const at = Number.isFinite(seconds) ? ` at ${timecode(seconds)}` : '';
   const newer = metadata.latestUrl ? ' A newer version exists.' : '';
-  if (metadata.source === 'library') return `Redline on library item “${metadata.label}” (${metadata.itemId})${at}.${newer}`;
+  if (metadata.source === 'canvas') return slideLine(metadata, shown);
+  if (metadata.source === 'library') return `Redline on library item “${metadata.label}” (${metadata.itemId})${metadata.iteration ? assetSuffix(metadata.iteration) : ''}${at}.${newer}`;
   if (metadata.kind === 'deck') {
     const slide = metadata.deck.slides[shown.index];
     const reveal = shown.stage === null ? '' : `, reveal ${shown.stage + 1} of ${slide.stages.length} “${slide.stages[shown.stage]}”`;
@@ -83,9 +107,18 @@ async function deckCapture(metadata, { slideId, stage, gallery, width, height })
   return response.blob();
 }
 
+// The slide editor's canvas: the server renders the saved slide at the shown step and scroll, without a build.
+async function canvasCapture(metadata, pinnedPath, { stage, scroll }) {
+  const response = await fetch(withChannel(`/api${pinnedPath}/capture`, metadata.channelId), {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ stage, scroll }) });
+  if (!response.ok) throw new MarkupRefused((await response.json().catch(() => ({}))).error || 'This slide cannot be marked up.');
+  return response.blob();
+}
+
 // One still of what the creator sees. A GIF decodes to its first frame through createImageBitmap.
 export async function captureBase(metadata, media, pinnedPath, shown) {
   try {
+    if (metadata.source === 'canvas') return { canvas: await bitmapBase(await canvasCapture(metadata, pinnedPath, shown)) };
     if (metadata.kind === 'deck') return { canvas: await bitmapBase(await deckCapture(metadata, shown)) };
     if (metadata.kind === 'video') return await videoFrame(media);
     const blob = await fetchBlob(metadata.mediaUrl);
@@ -122,14 +155,16 @@ async function request(url, options = {}) {
   return data;
 }
 
-// Opens the popup over the Preview page. `context` is app-written; `position` labels the stored redline.
-export function openRedline({ metadata, pinnedPath, canvas, context, position = '', onSent = () => {}, onClosed = () => {} }) {
+// Opens the popup over the Preview page, or within `host` (the slide editor's modal dialog). `context` is
+// app-written; `position` labels the stored redline. Without `requireMarks` (Send to chat) the frame can be
+// sent as it is, with or without marks and a prompt.
+export function openRedline({ metadata, pinnedPath, canvas, context, position = '', title = 'Markup', requireMarks = true, host = document.body, onSent = () => {}, onClosed = () => {} }) {
   const doc = document;
   const episodeUrl = path => withChannel(`/api/episodes/${encodeURIComponent(metadata.episodeId)}${path}`, metadata.channelId);
   const backdrop = doc.createElement('div');
   backdrop.className = 'redline-backdrop';
   backdrop.innerHTML = `<section class="redline" role="dialog" aria-modal="true" aria-labelledby="redline-title" data-marks="0">
-    <header><h2 id="redline-title">Markup</h2><button type="button" class="redline-close" data-redline-close aria-label="Close markup" title="Close markup">×</button></header>
+    <header><h2 id="redline-title"></h2><button type="button" class="redline-close" data-redline-close aria-label="Close markup" title="Close markup">×</button></header>
     <div class="redline-canvas" id="redline-canvas"></div>
     <div class="redline-send">
       <p class="redline-context" data-redline-context></p>
@@ -144,9 +179,10 @@ export function openRedline({ metadata, pinnedPath, canvas, context, position = 
   const $ = selector => backdrop.querySelector(selector);
   const dialog = $('.redline'), prompt = $('[data-redline-prompt]'), target = $('[data-redline-target]'), status = $('[data-redline-status]'), send = $('[data-redline-send]');
   $('[data-redline-context]').textContent = context;
-  const inerted = [...doc.body.children].filter(element => !element.inert);
+  $('#redline-title').textContent = title;
+  const inerted = [...host.children].filter(element => !element.inert);
   for (const element of inerted) element.inert = true;
-  doc.body.append(backdrop);
+  host.append(backdrop);
 
   const long = Math.max(canvas.width, canvas.height);
   // `current` is the target the selector shows: the default once the list first loads, then only the creator's
@@ -156,7 +192,7 @@ export function openRedline({ metadata, pinnedPath, canvas, context, position = 
   const paint = () => {
     dialog.dataset.marks = String(marks);
     status.textContent = error || (busy ? BUSY : sending ? 'Sending…' : '');
-    send.disabled = busy || sending || !current || !unsent();
+    send.disabled = busy || sending || !current || (requireMarks && !unsent());
     send.title = busy ? BUSY : '';
   };
   const countMarks = () => {
@@ -248,7 +284,7 @@ export function openRedline({ metadata, pinnedPath, canvas, context, position = 
       // Uploading identical bytes again returns the same redline record, so a retry never duplicates it.
       const item = await request(withChannel(`/api${pinnedPath}/redline`, metadata.channelId), { method: 'POST',
         headers: { 'content-type': 'image/png', ...(position ? { 'x-redline-position': position } : {}) }, body: png });
-      const text = `${context}\n\n${prompt.value.trim() || NO_PROMPT}`;
+      const text = `${context}\n\n${prompt.value.trim() || (marks ? NO_PROMPT : NO_MARKS)}`;
       await request(episodeUrl(`/chats/${encodeURIComponent(conversationId)}/messages`), { method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text, attachmentIds: [item.id] }) });
       sending = false;

@@ -1049,6 +1049,8 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
 .slide-editor-head h2 { flex: 1 1 180px; min-width: 0; margin: 0; overflow: hidden; font-size: 15px; white-space: nowrap; text-overflow: ellipsis; }
 .slide-editor-head h2 small { margin-right: 6px; color: var(--muted); font-weight: 500; }
 .slide-editor-saved { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.slide-editor-message { max-width: 320px; color: #8a3b12; font-size: 12.5px; }
+.slide-editor-message:empty { display: none; }
 .slide-editor-layout { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
 .slide-editor-head .icon-button:disabled { opacity: .4; cursor: default; }
 .slide-editor-body { display: grid; grid-template-columns: minmax(0, 1fr) 400px; min-height: 0; }
