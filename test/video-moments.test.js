@@ -8,6 +8,12 @@ import { createApp } from '../src/server.js';
 import { Store } from '../src/store.js';
 import { createVideoMoments } from '../src/video-moments.js';
 import { deleteDraftOutputs } from '../src/services/outputs.js';
+import { createProductionReadTools } from '../src/production-read-tools.js';
+import { createResearchContext } from '../src/research-context.js';
+import { defaultBootContextFor } from '../src/runtime/app-runtime.js';
+import { renderEpisodeBoot } from '../src/runtime/boot.js';
+import { selectKindTools } from '../src/runtime/kinds.js';
+import { createScopedTools } from '../src/runtime/tools.js';
 
 async function fixture(t) {
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'sb-moments-'));
@@ -96,6 +102,63 @@ test('two bookmarked ranges of imported video keep their sound, origin and ident
   assert.deepEqual(await call('POST', '', save), { ...a, available: false, mediaUrl: null });
   assert.equal((await fetch(base + a.mediaUrl)).status, 410);
   assert.ok(store.getLibraryItem(episode.id, later.id));
+});
+
+test('a video brief can find candidates and fetch one pinned range without adding moments to standing context', async t => {
+  const { store, origin, workspace, base, bytes, call } = await fixture(t);
+  const brief = store.createEpisode({ title: 'Next brief', channelId: origin.channelId });
+  for (const episodeId of [brief.id, origin.episodeId]) {
+    store.updateEpisode(episodeId, 1, { cards: [{ id: 'card_one', type: 'Video', title: 'Opener' }] });
+  }
+  const outputPath = path.relative(workspace, path.join(store.episodeOutputDirectory(origin.episodeId, 'drafts'), 'first.mp4'));
+  await writeFile(path.join(workspace, outputPath), bytes);
+  store.saveJob({ id: 'first', episodeId: origin.episodeId, state: 'completed', progress: 1, kind: 'draft',
+    outputClass: 'draft', outputPath, revision: 2, snapshot: {}, createdAt: '2026-01-01T00:00:00Z' });
+  const scoped = createScopedTools({ ...origin, episodeId: brief.id }, { store });
+  t.after(() => scoped.close());
+  const video = selectKindTools(scoped, 'video');
+  const search = async (query, page = {}) => JSON.parse((await video.call('search_video_moments', { channelId: origin.channelId, query, ...page })).text);
+  const get = async match => JSON.parse((await video.call('get_video_moment', { id: match.id, episodeId: match.episodeId, channelId: match.channelId })).text);
+  async function standingContext(episodeId) {
+    const episodeDir = store.episodeDirectory(episodeId);
+    const context = defaultBootContextFor(store, { episodeId })({ served: video.definitions.map(d => d.name) });
+    Object.assign(context.paths, { episode: episodeDir, work: store.episodeWorkDirectory(episodeId) });
+    await renderEpisodeBoot({ episodeDir, context });
+    return {
+      boot: await readFile(path.join(episodeDir, 'AGENTS.md'), 'utf8'),
+      context: createProductionReadTools({ store, episodeId }).get_context(),
+      researchPrompt: createResearchContext({ store, episodeId, assertActive() {} }).prompt().text,
+    };
+  }
+  const contexts = () => Promise.all([standingContext(origin.episodeId), standingContext(brief.id)]);
+  const before = await contexts();
+  const note = 'I like how the light rises. '.repeat(15);
+  const source = { type: 'output', id: 'first' };
+  const opening = await call('POST', '', { requestId: 'a', source, note, startSeconds: 0.1, endSeconds: 0.7 });
+  const wipe = await call('POST', '', { requestId: 'b', source, note: 'Carry motion through the cut', startSeconds: 1.1, endSeconds: 1.9 });
+  const matches = await search('Draft');
+  assert.deepEqual(matches.moments.map(m => [m.id, m.startSeconds, m.endSeconds]), [[wipe.id, 1.1, 1.9], [opening.id, 0.1, 0.7]]);
+  const page = await search('Draft', { limit: 1 });
+  assert.equal(page.nextOffset, 1);
+  assert.deepEqual((await search('Draft', { limit: 1, offset: page.nextOffset })).moments, [matches.moments[1]]);
+  assert.deepEqual(await search('no such phrase'), { moments: [], nextOffset: null });
+  await assert.rejects(search('Draft', { limit: 21 }));
+  const [match] = (await search('LIGHT RISES')).moments;
+  assert.deepEqual([match.channelName, match.episodeTitle, match.sourceLabel],
+    [store.getChannel(origin.channelId).name, store.getEpisode(origin.episodeId).title, opening.sourceLabel]);
+  assert.equal(match.creatorNoteExcerpt, note.slice(0, 200));
+  assert.ok(!JSON.stringify(match).includes(note));
+  const selected = await get(match);
+  assert.equal(selected.reference, true);
+  assert.equal(selected.creatorNote, note);
+  assert.deepEqual(selected.source, opening.source);
+  assert.equal(selected.playbackUrl, opening.mediaUrl + '#t=0.1,0.7');
+  assert.deepEqual(Buffer.from(await (await fetch(base + selected.playbackUrl)).arrayBuffer()), bytes);
+  for (const unrelated of [wipe.id, wipe.note]) assert.ok(!JSON.stringify(selected).includes(unrelated));
+  await assert.rejects(get({ ...match, episodeId: brief.id }), { statusCode: 404 });
+  await rm(path.join(workspace, outputPath));
+  assert.deepEqual(await get(match), { ...selected, available: false, playbackUrl: null });
+  assert.deepEqual(await contexts(), before);
 });
 
 test('an output bookmark pins a particular render, supports stale edit recovery and survives draft cleanup', async t => {
