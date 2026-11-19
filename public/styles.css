@@ -1142,6 +1142,8 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
 .deck-canvas-reset { padding: 4px 9px; font-size: 12px; }
 /* Element cards (element-cards.js): the slide editor's Elements panel. */
 .element-cards { display: grid; gap: 8px; }
+/* Grid items size to their content by default; nowrap summaries and tables must not widen the panel. */
+.slide-editor-scroll > *, .element-cards > *, .element-steps > *, .element-card { min-width: 0; }
 .element-card { border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
 .element-card.is-active { border-color: var(--deep); box-shadow: 0 0 0 2px var(--pale); }
 .element-card > summary { display: flex; align-items: baseline; gap: 8px; padding: 9px 12px; cursor: pointer; list-style-position: inside; }

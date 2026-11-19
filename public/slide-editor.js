@@ -77,7 +77,7 @@ export function createSlideEditor(dialog, { canvas, channel = () => null, getEpi
   // Selecting on the canvas highlights the matching element cards, opens them and brings them into view.
   dialog.addEventListener('sb-selectionchange', (event) => {
     const slide = slides()[position()];
-    active.clear();
+    active.clear(); notice = null;
     if (!slide) return;
     const keys = cardsFor(event.detail.key, slide);
     keys.forEach((key) => active.add(key));
