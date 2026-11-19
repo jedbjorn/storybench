@@ -31,7 +31,7 @@ test('the canvas serves one saved slide as the build renders it, with the bridge
   assert.match(page.headers.get('content-security-policy'), /^sandbox allow-scripts; default-src 'none'; script-src 'self'/);
   assert.equal(page.headers.get('cache-control'), 'no-store');
   const html = await page.text();
-  assert.match(html, /<script src="audience.js" defer><\/script><script src="canvas-frame.js" defer><\/script>/);
+  assert.match(html, /<script src="audience.js" defer><\/script><script src="canvas-frame.js" data-standards-revision="2" defer><\/script>/);
   assert.equal(html.match(/<article class="slide/g).length, 1, 'only the open slide');
   assert.match(html, /<ol class="stages stage-list"|<ul class="stages stage-list"/, 'deck default stage text style reaches the slide');
   const css = await (await canvas('styles.css')).text();

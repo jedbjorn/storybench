@@ -88,12 +88,13 @@ export function createDeckService({ store, queue = new HeavyJobQueue(), onChange
     const deck = store.getDeck(episodeId);
     if (deck.revision !== revision) throw new StoreError('The deck changed; reload the canvas', 409);
     if (!deck.slides.some(slide => slide.id === slideId)) throw new StoreError('Slide not found', 404);
-    const key = `${revision}:${slideId}:${store.getBrandStandards(deck.channelId).revision}`, slot = `${episodeId}\n${slideId}`;
+    const standardsRevision = store.getBrandStandards(deck.channelId).revision;
+    const key = `${revision}:${slideId}:${standardsRevision}`, slot = `${episodeId}\n${slideId}`;
     let entry = canvases.get(slot);
     if (entry?.key !== key) {
       const snapshot = deckSnapshot(store, episodeId, deck);
       entry = { key, files: assembleDeck(store, snapshot, snapshot.slides.filter(slide => slide.id === slideId)).then(({ files }) => {
-        files.set('index.html', Buffer.from(String(files.get('index.html')).replace('<script src="audience.js" defer></script>', '$&<script src="canvas-frame.js" defer></script>')));
+        files.set('index.html', Buffer.from(String(files.get('index.html')).replace('<script src="audience.js" defer></script>', `$&<script src="canvas-frame.js" data-standards-revision="${standardsRevision}" defer></script>`)));
         files.set('canvas-frame.js', CANVAS_FRAME);
         return files;
       }, error => { throw new StoreError(`This slide cannot be shown yet: ${error.message}`, 422); }) };

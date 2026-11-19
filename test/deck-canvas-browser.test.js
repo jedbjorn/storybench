@@ -66,6 +66,25 @@ async function openEditor(page, index) {
   await page.locator(`#slideEditor .deck-slide[data-slide-index="${index}"]`).waitFor();
 }
 
+test('a newer channel theme refreshes an already visible canvas without a slide edit', { timeout: 30000 }, async t => {
+  const browser = await launch(chromium);
+  if (!browser) return t.skip('No launchable Chromium on this seat');
+  t.after(() => browser.close());
+  const { app, episode, url } = await setup(t, () => ({ slides: [{ id: 'opening', title: 'One slide', layout: 'statement' }] }));
+  const page = await browser.newPage();
+  await page.goto(url);
+  const themeResponse = Promise.withResolvers();
+  await page.route('**/api/brand-standards', async route => { await themeResponse.promise; await route.continue(); }, { times: 1 });
+  await openEditor(page, 0);
+  const usesInk = color => getComputedStyle(document.documentElement).getPropertyValue('--ink').trim().toUpperCase() === color;
+  await frameShows(page, 'opening', usesInk, '#1A2B6D');
+  const current = app.store.getBrandStandards(episode.channelId);
+  app.store.saveBrandStandards(episode.channelId, current.revision, { ...STANDARDS, colors: ['#113355', ...STANDARDS.colors.slice(1)], stylePrompt: '' });
+  themeResponse.resolve();
+  await frameShows(page, 'opening', usesInk, '#113355');
+  assert.match(await inspector(page).locator('[data-control="theme.colors.base"]').textContent(), /#113355/);
+});
+
 for (const type of [chromium, firefox]) test(`A7 ${type.name()}: the creator edits slides and the deck theme by selection on the canvas`, { timeout: 120000 }, async t => {
   const browser = await launch(type);
   if (!browser) return t.skip(`No launchable ${type.name()} on this seat`);
