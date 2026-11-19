@@ -193,7 +193,7 @@ test('create and edit deck turns render the mandatory correction loop on all har
     for (const file of ['AGENTS.md','CLAUDE.md']) {
       const body=await readFile(path.join(episodeDir,file),'utf8');
       assert.match(body,/When creating or editing a deck, build the saved revision and live-drive it in the browser/);
-      assert.match(body,/fix issues, rebuild and recheck/);assert.match(body,/report QA incomplete/);
+      assert.match(body,/Fix issues within creator direction, rebuild and recheck/);assert.match(body,/report QA incomplete/);
       assert.match(body,/report_deck_qa/);assert.match(body,/get_deck_qa_report/);
       assert.match(body,/`read_deck` for the saved slides and revision before changing it/);
       assert.match(body,/`get_context` for context and readiness/);
@@ -242,6 +242,24 @@ async function renderedGuidance(t, kind) {
   assert.equal(await readFile(path.join(episodeDir, 'CLAUDE.md'), 'utf8'), boot);
   return { episodeDir, boot };
 }
+
+test('deck QA instructions preserve the creator’s selected iteration through rebuilds', async t => {
+  const { episodeDir, boot } = await renderedGuidance(t, 'deck');
+  const skill = await readFile(path.join(episodeDir, '.agents/skills/storybench-compose-deck/SKILL.md'), 'utf8');
+  const bootQA = boot.slice(boot.indexOf('When creating or editing a deck'));
+  const skillQA = skill.slice(skill.indexOf('### Mandatory create and edit correction loop'));
+  for (const [source, instructions] of [['boot', bootQA], ['composition skill', skillQA]]) {
+    assert.match(instructions, /Keep creator-directed picks through every QA pass and rebuild/, source);
+    assert.match(instructions, /“Use it” selects only the proposed iteration/, source);
+    assert.match(instructions, /blocking defect[^.]*report[^.]*propose a corrected unstarred iteration/, source);
+    assert.match(instructions, /Preserve the rest of the slide for a pick-only request/, source);
+    assert.match(instructions, /Star it only after a new creator instruction to use that iteration/, source);
+    assert.match(instructions, /QA incomplete/, source);
+  }
+  assert.match(skillQA, /report it with `report_deck_qa` and propose a corrected unstarred iteration as a candidate/);
+  assert.match(skillQA, /Register it with `iterationOf`/);
+  assert.match(skillQA, /Blocking findings stay open until a fresh build confirms the fix\. If a correction needs creator direction, retain a draft and report QA incomplete/);
+});
 
 test('deck guidance is within its 4,000-word cap and states the research rule in full once', async t => {
   const { episodeDir, boot } = await renderedGuidance(t, 'deck');
