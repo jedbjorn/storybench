@@ -1917,7 +1917,7 @@ export class Store {
       if (!result.changes) throw new StoreError("Stale library revision", 409);
       // The label is shared by the iteration group (spec #46 'Asset preview'): renaming one renames all.
       if (label !== current.label)
-        this.db.prepare("UPDATE library_items SET label=?,revision=revision+1,updated_at=? WHERE episode_id=? AND iteration_group=? AND id<>?")
+        this.db.prepare("UPDATE library_items SET label=?,revision=revision+1,updated_at=? WHERE episode_id=? AND COALESCE(iteration_group,id)=? AND id<>?")
           .run(label, stamp, episodeId, current.iterationGroup, itemId);
       this.db.exec("COMMIT");
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }

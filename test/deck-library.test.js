@@ -111,3 +111,24 @@ test('The label is shared by the iteration group: renaming one iteration renames
   assert.throws(() => store.updateLibraryItem(deck.id, v1.id, 1, { label: 'Stale' }), /Stale library revision/);
   assert.equal(store.getLibraryItem(deck.id, v2.id).label, 'Ground floor', 'a refused rename changes nothing');
 });
+
+test('A group whose first item has no stored iteration_group (a graphic-recipe insert) still renames and groups as one; reused numbers are harmless', t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'sb-deck-library-'));
+  const store = new Store(root);
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  const deck = store.createEpisode({ kind: 'deck' });
+  const asset = n => store.saveAsset({ name: `art-${n}.png`, hash: `art-${n}`, kind: 'image', path: `media/art-${n}.png`, metadata: { contentType: 'image/png' } });
+  const head = store.attachLibraryItem(deck.id, asset(1).id, { category: 'Graphics', label: 'Poster' });
+  store.db.prepare('UPDATE library_items SET iteration_group=NULL WHERE id=?').run(head.id);
+  const v2 = store.attachLibraryItem(deck.id, asset(2).id, { category: 'Graphics', iterationOf: head.id });
+  assert.deepEqual([v2.iterationGroup, v2.iteration], [head.id, 2]);
+  store.updateLibraryItem(deck.id, v2.id, v2.revision, { label: 'Poster, final' });
+  assert.equal(store.getLibraryItem(deck.id, head.id).label, 'Poster, final', 'the NULL-group head is renamed with its group');
+  // Deleting the latest iteration lets its number be reused; grouping and Clean up key on ids, not numbers.
+  const deleted = store.deleteLibraryItem(deck.id, v2.id, store.getLibraryItem(deck.id, v2.id).revision, store.getEpisode(deck.id).revision);
+  const again = store.attachLibraryItem(deck.id, asset(3).id, { category: 'Graphics', iterationOf: head.id });
+  assert.equal(again.iteration, 2);
+  const items = store.listEpisodeLibrary(deck.id);
+  assert.deepEqual(iterationGroups(items).map(group => group.map(item => item.id)), [[head.id, again.id]]);
+  assert.deepEqual(cleanupEligible({ ...deleted, cards: [] }, items).map(item => item.id), [head.id, again.id]);
+});
