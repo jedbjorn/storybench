@@ -1,6 +1,7 @@
 // Saved composition data, shared by manual editing and runtime tools. No executable markup.
 import { fontForFamily } from './fonts.js';
 import { SLIDE_TYPES, SLIDE_TYPE_NAMES, typeHasVisual, visualKind } from '../public/slide-types.js';
+import { validateDrawingParts } from '../public/drawing-parts.js';
 export { SLIDE_TYPES, visualKind };
 export const DECK_LAYOUTS = SLIDE_TYPE_NAMES;
 export const STAGE_TRIGGERS = ['auto', 'manual'];
@@ -90,7 +91,7 @@ const PICK_SETTERS = ['creator', 'agent'];
  *  saved pick (unstar it into candidates first, remove it later). A save that changes a slide's picks
  *  records `pickSetBy`; an unchanged one keeps it. Without `setBy` (undo, build) the recorded
  *  `pickSetBy` is kept as saved. */
-export function validateSlides(slides, { libraryItems = [], sections = [], design: deckDesign = {}, previous = null, setBy = null } = {}) {
+export function validateSlides(slides, { libraryItems = [], sections = [], design: deckDesign = {}, previous = null, setBy = null, checkRevealParts = true } = {}) {
   const fail = (message) => { throw new Error(message); };
   const text = (value, name, required = false) => {
     if (typeof value !== 'string' || (required && !value.trim())) fail(`${name} must be ${required ? 'nonempty ' : ''}text`);
@@ -152,7 +153,10 @@ export function validateSlides(slides, { libraryItems = [], sections = [], desig
       if (slide.media || result.subnav.length) fail(`Slide ${slide.id}: vector composition cannot also contain media or gallery views`);
       if (!typeHasVisual(slide.layout, 'drawing')) fail(`Slide ${slide.id}: vector requires ${DRAWING_TYPES} layout`);
       const groups = selected.asset.metadata.svgGroups;
-      try { validateVectorStages(result.stages, selected.asset.metadata.svgGroupIds ?? [], groups ? groups.filter(group => group.stroked).map(group => group.id) : null); }
+      try {
+        validateVectorStages(result.stages, selected.asset.metadata.svgGroupIds ?? [], groups ? groups.filter(group => group.stroked).map(group => group.id) : null);
+        if (checkRevealParts) validateDrawingParts(result.stages, selected.asset.metadata);
+      }
       catch (error) { fail(`Slide ${slide.id}: ${error.message}`); }
       result.vector = { itemId: selected.id, alt: text(slide.vector.alt ?? '', 'vector alt') };
       for (const stage of result.stages) if (stage.svgGroupIds !== undefined) stage.svgGroupIds = [...stage.svgGroupIds];

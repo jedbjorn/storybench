@@ -30,13 +30,13 @@ const TABLE = {
 };
 const CARDS = { copy: ['title', 'body'], visual: ['visual'], columns: ['columns'], steps: [] };
 
-function editor(slides, items = [], { design = {}, onReplay = () => {}, gallery = false } = {}) {
+function editor(slides, items = [], { design = {}, onReplay = () => {}, gallery = false, onDrawingPick } = {}) {
   const dom = new JSDOM('<main></main>'), root = dom.window.document.querySelector('main');
   const notices = [], saves = [], asks = [], galleries = new Set(gallery ? [slides[0].id] : []);
   let notice = null;
   const render = () => { root.innerHTML = `<div data-slide-index="0"><select data-slide-field="layout">${layoutOptions(slides[0].layout)}</select>${elementCardsHTML(slides[0], 0, { items, sections: [], design, notice, gallery: galleries.has(slides[0].id) })}</div>`; };
   render();
-  bindElementCards(root, { getSlides: () => slides, getItems: () => items, onDirty() { notice = null; }, onSave() { saves.push(structuredClone(slides[0])); }, render, onReplay, onAskForAnother: text => asks.push(text),
+  bindElementCards(root, { getSlides: () => slides, getItems: () => items, onDirty() { notice = null; }, onSave() { saves.push(structuredClone(slides[0])); }, render, onReplay, onDrawingPick, onAskForAnother: text => asks.push(text),
     notify(card, text) { notice = { card, text }; notices.push(text); render(); }, isGallery: id => galleries.has(id), onGalleryMode(id, on) { if (on) galleries.add(id); else galleries.delete(id); } });
   const slots = () => [...new Set([...root.querySelectorAll('[data-card], [data-card-group]')].map(node => {
     const key = node.dataset.card || node.dataset.cardGroup;
@@ -385,18 +385,18 @@ test('E4: on a drawing slide whose parts are all claimed Add element > Step is r
   assert.equal(root.querySelector('[data-card="visual"] [data-card-notice]').textContent, 'Every part already appears in a step; free one first');
 });
 
-test('E8 (editor half): starring a drawing onto a slide with a step that would reveal nothing is refused with the server\'s wording and saves nothing', t => {
+test('starring the first drawing with text steps hands an isolated pick draft to the assignment form', t => {
   const plan = DRAWING('plan', ['observe', 'connect']), photo = PHOTO('p');
   const slides = [{ id: 's', title: 'Plan', layout: 'full-media', body: '', media: { itemId: 'p', alt: 'Photo' }, candidates: [{ itemId: 'plan', alt: '' }],
     stages: [{ id: 'a', title: 'A', body: 'Text only' }] }];
   const before = structuredClone(slides[0]);
-  const { dom, root, click, notices, saves } = editor(slides, [plan, photo]);
+  let draft;
+  const { dom, click, saves } = editor(slides, [plan, photo], { onDrawingPick: (_slide, next) => { draft = next; } });
   t.after(() => dom.window.close());
-  // What the server says of the same slide: 'Slide s: Stage a: select at least one SVG group'.
-  assert.throws(() => validateVectorStages(slides[0].stages, plan.asset.metadata.svgGroupIds), { message: 'Stage a: select at least one SVG group' });
   click('[data-candidate-star="plan"]');
   assert.deepEqual(slides[0], before, 'the pick is unchanged');
   assert.equal(saves.length, 0);
-  assert.deepEqual(notices, ['Stage a: select at least one SVG group']);
-  assert.equal(root.querySelector('[data-card="visual"] [data-card-notice]').textContent, 'Stage a: select at least one SVG group');
+  assert.deepEqual(draft.vector, { itemId: 'plan', alt: '' });
+  assert.deepEqual(draft.candidates, [{ itemId: 'p', alt: 'Photo' }]);
+  assert.deepEqual(draft.stages, before.stages);
 });

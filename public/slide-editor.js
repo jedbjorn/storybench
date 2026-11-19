@@ -7,6 +7,7 @@
 import { icons } from './icons.js';
 import { layoutOptions, slideNumber } from './deck-workspace.js';
 import { elementCardsHTML, bindElementCards, cardsFor } from './element-cards.js';
+import { drawingParts, validateDrawingParts } from './drawing-parts.js';
 import { withChannel } from './preview-links.js';
 
 // The note's picked assets: the slide's picks in today's fields (decision #123), each with its iteration.
@@ -19,13 +20,16 @@ function pickedAssets(slide, items) {
   });
 }
 
-export function createSlideEditor(dialog, { canvas, channel = () => null, getEpisode, getItems, getSections, saveState, onDirty, onSave, onClose = () => {}, onOpenAsset = () => {}, onAskForAnother = () => {} }) {
+export function createSlideEditor(dialog, { canvas, channel = () => null, getEpisode, getItems, getSections, saveState, onDirty, onSave, onSaveDrawing, onClose = () => {}, onOpenAsset = () => {}, onAskForAnother = () => {} }) {
   const doc = dialog.ownerDocument, $ = (selector) => dialog.querySelector(selector);
   const root = $('[data-editor-root]'), elements = $('[data-editor-elements]'), scroller = $('[data-editor-scroll]');
   const count = $('[data-editor-count]'), title = $('[data-editor-title]'), saved = $('[data-editor-saved]'), layout = $('[data-editor-layout]');
   const previous = $('[data-editor-nav="-1"]'), next = $('[data-editor-nav="1"]');
   previous.innerHTML = icons.left; next.innerHTML = icons.right; $('[data-editor-close]').innerHTML = icons.close;
   const message = $('[data-editor-message]'), redlineButtons = [...dialog.querySelectorAll('[data-editor-redline]')];
+  const assignment = $('[data-drawing-assignment]'), stepFields = $('[data-drawing-steps]');
+  const confirmDrawing = $('[data-drawing-confirm]'), cancelDrawing = $('[data-drawing-cancel]'), drawingError = $('[data-drawing-error]');
+  let drawingDraft = null, savingDrawing = false;
   let slideId = null, fieldsHTML = '', layoutHTML = '', redlining = null, notice = null, shownId = null;
   // Card state for the open slide: which cards are open, which match the canvas selection; and the
   // slides whose Gallery mode was chosen before a view was starred.
@@ -39,7 +43,8 @@ export function createSlideEditor(dialog, { canvas, channel = () => null, getEpi
 
   bindElementCards(root, { getSlides: slides, getItems, onSave, render,
     onDirty() { notice = null; onDirty(); },
-    notify(card, text) { syncOpen(); notice = { card, text }; open_.add(card); render(false); },
+    notify,
+    onDrawingPick: pickDrawing,
     onReplay: (index) => canvas.replayStep(index),
     onPlayStep: (index) => canvas.playStep(index),
     onOpenAsset,
@@ -56,9 +61,9 @@ export function createSlideEditor(dialog, { canvas, channel = () => null, getEpi
     if (step) open(slides()[position() + step]?.id);
   });
   // Escape is handled before the canvas's selection surface sees it, so one press is one layer.
-  dialog.addEventListener('cancel', (event) => event.preventDefault());
+  dialog.addEventListener('cancel', (event) => { if (event.target === dialog) event.preventDefault(); });
   dialog.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape' || !dialog.open) return;
+    if (event.key !== 'Escape' || !dialog.open || assignment.open) return;
     // The redline popup exits only by its ✕ or a successful Send (decision #85); its own list menu still closes.
     if (redlining) {
       if (!event.target.closest('.sb-select')) { event.preventDefault(); event.stopPropagation(); }
@@ -90,6 +95,86 @@ export function createSlideEditor(dialog, { canvas, channel = () => null, getEpi
     if (keys.length) elements.querySelector(`[data-card="${CSS.escape(keys[0])}"]`)?.scrollIntoView({ block: 'nearest' });
   });
   dialog.addEventListener('close', () => { slideId = null; shownId = null; fieldsHTML = ''; notice = null; message.textContent = ''; canvas.hide(); onClose(); });
+
+  function notify(card, text) {
+    syncOpen(); notice = { card, text }; open_.add(card); render(false);
+  }
+
+  function pickDrawing(slide, next, { asset }) {
+    if (savingDrawing || assignment.open) return;
+    const { id: episodeId, revision } = getEpisode();
+    const base = { episodeId, revision };
+    if (slide.vector || !slide.stages?.length) return commitDrawing(base, next);
+    const parts = drawingParts(asset.metadata);
+    if (parts.length < slide.stages.length)
+      return notify('visual', 'This drawing has too few parts for these steps. Choose another drawing.');
+    drawingDraft = { base, next, metadata: asset.metadata };
+    stepFields.replaceChildren(...slide.stages.map((stage, index) => {
+      const field = doc.createElement('label');
+      field.append(`Step ${index + 1}: ${stage.title}`);
+      if (stage.body) {
+        const body = doc.createElement('span');
+        body.textContent = stage.body;
+        field.append(body);
+      }
+      const select = doc.createElement('select');
+      select.setAttribute('aria-label', `Part for step ${index + 1}: ${stage.title}`);
+      for (const part of ['', ...parts]) {
+        const option = doc.createElement('option');
+        option.value = part;
+        option.textContent = part || 'Choose part…';
+        select.append(option);
+      }
+      field.append(select);
+      return field;
+    }));
+    assignmentState();
+    assignment.showModal();
+  }
+
+  function assignmentState() {
+    if (!drawingDraft) return null;
+    const selected = [...stepFields.querySelectorAll('select')].map(select => select.value);
+    const stages = drawingDraft.next.stages.map((stage, index) => ({ ...stage, svgGroupIds: [selected[index]] }));
+    let error = '';
+    if (selected.every(Boolean)) {
+      if (new Set(selected).size !== selected.length) error = 'Give each step a different part.';
+      else try { validateDrawingParts(stages, drawingDraft.metadata); }
+      catch (cause) { error = cause.message; }
+    }
+    drawingError.textContent = error;
+    drawingError.hidden = !error;
+    const ready = selected.every(Boolean) && !error;
+    confirmDrawing.disabled = savingDrawing || !ready;
+    return ready ? stages : null;
+  }
+  assignment.addEventListener('change', assignmentState);
+  assignment.addEventListener('submit', event => {
+    event.preventDefault();
+    const stages = assignmentState();
+    if (stages && !savingDrawing) commitDrawing(drawingDraft.base, { ...drawingDraft.next, stages });
+  });
+  assignment.addEventListener('cancel', event => { if (savingDrawing) event.preventDefault(); });
+  assignment.addEventListener('close', () => { if (!assignment.open) drawingDraft = null; });
+  cancelDrawing.onclick = () => assignment.close();
+
+  async function commitDrawing(base, next) {
+    savingDrawing = true;
+    root.inert = true;
+    stepFields.inert = true;
+    confirmDrawing.disabled = cancelDrawing.disabled = true;
+    let error;
+    try { await onSaveDrawing(base, next); }
+    catch (cause) { error = cause; }
+    savingDrawing = false;
+    root.inert = false;
+    stepFields.inert = false;
+    cancelDrawing.disabled = false;
+    if (assignment.open) assignment.close();
+    if (error) return notify('visual', error.status === 409 ? 'The deck changed. Reload it and try the drawing pick again.' : error.message);
+    notice = null;
+    render();
+  }
 
   // Re-renders keep the focused field, its caret and the panel's scroll.
   function replaceFields(html) {
@@ -178,7 +263,8 @@ export function createSlideEditor(dialog, { canvas, channel = () => null, getEpi
   }
   // A field being typed in commits (its change saves) before the editor closes.
   function close() {
-    if (!dialog.open) return;
+    if (!dialog.open || savingDrawing) return;
+    if (assignment.open) assignment.close();
     if (dialog.contains(doc.activeElement)) doc.activeElement.blur();
     dialog.close();
   }

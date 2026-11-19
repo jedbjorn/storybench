@@ -224,6 +224,18 @@
           </aside>
         </div>
       </div>
+      <dialog aria-labelledby="drawingAssignmentTitle" data-drawing-assignment>
+        <form>
+          <h2 id="drawingAssignmentTitle">Assign drawing parts</h2>
+          <p>Choose a different part for each step.</p>
+          <div class="drawing-assignment-steps" data-drawing-steps></div>
+          <p class="error" role="alert" data-drawing-error hidden></p>
+          <div class="modal-actions">
+            <button type="button" data-drawing-cancel>Cancel</button>
+            <button type="submit" data-drawing-confirm>Pick drawing</button>
+          </div>
+        </form>
+      </dialog>
     </dialog>
     <dialog id="previewModal" class="preview-modal" closedby="none" aria-labelledby="previewTitle">
       <header class="modal-heading"><h2 id="previewTitle" data-preview-title>Preview</h2><button type="button" class="icon-button" data-preview-close aria-label="Close" title="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
