@@ -203,3 +203,20 @@ export function buildRenderPlan({ sections = [], cards = [], libraryItems = [], 
     referencedAssetIds: [...new Set([...visualSpine, ...audioPlacements].map((placement) => placement.assetId))],
   };
 }
+
+// Resolve editable source times only after the complete cut has passed validation.
+export function placeEditorialCues(cards, plan) {
+  const soundingCards = new Map([...plan.audioPlacements, ...plan.visualSpine.filter((entry) => entry.includeSourceAudio)]
+    .map((entry) => [entry.cardId, entry]));
+  return cards.flatMap((card) => (card.cues || []).map((cue) => {
+    const sourceFrame = secondsToFrame(cue.sourceSeconds, plan.fps);
+    const mark = { ...cue, cardId: card.id, sourceFrame };
+    const placement = soundingCards.get(card.id);
+    if (!placement) return { ...mark, status: "not-in-cut" };
+    if (cue.assetId !== placement.assetId) return { ...mark, status: "source-changed" };
+    if (sourceFrame < placement.sourceInFrame || sourceFrame >= placement.sourceOutFrame)
+      return { ...mark, status: "trimmed-away" };
+    const cutFrame = placement.startFrame + (sourceFrame - placement.sourceInFrame);
+    return { ...mark, status: "placed", cutFrame, cutSeconds: cutFrame / plan.fps };
+  }));
+}
