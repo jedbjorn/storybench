@@ -129,7 +129,7 @@ function visualCard(slide, items, ctx) {
       <div class="icon-actions">${iconButton('part-up', 'Move view earlier', 'up')}${iconButton('part-down', 'Move view later', 'down')}</div></div>`).join('')}</div>` : '';
   const parts = drawing ? partsTable(slide, drawing) : '';
   const open = picked.length === 1 && items.some(item => item.id === picked[0]) ? `<button type="button" data-open-asset="${esc(picked[0])}">${icons.edit} Open asset</button>` : '';
-  const warn = missing.length ? `<p class="element-warning" role="alert" data-missing-part>${esc(missingPartText(drawing, missing[0]))}</p>` : '';
+  const warn = missing.map(part => `<p class="element-warning" role="alert" data-missing-part>${esc(missingPartText(drawing, part))}</p>`).join('');
   return card('visual', 'Visual', pick, `${noticeHTML(ctx.notice, 'visual')}${warn}${mode}${strip}${add}${alt}${views}${parts}${open}`,
     { ...ctx, extra: ` data-visual-kinds="${kinds.join(' ')}"` });
 }
@@ -268,7 +268,7 @@ export function bindElementCards(root, { getSlides, getItems = () => [], onDirty
     const kind = visualKind(value);
     if (kind === 'drawing') {
       const missing = missingParts(value, slide.stages);
-      if (missing.length) return notify('visual', missingPartText(value, missing[0]));
+      if (missing.length) return notify('visual', missing.map(part => missingPartText(value, part)).join(' '));
     }
     const gallery = kind !== 'drawing' && !slide.subnav?.length && SLIDE_TYPES[slide.layout]?.visual.includes('gallery') && isGallery(slide.id);
     replace(index, gallery ? startGallery(slide, value) : useOnSlide(slide, value));

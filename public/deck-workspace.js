@@ -17,7 +17,7 @@ export function slideWarnings(slide, items) {
   if (items && picked.some(id => !items.some(item => item.id === id))) warnings.push('Missing media');
   if (slide.vector) {
     const drawing = items?.find(item => item.id === slide.vector.itemId), missing = missingParts(drawing, slide.stages);
-    if (missing.length) warnings.push(missingPartText(drawing, missing[0]));
+    warnings.push(...missing.map(part => missingPartText(drawing, part)));
   }
   if (slide.candidates?.length && !picked.length) warnings.push('No pick for the visual');
   return warnings;

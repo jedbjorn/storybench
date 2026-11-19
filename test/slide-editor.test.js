@@ -11,7 +11,7 @@ import { JSDOM } from 'jsdom';
 import { Store } from '../src/store.js';
 import { createDeckService } from '../src/deck-service.js';
 import { SLIDE_TYPES } from '../public/slide-types.js';
-import { slideListHTML, layoutOptions } from '../public/deck-workspace.js';
+import { slideListHTML, slideWarnings, layoutOptions } from '../public/deck-workspace.js';
 import { elementCardsHTML, bindElementCards, hiddenValues } from '../public/element-cards.js';
 
 // The Slide Types table, as the editor's element cards. Every type has copy (Title and Body) and steps;
@@ -271,6 +271,13 @@ test('E8 (editor half): a saved pick lacking a stepped part warns on the Visual 
   const list = new JSDOM(slideListHTML(slides, [v1], null));
   t.after(() => list.window.close());
   assert.equal(list.window.document.querySelector('[data-slide-warning]').textContent, 'v1 has no part route-a, so a step reveals nothing.');
+  // Each missing part has its own line.
+  slides[0].stages.push({ id: 'b', title: 'B', svgGroupIds: ['route-b'] });
+  const twice = editor(slides, [v1]);
+  t.after(() => twice.dom.window.close());
+  assert.deepEqual([...twice.root.querySelectorAll('[data-card="visual"] [data-missing-part]')].map(node => node.textContent),
+    ['v1 has no part route-a, so a step reveals nothing.', 'v1 has no part route-b, so a step reveals nothing.']);
+  assert.deepEqual(slideWarnings(slides[0], [v1]), ['v1 has no part route-a, so a step reveals nothing.', 'v1 has no part route-b, so a step reveals nothing.']);
 });
 
 test('E8 (editor half): a gallery stars several candidates and they play in their order', t => {

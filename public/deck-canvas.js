@@ -21,7 +21,7 @@ import { openColorPicker } from './color-picker.js';
 
 const BLOCKS = { copy: 'Title and text', stageText: 'Stage text', visual: 'Visual' };
 // The primitives each view edits: the toolbar's per block; '' is the inspector's slide and deck view.
-const VIEW_PRIMITIVES = { copy: ['copy', 'type'], stageText: ['stageText'], visual: ['copy', 'stageText'], '': ['type', 'spacing', 'timing'] };
+const VIEW_PRIMITIVES = { copy: ['copy', 'type'], stageText: ['stageText'], '': ['type', 'spacing', 'timing'] };
 // The drop zones around the visual, as fractions of its box: [left, top, width, height].
 const ZONES = [['left', 'Left', [0, 0.25, 0.3, 0.5]], ['right', 'Right', [0.7, 0.25, 0.3, 0.5]], ['top', 'Above', [0.3, 0, 0.4, 0.3]], ['bottom', 'Below', [0.3, 0.7, 0.4, 0.3]]];
 const ALIGN_NAMES = { rows: { start: 'Top', center: 'Middle', end: 'Bottom' }, cols: { start: 'left', center: 'centre', end: 'right' } };
@@ -152,8 +152,8 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
     if (!data || data.type !== 'storybench-canvas' || data.version !== 1) return;
     if (pending && event.source === pending.contentWindow) {
       frame?.remove(); frame = pending; pending = null; frame.classList.remove('is-loading');
-      // A step whose timing just changed replays once its saved revision shows.
-      if (replay !== null) { frame.contentWindow.postMessage({ type: 'storybench-canvas-play-step', stage: replay }, '*'); replay = null; }
+      // A step whose timing just changed replays once a revision saved after the change shows.
+      if (replay && Number(frame.dataset.revision) > replay.after) { frame.contentWindow.postMessage({ type: 'storybench-canvas-play-step', stage: replay.stage }, '*'); replay = null; }
     } else if (!frame || event.source !== frame.contentWindow) return;
     const before = info && Object.keys(info.blocks).join();
     info = data;
@@ -382,8 +382,9 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
   // The toolbar's controls for the selected block: copy has Position, Alignment and Size; stage text has
   // Style, Position and Align; the visual has the candidate in use and Open asset. Each has the scope.
   function blockView(key) {
+    // The visual's toolbar edits no deck value, so it has no scope.
+    if (key === 'visual') return visualView();
     const visual = Boolean(info?.blocks.visual), parts = [scopeSwitch(VIEW_PRIMITIVES[key])];
-    if (key === 'visual') return [...parts, ...visualView()];
     if (key === 'stageText') {
       parts.push(segmented('stageText', 'style', 'Style', STYLES));
       const style = value('stageText', 'style');
@@ -589,9 +590,10 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
       load(); renderInspector(false);
     },
     open,
-    // Play step replays one step from its start state; replayStep does so once the next saved revision shows.
+    // Play step replays one step from its start state; replayStep does so once a revision saved after
+    // the change shows (a refused save shows none; the next slide or close drops it).
     playStep(index) { frame?.contentWindow.postMessage({ type: 'storybench-canvas-play-step', stage: index }, '*'); },
-    replayStep(index) { replay = index; },
+    replayStep(index) { if (episode) replay = { stage: index, after: episode.revision }; },
     closeMenu,
     // Closing the editor drops the frame, so a hidden canvas loads and plays nothing.
     hide() {
