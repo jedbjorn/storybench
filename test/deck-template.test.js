@@ -110,6 +110,17 @@ test('invalid content and paths fail before producing a bundle', () => {
   assert.throws(() => buildDeck(exampleDeck), /Missing media/);
 });
 
+test('a column with an empty or missing body builds and shows its title only', () => {
+  const input = structuredClone(exampleDeck);
+  assert.equal(input.slides[3].layout, 'columns');
+  input.slides[3].columns = [{ title: 'Empty', body: '' }, { title: 'Missing' }, { title: 'Kept', body: 'Still here' }];
+  const doc = new JSDOM(String(buildDeck(input, { assets: exampleAssets }).get('index.html'))).window.document;
+  const sections = [...doc.querySelectorAll('.layout-columns .columns > section')];
+  assert.deepEqual(sections.map(section => [section.querySelector('h2').textContent, section.querySelector('p')?.textContent ?? null]),
+    [['Empty', null], ['Missing', null], ['Kept', 'Still here']]);
+  assert.equal(doc.querySelectorAll('.layout-columns .columns p:empty').length, 0);
+});
+
 test('bounded slide controls, keyboard and editable input behavior', () => {
   const p = page(bundle());
   assert.equal(current(p), 'welcome');
