@@ -2375,7 +2375,7 @@ var EditorState = class _EditorState {
       text2 = this.toText(text2);
     return this.changeByRange((range) => ({
       changes: { from: range.from, to: range.to, insert: text2 },
-      range: EditorSelection.cursor(range.from + text2.length)
+      range: EditorSelection.cursor(range.from + text2.length, -1)
     }));
   }
   /**
@@ -4806,8 +4806,20 @@ function trivialOrder(length) {
 var movedOver = "";
 function moveVisually(line, order, dir, start, forward) {
   var _a2;
-  let startIndex = start.head - line.from;
-  let spanI = BidiSpan.find(order, startIndex, (_a2 = start.bidiLevel) !== null && _a2 !== void 0 ? _a2 : -1, start.assoc);
+  if (!line.length)
+    return null;
+  let startIndex = start.head - line.from, spanI;
+  if (start.head == line.from && start.assoc < 0) {
+    if (!forward)
+      return null;
+    startIndex = order[spanI = 0].side(false, dir);
+  } else if (start.head == line.to && start.assoc > 0) {
+    if (forward)
+      return null;
+    startIndex = order[spanI = order.length - 1].side(true, dir);
+  } else {
+    spanI = BidiSpan.find(order, startIndex, (_a2 = start.bidiLevel) !== null && _a2 !== void 0 ? _a2 : -1, start.assoc);
+  }
   let span = order[spanI], spanEnd = span.side(forward, dir);
   if (startIndex == spanEnd) {
     let nextI = spanI += forward ? 1 : -1;
@@ -4822,8 +4834,12 @@ function moveVisually(line, order, dir, start, forward) {
     nextIndex = spanEnd;
   movedOver = line.text.slice(Math.min(startIndex, nextIndex), Math.max(startIndex, nextIndex));
   let nextSpan = spanI == (forward ? order.length - 1 : 0) ? null : order[spanI + (forward ? 1 : -1)];
-  if (nextSpan && nextIndex == spanEnd && nextSpan.level + (forward ? 0 : 1) < span.level)
-    return EditorSelection.cursor(nextSpan.side(!forward, dir) + line.from, nextSpan.forward(forward, dir) ? 1 : -1, nextSpan.level);
+  if (nextIndex == spanEnd) {
+    if (!nextSpan)
+      return forward ? EditorSelection.cursor(line.to, 1) : EditorSelection.cursor(line.from, -1);
+    if (nextSpan.level + (forward ? 0 : 1) < span.level)
+      return EditorSelection.cursor(nextSpan.side(!forward, dir) + line.from, nextSpan.forward(forward, dir) ? 1 : -1, nextSpan.level);
+  }
   return EditorSelection.cursor(nextIndex + line.from, span.forward(forward, dir) ? -1 : 1, span.level);
 }
 function autoDirection(text2, from, to) {
@@ -7126,9 +7142,6 @@ function moveToLineBoundary(view, start, forward, includeWrap) {
     if (pos != null)
       return EditorSelection.cursor(pos, forward ? -1 : 1);
   }
-  let line = view.state.doc.lineAt(start.head);
-  if (forward ? line.to == block2.to : line.from == block2.from)
-    return view.visualLineSide(line, forward);
   return EditorSelection.cursor(forward ? block2.to : block2.from, forward ? -1 : 1);
 }
 function moveByChar(view, start, forward, by) {
@@ -7142,7 +7155,7 @@ function moveByChar(view, start, forward, by) {
       char = "\n";
       line = view.state.doc.line(line.number + (forward ? 1 : -1));
       spans = view.bidiSpans(line);
-      next = view.visualLineSide(line, !forward);
+      next = forward ? EditorSelection.cursor(line.from, -1) : EditorSelection.cursor(line.to, 1);
     }
     if (!check) {
       if (!by)
@@ -7824,7 +7837,7 @@ function selectionFromPoints(points, base3) {
   if (points.length == 0)
     return null;
   let anchor = points[0].pos, head = points.length == 2 ? points[1].pos : anchor;
-  return anchor > -1 && head > -1 ? EditorSelection.single(anchor + base3, head + base3) : null;
+  return anchor < 0 || head < 0 ? null : anchor == head ? EditorSelection.create([EditorSelection.cursor(head + base3, -1)]) : EditorSelection.single(anchor + base3, head + base3);
 }
 function sameSelPos(selection, range) {
   return range.head == selection.main.head && range.anchor == selection.main.anchor;
@@ -7928,8 +7941,11 @@ var InputState = class {
       let mods = { ctrlKey: event.ctrlKey, altKey: event.altKey, metaKey: event.metaKey, shiftKey: event.shiftKey };
       if (mods.shiftKey && browser.ios && !/^(off|none)$/.test(this.view.contentDOM.autocapitalize) && iosVirtualKeyboardOpen(this.view.win))
         mods.shiftKey = false;
-      this.pendingIOSKey = { key: event.key, keyCode: event.keyCode, mods };
-      setTimeout(() => this.flushIOSKey(), 50);
+      let pending = this.pendingIOSKey = { key: event.key, keyCode: event.keyCode, mods };
+      setTimeout(() => {
+        if (this.pendingIOSKey == pending)
+          this.flushIOSKey();
+      }, 50);
       return true;
     }
     if (event.keyCode != 229)
@@ -8199,7 +8215,7 @@ function doPaste(view, input) {
       let insert2 = state.toText((byLine ? text2.line(i++).text : input) + state.lineBreak);
       return {
         changes: { from: line.from, insert: insert2 },
-        range: EditorSelection.cursor(range.from + insert2.length)
+        range: EditorSelection.cursor(range.from + insert2.length, -1)
       };
     });
   } else if (byLine) {
@@ -8207,7 +8223,7 @@ function doPaste(view, input) {
       let line = text2.line(i++);
       return {
         changes: { from: range.from, to: range.to, insert: line.text },
-        range: EditorSelection.cursor(range.from + line.length)
+        range: EditorSelection.cursor(range.from + line.length, -1)
       };
     });
   } else {
@@ -8842,12 +8858,12 @@ var HeightMap = class _HeightMap {
           after += next.size;
       }
     }
-    let brk = 0;
+    let brk = false;
     if (nodes[i - 1] == null) {
-      brk = 1;
+      brk = true;
       i--;
     } else if (nodes[i] == null) {
-      brk = 1;
+      brk = true;
       j++;
     }
     return new HeightMapBranch(_HeightMap.of(nodes.slice(0, i)), brk, _HeightMap.of(nodes.slice(j)));
@@ -9067,11 +9083,13 @@ var HeightMapGap = class _HeightMapGap extends HeightMap {
 };
 var HeightMapBranch = class extends HeightMap {
   constructor(left, brk, right) {
-    super(left.length + brk + right.length, left.height + right.height, brk | (left.outdated || right.outdated ? 2 : 0));
+    super(left.length + (brk ? 1 : 0) + right.length, left.height + right.height, (brk ? 1 : 0) | (left.outdated || right.outdated ? 2 : 0));
     this.left = left;
     this.right = right;
     this.size = left.size + right.size;
   }
+  // Returns 1 if there is a line break between this.left and
+  // this.right, 0 otherwise.
   get break() {
     return this.flags & 1;
   }
@@ -9101,11 +9119,11 @@ var HeightMapBranch = class extends HeightMap {
     } else {
       let mid = this.lineAt(rightOffset, QueryType.ByPos, oracle, top2, offset);
       if (from < mid.from)
-        this.left.forEachLine(from, mid.from - 1, oracle, top2, offset, f);
+        this.left.forEachLine(from, Math.min(to, mid.from - 1), oracle, top2, offset, f);
       if (mid.to >= from && mid.from <= to)
         f(mid);
       if (to > mid.to)
-        this.right.forEachLine(mid.to + 1, to, oracle, rightTop, rightOffset, f);
+        this.right.forEachLine(Math.max(from, mid.to + 1), to, oracle, rightTop, rightOffset, f);
     }
   }
   replace(from, to, nodes) {
@@ -11525,15 +11543,11 @@ var EditorView = class _EditorView {
     return skipAtoms(this, start, moveByChar(this, start, forward, (initial) => byGroup(this, start.head, initial)));
   }
   /**
-  Get the cursor position visually at the start or end of a line.
-  Note that this may differ from the _logical_ position at its
-  start or end (which is simply at `line.from`/`line.to`) if text
-  at the start or end goes against the line's base text direction.
+  **\[DEPRECATED]** Get the cursor position visually at the start
+  or end of a line.
   */
   visualLineSide(line, end) {
-    let order = this.bidiSpans(line), dir = this.textDirectionAt(line.from);
-    let span = order[end ? order.length - 1 : 0];
-    return EditorSelection.cursor(span.side(end, dir) + line.from, span.forward(!end, dir) ? 1 : -1);
+    return end ? EditorSelection.cursor(line.to, 1) : EditorSelection.cursor(line.from, -1);
   }
   /**
   Move to the next line boundary in the given direction. If
@@ -11602,6 +11616,15 @@ var EditorView = class _EditorView {
     this.readMeasured();
     let line = this.state.doc.lineAt(pos), order = this.bidiSpans(line);
     let span = order[BidiSpan.find(order, pos - line.from, -1, side)];
+    if (line.length && (pos == line.from && side < 0 || pos == line.to && side > 0) && span.dir != this.textDirectionAt(line.from)) {
+      if (pos == line.to) {
+        pos = line.from + span.from;
+        side = 1;
+      } else {
+        pos = line.from + span.to;
+        side = -1;
+      }
+    }
     return this.docView.coordsAt(pos, side, span.dir == Direction.RTL);
   }
   /**
@@ -15723,13 +15746,13 @@ function bracketedAligned(context) {
     return null;
   let sim = context.options.simulateBreak;
   let openLine = context.state.doc.lineAt(openToken.from);
-  let lineEnd2 = sim == null || sim <= openLine.from ? openLine.to : Math.min(openLine.to, sim);
+  let lineEnd3 = sim == null || sim <= openLine.from ? openLine.to : Math.min(openLine.to, sim);
   for (let pos = openToken.to; ; ) {
     let next = tree.childAfter(pos);
     if (!next || next == last2)
       return null;
     if (!next.type.isSkipped) {
-      if (next.from >= lineEnd2)
+      if (next.from >= lineEnd3)
         return null;
       let space4 = /^ */.exec(openLine.text.slice(openToken.to - openLine.from))[0].length;
       return { from: openToken.from, to: openToken.to + space4 };
@@ -16585,8 +16608,8 @@ var cursorLineBoundaryForward = (view) => moveSel(view, (range) => moveByLineBou
 var cursorLineBoundaryBackward = (view) => moveSel(view, (range) => moveByLineBoundary(view, range, false));
 var cursorLineBoundaryLeft = (view) => moveSel(view, (range) => moveByLineBoundary(view, range, !ltrAtCursor(view)));
 var cursorLineBoundaryRight = (view) => moveSel(view, (range) => moveByLineBoundary(view, range, ltrAtCursor(view)));
-var cursorLineStart = (view) => moveSel(view, (range) => EditorSelection.cursor(view.lineBlockAt(range.head).from, 1));
-var cursorLineEnd = (view) => moveSel(view, (range) => EditorSelection.cursor(view.lineBlockAt(range.head).to, -1));
+var cursorLineStart = (view) => moveSel(view, (range) => view.moveToLineBoundary(range, false, false));
+var cursorLineEnd = (view) => moveSel(view, (range) => view.moveToLineBoundary(range, true, false));
 function toMatchingBracket(state, dispatch, extend) {
   let found = false, selection = updateSel(state.selection, (range) => {
     let matching = matchBrackets(state, range.head, -1) || matchBrackets(state, range.head, 1) || range.head > 0 && matchBrackets(state, range.head - 1, 1) || range.head < state.doc.length && matchBrackets(state, range.head + 1, -1);
@@ -16602,8 +16625,10 @@ function toMatchingBracket(state, dispatch, extend) {
   return true;
 }
 var cursorMatchingBracket = ({ state, dispatch }) => toMatchingBracket(state, dispatch, false);
-function extendSel(target, how) {
+function extendSel(target, forward, how) {
   let selection = updateSel(target.state.selection, (range) => {
+    if (range.undirectional && range.head >= range.anchor != forward)
+      range = EditorSelection.range(range.head, range.anchor);
     let head = how(range);
     return EditorSelection.range(range.anchor, head.head, head.goalColumn, head.bidiLevel || void 0, head.assoc);
   });
@@ -16613,33 +16638,45 @@ function extendSel(target, how) {
   return true;
 }
 function selectByChar(view, forward) {
-  return extendSel(view, (range) => view.moveByChar(range, forward));
+  return extendSel(view, forward, (range) => view.moveByChar(range, forward));
 }
 var selectCharLeft = (view) => selectByChar(view, !ltrAtCursor(view));
 var selectCharRight = (view) => selectByChar(view, ltrAtCursor(view));
 function selectByGroup(view, forward) {
-  return extendSel(view, (range) => view.moveByGroup(range, forward));
+  return extendSel(view, forward, (range) => view.moveByGroup(range, forward));
 }
 var selectGroupLeft = (view) => selectByGroup(view, !ltrAtCursor(view));
 var selectGroupRight = (view) => selectByGroup(view, ltrAtCursor(view));
-var selectSyntaxLeft = (view) => extendSel(view, (range) => moveBySyntax(view.state, range, !ltrAtCursor(view)));
-var selectSyntaxRight = (view) => extendSel(view, (range) => moveBySyntax(view.state, range, ltrAtCursor(view)));
+var selectSyntaxLeft = (view) => {
+  let forward = !ltrAtCursor(view);
+  return extendSel(view, forward, (range) => moveBySyntax(view.state, range, forward));
+};
+var selectSyntaxRight = (view) => {
+  let forward = ltrAtCursor(view);
+  return extendSel(view, forward, (range) => moveBySyntax(view.state, range, forward));
+};
 function selectByLine(view, forward) {
-  return extendSel(view, (range) => view.moveVertically(range, forward));
+  return extendSel(view, forward, (range) => view.moveVertically(range, forward));
 }
 var selectLineUp = (view) => selectByLine(view, false);
 var selectLineDown = (view) => selectByLine(view, true);
 function selectByPage(view, forward) {
-  return extendSel(view, (range) => view.moveVertically(range, forward, pageInfo(view).height));
+  return extendSel(view, forward, (range) => view.moveVertically(range, forward, pageInfo(view).height));
 }
 var selectPageUp = (view) => selectByPage(view, false);
 var selectPageDown = (view) => selectByPage(view, true);
-var selectLineBoundaryForward = (view) => extendSel(view, (range) => moveByLineBoundary(view, range, true));
-var selectLineBoundaryBackward = (view) => extendSel(view, (range) => moveByLineBoundary(view, range, false));
-var selectLineBoundaryLeft = (view) => extendSel(view, (range) => moveByLineBoundary(view, range, !ltrAtCursor(view)));
-var selectLineBoundaryRight = (view) => extendSel(view, (range) => moveByLineBoundary(view, range, ltrAtCursor(view)));
-var selectLineStart = (view) => extendSel(view, (range) => EditorSelection.cursor(view.lineBlockAt(range.head).from));
-var selectLineEnd = (view) => extendSel(view, (range) => EditorSelection.cursor(view.lineBlockAt(range.head).to));
+var selectLineBoundaryForward = (view) => extendSel(view, true, (range) => moveByLineBoundary(view, range, true));
+var selectLineBoundaryBackward = (view) => extendSel(view, false, (range) => moveByLineBoundary(view, range, false));
+var selectLineBoundaryLeft = (view) => {
+  let forward = !ltrAtCursor(view);
+  return extendSel(view, forward, (range) => moveByLineBoundary(view, range, forward));
+};
+var selectLineBoundaryRight = (view) => {
+  let forward = ltrAtCursor(view);
+  return extendSel(view, forward, (range) => moveByLineBoundary(view, range, forward));
+};
+var selectLineStart = (view) => extendSel(view, false, (range) => EditorSelection.cursor(view.lineBlockAt(range.head).from));
+var selectLineEnd = (view) => extendSel(view, true, (range) => EditorSelection.cursor(view.lineBlockAt(range.head).to));
 var cursorDocStart = ({ state, dispatch }) => {
   dispatch(setSel(state, { anchor: 0 }));
   return true;
@@ -16661,7 +16698,7 @@ var selectAll = ({ state, dispatch }) => {
   return true;
 };
 var selectLine = ({ state, dispatch }) => {
-  let ranges = selectedLineBlocks(state).map(({ from, to }) => EditorSelection.range(from, Math.min(to + 1, state.doc.length)));
+  let ranges = selectedLineBlocks(state).map(({ from, to }) => EditorSelection.undirectionalRange(from, Math.min(to + 1, state.doc.length)));
   dispatch(state.update({ selection: EditorSelection.create(ranges), userEvent: "select" }));
   return true;
 };
@@ -16676,7 +16713,7 @@ var selectParentSyntax = ({ state, dispatch }) => {
     for (let cur = stack; cur; cur = cur.next) {
       let { node } = cur;
       if ((node.from < range.from && node.to >= range.to || node.to > range.to && node.from <= range.from) && cur.next)
-        return EditorSelection.range(node.to, node.from);
+        return EditorSelection.undirectionalRange(node.from, node.to);
     }
     return range;
   });
@@ -16805,8 +16842,8 @@ var deleteByGroup = (target, forward) => deleteBy(target, (range) => {
 var deleteGroupBackward = (target) => deleteByGroup(target, false);
 var deleteGroupForward = (target) => deleteByGroup(target, true);
 var deleteToLineEnd = (view) => deleteBy(view, (range) => {
-  let lineEnd2 = view.lineBlockAt(range.head).to;
-  return range.head < lineEnd2 ? lineEnd2 : Math.min(view.state.doc.length, range.head + 1);
+  let lineEnd3 = view.lineBlockAt(range.head).to;
+  return range.head < lineEnd3 ? lineEnd3 : Math.min(view.state.doc.length, range.head + 1);
 });
 var deleteLineBoundaryBackward = (view) => deleteBy(view, (range) => {
   let lineStart = view.moveToLineBoundary(range, false).head;
@@ -17113,7 +17150,7 @@ var defaultKeymap = /* @__PURE__ */ [
   { key: "Shift-Mod-k", run: deleteLine },
   { key: "Shift-Mod-\\", run: cursorMatchingBracket },
   { key: "Mod-/", run: toggleComment },
-  { key: "Alt-A", run: toggleBlockComment },
+  { key: "Alt-A", mac: "Ctrl-A", run: toggleBlockComment },
   { key: "Ctrl-m", mac: "Shift-Alt-m", run: toggleTabFocusMode }
 ].concat(standardKeymap);
 
@@ -27330,12 +27367,14 @@ var StateBlock = class {
     const s = this.src;
     for (let start = 0, pos = 0, indent = 0, offset = 0, len = s.length, indent_found = false; pos < len; pos++) {
       const ch = s.charCodeAt(pos);
-      if (!indent_found) if (isSpace(ch)) {
-        indent++;
-        if (ch === 9) offset += 4 - offset % 4;
-        else offset++;
-        continue;
-      } else indent_found = true;
+      if (!indent_found) {
+        if (isSpace(ch)) {
+          indent++;
+          if (ch === 9) offset += 4 - offset % 4;
+          else offset++;
+          continue;
+        } else indent_found = true;
+      }
       if (ch === 10 || pos === len - 1) {
         if (ch !== 10) pos++;
         this.bMarks.push(start);
@@ -27402,9 +27441,10 @@ var StateBlock = class {
       else last2 = this.eMarks[line];
       while (first < last2 && lineIndent < indent) {
         const ch = this.src.charCodeAt(first);
-        if (isSpace(ch)) if (ch === 9) lineIndent += 4 - (lineIndent + this.bsCount[line]) % 4;
-        else lineIndent++;
-        else if (first - lineStart < this.tShift[line]) lineIndent++;
+        if (isSpace(ch)) {
+          if (ch === 9) lineIndent += 4 - (lineIndent + this.bsCount[line]) % 4;
+          else lineIndent++;
+        } else if (first - lineStart < this.tShift[line]) lineIndent++;
         else break;
         first++;
       }
@@ -27429,13 +27469,15 @@ function escapedSplit(str) {
   let lastPos = 0;
   let current = "";
   while (pos < max) {
-    if (ch === 124) if (!isEscaped) {
-      result.push(current + str.substring(lastPos, pos));
-      current = "";
-      lastPos = pos + 1;
-    } else {
-      current += str.substring(lastPos, pos - 1);
-      lastPos = pos;
+    if (ch === 124) {
+      if (!isEscaped) {
+        result.push(current + str.substring(lastPos, pos));
+        current = "";
+        lastPos = pos + 1;
+      } else {
+        current += str.substring(lastPos, pos - 1);
+        lastPos = pos;
+      }
     }
     isEscaped = ch === 92;
     pos++;
@@ -27467,8 +27509,10 @@ function table(state, startLine, endLine, silent) {
   const aligns = [];
   for (let i = 0; i < columns.length; i++) {
     const t2 = columns[i].trim();
-    if (!t2) if (i === 0 || i === columns.length - 1) continue;
-    else return false;
+    if (!t2) {
+      if (i === 0 || i === columns.length - 1) continue;
+      else return false;
+    }
     if (!/^:?-+:?$/.test(t2)) return false;
     if (t2.charCodeAt(t2.length - 1) === 58) aligns.push(t2.charCodeAt(0) === 58 ? "center" : "right");
     else if (t2.charCodeAt(0) === 58) aligns.push("left");
@@ -27655,9 +27699,10 @@ function blockquote(state, startLine, endLine, silent) {
       state.bMarks[nextLine] = pos;
       while (pos < max) {
         const ch = state.src.charCodeAt(pos);
-        if (isSpace(ch)) if (ch === 9) offset += 4 - (offset + state.bsCount[nextLine] + (adjustTab ? 1 : 0)) % 4;
-        else offset++;
-        else break;
+        if (isSpace(ch)) {
+          if (ch === 9) offset += 4 - (offset + state.bsCount[nextLine] + (adjustTab ? 1 : 0)) % 4;
+          else offset++;
+        } else break;
         pos++;
       }
       lastLineEmpty = pos >= max;
@@ -27884,131 +27929,141 @@ function list(state, startLine, endLine, silent) {
   if (tight) markTightParagraphs(state, listTokIdx);
   return true;
 }
+var MAX_LABEL_LENGTH = 999;
+function countCodePoints(str) {
+  let length = str.length;
+  for (let i = 0; i < str.length - 1; i++) {
+    const high = str.charCodeAt(i);
+    if (high < 55296 || high > 56319) continue;
+    const low = str.charCodeAt(i + 1);
+    if (low >= 56320 && low <= 57343) {
+      length--;
+      i++;
+    }
+  }
+  return length;
+}
+function lineEnd2(state, line) {
+  return Math.min(state.eMarks[line] + 1, state.src.length);
+}
+function getNextLinePos(state, nextLine) {
+  const endLine = state.lineMax;
+  if (nextLine >= endLine || state.isEmpty(nextLine)) return -1;
+  let isContinuation = false;
+  if (state.sCount[nextLine] - state.blkIndent > 3) isContinuation = true;
+  if (state.sCount[nextLine] < 0) isContinuation = true;
+  if (!isContinuation) {
+    const terminatorRules = state.md.block.ruler.getRules("reference");
+    const oldParentType = state.parentType;
+    state.parentType = "reference";
+    let terminate = false;
+    for (let i = 0, l = terminatorRules.length; i < l; i++) if (terminatorRules[i](state, nextLine, endLine, true)) {
+      terminate = true;
+      break;
+    }
+    state.parentType = oldParentType;
+    if (terminate) return -1;
+  }
+  return state.bMarks[nextLine] + state.tShift[nextLine];
+}
 function reference(state, startLine, _endLine, silent) {
+  const src = state.src;
   let pos = state.bMarks[startLine] + state.tShift[startLine];
-  let max = state.eMarks[startLine];
   let nextLine = startLine + 1;
   if (state.sCount[startLine] - state.blkIndent >= 4) return false;
-  if (state.src.charCodeAt(pos) !== 91) return false;
-  function getNextLine(nextLine2) {
-    const endLine = state.lineMax;
-    if (nextLine2 >= endLine || state.isEmpty(nextLine2)) return null;
-    let isContinuation = false;
-    if (state.sCount[nextLine2] - state.blkIndent > 3) isContinuation = true;
-    if (state.sCount[nextLine2] < 0) isContinuation = true;
-    if (!isContinuation) {
-      const terminatorRules = state.md.block.ruler.getRules("reference");
-      const oldParentType = state.parentType;
-      state.parentType = "reference";
-      let terminate = false;
-      for (let i = 0, l = terminatorRules.length; i < l; i++) if (terminatorRules[i](state, nextLine2, endLine, true)) {
-        terminate = true;
-        break;
-      }
-      state.parentType = oldParentType;
-      if (terminate) return null;
-    }
-    const pos2 = state.bMarks[nextLine2] + state.tShift[nextLine2];
-    const max2 = state.eMarks[nextLine2];
-    return state.src.slice(pos2, max2 + 1);
-  }
-  let str = state.src.slice(pos, max + 1);
-  max = str.length;
+  if (src.charCodeAt(pos) !== 91) return false;
+  let max = lineEnd2(state, startLine);
+  let rawLabel = "";
   let labelEnd = -1;
-  for (pos = 1; pos < max; pos++) {
-    const ch = str.charCodeAt(pos);
+  let segmentStart = ++pos;
+  while (pos < max) {
+    if (rawLabel.length + pos - segmentStart > MAX_LABEL_LENGTH * 2) return false;
+    let ch = src.charCodeAt(pos);
     if (ch === 91) return false;
-    else if (ch === 93) {
+    if (ch === 93) {
       labelEnd = pos;
       break;
-    } else if (ch === 10) {
-      const lineContent = getNextLine(nextLine);
-      if (lineContent !== null) {
-        str += lineContent;
-        max = str.length;
-        nextLine++;
-      }
-    } else if (ch === 92) {
-      pos++;
-      if (pos < max && str.charCodeAt(pos) === 10) {
-        const lineContent = getNextLine(nextLine);
-        if (lineContent !== null) {
-          str += lineContent;
-          max = str.length;
-          nextLine++;
-        }
-      }
     }
+    if (ch === 92) ch = src.charCodeAt(++pos);
+    if (ch === 10 && pos < max) {
+      const nextPos = getNextLinePos(state, nextLine);
+      if (nextPos < 0) return false;
+      rawLabel += src.slice(segmentStart, max);
+      pos = segmentStart = nextPos;
+      max = lineEnd2(state, nextLine++);
+      continue;
+    }
+    pos++;
   }
-  if (labelEnd < 0 || str.charCodeAt(labelEnd + 1) !== 58) return false;
-  for (pos = labelEnd + 2; pos < max; pos++) {
-    const ch = str.charCodeAt(pos);
+  if (labelEnd < 0 || src.charCodeAt(labelEnd + 1) !== 58) return false;
+  rawLabel += src.slice(segmentStart, labelEnd);
+  if (rawLabel.length > MAX_LABEL_LENGTH && countCodePoints(rawLabel) > MAX_LABEL_LENGTH) return false;
+  pos = labelEnd + 2;
+  while (pos < max) {
+    const ch = src.charCodeAt(pos);
     if (ch === 10) {
-      const lineContent = getNextLine(nextLine);
-      if (lineContent !== null) {
-        str += lineContent;
-        max = str.length;
-        nextLine++;
-      }
-    } else if (isSpace(ch)) {
-    } else break;
+      const nextPos = getNextLinePos(state, nextLine);
+      if (nextPos < 0) break;
+      pos = nextPos;
+      max = lineEnd2(state, nextLine++);
+    } else if (isSpace(ch)) pos++;
+    else break;
   }
-  const destRes = state.md.helpers.parseLinkDestination(str, pos, max);
+  const destRes = state.md.helpers.parseLinkDestination(src, pos, max);
   if (!destRes.ok) return false;
   const href = state.md.normalizeLink(destRes.str);
   if (!state.md.validateLink(href)) return false;
   pos = destRes.pos;
   const destEndPos = pos;
+  const destEndMax = max;
   const destEndLineNo = nextLine;
-  const start = pos;
-  for (; pos < max; pos++) {
-    const ch = str.charCodeAt(pos);
+  while (pos < max) {
+    const ch = src.charCodeAt(pos);
     if (ch === 10) {
-      const lineContent = getNextLine(nextLine);
-      if (lineContent !== null) {
-        str += lineContent;
-        max = str.length;
-        nextLine++;
-      }
-    } else if (isSpace(ch)) {
-    } else break;
+      const nextPos = getNextLinePos(state, nextLine);
+      if (nextPos < 0) break;
+      pos = nextPos;
+      max = lineEnd2(state, nextLine++);
+    } else if (isSpace(ch)) pos++;
+    else break;
   }
-  let titleRes = state.md.helpers.parseLinkTitle(str, pos, max);
+  const titleStart = pos;
+  let titleRes = state.md.helpers.parseLinkTitle(src, pos, max);
   while (titleRes.can_continue) {
-    const lineContent = getNextLine(nextLine);
-    if (lineContent === null) break;
-    str += lineContent;
-    pos = max;
-    max = str.length;
-    nextLine++;
-    titleRes = state.md.helpers.parseLinkTitle(str, pos, max, titleRes);
+    const nextPos = getNextLinePos(state, nextLine);
+    if (nextPos < 0) break;
+    pos = nextPos;
+    max = lineEnd2(state, nextLine++);
+    titleRes = state.md.helpers.parseLinkTitle(src, pos, max, titleRes);
   }
   let title;
-  if (pos < max && start !== pos && titleRes.ok) {
+  if (titleStart !== destEndPos && titleRes.ok) {
     title = titleRes.str;
     pos = titleRes.pos;
   } else {
     title = "";
     pos = destEndPos;
+    max = destEndMax;
     nextLine = destEndLineNo;
   }
   while (pos < max) {
-    if (!isSpace(str.charCodeAt(pos))) break;
+    if (!isSpace(src.charCodeAt(pos))) break;
     pos++;
   }
-  if (pos < max && str.charCodeAt(pos) !== 10) {
+  if (pos < max && src.charCodeAt(pos) !== 10) {
     if (title) {
       title = "";
       pos = destEndPos;
+      max = destEndMax;
       nextLine = destEndLineNo;
       while (pos < max) {
-        if (!isSpace(str.charCodeAt(pos))) break;
+        if (!isSpace(src.charCodeAt(pos))) break;
         pos++;
       }
     }
   }
-  if (pos < max && str.charCodeAt(pos) !== 10) return false;
-  const label = normalizeReference(str.slice(1, labelEnd));
+  if (pos < max && src.charCodeAt(pos) !== 10) return false;
+  const label = normalizeReference(rawLabel);
   if (!label) return false;
   if (silent) return true;
   if (typeof state.env.references === "undefined") state.env.references = {};
@@ -28091,7 +28146,7 @@ var html_blocks_default = [
 ];
 var open_tag = `<[A-Za-z][A-Za-z0-9\\-]*(?:\\s+[a-zA-Z_:][a-zA-Z0-9:._-]*(?:\\s*=\\s*(?:[^"'=<>\`\\x00-\\x20]+|'[^']*'|"[^"]*"))?)*\\s*\\/?>`;
 var close_tag = "<\\/[A-Za-z][A-Za-z0-9\\-]*\\s*>";
-var HTML_TAG_RE = new RegExp(`^(?:${open_tag}|${close_tag}|<!---?>|<!--(?:[^-]|-[^-]|--[^>])*-->|<[?][\\s\\S]*?[?]>|<![A-Za-z][^>]*>|<!\\[CDATA\\[[\\s\\S]*?\\]\\]>)`);
+new RegExp(`^(?:${open_tag}|${close_tag}|<!---?>|<!--(?:[^-]|-[^-]|--[^>])*-->|<[?][\\s\\S]*?[?]>|<![A-Za-z][^>]*>|<!\\[CDATA\\[[\\s\\S]*?\\]\\]>)`);
 var HTML_OPEN_CLOSE_TAG_RE = new RegExp(`^(?:${open_tag}|${close_tag})`);
 var HTML_SEQUENCES = [
   [
@@ -28401,6 +28456,7 @@ var StateInline = class {
     _defineProperty(this, "cache", {});
     _defineProperty(this, "backticks", {});
     _defineProperty(this, "backticksScanned", false);
+    _defineProperty(this, "skipHtmlSpecial", false);
     _defineProperty(this, "linkLevel", 0);
     _defineProperty(this, "delimiters", []);
     _defineProperty(this, "_prev_delimiters", []);
@@ -28563,16 +28619,19 @@ function newline3(state, silent) {
   if (state.src.charCodeAt(pos) !== 10) return false;
   const pmax = state.pending.length - 1;
   const max = state.posMax;
-  if (!silent) if (pmax >= 0 && state.pending.charCodeAt(pmax) === 32) if (pmax >= 1 && state.pending.charCodeAt(pmax - 1) === 32) {
-    let ws = pmax - 1;
-    while (ws >= 1 && state.pending.charCodeAt(ws - 1) === 32) ws--;
-    state.pending = state.pending.slice(0, ws);
-    state.push("hardbreak", "br", 0);
-  } else {
-    state.pending = state.pending.slice(0, -1);
-    state.push("softbreak", "br", 0);
+  if (!silent) {
+    if (pmax >= 0 && state.pending.charCodeAt(pmax) === 32) {
+      if (pmax >= 1 && state.pending.charCodeAt(pmax - 1) === 32) {
+        let ws = pmax - 1;
+        while (ws >= 1 && state.pending.charCodeAt(ws - 1) === 32) ws--;
+        state.pending = state.pending.slice(0, ws);
+        state.push("hardbreak", "br", 0);
+      } else {
+        state.pending = state.pending.slice(0, -1);
+        state.push("softbreak", "br", 0);
+      }
+    } else state.push("softbreak", "br", 0);
   }
-  else state.push("softbreak", "br", 0);
   pos++;
   while (pos < max && isSpace(state.src.charCodeAt(pos))) pos++;
   state.pos = pos;
@@ -29045,22 +29104,53 @@ function isLetter(ch) {
   const lc = ch | 32;
   return lc >= 97 && lc <= 122;
 }
+function scanSpecial(state, pos) {
+  const src = state.src;
+  let start;
+  let terminator;
+  if (src.startsWith("<!--", pos)) {
+    if (src.startsWith(">", pos + 4)) return pos + 5;
+    if (src.startsWith("->", pos + 4)) return pos + 6;
+    start = pos + 4;
+    terminator = "-->";
+  } else if (src.startsWith("<![CDATA[", pos)) {
+    start = pos + 9;
+    terminator = "]]>";
+  } else if (src.charCodeAt(pos + 1) === 63) {
+    start = pos + 2;
+    terminator = "?>";
+  } else if (isLetter(src.charCodeAt(pos + 2))) {
+    start = pos + 3;
+    terminator = ">";
+  } else return -1;
+  if (state.skipHtmlSpecial) return -1;
+  const end = src.indexOf(terminator, start);
+  if (end < 0) {
+    state.skipHtmlSpecial = true;
+    return -1;
+  }
+  return end + terminator.length;
+}
 function html_inline(state, silent) {
   if (!state.md.options.html) return false;
   const max = state.posMax;
   const pos = state.pos;
   if (state.src.charCodeAt(pos) !== 60 || pos + 2 >= max) return false;
+  let end;
   const ch = state.src.charCodeAt(pos + 1);
-  if (ch !== 33 && ch !== 63 && ch !== 47 && !isLetter(ch)) return false;
-  const match = state.src.slice(pos).match(HTML_TAG_RE);
-  if (!match) return false;
+  if (ch === 33 || ch === 63) end = scanSpecial(state, pos);
+  else if (ch === 47 || isLetter(ch)) {
+    const match = state.src.slice(pos).match(HTML_OPEN_CLOSE_TAG_RE);
+    end = match ? pos + match[0].length : -1;
+  } else return false;
+  if (end < 0) return false;
   if (!silent) {
     const token = state.push("html_inline", "", 0);
-    token.content = match[0];
+    token.content = state.src.slice(pos, end);
     if (isLinkOpen(token.content)) state.linkLevel++;
     if (isLinkClose(token.content)) state.linkLevel--;
   }
-  state.pos += match[0].length;
+  state.pos = end;
   return true;
 }
 var DIGITAL_RE = /^&#((?:x[a-f0-9]{1,6}|[0-9]{1,7}));/i;
@@ -30129,5 +30219,5 @@ export {
 /*! Bundled license information:
 
 markdown-it/dist/markdown-it.mjs:
-  (*! markdown-it 15.0.2 https://github.com/markdown-it/markdown-it @license MIT *)
+  (*! markdown-it 15.0.3 https://github.com/markdown-it/markdown-it @license MIT *)
 */
