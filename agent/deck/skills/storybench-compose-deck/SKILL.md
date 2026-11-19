@@ -38,6 +38,19 @@ Single lengths accept numbers, `px` or `%`. Letter and word spacing also accept 
 
 Use static SVG in slides or galleries. Map stages to independent visible `<g id="...">` groups. Exclude definitions, nested mapped groups and geometry referenced by `use` outside the group. Groups may contain their own reusable definitions.
 
+### Candidates, picks and iterations
+
+A slide's `candidates` are its unpicked visuals, `{itemId,alt,label?}`; the pick (the star) is what `media`, `vector` or `subnav` holds; a gallery's starred views play in `subnav` order.
+
+- Always send every slide's `candidates`, edited from `read_deck`. A save without them can still replace or clear a pick, dropping the creator's choice.
+- Add candidates freely. Star only when the creator's message says to use one; otherwise name it (label, iteration, item ID) and propose it. Never unstar the creator's pick without direction.
+- A revision is a new iteration: `register_work_file` with `iterationOf` set to the revised item adds the next vN under the group's label. A drawing iteration keeps every group ID the slide's stages reveal, or the editor shows "v4 has no part route-a, so a step reveals nothing." and refuses the star.
+
+Where a request starts decides where its result lands (after the redline skill's go-ahead, when it applies):
+
+- **A slide:** the creator names it, or the note begins `Redline on slide 06 “…” (id) in the slide editor` (Markup or Send to chat). Add the iteration to that slide's candidates, unstarred unless the request says to use it, and propose it. A slide redline may instead need slide changes or a different pick; propose those.
+- **The asset preview:** `Make another iteration of “…” (library item …, v2). … do not add it to a slide.` or `Redline on library item “…” (…), iteration v2 of 3, a candidate for slide 06 “…”`. It joins the group only; offer to add it to the slides the note lists.
+
 ### Theme and layout primitives
 
 `save_deck` takes an optional top-level `design`, which `read_deck` returns. Omitted, the saved design stays; supplied, it replaces the saved one whole, so edit what `read_deck` returned.

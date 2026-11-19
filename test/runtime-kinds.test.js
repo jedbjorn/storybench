@@ -307,6 +307,44 @@ test('deck guidance states the theme mapping and the agent\'s choices, and docum
   assert.equal(validateDeckDesign(saved.design, { setBy: 'agent' }).stageText.align, 'center');
 });
 
+// Spec #46 task #131 ('The assistant and picks', 'Iterations'): the deck boot and skill carry the pick
+// rules, and every app-written note the skill quotes matches what the app writes (tasks #127, #129, #130).
+test('deck guidance keeps picks with the creator and routes iterations by where the request started', async t => {
+  const { episodeDir, boot } = await renderedGuidance(t, 'deck');
+  const deckBoot = boot.slice(boot.indexOf('## Deck production'));
+  const skill = await readFile(path.join(episodeDir, '.agents/skills/storybench-compose-deck/SKILL.md'), 'utf8');
+  const section = skill.slice(skill.indexOf('### Candidates, picks and iterations'), skill.indexOf('### Theme and layout primitives'));
+  assert.ok(section.length > 0);
+  assert.match(deckBoot, /Add candidates freely\. Star one only when the creator's message says to use it; otherwise name the candidate and propose it\. Never unstar the creator's pick without direction\./);
+  assert.match(section, /Add candidates freely\. Star only when the creator's message says to use one; otherwise name it[^.]*and propose it\. Never unstar the creator's pick without direction\./);
+  // WU50 carry-forward: a save without candidates can still replace or clear a pick (E11).
+  assert.match(section, /Always send every slide's `candidates`[^.]*\. A save without them can still replace or clear a pick/);
+  assert.match(section, /A revision is a new iteration: `register_work_file` with `iterationOf`/);
+  assert.match(section, /Where a request starts decides where its result lands/);
+  assert.match(section, /\*\*A slide:\*\*[^\n]*candidates, unstarred unless the request says to use it, and propose it/);
+  assert.match(section, /\*\*The asset preview:\*\*[^\n]*It joins the group only/);
+
+  // A quoted note is a template: “…” is a quoted title or label, … any text, 06 a slide number, v2 of 3 an
+  // iteration, (id) an identifier.
+  const pattern = quote => new RegExp('^' + quote.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replaceAll('“…”', '“[^”]+”').replaceAll('…', '.+?').replace(/\b\d{2}\b/g, '\\d{2}')
+    .replace(/v\d+ of \d+/g, 'v\\d+ of \\d+').replace(/\bv\d+\b/g, 'v\\d+').replaceAll('\\(id\\)', '\\([^)]+\\)'));
+  const quotes = [...section.matchAll(/`((?:Redline on|Make another)[^`]+)`/g)].map(match => match[1]);
+  assert.equal(quotes.length, 3, 'the skill quotes the slide note, the Ask for another request and the asset note');
+  const { LibraryWorkspace } = await import('../public/library-workspace.js');
+  const { missingPartText } = await import('../public/deck-library.js');
+  let ask;
+  LibraryWorkspace.prototype.askForAnother.call({ preview: { close() {} }, onAskForAnother: text => { ask = text; } }, { id: 'item-7', label: 'Floor plan', iteration: 2 });
+  // The redline notes as test/slide-redline-browser.test.js asserts public/redline.js writes them (E10).
+  const notes = [
+    'Redline on slide 02 “Observe, connect, plan” (plan) in the slide editor, saved revision 2, step 1 of 2 “connect”, showing “Floor plan” v2 of 2 (item-7).',
+    ask,
+    'Redline on library item “Floor plan” (item-7), iteration v2 of 2, a candidate for slide 02 “Observe, connect, plan” (starred).'];
+  for (const [index, quote] of quotes.entries()) assert.match(notes[index], pattern(quote), `the skill's "${quote}" matches what the app writes`);
+  const partLine = /"(v\d+ has no part [^"]+)"/.exec(section)[1];
+  assert.equal(partLine, missingPartText({ iteration: 4 }, 'route-a'));
+});
+
 // Spec #34 B14: the worked example is a drawn diagram flowing through its stages, and it validates.
 test("the deck skill's reveal timing and motion example validates, starts on its own and flows", async () => {
   const { validateSlides } = await import('../src/deck-data.js');
