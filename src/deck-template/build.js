@@ -151,7 +151,11 @@ export function buildDeck(input, { assets = {} } = {}) {
     if (slide.layout === 'columns') {
       const values = list(slide.columns, 'columns');
       if (values.length < 2 || values.length > 3) throw new Error('columns requires two or three items');
-      columns = `<div class="columns">${values.map((col) => `<section><h2>${text(col.title, 'column.title')}</h2><p>${text(col.body, 'column.body')}</p></section>`).join('')}</div>`;
+      // A column's body is optional, as in deck-data validation: an empty or missing one renders the title only.
+      columns = `<div class="columns">${values.map((col) => {
+        const body = text(col.body ?? '', 'column.body', true);
+        return `<section><h2>${text(col.title, 'column.title')}</h2>${body.trim() ? `<p>${body}</p>` : ''}</section>`;
+      }).join('')}</div>`;
     }
     if (slide.layout === 'process' && !stages.length) throw new Error('process requires stages');
     const subnav = slide.subnav === undefined ? stages.map((stage) => stage.title) : list(slide.subnav, 'subnav');
