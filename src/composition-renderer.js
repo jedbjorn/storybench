@@ -74,7 +74,7 @@ export async function renderComposition({ workspace, plan, libraryItems, outputP
   for (const visual of plan.visualSpine) {
     const { item, path } = resolved.get(visual.itemId);
     const index = input++;
-    if (item.asset.kind === "image") args.push("-loop", "1", "-i", path);
+    if (item.asset.kind === "image") args.push("-loop", "1", "-framerate", String(plan.fps), "-i", path);
     else args.push("-i", path);
     const length = seconds(visual.durationFrames, plan.fps);
     const trim = item.asset.kind === "image"
@@ -102,7 +102,9 @@ export async function renderComposition({ workspace, plan, libraryItems, outputP
     audioLabels.push(`[a${index}]`);
   }
   filters.push(`${videoLabels.join("")}concat=n=${videoLabels.length}:v=1:a=0[vout]`);
-  if (audioLabels.length) filters.push(`${audioLabels.join("")}amix=inputs=${audioLabels.length}:duration=longest:normalize=0,apad,atrim=duration=${duration}[aout]`);
+  // Delays are already encoded as silence. Timestamp the mixed samples from zero,
+  // including when FFmpeg emits an unset first PTS for a delayed, trimmed input.
+  if (audioLabels.length) filters.push(`${audioLabels.join("")}amix=inputs=${audioLabels.length}:duration=longest:normalize=0,asetpts=N/SR/TB,apad,atrim=duration=${duration}[aout]`);
   else filters.push(`anullsrc=r=48000:cl=stereo,atrim=duration=${duration}[aout]`);
   const temporary = `${output}.${randomUUID()}.tmp.mp4`;
   args.push("-filter_complex", filters.join(";"), "-map", "[vout]", "-map", "[aout]", "-t", String(duration), "-r", String(plan.fps), "-c:v", "libx264", "-preset", preview ? "veryfast" : "medium", "-crf", preview ? "25" : "20", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", "-progress", "pipe:3", "-y", temporary);

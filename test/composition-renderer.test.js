@@ -122,6 +122,34 @@ test("composition renderer decodes fractional source cuts at the card boundary",
     assert.ok(blue > red * 1.5 && blue > green * 1.5, `expected blue source segment, got ${[red, green, blue]}`);
 });
 
+test("still boundaries and a delayed trimmed mix keep the validated frame clock", async (t) => {
+  const value = await fixture();
+  t.after(() => rm(value.workspace, { recursive: true, force: true }));
+  const still = join(value.workspace, "red.png");
+  ffmpeg(["-i", value.red, "-frames:v", "1", still]);
+  value.libraryItems.push({ id: "still", assetId: "still", asset: { kind: "image", path: "red.png" } });
+  const halfSecond = { itemId: "still", assetId: "still", durationFrames: 15 };
+  const sound = { itemId: "voice-item", assetId: "voice", gain: 1, fadeInFrames: 0, fadeOutFrames: 0 };
+  const plan = { fps: 30, durationFrames: 39, visualSpine: [
+    { ...halfSecond, startFrame: 0 }, { ...halfSecond, startFrame: 15 },
+    { ...value.plan.visualSpine[1], startFrame: 30 },
+  ], audioPlacements: [
+    { ...sound, startFrame: 30, endFrame: 36, sourceInFrame: 3, sourceOutFrame: 9 },
+    { ...sound, startFrame: 0, endFrame: 9, sourceInFrame: 0, sourceOutFrame: 9 },
+  ] };
+  const outputPath = join(value.workspace, "clock.mp4");
+  await renderComposition({ ...value, plan, outputPath, preview: true });
+  const frames = spawnSync("ffmpeg", ["-v", "error", "-i", outputPath, "-vf",
+    "select='eq(n,29)+eq(n,30)',scale=1:1,format=rgb24", "-fps_mode", "vfr", "-f", "rawvideo", "-"]);
+  assert.equal(frames.status, 0, frames.stderr?.toString());
+  assert.equal(frames.stdout.length, 6);
+  assert.ok(frames.stdout[0] > 180 && frames.stdout[5] > 180, "red on frame 29, blue on frame 30");
+  const audio = pcm(outputPath);
+  assert.ok(rms(audio, 0.05, 0.25) > 0.02, "opening voice");
+  assert.ok(rms(audio, 0.4, 0.9) < 0.001, "gap before delayed clip");
+  assert.ok(rms(audio, 1.02, 1.18) > 0.02, "trimmed clip starts with the reveal");
+});
+
 test("composition export produces a 1920x1080 artifact", async (t) => {
   const value = await fixture();
   t.after(() => rm(value.workspace, { recursive: true, force: true }));
