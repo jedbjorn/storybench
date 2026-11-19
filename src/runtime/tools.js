@@ -74,9 +74,8 @@ const directionProp = {
 export const TOOL_DEFINITIONS = Object.freeze([
   {
     name: "search_video_moments",
-    description: "Find saved moments by source label or words from the creator's note. Returns a page of candidates with origin, range and a short creator-note excerpt. Use get_video_moment for one chosen match.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["channelId", "query"], properties: {
-      channelId: { type: "string", description: "Origin channel to search." },
+    description: "Search all episodes in the current channel for saved moments by source label or words from the creator's note. Returns a page of candidates with origin, range and a short creator-note excerpt. Use get_video_moment for one chosen match.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["query"], properties: {
       query: { type: "string", description: "Text to match in the label or note." },
       limit: { type: "integer", minimum: 1, maximum: 20 },
       offset: { type: "integer", minimum: 0 },
@@ -240,10 +239,10 @@ export function createScopedTools(scope, { store, library = null, isShortcutMess
   const definitions = [...TOOL_DEFINITIONS, ...DECK_QA_DEFINITIONS, ...UPSTREAM_DEFINITIONS];
   let served = definitions;
   const handlers = {
-    search_video_moments({ query, channelId, offset = 0, limit = 8 }) {
+    search_video_moments({ query, offset = 0, limit = 8 }) {
       if (typeof query !== "string" || !Number.isInteger(limit) || limit < 1 || limit > 20)
         throw new StoreError("Supply search text and a page size from 1 to 20");
-      const page = moments.list({ query, channelIds: [channelId], offset, limit });
+      const page = moments.list({ query, channelIds: [scope.channelId], offset, limit });
       return json({ moments: page.moments.map(({ noteExcerpt, ...match }) => ({ ...match, creatorNoteExcerpt: noteExcerpt })), nextOffset: page.nextOffset });
     },
     async get_video_moment({ id, channelId, episodeId }) {
