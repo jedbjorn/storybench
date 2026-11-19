@@ -121,6 +121,7 @@ export const TOOL_DEFINITIONS = Object.freeze([
       sourcePath: { type: "string", description: "Editable source in work/ that produced it (script, SVG, project file), recorded for later revision." },
       derivedFrom: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["itemId"], properties: { itemId: { type: "string" }, episodeId: { type: "string" } } },
         description: "Library items this was made from." },
+      iterationOf: { type: "string", description: "A library item of this production that this file is a new version of. It joins that item's iteration group as the next iteration (v2, v3, ...) and shares the group's label; nothing is replaced. Omit to start a new group." },
       direction: directionProp,
       ...cardProps,
     } },
@@ -250,6 +251,8 @@ export function createScopedTools(scope, { store, library = null, isShortcutMess
       const file = refusePad(await resolveWorkFile(scope.workDir, args.path, { base: scope.episodeDir }));
       if (args.category != null && !Object.hasOwn(KINDS_FOR_CATEGORY, args.category)) throw new RuntimeError("INVALID_CATEGORY", "category must be Graphics, B-roll or Narration");
       if (args.cardId != null && typeof args.cardId !== "string") throw new RuntimeError("INVALID_CARD", "cardId must be a string");
+      if (args.iterationOf != null && (typeof args.iterationOf !== "string" || !store.getLibraryItem(scope.episodeId, args.iterationOf)))
+        throw new RuntimeError("INVALID_ITERATION", "iterationOf must be a library item of this production", { status: 422 });
       const editable = args.sourcePath == null ? null : refusePad(await resolveWorkFile(scope.workDir, args.sourcePath, { base: scope.episodeDir }));
       const derived = [];
       const direction = args.direction ? validateDirection(store, scope, args.direction, { isShortcutMessage }) : null;
@@ -288,12 +291,13 @@ export function createScopedTools(scope, { store, library = null, isShortcutMess
       const asset = store.saveAsset({ ...imported, channelId: scope.channelId, name, metadata: { ...imported.metadata, originPath: file.path, provenance } });
       // Same bytes already registered in this channel: keep that asset, drop the redundant copy.
       if (imported.createdFile && asset.path !== imported.path) await rm(path.join(workspace, imported.path), { force: true });
-      const item = store.attachLibraryItem(scope.episodeId, asset.id, { category, label: name, sourceKind: "file", provenance });
+      const item = store.attachLibraryItem(scope.episodeId, asset.id, { category, label: name, sourceKind: "file", provenance, iterationOf: args.iterationOf });
       const recorded = direction ? derived.filter((entry) => entry.reference && entry.episode.id === scope.episodeId)
         .map((entry) => recordDirection(store, scope, entry.item.id, direction).id) : [];
       if (args.cardId) assertAuthoringContext(); // Recheck after asynchronous staging/import, immediately before the write.
       const card = assignToCard(store, scope.episodeId, item.id, args);
       return json({ registered: true, libraryItemId: item.id, assetId: asset.id, category, kind: asset.kind, sha256: asset.hash, deduplicated,
+        label: item.label, iterationGroup: item.iterationGroup, iteration: item.iteration,
         width: asset.width, height: asset.height, duration: asset.duration, editableSource: provenance.editableSource, referenceDirections: recorded, ...card });
     },
     async reuse_project_item(args = {}) {

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { Store } from '../src/store.js';
+import { Store, SCHEMA_VERSION } from '../src/store.js';
 import { createDeckService } from '../src/deck-service.js';
 import { createApp } from '../src/server.js';
 import { validateDeckDesign, effectiveDeckTheme, emptyDesign, TEMPLATE_COLORS } from '../src/deck-data.js';
@@ -90,7 +90,7 @@ test('migration 21 adds the design column to existing decks without changing the
   store.close();
   store = new Store(root);
   t.after(() => store.close());
-  assert.equal(Number(store.db.prepare('PRAGMA user_version').get().user_version), 21);
+  assert.equal(Number(store.db.prepare('PRAGMA user_version').get().user_version), SCHEMA_VERSION);
   const legacy = store.getDeck(deck.id);
   assert.equal(legacy.revision, 2); assert.deepEqual(legacy.slides.map(s => s.id), ['opening']);
   assert.deepEqual(legacy.design, emptyDesign());
