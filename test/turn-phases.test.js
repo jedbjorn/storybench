@@ -8,6 +8,7 @@ import { toolPhase, phaseLabel } from "../public/turn-phases.js";
 // The spec's table, row by row: phase -> app tools.
 const APP = {
   research: ["read_reference_excerpt", "search_project", "read_research", "save_research", "get_context", "get_capabilities",
+    "search_video_moments", "get_video_moment",
     "read_conversation_history", "get_operation_guide", "read_deck", "list_graphic_recipes", "get_graphic_recipe", "list_branding"],
   assets: ["register_work_file", "reuse_project_item", "create_graphic_recipe", "update_graphic_recipe", "render_graphic", "apply_branding", "promote_card"],
   build: ["update_story", "update_cards", "save_deck", "build_deck", "create_draft", "declare_final_request", "create_final",
