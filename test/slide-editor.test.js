@@ -11,43 +11,53 @@ import { JSDOM } from 'jsdom';
 import { Store } from '../src/store.js';
 import { createDeckService } from '../src/deck-service.js';
 import { SLIDE_TYPES } from '../public/slide-types.js';
-import { slideFieldsHTML, bindSlideFields, slideListHTML, layoutOptions, hiddenValues } from '../public/deck-workspace.js';
+import { slideListHTML, layoutOptions } from '../public/deck-workspace.js';
+import { elementCardsHTML, bindElementCards, hiddenValues } from '../public/element-cards.js';
 
-// The Slide Types table, as the editor's slots. Every type has copy and steps; More (notes, minutes,
-// story section) is not a slot of the table and always shows.
+// The Slide Types table, as the editor's element cards. Every type has copy (Title and Body) and steps;
+// More (notes, minutes, story section) is not a slot of the table and always shows. The Visual card
+// names what the type's visual slot offers.
 const TABLE = {
-  title: ['copy', 'drawing', 'steps'],
-  section: ['copy', 'steps'],
-  statement: ['copy', 'steps'],
-  'text-media': ['copy', 'media', 'drawing', 'gallery', 'steps'],
-  columns: ['copy', 'columns', 'steps'],
-  'full-media': ['copy', 'media', 'drawing', 'gallery', 'steps'],
-  process: ['copy', 'drawing', 'steps'],
+  title: [['copy', 'visual', 'steps'], 'drawing'],
+  section: [['copy', 'steps'], ''],
+  statement: [['copy', 'steps'], ''],
+  'text-media': [['copy', 'visual', 'steps'], 'image video drawing gallery'],
+  columns: [['copy', 'columns', 'steps'], ''],
+  'full-media': [['copy', 'visual', 'steps'], 'image video drawing gallery'],
+  process: [['copy', 'visual', 'steps'], 'drawing'],
 };
-// The control that proves each slot is there.
-const CONTROL = { copy: '[data-slide-field="title"]', media: '[data-slide-field="mediaItemId"]', drawing: '[data-slide-field="vectorItemId"]',
-  gallery: '[data-slide-action="add-subnav"]', columns: '[data-slide-action="add-columns"]', steps: '[data-slide-action="add-stages"]' };
+const CARDS = { copy: ['title', 'body'], visual: ['visual'], columns: ['columns'], steps: [] };
 
-function editor(slides, items = []) {
+function editor(slides, items = [], { design = {}, onReplay = () => {}, gallery = false } = {}) {
   const dom = new JSDOM('<main></main>'), root = dom.window.document.querySelector('main');
-  const render = () => { root.innerHTML = `<div data-slide-index="0"><select data-slide-field="layout">${layoutOptions(slides[0].layout)}</select>${slideFieldsHTML(slides[0], 0, items, [])}</div>`; };
+  const notices = [], saves = [], galleries = new Set(gallery ? [slides[0].id] : []);
+  let notice = null;
+  const render = () => { root.innerHTML = `<div data-slide-index="0"><select data-slide-field="layout">${layoutOptions(slides[0].layout)}</select>${elementCardsHTML(slides[0], 0, { items, sections: [], design, notice, gallery: galleries.has(slides[0].id) })}</div>`; };
   render();
-  bindSlideFields(root, { getSlides: () => slides, onDirty() {}, onSave() {}, render });
-  const slots = () => [...root.querySelectorAll('[data-slot]')].map(node => node.dataset.slot);
+  bindElementCards(root, { getSlides: () => slides, getItems: () => items, onDirty() { notice = null; }, onSave() { saves.push(structuredClone(slides[0])); }, render, onReplay,
+    notify(card, text) { notice = { card, text }; notices.push(text); render(); }, isGallery: id => galleries.has(id), onGalleryMode(id, on) { if (on) galleries.add(id); else galleries.delete(id); } });
+  const slots = () => [...new Set([...root.querySelectorAll('[data-card], [data-card-group]')].map(node => {
+    const key = node.dataset.card || node.dataset.cardGroup;
+    return key.startsWith('step:') ? 'steps' : ['title', 'body'].includes(key) ? 'copy' : key;
+  }))];
   const choose = (selector, value) => {
     const field = root.querySelector(selector); field.value = value;
     for (const name of ['input', 'change']) field.dispatchEvent(new dom.window.Event(name, { bubbles: true }));
   };
-  return { dom, root, slots, choose };
+  const click = selector => root.querySelector(selector).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+  return { dom, root, slots, choose, click, notices, saves };
 }
 
 test('E3: for each of the seven types the editor shows exactly the slots of the Slide Types table', t => {
   assert.deepEqual(Object.keys(TABLE).sort(), Object.keys(SLIDE_TYPES).sort());
-  for (const [layout, expected] of Object.entries(TABLE)) {
+  for (const [layout, [expected, visual]] of Object.entries(TABLE)) {
     const { dom, root, slots } = editor([{ id: 'one', title: 'One', layout, body: '' }]);
     t.after(() => dom.window.close());
     assert.deepEqual(slots(), [...expected, 'more'], layout);
-    for (const [slot, selector] of Object.entries(CONTROL)) assert.equal(Boolean(root.querySelector(selector)), expected.includes(slot), `${layout}: ${slot}`);
+    for (const [slot, cards] of Object.entries(CARDS)) for (const key of cards) assert.equal(Boolean(root.querySelector(`[data-card="${key}"]`)), expected.includes(slot), `${layout}: ${key}`);
+    assert.equal(root.querySelector('[data-card="visual"]')?.dataset.visualKinds ?? '', visual, `${layout}: what the visual offers`);
+    assert.equal(Boolean(root.querySelector('[data-slide-action="add-columns"]')), expected.includes('columns'), `${layout}: Add column`);
+    assert.ok(root.querySelector('[data-add-element] option[value="step"]'), `${layout}: Add element offers a step`);
     assert.equal(root.querySelector('[data-hidden-count]'), null, `${layout}: nothing hidden`);
     // The layout choice names every type by its plain name.
     assert.equal(root.querySelector('[data-slide-field="layout"]').selectedOptions[0].textContent, SLIDE_TYPES[layout].label);
@@ -69,7 +79,8 @@ test('E3: changing type hides values the new type has no slot for, keeps them sa
   choose('[data-slide-field="layout"]', 'text-media');
   assert.deepEqual(slides[0], before);
   assert.equal(root.querySelector('[data-hidden-count]'), null);
-  assert.equal(root.querySelector('[data-slide-field="mediaItemId"]').value, 'photo');
+  // The Visual card shows both picks starred (media and the gallery view), the description and the view's label.
+  assert.deepEqual([...root.querySelectorAll('[data-candidate-star][aria-pressed="true"]')].map(node => node.dataset.candidateStar), ['photo', 'photo']);
   assert.equal(root.querySelector('[data-slide-field="mediaAlt"]').value, 'A photo');
   assert.equal(root.querySelector('[data-part="subnav"] [data-slide-field="label"]').value, 'Detail');
 });
@@ -120,7 +131,7 @@ test('E1 (local half): a slide card shows its number, title, the body first line
   assert.deepEqual(cards.map(card => text(card, '.slide-card-summary strong')), ['Opening', 'Plan', 'Gone', 'Unpicked']);
   assert.equal(text(cards[0], '.slide-card-summary span'), 'The first line');
   assert.deepEqual([...cards[1].querySelectorAll('.slide-pill:not(.warn)')].map(node => node.textContent), ['Process', 'Drawing', '2 steps', '2 candidates']);
-  assert.equal(text(cards[1], '[data-slide-warning]'), 'A step reveals nothing');
+  assert.equal(text(cards[1], '[data-slide-warning]'), 'v1 has no part route-a, so a step reveals nothing.');
   assert.equal(text(cards[2], '[data-slide-warning]'), 'Missing media');
   assert.equal(text(cards[3], '[data-slide-warning]'), 'No pick for the visual');
   assert.equal(cards[0].querySelector('[data-slide-warning]'), null);
@@ -132,4 +143,166 @@ test('E1 (local half): a slide card shows its number, title, the body first line
   const loading = new JSDOM(slideListHTML(slides, null, null));
   t.after(() => loading.window.close());
   assert.equal(loading.window.document.querySelectorAll('[data-slide-warning]').length, 1, 'only the unpicked candidate warns');
+});
+
+// Spec #46 task #127, element cards. E4 (local half): presets write the table's exact values, a value
+// matching no preset shows as Custom, the decision #119 gap locks Starts and Wait before after the first
+// step, and the parts table gives each part one place. E8 (editor half): star = pick, a starred
+// candidate cannot be removed, and a drawing lacking a stepped part warns and refuses the star.
+const DRAWING = (id, parts, iteration = 1) => ({ id, label: 'Floor plan', iteration, episodeId: 'e', asset: { kind: 'image', metadata: { contentType: 'image/svg+xml', svgGroupIds: parts } } });
+const PHOTO = id => ({ id, label: `Photo ${id}`, episodeId: 'e', asset: { kind: 'image', metadata: { contentType: 'image/png' } } });
+const stepRow = (root, i, key) => root.querySelector(`[data-part="stages"][data-part-index="${i}"] [data-step-row="${key}"]`);
+const pressedIn = row => [...row.querySelectorAll('[aria-pressed="true"]')].map(node => node.textContent);
+
+test('E4: Speed and Wait before write the exact table values; an unlisted value shows as Custom; a change asks for a replay', t => {
+  const replays = [];
+  const slides = [{ id: 's', title: 'Steps', layout: 'statement', body: '', stages: [{ id: 'a', title: 'A', body: '' }, { id: 'b', title: 'B', body: '', durationMs: 1200, afterMs: 700, trigger: 'auto' }] }];
+  const { dom, root, click, saves } = editor(slides, [], { onReplay: i => replays.push(i) });
+  t.after(() => dom.window.close());
+  // The agent's 1200 ms shows as Custom 1.2 s, its 700 ms wait as Custom 0.7 s; an unset speed is Standard.
+  assert.deepEqual(pressedIn(stepRow(root, 1, 'durationMs')), ['Custom 1.2 s']);
+  assert.deepEqual(pressedIn(stepRow(root, 1, 'afterMs')), ['Custom 0.7 s']);
+  assert.deepEqual(pressedIn(stepRow(root, 0, 'durationMs')), []);
+  assert.match(stepRow(root, 0, 'durationMs').textContent, /Standard/);
+  assert.deepEqual(pressedIn(stepRow(root, 0, 'afterMs')), ['None']);
+  assert.deepEqual(pressedIn(stepRow(root, 0, 'trigger')), ['On click']);
+  click('[data-part-index="1"] [data-step-set="durationMs"][data-value="1600"]');
+  assert.equal(slides[0].stages[1].durationMs, 1600);
+  assert.deepEqual(pressedIn(stepRow(root, 1, 'durationMs')), ['Slow']);
+  click('[data-part-index="0"] [data-step-set="afterMs"][data-value="300"]');
+  assert.equal(slides[0].stages[0].afterMs, 300);
+  // Waiting never changes how a step starts: the unset trigger is pinned to On click.
+  assert.equal(slides[0].stages[0].trigger, 'manual');
+  click('[data-part-index="0"] [data-step-set="trigger"][data-value="auto"]');
+  assert.equal(slides[0].stages[0].trigger, 'auto');
+  // Choosing the value already set changes nothing.
+  click('[data-part-index="0"] [data-step-set="trigger"][data-value="auto"]');
+  assert.deepEqual(replays, [1, 0, 0]);
+  assert.equal(saves.length, 3);
+  for (const [label, ms] of [['Fast', 400], ['Medium', 800], ['Slow', 1600]]) assert.equal(stepRow(root, 0, 'durationMs').querySelector(`[data-value="${ms}"]`).textContent, label);
+  for (const [label, ms] of [['None', 0], ['Short', 300], ['Medium', 1000], ['Long', 2500]]) assert.equal(stepRow(root, 0, 'afterMs').querySelector(`[data-value="${ms}"]`).textContent, label);
+});
+
+test('E4: with the gap between stages set, Starts and Wait before after the first step are set by it and cannot be changed', t => {
+  const slides = [{ id: 's', title: 'Steps', layout: 'statement', body: '', stages: [{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }, { id: 'c', title: 'C' }] }];
+  for (const [design, own] of [[{ timing: { betweenMs: 400 } }, undefined], [{}, { timing: { betweenMs: 0 } }]]) {
+    slides[0].design = own;
+    const { dom, root } = editor(slides, [], { design });
+    t.after(() => dom.window.close());
+    for (const key of ['trigger', 'afterMs']) {
+      assert.equal(stepRow(root, 0, key).querySelector('[data-locked]'), null, 'the first step is free');
+      for (const i of [1, 2]) {
+        assert.equal(stepRow(root, i, key).querySelector('[data-locked]').textContent, 'Set by the gap between stages');
+        assert.ok([...stepRow(root, i, key).querySelectorAll('button')].every(button => button.disabled), `step ${i + 1} ${key} is disabled`);
+      }
+    }
+    assert.ok(![...stepRow(root, 1, 'durationMs').querySelectorAll('button')].some(button => button.disabled), 'Speed stays free');
+  }
+});
+
+test('E4: the drawing parts table gives each part one Appears choice; a step is never left revealing nothing', t => {
+  const plan = DRAWING('plan', ['observe', 'connect', 'plan']);
+  const slides = [{ id: 's', title: 'Plan', layout: 'process', body: '', vector: { itemId: 'plan', alt: '' }, stages: [
+    { id: 'a', title: 'A', svgGroupIds: ['observe'] }, { id: 'b', title: 'B', svgGroupIds: ['connect'] }] }];
+  const { dom, root, choose, notices } = editor(slides, [plan]);
+  t.after(() => dom.window.close());
+  const appears = () => Object.fromEntries([...root.querySelectorAll('[data-part-appears]')].map(node => [node.dataset.partAppears, node.value]));
+  assert.deepEqual(appears(), { observe: '0', connect: '1', plan: '' });
+  // One select per part: a part is in one step only. Moving plan to step 1 takes it from nowhere else.
+  assert.equal(root.querySelectorAll('[data-part-appears] [multiple], select[multiple]').length, 0);
+  choose('[data-part-appears="plan"]', '0');
+  assert.deepEqual(slides[0].stages.map(stage => stage.svgGroupIds), [['observe', 'plan'], ['connect']]);
+  choose('[data-part-appears="plan"]', '1');
+  assert.deepEqual(slides[0].stages.map(stage => stage.svgGroupIds), [['observe'], ['connect', 'plan']]);
+  // Step 1's only part cannot leave it: the change is refused on the card and nothing changes.
+  choose('[data-part-appears="observe"]', '');
+  assert.deepEqual(slides[0].stages.map(stage => stage.svgGroupIds), [['observe'], ['connect', 'plan']]);
+  assert.deepEqual(notices, ['Step 1 would reveal nothing; give it another part first.']);
+  assert.equal(root.querySelector('[data-card="visual"] [data-card-notice]').textContent, 'Step 1 would reveal nothing; give it another part first.');
+  // A step's Reveals: remove a part (to From the start) and Add part offers only unclaimed parts.
+  root.querySelector('[data-card="step:b"] [data-reveal-remove="plan"]').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+  assert.deepEqual(slides[0].stages[1].svgGroupIds, ['connect']);
+  assert.deepEqual([...root.querySelectorAll('[data-card="step:a"] [data-reveal-add] option')].map(node => node.value), ['', 'plan']);
+  choose('[data-card="step:a"] [data-reveal-add]', 'plan');
+  assert.deepEqual(slides[0].stages[0].svgGroupIds, ['observe', 'plan']);
+});
+
+test('E8 (editor half): star = pick; a starred candidate cannot be removed; a drawing lacking a stepped part warns and refuses the star', t => {
+  const v1 = DRAWING('v1', ['observe', 'connect'], 1), v2 = DRAWING('v2', ['observe', 'connect', 'route-a'], 2), photo = PHOTO('p');
+  const slides = [{ id: 's', title: 'Plan', layout: 'full-media', body: '', vector: { itemId: 'v2', alt: 'Plan' }, candidates: [{ itemId: 'v1', alt: '' }, { itemId: 'p', alt: '' }],
+    stages: [{ id: 'a', title: 'A', svgGroupIds: ['observe'] }, { id: 'b', title: 'Route', svgGroupIds: ['route-a'] }] }];
+  const { dom, root, click, notices, saves } = editor(slides, [v1, v2, photo]);
+  t.after(() => dom.window.close());
+  const starred = () => [...root.querySelectorAll('[data-candidate-star][aria-pressed="true"]')].map(node => node.dataset.candidateStar);
+  assert.deepEqual(starred(), ['v2']);
+  assert.equal(root.querySelector('[data-card="visual"] .element-card-summary').textContent, 'Floor plan v2');
+  // Removing the starred candidate is refused; star another first.
+  click('[data-candidate-remove="v2"]');
+  assert.equal(slides[0].vector.itemId, 'v2');
+  assert.match(notices.at(-1), /starred on the slide; star another first/);
+  // Starring v1, which has no part route-a, is refused at the star with the spec's line.
+  click('[data-candidate-star="v1"]');
+  assert.equal(notices.at(-1), 'v1 has no part route-a, so a step reveals nothing.');
+  assert.equal(root.querySelector('[data-card="visual"] [data-card-notice]').textContent, 'v1 has no part route-a, so a step reveals nothing.');
+  assert.equal(slides[0].vector.itemId, 'v2');
+  assert.equal(saves.length, 0, 'nothing was saved');
+  // Starring the photo swaps the pick: the drawing returns to the candidates, the steps lose its parts.
+  click('[data-candidate-star="p"]');
+  assert.deepEqual(slides[0].media, { itemId: 'p', alt: '' });
+  assert.equal(slides[0].vector, null);
+  assert.deepEqual(slides[0].candidates.map(c => c.itemId).sort(), ['v1', 'v2']);
+  assert.ok(slides[0].stages.every(stage => stage.svgGroupIds === undefined));
+  assert.deepEqual(starred(), ['p']);
+  // An unpicked candidate is removed; unstarring leaves the slot empty with the asset kept as a candidate.
+  click('[data-candidate-remove="v1"]');
+  assert.deepEqual(slides[0].candidates.map(c => c.itemId), ['v2']);
+  click('[data-candidate-star="p"]');
+  assert.equal(slides[0].media, null);
+  assert.deepEqual(slides[0].candidates.map(c => c.itemId), ['v2', 'p']);
+  assert.equal(root.querySelector('[data-card="visual"] .element-card-summary').textContent, 'No pick');
+});
+
+test('E8 (editor half): a saved pick lacking a stepped part warns on the Visual card and the slide card', t => {
+  const v1 = DRAWING('v1', ['observe']);
+  const slides = [{ id: 's', title: 'Plan', layout: 'process', body: '', vector: { itemId: 'v1', alt: '' }, stages: [{ id: 'a', title: 'A', svgGroupIds: ['route-a'] }] }];
+  const { dom, root } = editor(slides, [v1]);
+  t.after(() => dom.window.close());
+  assert.equal(root.querySelector('[data-card="visual"] [data-missing-part]').textContent, 'v1 has no part route-a, so a step reveals nothing.');
+  const list = new JSDOM(slideListHTML(slides, [v1], null));
+  t.after(() => list.window.close());
+  assert.equal(list.window.document.querySelector('[data-slide-warning]').textContent, 'v1 has no part route-a, so a step reveals nothing.');
+});
+
+test('E8 (editor half): a gallery stars several candidates and they play in their order', t => {
+  const items = ['a', 'b', 'c'].map(PHOTO);
+  const slides = [{ id: 's', title: 'Gallery', layout: 'text-media', body: '', candidates: items.map(item => ({ itemId: item.id, alt: '' })) }];
+  const { dom, root, click } = editor(slides, items);
+  t.after(() => dom.window.close());
+  click('[data-visual-mode="gallery"]');
+  click('[data-candidate-star="c"]');
+  click('[data-candidate-star="a"]');
+  assert.deepEqual(slides[0].subnav.map(view => [view.itemId, view.label]), [['c', 'Photo c'], ['a', 'Photo a']]);
+  assert.equal(slides[0].media ?? null, null);
+  assert.deepEqual(slides[0].candidates.map(c => c.itemId), ['b']);
+  // The views reorder; back to one visual keeps the first view as the pick.
+  click('[data-part="subnav"][data-part-index="1"] [data-slide-action="part-up"]');
+  assert.deepEqual(slides[0].subnav.map(view => view.itemId), ['a', 'c']);
+  click('[data-visual-mode="single"]');
+  assert.deepEqual(slides[0].media, { itemId: 'a', alt: '' });
+  assert.deepEqual(slides[0].subnav, []);
+  assert.deepEqual(slides[0].candidates.map(c => c.itemId).sort(), ['b', 'c']);
+});
+
+test('E4: steps reorder, are added from Add element and removed', t => {
+  const slides = [{ id: 's', title: 'Steps', layout: 'statement', body: '', stages: [{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }, { id: 'c', title: 'C' }] }];
+  const { dom, root, click, choose } = editor(slides);
+  t.after(() => dom.window.close());
+  click('[data-part="stages"][data-part-index="2"] [data-slide-action="part-up"]');
+  assert.deepEqual(slides[0].stages.map(stage => stage.id), ['a', 'c', 'b']);
+  choose('[data-add-element]', 'step');
+  assert.equal(slides[0].stages.length, 4);
+  assert.equal(slides[0].stages[3].title, 'New step');
+  click('[data-part="stages"][data-part-index="0"] [data-slide-action="part-delete"]');
+  assert.deepEqual(slides[0].stages.map(stage => stage.id).slice(0, 2), ['c', 'b']);
+  assert.ok(root.querySelector('[data-part="stages"][data-part-index="0"] [data-play-step="0"]'), 'each step has Play step');
 });

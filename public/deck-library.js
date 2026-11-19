@@ -106,3 +106,39 @@ export function removeCandidate(slide, itemId) {
   if (picks(slide).includes(itemId)) throw new Error('This asset is starred on the slide; star another first, then remove it.');
   return { ...slide, candidates: without(slide, itemId) };
 }
+/** Unstar: the asset leaves the pick and returns to the candidates. A gallery view keeps its label on its
+ *  candidate. Leaving the drawing drops what only its parts carried, as useOnSlide does. */
+export function unstar(slide, itemId) {
+  if (!picks(slide).includes(itemId)) return slide;
+  const next = { ...slide, candidates: [...without(slide, itemId)] };
+  const view = (slide.subnav ?? []).find(value => value.itemId === itemId);
+  if (view) {
+    next.subnav = slide.subnav.filter(value => value !== view);
+    next.candidates.push({ itemId, alt: '', ...(view.label ? { label: view.label } : {}) });
+    return next;
+  }
+  const own = slide.vector?.itemId === itemId ? slide.vector : slide.media;
+  next.candidates.push({ itemId, alt: own.alt ?? '' });
+  if (slide.media?.itemId === itemId) return { ...next, media: null };
+  next.stages = withoutParts(slide.stages);
+  return { ...next, vector: null };
+}
+const withoutParts = stages => (stages ?? []).map(({ svgGroupIds: _groups, changes: _changes, from: _from, motion, ...stage }) =>
+  ({ ...stage, ...(motion === undefined || motion === 'draw' || motion === 'enter' ? {} : { motion }) }));
+/** Starts a gallery with this image or video as its first view (the slide's media pick, if any, moves
+ *  back to the candidates). */
+export function startGallery(slide, item) {
+  const next = useOnSlide({ ...slide, subnav: [] }, item);
+  if (next.media?.itemId !== item.id) return next;
+  const entry = candidateOf(slide, item.id);
+  return { ...next, media: null, subnav: [{ id: 'view1', label: entry?.label || item.label, itemId: item.id }] };
+}
+
+/** The parts a step reveals that a drawing lacks; `stages` default to the slide's own. */
+export function missingParts(drawing, stages) {
+  const parts = drawing?.asset?.metadata?.svgGroupIds;
+  if (!parts) return [];
+  return [...new Set((stages ?? []).flatMap(stage => stage.svgGroupIds ?? []))].filter(id => !parts.includes(id));
+}
+/** The warning beside a picked drawing that lacks a stepped part (spec #46 'Candidates'). */
+export const missingPartText = (drawing, partId) => `v${drawing.iteration ?? 1} has no part ${partId}, so a step reveals nothing.`;

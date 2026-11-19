@@ -10,7 +10,8 @@ import { createApp } from '../src/server.js';
 import { createChatService } from '../src/chat.js';
 import { createV9ConversationPersistence } from '../src/runtime/conversation-persistence.js';
 import { JSDOM } from 'jsdom';
-import { slideFieldsHTML, bindSlideFields, slideListHTML, bindSlideList, layoutOptions } from '../public/deck-workspace.js';
+import { slideListHTML, bindSlideList, layoutOptions } from '../public/deck-workspace.js';
+import { elementCardsHTML, bindElementCards } from '../public/element-cards.js';
 const slide = (id = 'slide_one') => ({ id, title: 'Opening', layout: 'statement', body: 'A useful idea', notes: 'Pause', targetMinutes: 1,
   stages: [{id: 'stage_one', title: 'First', body: 'Observe', afterMs: 200}], subnav: [{id: 'nav_one', label: 'Discover'}] });
 function fixture(t) {
@@ -74,26 +75,26 @@ test('invalid composition and dangling media fail plainly', t => {
   }
   assert.throws(() => validateSlides([slide(),slide()]),/Duplicate/);
 });
-test('manual board edits content, notes, layouts, reveals, columns and subnav without source editing', () => {
+test('manual board edits content, notes, layouts, reveals and columns without source editing', () => {
   const dom = new JSDOM('<main></main><ol></ol>'), root = dom.window.document.querySelector('main'), list = dom.window.document.querySelector('ol');
   const slides = [slide()]; let dirty = 0, saved = 0, changed = 0;
   // The editor: the header's layout choice and the slide's fields, under one [data-slide-index].
-  const render = () => { root.innerHTML = `<div data-slide-index="0"><select data-slide-field="layout">${layoutOptions(slides[0].layout)}</select>${slideFieldsHTML(slides[0],0,[],[])}</div>`; };
-  render(); bindSlideFields(root,{ getSlides:()=>slides,onDirty:()=>dirty++,onSave:()=>saved++,render });
+  const render = () => { root.innerHTML = `<div data-slide-index="0"><select data-slide-field="layout">${layoutOptions(slides[0].layout)}</select>${elementCardsHTML(slides[0],0,{ items: [], sections: [] })}</div>`; };
+  render(); bindElementCards(root,{ getSlides:()=>slides,onDirty:()=>dirty++,onSave:()=>saved++,render });
   const edit = (selector,value) => { const el=root.querySelector(selector); el.value=value; el.dispatchEvent(new dom.window.Event('input',{bubbles:true})); el.dispatchEvent(new dom.window.Event('change',{bubbles:true})); };
   edit('[data-slide-field="notes"]','Explain this calmly'); edit('[data-slide-field="layout"]','columns');
   root.querySelector('[data-slide-action="add-columns"]').click();
   edit('[data-part="columns"] [data-slide-field="title"]','Option A');
-  root.querySelector('[data-slide-action="add-stages"]').click();
-  // A gallery is a text-and-media slot; columns stay saved, hidden, while the layout shows the gallery.
+  edit('[data-add-element]','step');
+  // Columns stay saved, hidden, while a text-and-media layout shows its visual instead.
   edit('[data-slide-field="layout"]','text-media');
-  root.querySelector('[data-slide-action="add-subnav"]').click();
+  assert.match(root.querySelector('[data-hidden-count]').textContent, /1 saved value hidden by this layout \(columns\)/);
   // The slide list duplicates, moves and deletes whole slides.
   const renderList = () => { list.innerHTML = slideListHTML(slides, [], null); };
   renderList(); bindSlideList(list,{ getSlides:()=>slides,getOpenId:()=>null,setOpenId(){},onPlay(){},onEdit(){},onChange:()=>{ changed++; renderList(); },confirm:()=>true });
   list.querySelector('[data-slide-action="duplicate"]').click();
   assert.equal(slides[0].notes,'Explain this calmly'); assert.equal(slides[0].columns[0].title,'Option A');
-  assert.equal(slides[0].stages.length,2); assert.equal(slides[0].subnav.length,2);
+  assert.equal(slides[0].stages.length,2); assert.equal(slides[1].stages.length,2);
   assert.notEqual(slides[0].id,slides[1].id); assert.notEqual(slides[0].stages[0].id,slides[1].stages[0].id);
   list.querySelector('[data-slide-action="down"]').click(); assert.equal(slides[0].title,'Opening (copy)');
   list.querySelector('[data-slide-action="delete"]').click(); assert.equal(slides.length,1);
@@ -222,16 +223,14 @@ test('staged vector editor persists group mappings, reorder/duplicate identity a
   ] }];
   const dom = new JSDOM('<main></main>'), root = dom.window.document.querySelector('main');
   t.after(() => dom.window.close());
-  const render = () => { root.innerHTML = slideFieldsHTML(slides[0], 0, [item], []); };
-  render(); bindSlideFields(root, { getSlides: () => slides, onDirty() {}, onSave() {}, render });
-  const edit = (selector, value) => { const field = root.querySelector(selector); field.value = value; field.dispatchEvent(new dom.window.Event('input', { bubbles: true })); };
-  edit('[data-slide-field="vectorItemId"]', item.id);
+  const render = () => { root.innerHTML = `<div data-slide-index="0">${elementCardsHTML(slides[0], 0, { items: [item], sections: [] })}</div>`; };
+  render(); bindElementCards(root, { getSlides: () => slides, getItems: () => [item], onDirty() {}, onSave() {}, render });
+  const edit = (selector, value) => { const field = root.querySelector(selector); field.value = value; for (const name of ['input', 'change']) field.dispatchEvent(new dom.window.Event(name, { bubbles: true })); };
+  // Add the drawing as a candidate and star it; then give each part one step in the parts table.
+  edit('[data-candidate-add]', item.id);
+  root.querySelector(`[data-candidate-star="${item.id}"]`).click();
   edit('[data-slide-field="vectorAlt"]', 'Three parts of a shared plan');
-  for (const [i, values] of [['0', ['observe']], ['1', ['connect', 'plan']]]) {
-    const field = root.querySelector(`[data-part-index="${i}"] [data-slide-field="svgGroupIds"]`);
-    for (const option of field.options) option.selected = values.includes(option.value);
-    field.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-  }
+  for (const [part, step] of [['observe', '0'], ['connect', '1'], ['plan', '1']]) edit(`[data-part-appears="${part}"]`, step);
   root.querySelector('[data-part-index="1"] [data-slide-action="part-up"]').click();
   const list = dom.window.document.createElement('ol');
   list.innerHTML = slideListHTML(slides, [item], null);
