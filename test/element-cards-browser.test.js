@@ -38,7 +38,8 @@ function png([r, g, b]) {
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), chunk('IDAT', deflateSync(rows)), chunk('IEND', Buffer.alloc(0))]);
 }
 // Four slides: a drawing whose steps reveal observe, connect and plan (with a drawing lacking plan as a
-// candidate); three plain steps, one at an agent's 1200 ms; three steps under a 400 ms gap; a photo.
+// candidate); three plain steps, one at an agent's 1200 ms; three steps under a 400 ms gap; a photo; an
+// automatic step that starts with the step before it.
 const SLIDES = ({ svg, lacking, red, blue }) => [
   { id: 'diagram', title: 'Observe, connect, plan', layout: 'full-media', body: 'Three steps to a plan.', vector: { itemId: svg, alt: 'A plan' },
     candidates: [{ itemId: lacking, alt: '' }], stages: [
@@ -50,6 +51,9 @@ const SLIDES = ({ svg, lacking, red, blue }) => [
   { id: 'gap', title: 'Evenly spaced', layout: 'statement', body: 'A steady rhythm.', design: { timing: { betweenMs: 400 } }, stages: [
     { id: 'x', title: 'X' }, { id: 'y', title: 'Y' }, { id: 'z', title: 'Z' }] },
   { id: 'photo', title: 'A photo', layout: 'text-media', body: 'With a picture.', media: { itemId: red, alt: 'Red' } },
+  // An automatic step after an untimed one starts with it (After previous, Wait None, Speed Standard).
+  { id: 'together', title: 'Together', layout: 'statement', body: 'Two at once.', stages: [
+    { id: 'a', title: 'First', body: 'One' }, { id: 'b', title: 'Second', body: 'Two', trigger: 'auto' }, { id: 'c', title: 'Third', body: 'Three', trigger: 'manual', durationMs: 800 }] },
 ];
 async function setup(t) {
   const workspace = await mkdtemp(path.join(tmpdir(), 'sb-element-cards-'));
@@ -267,6 +271,7 @@ for (const type of [chromium, firefox]) test(`E4, E5, E6, E8 ${type.name()}: ele
   await page.click('.deck-canvas-block[data-select="visual"]');
   const visualBar = page.locator('.deck-canvas-toolbar[data-toolbar-block="visual"]:not([hidden])');
   assert.equal(await visualBar.locator('.deck-canvas-in-use').textContent(), `In use: ${items.svg.label} v1`);
+  assert.equal(await visualBar.getByRole('button', { name: 'All slides' }).count(), 0, 'the visual toolbar has no scope: it edits no deck value');
   assert.equal(await cardOf(page, 'visual').evaluate(node => node.classList.contains('is-active')), true);
   await evidence(page, `e6-visual-toolbar-${type.name()}.png`);
 
@@ -288,5 +293,29 @@ for (const type of [chromium, firefox]) test(`E4, E5, E6, E8 ${type.name()}: ele
   assert.match(await cardOf(page, 'visual').locator('[data-card-notice]').textContent(), /starred on the slide; star another first/);
   assert.equal(deck().revision, revision, 'nothing was saved');
   await evidence(page, `e8-star-${type.name()}.png`);
+
+  // ---- E5: an automatic step that starts with the step before it plays from its own start, on Play step
+  // and on the replay after a Speed change, and holds at the end of its motion.
+  await openEditor(page, 4);
+  await openCard(page, 'step:b');
+  const together = await frameIn(page, 'together');
+  const [first, second] = (await together.evaluate(() => window.storybenchDeck.timeline().stages)).slice(0, 2);
+  assert.equal(second.startMs, first.startMs, 'step 2 starts with step 1');
+  const playsStep2 = (all, label) => {
+    // From the step's start: samples before the frame took the message show the slide as it was.
+    const seen = all.slice(Math.max(0, all.findIndex(entry => entry.state === 'playing')));
+    assert.ok(seen.some(entry => entry.state === 'playing' && entry.stage === 1 && entry.timeMs < entry.ends[1]), `${label}: step 2 plays its motion`);
+    assert.ok(!seen.some(entry => entry.stage === 2), `${label}: only up to step 2`);
+    const end = seen.at(-1);
+    assert.deepEqual([end.state, end.stage], ['paused', 1], `${label}: and holds it`);
+    assert.ok(Math.abs(end.timeMs - end.ends[1]) <= 0.5, `${label}: at the end of its motion (${end.timeMs} of ${end.ends[1]})`);
+  };
+  await cardOf(page, 'step:b').getByRole('button', { name: 'Play step' }).click();
+  playsStep2(await sample(page, together), 'Play step');
+  const sped = deck().revision;
+  await stepRow(page, 'b', 'durationMs').getByRole('button', { name: 'Slow', exact: true }).click();
+  await settled(page);
+  assert.equal(slide('together').stages[1].durationMs, 1600);
+  playsStep2(await sample(page, await frameIn(page, 'together', sped + 1)), 'Speed Slow');
   assert.deepEqual(errors, []);
 });

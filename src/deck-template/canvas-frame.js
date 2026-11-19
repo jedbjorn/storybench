@@ -40,12 +40,12 @@
   }
   // A stage is shown at the end of its own motion, before the next stage begins; null is the full reveal.
   // Any stage index the slide has is kept as asked (the editor normalizes by the same rule), the last included.
+  const heldAt = (stages, i) => Math.max(stages[i].startMs, Math.min(stages[i].motionEndMs, (stages[i + 1]?.startMs ?? Infinity) - 0.5));
   function show(value) {
     stop();
     const { stages, durationMs } = deck.timeline();
     stage = Number.isInteger(value) && value >= 0 && value < stages.length ? value : null;
-    const time = stage === null ? durationMs : Math.max(stages[stage].startMs, Math.min(stages[stage].motionEndMs, (stages[stage + 1]?.startMs ?? Infinity) - 0.5));
-    deck.seek(time);
+    deck.seek(stage === null ? durationMs : heldAt(stages, stage));
     post();
   }
   // Play: the runtime's own clock runs the slide. Each tick reports the stage it reached; where the
@@ -62,8 +62,13 @@
     const { stages } = deck.timeline();
     if (!Number.isInteger(value) || value < 0 || value >= stages.length) return;
     // The first stage replays with the slide; a later one is clicked from the end of the one before it,
-    // which plays its motion once.
-    if (value === 0) { stop(); deck.replay(); } else { show(value - 1); slide.querySelector(`[data-stage="${value}"]`)?.click(); }
+    // which plays its motion once. An automatic stage that starts with the one before it is already
+    // current there, so it plays from its own start instead, with any stage that starts with it.
+    // Nothing is reported until it plays: the editor would hold a stage reported on the way.
+    stop();
+    if (value === 0) deck.replay();
+    else if ((deck.seek(heldAt(stages, value - 1)).stage ?? -1) >= value) { deck.seek(stages[value].startMs); deck.resume(); }
+    else slide.querySelector(`[data-stage="${value}"]`)?.click();
     playing = { pulse: null, timer: null, reported: '', until: value };
     tick();
   }
@@ -74,8 +79,9 @@
     const key = `${stage}:${playing.pulse}`;
     if (key !== playing.reported) { playing.reported = key; post(); }
     if (playing.until !== undefined) {
-      const end = now.stages[playing.until].motionEndMs;
-      if (now.state === 'playing' && now.timeMs < end && (now.stage ?? 0) <= playing.until) { playing.timer = setTimeout(tick, 40); return; }
+      // It holds at the stage's motion end, or where a later stage starts; one that starts with it plays along.
+      const { startMs, motionEndMs } = now.stages[playing.until], later = now.stages[now.stage ?? 0].startMs > startMs;
+      if (now.state === 'playing' && now.timeMs < motionEndMs && !((now.stage ?? 0) > playing.until && later)) { playing.timer = setTimeout(tick, 40); return; }
       return show(playing.until);
     }
     if (now.state === 'complete' || (now.state === 'waiting' && !following)) return show(null);
