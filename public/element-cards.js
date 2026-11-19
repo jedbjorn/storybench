@@ -11,7 +11,7 @@
 // picks, parts and timing again (src/deck-data.js).
 import { icons } from './icons.js';
 import { SLIDE_TYPES, visualKind } from './slide-types.js';
-import { missingParts, missingPartText, removeCandidate, slideOffers, startGallery, unstar, useOnSlide } from './deck-library.js';
+import { askFromSlideText, missingParts, missingPartText, removeCandidate, slideOffers, startGallery, unstar, useOnSlide } from './deck-library.js';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const count = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
@@ -129,9 +129,19 @@ function visualCard(slide, items, ctx) {
       <div class="icon-actions">${iconButton('part-up', 'Move view earlier', 'up')}${iconButton('part-down', 'Move view later', 'down')}</div></div>`).join('')}</div>` : '';
   const parts = drawing ? partsTable(slide, drawing) : '';
   const open = picked.length === 1 && items.some(item => item.id === picked[0]) ? `<button type="button" data-open-asset="${esc(picked[0])}">${icons.edit} Open asset</button>` : '';
+  const ask = askButton(picked, items);
   const warn = missing.map(part => `<p class="element-warning" role="alert" data-missing-part>${esc(missingPartText(drawing, part))}</p>`).join('');
-  return card('visual', 'Visual', pick, `${noticeHTML(ctx.notice, 'visual')}${warn}${mode}${strip}${add}${alt}${views}${parts}${open}`,
+  return card('visual', 'Visual', pick, `${noticeHTML(ctx.notice, 'visual')}${warn}${mode}${strip}${add}${alt}${views}${parts}${open}${ask}`,
     { ...ctx, extra: ` data-visual-kinds="${kinds.join(' ')}"` });
+}
+// Ask for another (spec #46 Iterations): a new iteration of the one picked visual, asked from this slide.
+// Without exactly one picked library asset it is disabled with the reason.
+function askButton(picked, items) {
+  const reason = !picked.length ? 'Star a candidate first: Ask for another makes a new iteration of the pick.'
+    : picked.length > 1 ? 'Several views are picked: name the one to remake in chat.'
+    : !items.some(item => item.id === picked[0]) ? 'The picked asset is not in the library.' : '';
+  return reason ? `<button type="button" data-ask-another disabled title="${esc(reason)}" aria-description="${esc(reason)}">Ask for another</button>`
+    : `<button type="button" data-ask-another="${esc(picked[0])}">Ask for another</button>`;
 }
 // Drawing parts: one row per part of the picked drawing, with one Appears choice (From the start, or one
 // step). A part can be in one step only.
@@ -204,9 +214,10 @@ const stageFields = ['trigger', 'afterMs', 'durationMs', 'holdMs', 'easing', 'mo
 /** Edits inside `root` change the slide under the nearest [data-slide-index]. Typing marks the production
  *  dirty; a committed change saves. Structural changes re-render at once. `notify(card, text)` shows a
  *  refusal on that card without saving; `onReplay(index)` replays a step once its change is saved;
- *  `onPlayStep(index)` plays it now; `onOpenAsset(itemId)` opens the asset preview. */
+ *  `onPlayStep(index)` plays it now; `onOpenAsset(itemId)` opens the asset preview; `onAskForAnother(text)`
+ *  hands the Visual card's Ask for another note to the chat composer. */
 export function bindElementCards(root, { getSlides, getItems = () => [], onDirty, onSave, render, notify = () => {}, onReplay = () => {}, onPlayStep = () => {},
-  onOpenAsset = () => {}, onToggle = () => {}, isGallery = () => false, onGalleryMode = () => {} }) {
+  onOpenAsset = () => {}, onAskForAnother = () => {}, onToggle = () => {}, isGallery = () => false, onGalleryMode = () => {} }) {
   const at = target => {
     const index = Number(target.closest('[data-slide-index]')?.dataset.slideIndex);
     return { index, slide: getSlides()[index] };
@@ -316,6 +327,8 @@ export function bindElementCards(root, { getSlides, getItems = () => [], onDirty
     if (mode) return visualMode(index, slide, mode.dataset.visualMode);
     const asset = target.closest('[data-open-asset]');
     if (asset) return onOpenAsset(asset.dataset.openAsset);
+    const ask = target.closest('[data-ask-another]')?.dataset.askAnother;
+    if (ask && item(ask)) return onAskForAnother(askFromSlideText(slide, index, item(ask)));
     const action = target.closest('[data-slide-action]')?.dataset.slideAction;
     if (!action || !(action.startsWith('add-') || action.startsWith('part-'))) return;
     if (action.startsWith('add-')) {

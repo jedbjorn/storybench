@@ -142,3 +142,7 @@ export function missingParts(drawing, stages) {
 }
 /** The warning beside a picked drawing that lacks a stepped part (spec #46 'Candidates'). */
 export const missingPartText = (drawing, partId) => `v${drawing.iteration ?? 1} has no part ${partId}, so a step reveals nothing.`;
+// Ask for another from a slide's Visual card (spec #46 Iterations): the composer note names the slide, the
+// picked asset and its iteration, so the deck guidance's slide route applies (an unstarred candidate of that
+// slide). The asset preview's Ask names no slide and keeps the result in the group (library-workspace.js).
+export const askFromSlideText = (slide, index, item) => `On slide ${slideNumber(index)} “${slide.title}” (${slide.id}): make another iteration of its picked visual “${item.label}” (library item ${item.id}, v${item.iteration ?? 1}). Register it with iterationOf ${item.id} and add it to this slide's candidates, unstarred unless I say to use it. What to change: `;

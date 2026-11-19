@@ -13,6 +13,7 @@ import { createDeckService } from '../src/deck-service.js';
 import { SLIDE_TYPES } from '../public/slide-types.js';
 import { slideListHTML, slideWarnings, layoutOptions } from '../public/deck-workspace.js';
 import { elementCardsHTML, bindElementCards, hiddenValues } from '../public/element-cards.js';
+import { askFromSlideText } from '../public/deck-library.js';
 
 // The Slide Types table, as the editor's element cards. Every type has copy (Title and Body) and steps;
 // More (notes, minutes, story section) is not a slot of the table and always shows. The Visual card
@@ -30,11 +31,11 @@ const CARDS = { copy: ['title', 'body'], visual: ['visual'], columns: ['columns'
 
 function editor(slides, items = [], { design = {}, onReplay = () => {}, gallery = false } = {}) {
   const dom = new JSDOM('<main></main>'), root = dom.window.document.querySelector('main');
-  const notices = [], saves = [], galleries = new Set(gallery ? [slides[0].id] : []);
+  const notices = [], saves = [], asks = [], galleries = new Set(gallery ? [slides[0].id] : []);
   let notice = null;
   const render = () => { root.innerHTML = `<div data-slide-index="0"><select data-slide-field="layout">${layoutOptions(slides[0].layout)}</select>${elementCardsHTML(slides[0], 0, { items, sections: [], design, notice, gallery: galleries.has(slides[0].id) })}</div>`; };
   render();
-  bindElementCards(root, { getSlides: () => slides, getItems: () => items, onDirty() { notice = null; }, onSave() { saves.push(structuredClone(slides[0])); }, render, onReplay,
+  bindElementCards(root, { getSlides: () => slides, getItems: () => items, onDirty() { notice = null; }, onSave() { saves.push(structuredClone(slides[0])); }, render, onReplay, onAskForAnother: text => asks.push(text),
     notify(card, text) { notice = { card, text }; notices.push(text); render(); }, isGallery: id => galleries.has(id), onGalleryMode(id, on) { if (on) galleries.add(id); else galleries.delete(id); } });
   const slots = () => [...new Set([...root.querySelectorAll('[data-card], [data-card-group]')].map(node => {
     const key = node.dataset.card || node.dataset.cardGroup;
@@ -45,7 +46,7 @@ function editor(slides, items = [], { design = {}, onReplay = () => {}, gallery 
     for (const name of ['input', 'change']) field.dispatchEvent(new dom.window.Event(name, { bubbles: true }));
   };
   const click = selector => root.querySelector(selector).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
-  return { dom, root, slots, choose, click, notices, saves };
+  return { dom, root, slots, choose, click, notices, saves, asks };
 }
 
 test('E3: for each of the seven types the editor shows exactly the slots of the Slide Types table', t => {
@@ -298,6 +299,43 @@ test('E8 (editor half): a gallery stars several candidates and they play in thei
   assert.deepEqual(slides[0].media, { itemId: 'a', alt: '' });
   assert.deepEqual(slides[0].subnav, []);
   assert.deepEqual(slides[0].candidates.map(c => c.itemId).sort(), ['b', 'c']);
+});
+
+// Spec #46 Iterations, task #133: Ask for another from a slide's Visual card. The note names the slide
+// (number, title), the picked asset and its iteration, so the deck guidance's slide route applies: the new
+// iteration becomes an unstarred candidate of that slide. Nothing is saved; the note waits in the composer.
+test('Iterations: the Visual card asks for another of its one pick with a note naming the slide; otherwise it is disabled with a reason', t => {
+  const v2 = DRAWING('v2', ['observe'], 2);
+  const slide = { id: 'plan-slide', title: 'Observe, connect, plan', layout: 'full-media', body: '', vector: { itemId: 'v2', alt: '' } };
+  assert.equal(askFromSlideText(slide, 5, v2), 'On slide 06 “Observe, connect, plan” (plan-slide): make another iteration of its picked visual “Floor plan” (library item v2, v2). '
+    + "Register it with iterationOf v2 and add it to this slide's candidates, unstarred unless I say to use it. What to change: ");
+  const slides = [slide];
+  const { dom, root, click, asks, saves } = editor(slides, [v2]);
+  t.after(() => dom.window.close());
+  const ask = () => root.querySelector('[data-card="visual"] [data-ask-another]');
+  assert.equal(ask().textContent, 'Ask for another');
+  assert.equal(ask().disabled, false);
+  click('[data-ask-another]');
+  assert.deepEqual(asks, [askFromSlideText(slide, 0, v2)]);
+  assert.match(asks[0], /^On slide 01 “Observe, connect, plan” \(plan-slide\): make another iteration of its picked visual “Floor plan” \(library item v2, v2\)\./);
+  assert.equal(saves.length, 0, 'asking saves nothing');
+  // No pick: disabled with the reason; a gallery with several picks: disabled, name the view in chat.
+  const empty = editor([{ ...slide, vector: null, candidates: [{ itemId: 'v2', alt: '' }] }], [v2]);
+  t.after(() => empty.dom.window.close());
+  const none = empty.root.querySelector('[data-card="visual"] [data-ask-another]');
+  assert.equal(none.disabled, true);
+  assert.equal(none.title, 'Star a candidate first: Ask for another makes a new iteration of the pick.');
+  const photos = ['a', 'b'].map(PHOTO);
+  const gallery = editor([{ id: 'g', title: 'Gallery', layout: 'text-media', body: '', subnav: photos.map(item => ({ id: `view-${item.id}`, label: item.label, itemId: item.id })) }], photos);
+  t.after(() => gallery.dom.window.close());
+  const several = gallery.root.querySelector('[data-card="visual"] [data-ask-another]');
+  assert.equal(several.disabled, true);
+  assert.equal(several.title, 'Several views are picked: name the one to remake in chat.');
+  // One starred view is one pick: it asks for that view.
+  const one = editor([{ id: 'g', title: 'Gallery', layout: 'text-media', body: '', subnav: [{ id: 'view-a', label: 'Photo a', itemId: 'a' }] }], photos);
+  t.after(() => one.dom.window.close());
+  one.click('[data-ask-another]');
+  assert.match(one.asks[0], /^On slide 01 “Gallery” \(g\): make another iteration of its picked visual “Photo a” \(library item a, v1\)\./);
 });
 
 test('E4: steps reorder, are added from Add element and removed', t => {

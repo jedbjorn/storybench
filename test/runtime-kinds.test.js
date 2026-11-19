@@ -341,6 +341,13 @@ test('deck guidance keeps picks with the creator and routes iterations by where 
     ask,
     'Redline on library item “Floor plan” (item-7), iteration v2 of 2, a candidate for slide 02 “Observe, connect, plan” (starred).'];
   for (const [index, quote] of quotes.entries()) assert.match(notes[index], pattern(quote), `the skill's "${quote}" matches what the app writes`);
+  // Task #133: the Visual card's Ask for another names its slide, so the slide route applies (the creator
+  // names it), never the asset preview's group-only one.
+  const { askFromSlideText } = await import('../public/deck-library.js');
+  const slideAsk = askFromSlideText({ id: 'plan', title: 'Observe, connect, plan' }, 1, { id: 'item-7', label: 'Floor plan', iteration: 2 });
+  assert.match(section, /\*\*A slide:\*\* the creator names it/);
+  assert.match(slideAsk, /^On slide 02 “Observe, connect, plan” \(plan\): /);
+  assert.doesNotMatch(slideAsk, pattern(quotes[1]), "the slide's ask is not the asset preview's group-only request");
   const partLine = /"(v\d+ has no part [^"]+)"/.exec(section)[1];
   assert.equal(partLine, missingPartText({ iteration: 4 }, 'route-a'));
 });

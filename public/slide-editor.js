@@ -19,7 +19,7 @@ function pickedAssets(slide, items) {
   });
 }
 
-export function createSlideEditor(dialog, { canvas, channel = () => null, getEpisode, getItems, getSections, saveState, onDirty, onSave, onClose = () => {}, onOpenAsset = () => {} }) {
+export function createSlideEditor(dialog, { canvas, channel = () => null, getEpisode, getItems, getSections, saveState, onDirty, onSave, onClose = () => {}, onOpenAsset = () => {}, onAskForAnother = () => {} }) {
   const doc = dialog.ownerDocument, $ = (selector) => dialog.querySelector(selector);
   const root = $('[data-editor-root]'), elements = $('[data-editor-elements]'), scroller = $('[data-editor-scroll]');
   const count = $('[data-editor-count]'), title = $('[data-editor-title]'), saved = $('[data-editor-saved]'), layout = $('[data-editor-layout]');
@@ -43,6 +43,8 @@ export function createSlideEditor(dialog, { canvas, channel = () => null, getEpi
     onReplay: (index) => canvas.replayStep(index),
     onPlayStep: (index) => canvas.playStep(index),
     onOpenAsset,
+    // Ask for another fills the chat composer and does not send; the editor closes so the composer is in reach.
+    onAskForAnother(text) { close(); onAskForAnother(text); },
     onToggle(key, isOpen) { if (isOpen) open_.add(key); else { open_.delete(key); active.delete(key); } },
     isGallery: (id) => galleries.has(id),
     onGalleryMode(id, on) { if (on) galleries.add(id); else galleries.delete(id); } });
