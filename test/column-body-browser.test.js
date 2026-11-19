@@ -75,7 +75,9 @@ for (const type of [chromium, firefox]) test(`Task 132 ${type.name()}: a cleared
   await evidence(page, `task132-canvas-cleared-${type.name()}.png`);
 
   // In the Elements panel: clear the second column's body; it saves "" and the canvas shows both titles only.
-  const body = editor.locator('[data-editor-elements] [data-part="columns"][data-part-index="1"] [data-slide-field="body"]');
+  const columnsCard = editor.locator('[data-card="columns"]');
+  if (!(await columnsCard.evaluate(node => node.open))) await columnsCard.locator('summary').click();
+  const body = columnsCard.locator('[data-part="columns"][data-part-index="1"] [data-slide-field="body"]');
   assert.equal(await body.inputValue(), 'Right');
   await body.fill('');
   commit = saveDone(); await body.blur(); await commit; await settled();
