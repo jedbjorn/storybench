@@ -32,7 +32,7 @@ const parse = (value, fallback = null) =>
 const STORY_LIMIT = 1024 * 1024;
 const STORY_MARKER = /^ {0,3}<!--\s*storybench:section\s+([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/i;
 const hash = (value) => crypto.createHash("sha256").update(value).digest("hex");
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 // Shared persistence/UI/tool limits: 1 MiB summary, 100 links, 200-byte IDs, 8 KiB URLs,
 // 512-byte titles, 2 KiB notes, 2 MiB complete normalized JSON (including escaping).
 // All text limits use UTF-8 bytes. Oversize input is rejected, never truncated.
@@ -479,6 +479,7 @@ export class Store {
     if (version < 20) this.migrateV20();
     if (version < 21) this.migrateV21();
     if (version < 22) this.migrateV22();
+    if (version < 23) this.migrateV23();
     try {
       this.afterMigrationCommit?.();
     } catch (error) {
@@ -651,6 +652,29 @@ export class Store {
         CREATE UNIQUE INDEX IF NOT EXISTS library_items_iteration ON library_items(episode_id,iteration_group,iteration);`);
       this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(22,?)").run(now());
       this.db.exec("PRAGMA user_version=22; COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+  // The episode owns its bookmarks. Removing a library item or cleaning an output must
+  // leave its bookmark readable, so source_id and asset_id deliberately have no FK.
+  migrateV23() {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec(`CREATE TABLE IF NOT EXISTS video_moments (
+        id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+        source_type TEXT NOT NULL CHECK(source_type IN ('library','output')), source_id TEXT NOT NULL,
+        asset_id TEXT, source_label TEXT NOT NULL, sha256 TEXT NOT NULL, file_stamp TEXT NOT NULL,
+        duration REAL NOT NULL, start_seconds REAL NOT NULL, end_seconds REAL NOT NULL,
+        note TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
+        CHECK(0 <= start_seconds AND start_seconds < end_seconds AND end_seconds <= duration)
+      );
+      CREATE INDEX IF NOT EXISTS video_moments_episode ON video_moments(episode_id);
+      CREATE TABLE IF NOT EXISTS video_moment_saves (
+        episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE, request_id TEXT NOT NULL,
+        fingerprint TEXT NOT NULL, moment_id TEXT REFERENCES video_moments(id) ON DELETE SET NULL,
+        PRIMARY KEY(episode_id,request_id)
+      );`);
+      this.db.prepare("INSERT OR REPLACE INTO migration_log(version,completed_at) VALUES(23,?)").run(now());
+      this.db.exec("PRAGMA user_version=23; COMMIT");
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
   upstreamReportRow(row) {
