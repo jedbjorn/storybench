@@ -218,25 +218,27 @@ test('staged vector editor persists group mappings, reorder/duplicate identity a
   const asset = s.saveAsset({ name: 'plan.svg', hash: 'vector-editor', kind: 'image', path: 'media/plan.svg',
     metadata: { contentType: 'image/svg+xml', svgGroupIds: ['observe', 'connect', 'plan'] } });
   const item = s.attachLibraryItem(deck.id, asset.id, { category: 'Graphics' });
-  const slides = [{ id: 'vector', title: 'A plan', layout: 'process', notes: 'Three steps', stages: [
-    { id: 'first', title: 'Observe' }, { id: 'second', title: 'Connect and plan' },
-  ] }];
+  const slides = [{ id: 'vector', title: 'A plan', layout: 'process', notes: 'Three steps' }];
   const dom = new JSDOM('<main></main>'), root = dom.window.document.querySelector('main');
   t.after(() => dom.window.close());
   const render = () => { root.innerHTML = `<div data-slide-index="0">${elementCardsHTML(slides[0], 0, { items: [item], sections: [] })}</div>`; };
   render(); bindElementCards(root, { getSlides: () => slides, getItems: () => [item], onDirty() {}, onSave() {}, render });
   const edit = (selector, value) => { const field = root.querySelector(selector); field.value = value; for (const name of ['input', 'change']) field.dispatchEvent(new dom.window.Event(name, { bubbles: true })); };
-  // Add the drawing as a candidate and star it; then give each part one step in the parts table.
+  // Add the drawing as a candidate and star it; add two steps (each takes the first free part, task #134);
+  // then give the last part a step in the parts table.
   edit('[data-candidate-add]', item.id);
   root.querySelector(`[data-candidate-star="${item.id}"]`).click();
   edit('[data-slide-field="vectorAlt"]', 'Three parts of a shared plan');
-  for (const [part, step] of [['observe', '0'], ['connect', '1'], ['plan', '1']]) edit(`[data-part-appears="${part}"]`, step);
+  for (let i = 0; i < 2; i++) edit('[data-add-element]', 'step');
+  assert.deepEqual(slides[0].stages.map(stage => stage.svgGroupIds), [['observe'], ['connect']]);
+  const second = slides[0].stages[1].id;
+  edit('[data-part-appears="plan"]', '1');
   root.querySelector('[data-part-index="1"] [data-slide-action="part-up"]').click();
   const list = dom.window.document.createElement('ol');
   list.innerHTML = slideListHTML(slides, [item], null);
   bindSlideList(list, { getSlides: () => slides, getOpenId: () => null, setOpenId() {}, onPlay() {}, onEdit() {}, onChange() {} });
   list.querySelector('[data-slide-action="duplicate"]').click();
-  assert.equal(slides[0].stages[0].id, 'second');
+  assert.equal(slides[0].stages[0].id, second);
   assert.deepEqual(slides[0].stages[0].svgGroupIds, ['connect', 'plan']);
   assert.notEqual(slides[0].stages[0].id, slides[1].stages[0].id);
   const saved = s.saveDeck(deck.id, 1, slides);

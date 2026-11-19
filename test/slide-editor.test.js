@@ -14,6 +14,7 @@ import { SLIDE_TYPES } from '../public/slide-types.js';
 import { slideListHTML, slideWarnings, layoutOptions } from '../public/deck-workspace.js';
 import { elementCardsHTML, bindElementCards, hiddenValues } from '../public/element-cards.js';
 import { askFromSlideText } from '../public/deck-library.js';
+import { validateVectorStages } from '../src/deck-data.js';
 
 // The Slide Types table, as the editor's element cards. Every type has copy (Title and Body) and steps;
 // More (notes, minutes, story section) is not a slot of the table and always shows. The Visual card
@@ -350,4 +351,52 @@ test('E4: steps reorder, are added from Add element and removed', t => {
   click('[data-part="stages"][data-part-index="0"] [data-slide-action="part-delete"]');
   assert.deepEqual(slides[0].stages.map(stage => stage.id).slice(0, 2), ['c', 'b']);
   assert.ok(root.querySelector('[data-part="stages"][data-part-index="0"] [data-play-step="0"]'), 'each step has Play step');
+});
+
+// Spec #46 task #134 (REV1 conformance F1, flag #95): on a drawing slide every step reveals a part, as the
+// server requires (validateVectorStages). Add element > Step takes the drawing's first unclaimed part, in
+// the drawing's part order; with none free it is refused on the Visual card; a drawing starred onto a slide
+// with a step that would reveal nothing is refused with the server's wording. A refusal saves nothing.
+test('E4: on a drawing slide Add element > Step reveals the first unclaimed part and saves once', t => {
+  const plan = DRAWING('plan', ['observe', 'connect', 'plan']);
+  const slides = [{ id: 's', title: 'Plan', layout: 'process', body: '', vector: { itemId: 'plan', alt: '' }, stages: [{ id: 'a', title: 'A', svgGroupIds: ['connect'] }] }];
+  const { dom, root, choose, notices, saves } = editor(slides, [plan]);
+  t.after(() => dom.window.close());
+  choose('[data-add-element]', 'step');
+  assert.deepEqual(slides[0].stages.map(stage => stage.svgGroupIds), [['connect'], ['observe']], 'the first part no step claims, in the drawing\'s order');
+  assert.equal(saves.length, 1);
+  assert.deepEqual(saves[0].stages[1].svgGroupIds, ['observe']);
+  assert.doesNotThrow(() => validateVectorStages(saves[0].stages, plan.asset.metadata.svgGroupIds), 'the server accepts the saved steps');
+  assert.deepEqual(notices, []);
+  assert.equal(root.querySelector('[data-card^="step:stage_"] .element-card-summary').textContent, 'On click · Standard · reveals observe');
+});
+
+test('E4: on a drawing slide whose parts are all claimed Add element > Step is refused on the Visual card and saves nothing', t => {
+  const plan = DRAWING('plan', ['observe', 'connect']);
+  const slides = [{ id: 's', title: 'Plan', layout: 'process', body: '', vector: { itemId: 'plan', alt: '' }, stages: [
+    { id: 'a', title: 'A', svgGroupIds: ['observe'] }, { id: 'b', title: 'B', svgGroupIds: ['connect'] }] }];
+  const before = structuredClone(slides[0]);
+  const { dom, root, choose, notices, saves } = editor(slides, [plan]);
+  t.after(() => dom.window.close());
+  choose('[data-add-element]', 'step');
+  assert.deepEqual(slides[0], before, 'no step is added');
+  assert.equal(saves.length, 0);
+  assert.deepEqual(notices, ['Every part already appears in a step; free one first']);
+  assert.equal(root.querySelector('[data-card="visual"] [data-card-notice]').textContent, 'Every part already appears in a step; free one first');
+});
+
+test('E8 (editor half): starring a drawing onto a slide with a step that would reveal nothing is refused with the server\'s wording and saves nothing', t => {
+  const plan = DRAWING('plan', ['observe', 'connect']), photo = PHOTO('p');
+  const slides = [{ id: 's', title: 'Plan', layout: 'full-media', body: '', media: { itemId: 'p', alt: 'Photo' }, candidates: [{ itemId: 'plan', alt: '' }],
+    stages: [{ id: 'a', title: 'A', body: 'Text only' }] }];
+  const before = structuredClone(slides[0]);
+  const { dom, root, click, notices, saves } = editor(slides, [plan, photo]);
+  t.after(() => dom.window.close());
+  // What the server says of the same slide: 'Slide s: Stage a: select at least one SVG group'.
+  assert.throws(() => validateVectorStages(slides[0].stages, plan.asset.metadata.svgGroupIds), { message: 'Stage a: select at least one SVG group' });
+  click('[data-candidate-star="plan"]');
+  assert.deepEqual(slides[0], before, 'the pick is unchanged');
+  assert.equal(saves.length, 0);
+  assert.deepEqual(notices, ['Stage a: select at least one SVG group']);
+  assert.equal(root.querySelector('[data-card="visual"] [data-card-notice]').textContent, 'Stage a: select at least one SVG group');
 });
