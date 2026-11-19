@@ -214,6 +214,22 @@ function placement(value, field) {
   };
 }
 
+function validateCues(cues) {
+  if (!Array.isArray(cues)) throw new StoreError("card cues must be an array");
+  return cues.map((cue) => {
+    if (typeof cue?.assetId !== "string" || !cue.assetId.trim())
+      throw new StoreError("cue assetId must identify a source recording");
+    if (!Number.isFinite(cue.sourceSeconds) || cue.sourceSeconds < 0)
+      throw new StoreError("cue sourceSeconds must be finite and non-negative");
+    if (typeof cue.label !== "string" || !cue.label.trim())
+      throw new StoreError("cue label must be non-empty text");
+    if (cue.visualMoment != null && (typeof cue.visualMoment !== "string" || !cue.visualMoment.trim()))
+      throw new StoreError("cue visualMoment must be non-empty text");
+    return { assetId: cue.assetId, sourceSeconds: cue.sourceSeconds, label: cue.label.trim(),
+      ...(cue.visualMoment != null ? { visualMoment: cue.visualMoment.trim() } : {}) };
+  });
+}
+
 export function validateCards(cards) {
   if (!Array.isArray(cards)) throw new StoreError("cards must be an array");
   const seen = new Set();
@@ -265,6 +281,7 @@ export function validateCards(cards) {
       gain: card.gain == null || card.gain === "" ? 1 : Number(card.gain),
       fadeIn: card.fadeIn == null || card.fadeIn === "" ? 0 : Number(card.fadeIn),
       fadeOut: card.fadeOut == null || card.fadeOut === "" ? 0 : Number(card.fadeOut),
+      ...(card.cues != null ? { cues: validateCues(card.cues) } : {}),
       intendedSectionTitle: card.intendedSectionTitle == null ? null : String(card.intendedSectionTitle),
       brandingTemplateId: card.brandingTemplateId == null ? null : String(card.brandingTemplateId),
     };
@@ -1635,6 +1652,7 @@ export class Store {
       if (card.sectionId && !this.db.prepare("SELECT 1 FROM story_sections WHERE id=? AND episode_id=? AND retired_at IS NULL").get(card.sectionId, episodeId))
         throw new StoreError(`Story section not found for this episode: ${card.sectionId}`);
     const libraryById = new Map(this.listEpisodeLibrary(episodeId).map((item) => [item.id, item]));
+    const episodeAssets = new Map(Array.from(libraryById.values(), (item) => [item.assetId, item.asset]));
     // Episode references use this same episode revision. Newly linked items must belong to the episode;
     // links that already exist are kept as-is so an unavailable one can be shown and unlinked, not hidden.
     const referenceItemIds = changes.referenceItemIds == null ? current.referenceItemIds : referenceIds(changes.referenceItemIds, "referenceItemIds");
@@ -1653,6 +1671,18 @@ export class Store {
       if (card.type === "Audio" && card.anchorVisualCardId && !cardIds.has(card.anchorVisualCardId))
         throw new StoreError(`Audio anchor card not found: ${card.anchorVisualCardId}`);
       const selected = card.itemId ? libraryById.get(card.itemId) : null;
+      for (const cue of card.cues || []) {
+        const source = episodeAssets.get(cue.assetId);
+        if (!source) {
+          // Keep existing marks when a library item is removed. New times require the recording.
+          if (currentCards.get(card.id)?.cues?.some((old) => old.assetId === cue.assetId && old.sourceSeconds === cue.sourceSeconds)) continue;
+          throw new StoreError("Cue recording not found in this episode's library");
+        }
+        if (!(source.kind === "audio" || (source.kind === "video" && source.metadata?.hasAudio)))
+          throw new StoreError("Cue recording requires audio-bearing media");
+        if (Number.isFinite(source.duration) && cue.sourceSeconds >= source.duration)
+          throw new StoreError("Cue time must be within the recording");
+      }
       if (selected) {
         const kind = selected.asset.kind;
         if (card.type === "Static Graphic" && kind !== "image") throw new StoreError("Static Graphic requires an image library item");

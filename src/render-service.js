@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { buildRenderPlan } from "./composition-plan.js";
+import { buildRenderPlan, placeEditorialCues } from "./composition-plan.js";
 import { renderComposition } from "./composition-renderer.js";
 import { HeavyJobQueue, renderFingerprint } from "./job-runner.js";
 import { StoreError } from "./store.js";
@@ -64,7 +64,10 @@ export function createRenderService({ workspace, store, renderGraphic, validateG
     return { ...snapshot, renderRevision: renderFingerprint(snapshot) };
   }
 
-  function validateRender(episodeId) { return getRenderSnapshot(episodeId); }
+  function validateRender(episodeId) {
+    const snapshot = getRenderSnapshot(episodeId);
+    return { ...snapshot, cuePlacements: placeEditorialCues(snapshot.episode.cards, snapshot.composition) };
+  }
 
   // The destination (channel, episode and managed output folder) is fixed when work is dispatched and travels
   // with the job; later navigation or default-channel changes cannot retarget it.

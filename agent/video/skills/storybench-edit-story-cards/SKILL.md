@@ -41,6 +41,7 @@ Field notes (as the store validates them):
 
 - `type`: `Video/Audio`, `Video`, `Audio`, `Static Graphic`, `Video Graphic`. Visual cards order the timeline; `Audio` cards anchor to a visual card (`anchorVisualCardId`) with `offset`, `gain` (0–8), `fadeIn`/`fadeOut` seconds, and a `role` (`voiceover`, `music`, `sound effect`, `other`).
 - Timing: video/audio media use `in`/`out` seconds within the source (out must be within the asset's duration); `Static Graphic` uses `duration` seconds.
+- To mark a recording, save `cues` on its card with `update_cards`. For example, `{"assetId":"asset-score","sourceSeconds":8,"label":"Lift","visualMoment":"The title settles"}` is one entry. Use the library item's `asset.id` from `get_context`. The visual moment is optional. After editing, `validate_render` returns `cuePlacements`. A placed mark has `cutFrame` and `cutSeconds`. A mark outside the frame-rounded trim is `trimmed-away`, one on a replaced recording is `source-changed`, and one on a card with no audio placement is `not-in-cut`.
 - `itemId` must be a library item in this episode; `sectionId` must be a live story section; `referenceItemIds` must exist in the episode library.
 - `enabled: false` or `excluded: true` keeps the card but leaves it out of the cut.
 
