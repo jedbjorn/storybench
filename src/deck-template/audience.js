@@ -196,13 +196,19 @@
         : `translate(${state.x}px,${state.y}px) rotate(${state.rotate}deg) scale(${state.scale})`;
     }
   }
-  // The card shows one face: the latest stage begun. Mid-flip, the outgoing face turns away over the
-  // first half and the incoming face turns in over the second. Reduced motion swaps faces without turning.
+  function visibleAtOrBefore(plan, n) {
+    while (n >= 0 && plan[n]?.el.hidden) n--;
+    return n;
+  }
+  // Hidden beats hold the last visible face flat. Only an arriving visible beat starts a flip.
   function paintCard(plan, t) {
-    let current = -1;
-    plan.forEach((entry, n) => { if (final() ? n <= stage : progress(entry, n, t) !== null) current = n; });
-    const entry = plan[current], f = !entry || final() || !entry.flip ? 1 : Math.max(0, Math.min(1, (t - entry.start) / entry.flip));
-    const e = f >= 1 ? 1 : entry.ease(f), shown = e < 0.5 ? current - 1 : current;
+    const active = opening ? -1 : Math.min(stage, plan.length - 1);
+    const current = visibleAtOrBefore(plan, active);
+    const entry = plan[current];
+    const flipping = current === active && entry?.flip && !final();
+    const f = flipping ? Math.max(0, Math.min(1, (t - entry.start) / entry.flip)) : 1;
+    const e = f >= 1 ? 1 : entry.ease(f);
+    const shown = e < 0.5 ? visibleAtOrBefore(plan, current - 1) : current;
     plan.forEach((face, n) => {
       flag(face.el, n !== shown);
       face.el.style.opacity = '';
@@ -216,10 +222,9 @@
   }
   function paintStage() {
     paintFrame();
-    // A hidden list entry still runs. Keep the preceding visible label current until the next one starts.
+    // The authored timeline includes every beat. Audience controls follow the last visible one.
     const plan = model().plan;
-    let label = opening ? -1 : stage;
-    while (label >= 0 && plan[label]?.el.hidden) label--;
+    const label = visibleAtOrBefore(plan, opening ? -1 : stage);
     slides[index].querySelectorAll('[data-stage]').forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.stage) === label)));
     plan.forEach(({ el }, i) => { if (i === label) el.setAttribute('aria-current', 'step'); else el.removeAttribute('aria-current'); });
     publish();

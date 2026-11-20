@@ -72,7 +72,7 @@ h1,h2{font-family:var(--font-accent,Manrope),Arial,sans-serif}.slide header,.cap
 }
 .stage-steps h2 button{font:inherit;letter-spacing:inherit;text-align:inherit;border:0;padding:0 .1em;background:transparent}
 .stage-steps h2 button[aria-pressed="true"]{background:var(--active);color:var(--paper)}
-.stage-text:has(>.stage-list):not(:has(li:not([hidden]))){display:none!important}
+.stage-text:has(>.stages):not(:has([data-step]:not([hidden]))){display:none!important}
 @media print{.stages[hidden]{display:grid!important}}
 
 /* The signed edges adjust the painted Visual inside its normal layout slot. */

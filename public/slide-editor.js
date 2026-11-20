@@ -187,8 +187,8 @@ export function createSlideEditor(dialog, { canvas, channel = () => null, getEpi
     const top = scroller.scrollTop;
     elements.innerHTML = fieldsHTML = html;
     scroller.scrollTop = top;
-    if (active?.dataset.slideAction === 'toggle-list-label') {
-      elements.querySelector(`[data-part="stages"][data-part-index="${part.dataset.partIndex}"] [data-slide-action="toggle-list-label"]`)?.focus({ preventScroll: true });
+    if (active?.dataset.slideAction === 'toggle-step-label') {
+      elements.querySelector(`[data-part="stages"][data-part-index="${part.dataset.partIndex}"] [data-slide-action="toggle-step-label"]`)?.focus({ preventScroll: true });
     }
     if (!key) return;
     const field = [...elements.querySelectorAll(`[data-slide-field="${CSS.escape(key)}"]`)].find((node) => {

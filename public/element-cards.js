@@ -185,8 +185,9 @@ function stepCard(slide, stage, i, items, ctx) {
     ${revealRow}<p class="element-motion" data-motion-line>${esc(motionLine(stage, drawing))}</p>
     <div class="element-card-actions"><button type="button" data-play-step="${i}">${icons.play} Play step</button>
     <div class="icon-actions">${iconButton('part-up', `Move step ${i + 1} earlier`, 'up')}${iconButton('part-down', `Move step ${i + 1} later`, 'down')}${iconButton('part-delete', `Remove step ${i + 1}`, 'trash', 'danger')}</div></div>`;
-  const visibility = style === 'list' ? iconButton('toggle-list-label', stage.hideFromList ? `Show step ${i + 1} in list` : `Hide step ${i + 1} from list`,
-    stage.hideFromList ? 'eyeOff' : 'preview') : '';
+  const visible = !stage.hideFromList;
+  const visibility = `<button type="button" class="icon-button" data-slide-action="toggle-step-label" aria-label="Show step ${i + 1} text to audience" aria-pressed="${visible}"
+    title="${visible ? 'Hide' : 'Show'} step text">${visible ? icons.preview : icons.eyeOff}</button>`;
   return `<div data-part="stages" data-part-index="${i}">${card(`step:${stage.id}`, title, summary, body, ctx)}${visibility}</div>`;
 }
 function columnsCard(slide, ctx) {
@@ -386,7 +387,7 @@ export function bindElementCards(root, { getSlides, getItems = () => [], onDirty
     const ask = target.closest('[data-ask-another]')?.dataset.askAnother;
     if (ask && item(ask)) return onAskForAnother(askFromSlideText(slide, index, item(ask)));
     const action = target.closest('[data-slide-action]')?.dataset.slideAction;
-    if (action === 'toggle-list-label') {
+    if (action === 'toggle-step-label') {
       const stage = slide.stages[stageAt(target)];
       if (stage.hideFromList) delete stage.hideFromList;
       else stage.hideFromList = true;

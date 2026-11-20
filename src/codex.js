@@ -56,7 +56,7 @@ const deckSlide = object(['id', 'title', 'layout'], {
   referenceItemIds: { type: 'array', items: deckText },
   columns: { type: 'array', items: object(['title'], { title: deckText, body: deckText }) },
   stages: { type: 'array', items: object(['id', 'title'], { id: deckText, title: deckText, body: deckText,
-    hideFromList: { type: 'boolean', description: 'Hide this entry in the List stage text style. The stage still plays.' },
+    hideFromList: { type: 'boolean', description: 'Hide this stage’s audience text in every stage style. Its timing, drawing and Presenter navigation are preserved.' },
     afterMs: { type: 'number', minimum: 0, maximum: 3600000 },
     trigger: { type: 'string', enum: ['auto', 'manual'], description: 'auto starts this stage afterMs after the previous one ends (afterMs may be 0 to flow straight on); manual waits for selection. Unset: a positive afterMs is automatic.' },
     durationMs: { type: 'number', minimum: 0, maximum: 60000, description: 'How long this stage\'s motion takes. Unset keeps the standard short fade and does not delay the next stage.' },

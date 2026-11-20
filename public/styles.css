@@ -1168,8 +1168,8 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
 .element-grip { display: inline-flex; cursor: grab; color: var(--muted); }
 .element-steps { display: grid; gap: 8px; }
 .element-steps [data-part="stages"] { position: relative; }
-.element-steps [data-slide-action="toggle-list-label"] { position: absolute; top: 4px; right: 6px; width: 28px; height: 28px; border-color: transparent; background: transparent; }
-.element-steps [data-part]:has(> [data-slide-action="toggle-list-label"]) summary { padding-right: 42px; }
+.element-steps [data-slide-action="toggle-step-label"] { position: absolute; top: 4px; right: 6px; width: 28px; height: 28px; border-color: transparent; background: transparent; }
+.element-steps [data-part]:has(> [data-slide-action="toggle-step-label"]) summary { padding-right: 42px; }
 .element-steps .element-card-title { flex-shrink: 0; max-width: 100%; }
 .element-step-title { overflow: hidden; text-overflow: ellipsis; }
 .element-steps h4 { margin: 6px 0 0; font-size: 13px; color: var(--deep); }

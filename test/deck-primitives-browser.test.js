@@ -182,6 +182,106 @@ test('A shortened narration list highlights the last visible label as every SVG 
   assert.equal((await seek(page, 550)).stage, 5);
 });
 
+for (const style of ['list', 'chips', 'steps', 'card']) test(`Hidden ${style} entries preserve the authored timeline, drawing and Presenter targets`, async t => {
+  const browser = await launch(t); if (!browser) return;
+  const design = { stageText: { style, numbered: true, position: 'right', flipMs: 160 } };
+  const visible = [1, 4];
+  const stages = vectorStages(6, i => ({ trigger: 'auto', durationMs: 240, easing: 'linear',
+    ...(visible.includes(i) ? {} : { hideFromList: true }) }));
+  const subnav = stages.map(s => `Navigate to ${s.id}`);
+  const page = await open(t, browser, [
+    vector('excerpt', design, { stages, subnav }),
+    vector('control', design, { stages: stages.map(s => ({ ...s, hideFromList: false })), subnav }),
+    vector('silent', design, { stages: stages.map(s => ({ ...s, hideFromList: true })), subnav }),
+  ]);
+  const slide = page.locator('#excerpt');
+  const shownFaces = () => slide.locator('.stage-card > section:visible').evaluateAll(els => els.map(el =>
+    [Number(el.dataset.step), el.style.transform]));
+  async function snapshot(id, time) {
+    const { stages, stage, durationMs } = await seek(page, time);
+    const svg = await page.locator(`#${id} [data-vector-step]`).evaluateAll(groups => groups.map(g =>
+      [g.dataset.vectorGroup, g.dataset.pending, g.getAttribute('aria-hidden'), g.style.opacity, g.style.transform]));
+    return { stages, stage, durationMs, svg };
+  }
+  const times = stages.map((_, i) => i * 240 + 180);
+  await go(page, 'control');
+  const reference = [];
+  for (const time of times) reference.push(await snapshot('control', time));
+  await go(page, 'excerpt');
+  for (const [i, time] of times.entries()) {
+    const state = await snapshot('excerpt', time);
+    assert.deepEqual(state, reference[i]);
+    assert.equal(state.stage, i);
+    const latest = visible.filter(n => n <= i).at(-1);
+    const current = slide.locator('.stages [aria-current=step]');
+    assert.deepEqual(await current.evaluateAll(els => els.map(el => Number(el.dataset.step))), latest == null ? [] : [latest]);
+    if (style === 'card') assert.deepEqual(await shownFaces(), latest == null ? [] : [[latest, '']]);
+    else {
+      const pressed = slide.getByRole('button', { pressed: true });
+      assert.deepEqual(await pressed.evaluateAll(els => els.map(el => Number(el.dataset.stage))), latest == null ? [] : [latest]);
+    }
+  }
+  if (style === 'card') {
+    await seek(page, 4 * 240 + 40);
+    assert.deepEqual(await shownFaces(), [[1, 'rotateY(45deg)']]);
+    await seek(page, 4 * 240 + 120);
+    assert.deepEqual(await shownFaces(), [[4, 'rotateY(-45deg)']]);
+  } else {
+    const controls = slide.getByRole('button');
+    assert.deepEqual(await controls.allTextContents(), visible.map(i => style === 'chips' ? subnav[i] : TITLES[i]));
+    await controls.last().click();
+    assert.equal(await page.evaluate(() => window.storybenchDeck.timeline().stage), 4);
+  }
+  const popup = page.waitForEvent('popup');
+  await page.locator('#presenter-open').click();
+  const presenter = await popup;
+  await presenter.waitForSelector('#stage-select:enabled');
+  assert.deepEqual(await presenter.locator('#stage-select option').allTextContents(), subnav);
+  await presenter.selectOption('#stage-select', { label: subnav[3] });
+  await page.waitForFunction(() => window.storybenchDeck.timeline().stage === 3);
+  await presenter.close();
+  await page.keyboard.press('ArrowLeft');
+  assert.equal(await page.evaluate(() => window.storybenchDeck.timeline().stage), 2);
+  await page.keyboard.press('ArrowRight');
+  assert.equal(await page.evaluate(() => window.storybenchDeck.timeline().stage), 3);
+  const visit = await page.evaluate(() => window.storybenchDeck.timeline().visit);
+  await page.getByRole('button', { name: 'Replay' }).click();
+  await page.waitForFunction(v => {
+    const s = window.storybenchDeck.timeline(); return s.visit > v && s.state === 'complete' && s.stage === 5;
+  }, visit);
+  for (const media of [{ reducedMotion: 'reduce' }, { media: 'print' }]) {
+    await page.emulateMedia(media);
+    await page.evaluate(() => window.storybenchDeck.timeline());
+    const accessibility = await slide.ariaSnapshot();
+    for (const i of [0, 2, 3, 5]) {
+      assert.ok(!accessibility.includes(TITLES[i]) && !accessibility.includes(subnav[i]), accessibility);
+      assert.equal(await slide.locator(`[data-step="${i}"]`).isVisible(), false);
+    }
+    if (style === 'card' && media.reducedMotion) assert.deepEqual(await shownFaces(), [[4, '']]);
+    if (media.media === 'print' && ['steps', 'card'].includes(style)) {
+      assert.deepEqual(await slide.locator('.step-number:visible').allTextContents(), ['1', '2']);
+    }
+  }
+  await page.emulateMedia({ media: 'screen', reducedMotion: 'no-preference' });
+  await go(page, 'silent');
+  assert.equal((await seek(page, 1380)).stage, 5);
+  assert.equal(await page.locator('#silent [data-vector-step][aria-hidden=false]').count(), 6);
+  assert.equal(await page.locator('#silent .stage-text').isVisible(), false);
+  assert.equal(await page.locator('#silent').getByRole('button').count(), 0);
+});
+
+test('Card holds a visible face when a hidden beat starts mid-flip', async t => {
+  const browser = await launch(t); if (!browser) return;
+  const stages = vectorStages(5, i => ({ trigger: 'auto', durationMs: 100, easing: 'linear', hideFromList: i === 2 || i === 3 }));
+  const page = await open(t, browser, [vector('overlap', { stageText: { style: 'card', flipMs: 400 } }, { stages })]);
+  const face = page.locator('.stage-card > section:visible');
+  for (const [time, index, transform] of [[150, 0, 'rotateY(22.5deg)'], [200, 1, ''], [350, 1, ''], [500, 1, 'rotateY(45deg)'], [700, 4, 'rotateY(-45deg)']]) {
+    await seek(page, time);
+    assert.equal(await face.getAttribute('data-step'), String(index));
+    assert.equal(await face.evaluate(el => el.style.transform), transform);
+  }
+});
+
 test('A5: slide value beats deck value beats default', { timeout: 60000 }, async t => {
   const browser = await launch(t); if (!browser) return;
   // As the build resolves them (deck-service): per argument, the slide's value, else the deck's.

@@ -206,6 +206,10 @@ test('server capture matches an agent QA screenshot of the same state and leaves
   const browser = await launchOrSkip(t);
   if (!browser) return;
   f.cleanup.defer(() => browser.close());
+  // Capture the drawing at the hidden final beat while the preceding audience label stays current.
+  const source = f.app.store.getDeck(f.episode.id);
+  source.slides[1].stages[2].hideFromList = true;
+  f.app.store.saveDeck(f.episode.id, source.revision, source.slides);
   const job = await f.build();
   const qa = createDeckQa({ store: f.app.store, scope: { episodeId: f.episode.id, requestId: 'qa-capture', conversationId: 'qa-capture', harness: 'codex', model: 'automated-fixture' } });
   f.cleanup.defer(() => qa.close());
