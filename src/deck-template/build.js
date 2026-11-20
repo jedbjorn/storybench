@@ -82,7 +82,7 @@ export function buildDeck(input, { assets = {} } = {}) {
   const files = new Map();
   const ids = new Set();
   const vectors = new Map(), svgFonts = new Set(), svgStyles = [];
-  const copyWidths = [];
+  const layoutStyles = [];
   let instance = 0;
   function asset(path, type) {
     const extensions = type === 'video' ? /\.(mp4|webm)$/i : /\.(svg|png|jpe?g|webp|gif)$/i;
@@ -130,9 +130,17 @@ export function buildDeck(input, { assets = {} } = {}) {
     for (const name of ['copy', 'stageText']) if (design[name]?.position && !hasVisual) throw new Error(`Slide ${slide.id}: design.${name}.position needs a visual (media on a text-media or full-media slide, a vector or a gallery)`);
     validateSlideTiming(slide, design);
     const copy = design.copy ?? {}, stageText = design.stageText ?? {};
-    for (const [field, selector] of [['titleWidth', 'h1'], ['bodyWidth', '.lede']]) {
-      if (copy[field] != null) copyWidths.push(`#${slide.id} .copy > ${selector}{width:${copy[field]}%}`);
+    // The canvas bridge overrides these same variables temporarily during a drag.
+    const settings = [];
+    for (const [name, width] of Object.entries({ title: copy.titleWidth, body: copy.bodyWidth,
+      stageText: stageText.width, columns: design.columns?.width, caption: design.caption?.width, eyebrow: design.eyebrow?.width })) {
+      if (width == null) continue;
+      settings.push(`--${name}-width:${width}%`);
+      if (['title', 'body', 'stageText'].includes(name)) settings.push(`--${name}-ratio:${width / 100}`);
     }
+    if (stageText.width != null) settings.push('--side-stage-width:100%');
+    for (const [side, spacing] of Object.entries(design.visual ?? {})) settings.push(`--visual-${side}:${-spacing}px`);
+    if (settings.length) layoutStyles.push(`#${slide.id}{${settings.join(';')}}`);
     const copyHTML = `<div class="copy"><h1>${heading}</h1>${body.trim() ? `<p class="lede">${body}</p>` : ''}</div>`;
     // Timing and motion are validated again here, whatever saved them; refusals name slide and stage.
     const motions = stages.map((stage, i) => {
@@ -189,6 +197,8 @@ export function buildDeck(input, { assets = {} } = {}) {
     if (gallery) visual += `<nav class="gallery-nav" aria-label="Gallery">${gallery.map((entry, i) => `<button data-gallery="${i}">${text(entry.label, 'gallery label')}</button>`).join('')}</nav><div class="gallery">${gallery.map((entry, i) => `<figure data-gallery-view="${i}"${i ? ' hidden' : ''}>${entry.media ? media(entry.media) : ''}<figcaption>${text(entry.label, 'gallery label')}</figcaption></figure>`).join('')}</div>`;
     const caption = slide.caption ? `<p class="caption">${text(slide.caption,'caption')}</p>` : '';
     const block = (name, html) => html && `<div class="${name}">${html}</div>`;
+    // Keep the Visual's allocation stable while its four painted edges move independently.
+    if (visual) visual = block('visual-slot', block('visual-content', visual));
     const placed = hasVisual && Boolean(copy.position || stageText.position);
     let content;
     if (placed) {
@@ -204,7 +214,9 @@ export function buildDeck(input, { assets = {} } = {}) {
     const attrs = (pairs) => pairs.filter(([, value]) => value != null).map(([name, value]) => ` data-${name}="${escape(value)}"`).join('');
     const composition = attrs([['copy-align', copy.align], ['copy-valign', copy.valign], ['stage-align', stageText.align], ['stage-valign', stageText.valign]]);
     const scale = attrs([['type', design.type?.scale], ['spacing', design.spacing?.density]]);
-    return `<article class="slide layout-${slide.layout}" id="${slide.id}" data-title="${heading}" data-minutes="${minutes}"${scale} hidden><header>${text(slide.eyebrow, 'eyebrow', true) || 'Presentation'}<span>${minutes} min</span></header><div class="composition${placed ? ' placed' : ''}"${composition}>${content}</div><p class="speaker-notes" hidden>${notes}</p></article>`;
+    const eyebrow = text(slide.eyebrow, 'eyebrow', true);
+    const headerLabel = eyebrow ? block('header-label-region', block('header-label', eyebrow)) : 'Presentation';
+    return `<article class="slide layout-${slide.layout}" id="${slide.id}" data-title="${heading}" data-minutes="${minutes}"${scale} hidden><header>${headerLabel}<span>${minutes} min</span></header><div class="composition${placed ? ' placed' : ''}"${composition}>${content}</div><p class="speaker-notes" hidden>${notes}</p></article>`;
   });
   const svgStylesheet = svgStyles.length ? '<link rel="stylesheet" href="svg.css">' : '';
   const shell = (body, script, extraStylesheet = '') => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="stylesheet" href="styles.css">${extraStylesheet}<script src="${script}" defer></script></head><body>${body}</body></html>`;
@@ -214,7 +226,7 @@ export function buildDeck(input, { assets = {} } = {}) {
   for (const name of ['audience.js', 'presenter.js', 'styles.css', 'assets/manrope-variable.ttf', 'assets/Manrope-OFL.txt']) files.set(name, readFileSync(new URL(name, import.meta.url)));
   const fontCSS = typography(files, input.fonts, [...svgFonts]);
   const palette = Object.entries(deckPalette(input.colors ?? {}));
-  if (copyWidths.length) files.set('styles.css', Buffer.from(files.get('styles.css') + '\n' + copyWidths.join('\n')));
+  if (layoutStyles.length) files.set('styles.css', Buffer.from(files.get('styles.css') + '\n' + layoutStyles.join('\n')));
   if (fontCSS) files.set('styles.css', Buffer.from(files.get('styles.css') + '\n' + fontCSS));
   if (palette.length) files.set('styles.css', Buffer.from(files.get('styles.css') + `\n:root{${palette.map(([name, value]) => `${name}:${value}`).join(';')}}\n`));
   if (svgStylesheet) files.set('svg.css', Buffer.from(`${svgStyles.join('\n')}\n`));

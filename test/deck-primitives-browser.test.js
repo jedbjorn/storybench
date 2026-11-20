@@ -334,3 +334,38 @@ test('overflow feedback includes later stage text while the opening stage is hel
   await page.locator('[data-step="1"] p').evaluate(el => { el.textContent = 'Corrected'; });
   assert.deepEqual(await page.evaluate(() => window.storybenchDeck.overflowRegions()), []);
 });
+
+test('offline Visual edges move independently behind the selected stage style and fill the space left by copy', async t => {
+  const browser = await launch(t); if (!browser) return;
+  const offsets = { top: 36, bottom: -12, left: -20, right: 80 };
+  const variants = ['steps', 'list', 'card', 'chips'];
+  const page = await open(t, browser, [
+    ...variants.map(style => vector(style, { stageText: { style, position: 'right', width: 35 }, visual: offsets })),
+    media('standard', {}), media('narrow', { copy: { titleWidth: 50, bodyWidth: 40 } }),
+    media('gutter', { visual: { right: 32 } }), media('outside', { visual: { right: 90 } }),
+  ]);
+  for (const style of variants) {
+    await go(page, style);
+    const result = await page.locator('#' + style).evaluate(slide => {
+      const rect = selector => slide.querySelector(selector).getBoundingClientRect();
+      const slot = rect('.visual-slot'), painted = rect('.visual-content'), text = rect('.stage-text > :not([hidden])');
+      const scale = slide.getBoundingClientRect().width / slide.offsetWidth;
+      const hit = document.elementFromPoint(text.left + 3, text.top + 3);
+      return { top: (slot.top - painted.top) / scale, bottom: (painted.bottom - slot.bottom) / scale,
+        left: (slot.left - painted.left) / scale, right: (painted.right - slot.right) / scale,
+        overlap: painted.right - text.left, front: Boolean(hit?.closest('.stage-text')) };
+    });
+    for (const [side, offset] of Object.entries(offsets)) near(result[side], offset, style + ' ' + side, .1);
+    assert.ok(result.overlap > 0 && result.front, style + ' remains in front where its box overlaps the Visual');
+  }
+  await go(page, 'standard');
+  const normal = await rect(page, '#standard .visual-content');
+  await go(page, 'narrow');
+  const narrow = await rect(page, '#narrow .visual-content'), copy = await rect(page, '#narrow .copy');
+  near(narrow.right, normal.right, 'fixed outer edge');
+  near(narrow.width - normal.width, copy.width / 2, 'Visual gains the width released by the wider copy field');
+  await go(page, 'gutter');
+  assert.deepEqual(await page.evaluate(() => window.storybenchDeck.overflowRegions()), []);
+  await go(page, 'outside');
+  assert.deepEqual(await page.evaluate(() => window.storybenchDeck.overflowRegions()), ['Visual']);
+});

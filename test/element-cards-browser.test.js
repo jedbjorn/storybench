@@ -276,7 +276,7 @@ for (const type of [chromium, firefox]) test(`E4, E5, E6, E8 ${type.name()}: ele
   await page.click('.deck-canvas-block[data-select="visual"]');
   const visualBar = page.locator('.deck-canvas-toolbar[data-toolbar-block="visual"]:not([hidden])');
   assert.equal(await visualBar.locator('.deck-canvas-in-use').textContent(), `In use: ${items.svg.label} v1`);
-  assert.equal(await visualBar.getByRole('button', { name: 'All slides' }).count(), 0, 'the visual toolbar has no scope: it edits no deck value');
+  assert.equal(await visualBar.getByRole('button', { name: 'All slides' }).count(), 1, 'Visual spacing can be applied to all slides');
   assert.equal(await cardOf(page, 'visual').evaluate(node => node.classList.contains('is-active')), true);
   await evidence(page, `e6-visual-toolbar-${type.name()}.png`);
 

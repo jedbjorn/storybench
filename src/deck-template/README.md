@@ -47,7 +47,9 @@ Bounded arguments only; no colour, font, raw style or markup. Refusals name the 
 | Primitive | Arguments |
 |---|---|
 | `copy` | `position`, `align`, `valign` for the block, plus independent `titleWidth` and `bodyWidth` percentages (20–100) |
-| `stageText` | `style` (`chips`, `steps`, `list`, `card`), `position`, `align`, `valign`, `numbered` (list and card), `flipMs` (card, 0 to 2000) |
+| `stageText` | `width` (20–100%), `style` (`chips`, `steps`, `list`, `card`), `position`, `align`, `valign`, `numbered` (list and card), `flipMs` (card, 0 to 2000) |
+| `columns`, `caption`, `eyebrow` (header label) | `width` (20–100%) |
+| `visual` | `top`, `bottom`, `left`, `right` (−240 to +240 slide units). Zero keeps the template gap. Positive extends that edge behind content. Negative adds padding. |
 | `type` | `scale`: `compact`, `standard`, `large` (headings and body together) |
 | `spacing` | `density`: `compact`, `standard`, `spacious` (internal gaps) |
 | `timing` | `betweenMs` (0 to 60000) |

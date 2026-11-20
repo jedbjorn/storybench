@@ -16,6 +16,10 @@
     const slide = slides[index];
     if (printMedia.matches) return [];
     const regions = new Set();
+    // An authored Visual can reach into the slide gutters up to the delivery frame.
+    const style = getComputedStyle(slide);
+    const visualInset = (edge, gutter) => Math.max(0, gutter + Math.min(0, parseFloat(style.getPropertyValue('--visual-' + edge)) || 0));
+    const visualBounds = [visualInset('left', 67), visualInset('right', 67), visualInset('top', 27), visualInset('bottom', 27)];
     for (const el of slide.querySelectorAll('.copy > *, .columns section, [data-step] > *, figure, figcaption, .caption, .stage-nav, .gallery-nav')) {
       if (!el.getClientRects().length || el.closest('[hidden]')) continue;
       // Layout coordinates exclude the pending slide-in and card flip transforms.
@@ -23,11 +27,12 @@
       for (let parent = el; parent && parent !== slide; parent = parent.offsetParent) {
         left += parent.offsetLeft; top += parent.offsetTop;
       }
-      if (el.offsetWidth && el.offsetHeight && left >= 67 && left + el.offsetWidth <= 1920 - 67 &&
-          top >= 27 && top + el.offsetHeight <= frameHeight - 27 && el.scrollWidth <= el.clientWidth + 1) continue;
+      const [start, end, above, below] = el.closest('.visual-content') ? visualBounds : [67, 67, 27, 27];
+      if (el.offsetWidth && el.offsetHeight && left >= start && left + el.offsetWidth <= 1920 - end &&
+          top >= above && top + el.offsetHeight <= frameHeight - below && el.scrollWidth <= el.clientWidth + 1) continue;
       const step = el.closest('[data-step]');
       regions.add(step ? `Step ${Number(step.dataset.step) + 1}` :
-        el.matches('h1') ? 'Title' : el.matches('.lede') ? 'Body' : el.closest('.columns') ? 'Columns' :
+        el.matches('h1') ? 'Title' : el.matches('.lede') ? 'Body' : el.matches('.caption') ? 'Caption' : el.closest('.columns') ? 'Columns' :
         el.closest('.visual') ? 'Visual' : 'Stage text');
     }
     return [...regions];
