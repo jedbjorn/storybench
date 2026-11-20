@@ -176,8 +176,8 @@ function stepCard(slide, stage, i, items, ctx) {
   const revealRow = drawing ? `<div class="element-row" data-reveals><span class="element-label">Reveals</span><div class="element-chips">${reveals.map(id => `<span class="element-chip">${esc(id)}<button type="button" data-reveal-remove="${esc(id)}" aria-label="Remove ${esc(id)} from step ${i + 1}" title="Remove">×</button></span>`).join('') || '<span class="element-note">Nothing</span>'}</div>
       ${parts.length ? `<select data-reveal-add aria-label="${addAria}"><option value="">${addLabel}…</option>${options(available.map(id => [id, id]), '')}</select>`
     : `<span class="element-note">${noPartsText(drawing)}</span>`}</div>` : '';
-  const title = `<span class="element-grip" data-step-grip draggable="true" title="Drag to reorder" aria-hidden="true">${icons.grip}</span>Step ${i + 1}: ${esc(stage.title)}`;
-  const body = `${noticeHTML(ctx.notice, `step:${stage.id}`)}${field('title', 'Button label', stage.title)}
+  const title = `<span class="element-grip" data-step-grip draggable="true" title="Drag to reorder" aria-hidden="true">${icons.grip}</span><span class="element-step-title">Step ${i + 1}: ${esc(stage.title)}</span>`;
+  const body = `${noticeHTML(ctx.notice, `step:${stage.id}`)}${field('title', 'Step label', stage.title)}
     ${field('body', style === 'chips' ? 'Step text (not shown in chips style)' : 'Step text', stage.body, 'textarea')}
     ${presetRow('trigger', 'Starts', STARTS, starts, { locked })}
     ${presetRow('afterMs', 'Wait before', WAIT, stage.afterMs ?? (locked ? null : 0), { locked })}
@@ -185,7 +185,9 @@ function stepCard(slide, stage, i, items, ctx) {
     ${revealRow}<p class="element-motion" data-motion-line>${esc(motionLine(stage, drawing))}</p>
     <div class="element-card-actions"><button type="button" data-play-step="${i}">${icons.play} Play step</button>
     <div class="icon-actions">${iconButton('part-up', `Move step ${i + 1} earlier`, 'up')}${iconButton('part-down', `Move step ${i + 1} later`, 'down')}${iconButton('part-delete', `Remove step ${i + 1}`, 'trash', 'danger')}</div></div>`;
-  return `<div data-part="stages" data-part-index="${i}">${card(`step:${stage.id}`, title, summary, body, ctx)}</div>`;
+  const visibility = style === 'list' ? iconButton('toggle-list-label', stage.hideFromList ? `Show step ${i + 1} in list` : `Hide step ${i + 1} from list`,
+    stage.hideFromList ? 'eyeOff' : 'preview') : '';
+  return `<div data-part="stages" data-part-index="${i}">${card(`step:${stage.id}`, title, summary, body, ctx)}${visibility}</div>`;
 }
 function columnsCard(slide, ctx) {
   const columns = slide.columns || [];
@@ -384,6 +386,12 @@ export function bindElementCards(root, { getSlides, getItems = () => [], onDirty
     const ask = target.closest('[data-ask-another]')?.dataset.askAnother;
     if (ask && item(ask)) return onAskForAnother(askFromSlideText(slide, index, item(ask)));
     const action = target.closest('[data-slide-action]')?.dataset.slideAction;
+    if (action === 'toggle-list-label') {
+      const stage = slide.stages[stageAt(target)];
+      if (stage.hideFromList) delete stage.hideFromList;
+      else stage.hideFromList = true;
+      return commit();
+    }
     if (!action || !(action.startsWith('add-') || action.startsWith('part-'))) return;
     if (action.startsWith('add-')) {
       const key = action.slice(4);

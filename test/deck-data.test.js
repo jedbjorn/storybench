@@ -74,6 +74,9 @@ test('invalid composition and dangling media fail plainly', t => {
     assert.equal(s.getDeck(deck.id).revision,1);
   }
   assert.throws(() => validateSlides([slide(),slide()]),/Duplicate/);
+  const invalid = slide();
+  invalid.stages[0].hideFromList = 'false';
+  assert.throws(() => validateSlides([invalid]), /Stage stage_one: hideFromList must be a boolean/);
 });
 test('manual board edits content, notes, layouts, reveals and columns without source editing', () => {
   const dom = new JSDOM('<main></main><ol></ol>'), root = dom.window.document.querySelector('main'), list = dom.window.document.querySelector('ol');
