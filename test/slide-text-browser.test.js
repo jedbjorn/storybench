@@ -16,7 +16,7 @@ import { createLibraryService } from '../src/library.js';
 import { listenInRange } from '../test-support/loopback-port.js';
 
 async function launch(type) {
-  let browser = await type.launch().catch(() => null);
+  let browser = await type.launch(type === chromium ? {channel:'chromium'} : {}).catch(() => null);
   if (!browser && type === chromium && existsSync('/usr/bin/chromium')) browser = await chromium.launch({ executablePath: '/usr/bin/chromium' }).catch(() => null);
   return browser;
 }
@@ -48,10 +48,10 @@ async function frameIn(page, selector, slideId) {
   }
   throw new Error(`no ${selector} frame for ${slideId}`);
 }
-const evidence = async (page, name) => {
-  if (!process.env.STORYBENCH_EVIDENCE_DIR) return;
-  await mkdir(process.env.STORYBENCH_EVIDENCE_DIR, { recursive: true });
-  await page.screenshot({ path: path.join(process.env.STORYBENCH_EVIDENCE_DIR, name) });
+const evidence = async (page, name, directory = process.env.STORYBENCH_EVIDENCE_DIR) => {
+  if (!directory) return;
+  await mkdir(directory, { recursive: true });
+  await page.screenshot({ path: path.join(directory, name) });
 };
 // The element's box in the frame's own coordinates, and on the page (through the canvas scale).
 const boxes = async (frame, selector) => ({ frame: await frame.locator(selector).evaluate(node => { const r = node.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; }),
@@ -162,9 +162,9 @@ for (const type of [chromium, firefox]) test(`E7 ${type.name()}: text is edited 
   // A step label (steps style) and a column title and body.
   await editor.getByRole('button', { name: 'Next slide' }).click();
   frame = await frameIn(page, '.deck-canvas-viewport', 'point');
-  const stepView = await boxes(frame, '[data-step="0"] > h2');
-  await edit(frame, '[data-step="0"] > h2');
-  assert.ok(moved(stepView, await boxes(frame, '[data-step="0"] > h2')) <= 2, 'the step label box stays in place');
+  const stepView = await boxes(frame, '[data-step="0"] > h2 > button');
+  await edit(frame, '[data-step="0"] > h2 > button');
+  assert.ok(moved(stepView, await boxes(frame, '[data-step="0"] > h2 > button')) <= 2, 'the step label box stays in place');
   await selectAll(); await page.keyboard.type('Uno');
   let commit = saveDone(); await page.keyboard.press('Enter'); await commit; await settled();
   assert.deepEqual(saved('point').stages.map(stage => stage.title), ['Uno', 'Two']);
@@ -182,12 +182,6 @@ for (const type of [chromium, firefox]) test(`E7 ${type.name()}: text is edited 
   // A chip step label is a button: Space types a space and clicking in it does not change the shown step.
   await editor.getByRole('button', { name: 'Next slide' }).click();
   frame = await frameIn(page, '.deck-canvas-viewport', 'diagram');
-  // The chips sit below the slide area: scroll the canvas to them first.
-  const surface = await page.locator('.deck-canvas-viewport').boundingBox();
-  await page.mouse.move(surface.x + surface.width / 2, surface.y + surface.height / 2);
-  await page.mouse.wheel(0, 400);
-  await frame.waitForFunction(() => document.querySelector('.stage-nav [data-stage="0"]').getBoundingClientRect().bottom <= document.getElementById('presentation').getBoundingClientRect().bottom);
-  await page.waitForTimeout(100);
   const chipView = await boxes(frame, '.stage-nav [data-stage="0"]');
   await edit(frame, '.stage-nav [data-stage="0"]');
   assert.ok(moved(chipView, await boxes(frame, '.stage-nav [data-stage="0"]')) <= 2, 'the chip box stays in place');
@@ -203,9 +197,6 @@ for (const type of [chromium, firefox]) test(`E7 ${type.name()}: text is edited 
   frame = await frameIn(page, '.deck-canvas-viewport', `${revision()}/diagram`);
   const elsewhere = app.store.getDeck(episode.id);
   app.store.saveDeck(episode.id, elsewhere.revision, elsewhere.slides.map(slide => slide.id === 'opening' ? { ...slide, body: 'Changed by the assistant' } : slide), 'agent');
-  await page.mouse.wheel(0, -800);
-  await frame.waitForFunction(() => document.getElementById('presentation').scrollTop === 0);
-  await page.waitForTimeout(100);
   await edit(frame, '.copy > h1');
   await selectAll(); await page.keyboard.type('Kept title');
   commit = saveDone(); await page.keyboard.press('Enter');
@@ -241,4 +232,103 @@ for (const type of [chromium, firefox]) test(`E7 ${type.name()}: text is edited 
   assert.equal(await frame.locator('.copy > h1').textContent(), 'A new opening');
   assert.equal(await frame.locator('.copy > .lede').textContent(), 'Changed by the assistant');
   assert.deepEqual(errors, []);
+});
+
+test('canvas width handles wrap live, commit once, cancel, reset and survive reopening', async t => {
+  const browser = await launch(chromium); if (!browser) return t.skip('No launchable Chromium');
+  t.after(() => browser.close());
+  const { app, episode, url } = await setup(t);
+  const saved = () => app.store.getDeck(episode.id);
+  const initial = saved();
+  initial.slides[0].title = 'Better teaching. Worse practice?';
+  initial.slides[0].body = 'Five stages in the process show how the route changes.\nThen we test it again.';
+  initial.slides[0].layout = 'process';
+  initial.slides[0].stages = [{ id: 'one', title: 'A problem and a solution' }];
+  app.store.saveDeck(episode.id, initial.revision, initial.slides);
+  const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+  await page.goto(url);
+  async function open() {
+    await card(page, 0).locator('.slide-card-summary').click();
+    await card(page, 0).locator('[data-slide-edit]').click();
+    const frame = await frameIn(page, '.deck-canvas-viewport', 'opening');
+    await page.locator('[data-select="copy"]').click();
+    return frame;
+  }
+  let frame = await open();
+  const handle = field => page.getByRole('slider', { name: field + ' width' });
+  const before = saved().revision;
+  const at = revision => frameIn(page, '.deck-canvas-viewport', revision + '/opening');
+  const geometry = () => frame.evaluate(() => {
+    const title = document.querySelector('.copy h1'), body = document.querySelector('.copy .lede');
+    return { title: title.offsetHeight, body: body.offsetWidth, font: getComputedStyle(title).fontSize };
+  });
+  await handle('Title').press('End');
+  frame = await at(before + 1);
+  const wide = await geometry();
+  const drag = async (field, dx) => {
+    const box = await handle(field).boundingBox();
+    const x = box.x + box.width / 2, y = box.y + box.height / 2;
+    await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.move(x + dx, y, { steps: 6 });
+  };
+  await drag('Title', -500);
+  await frame.waitForFunction(h => document.querySelector('.copy h1').offsetHeight > h, wide.title);
+  await evidence(page, 'title-resize.png', process.env.STORYBENCH_SLIDE_FIT_EVIDENCE);
+  const narrow = await geometry();
+  assert.equal(narrow.body, wide.body); assert.equal(narrow.font, wide.font);
+  assert.equal(saved().revision, before + 1);
+  await page.keyboard.press('Escape'); await page.mouse.up();
+  await frame.waitForFunction(h => document.querySelector('.copy h1').offsetHeight === h, wide.title);
+  assert.equal(saved().revision, before + 1);
+  await drag('Title', -350); await page.mouse.up();
+  frame = await at(before + 2);
+  const titleWidth = saved().slides[0].design.copy.titleWidth;
+  assert.ok(titleWidth >= 20 && titleWidth < 100);
+  await handle('Body').press('Home');
+  frame = await at(before + 3);
+  assert.equal(saved().slides[0].design.copy.bodyWidth, 20);
+  assert.ok((await geometry()).body < wide.body);
+  await page.reload(); frame = await open();
+  assert.equal(Number(await handle('Title').getAttribute('aria-valuenow')), titleWidth);
+  await handle('Body').focus();
+  await page.getByRole('button', { name: 'Reset body width' }).click();
+  await at(before + 4);
+  assert.deepEqual(saved().slides[0].design.copy, { titleWidth });
+  await page.getByRole('button', { name: '16:10', exact: true }).click();
+  frame = await at(before + 5);
+  assert.equal(saved().design.aspectRatio, '16:10');
+  const bounds = await frame.locator('.slide').boundingBox();
+  assert.ok(Math.abs(bounds.width / bounds.height - 1.6) < .001);
+  const concurrent = saved();
+  app.store.saveDeck(episode.id, concurrent.revision, concurrent.slides, 'agent', { ...concurrent.design, aspectRatio: '16:9' });
+  const refused = page.waitForResponse(r => r.request().method() === 'PUT' && r.status() === 409);
+  await handle('Body').press('Home'); await refused;
+  assert.equal(saved().design.aspectRatio, '16:9');
+  assert.deepEqual(saved().slides[0].design.copy, { titleWidth });
+  await page.reload(); await open();
+  assert.equal(Number(await handle('Title').getAttribute('aria-valuenow')), titleWidth);
+});
+
+test('the editor names overflow on a later reveal and clears the warning after a saved correction', async t => {
+  const browser = await launch(chromium); if (!browser) return t.skip('No launchable Chromium');
+  t.after(() => browser.close());
+  const { app, episode, url } = await setup(t);
+  const deck = app.store.getDeck(episode.id), crowded = deck.slides[1];
+  crowded.design = { stageText: { style: 'card' } };
+  crowded.stages[1].body = 'An overfull final reveal.\n'.repeat(80);
+  const saved = app.store.saveDeck(episode.id, deck.revision, deck.slides);
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await page.goto(url);
+  await card(page, 1).locator('.slide-card-summary').click();
+  await card(page, 1).locator('[data-slide-edit]').click();
+  await frameIn(page, '.deck-canvas-viewport', crowded.id);
+  await page.locator('[data-canvas-stages]').getByRole('button', {name:'Start'}).click();
+  const warning = page.locator('[data-canvas-overflow]');
+  await warning.filter({ hasText: /One point.*Step 2/ }).waitFor();
+  await evidence(page, 'later-reveal-warning.png', process.env.STORYBENCH_SLIDE_FIT_EVIDENCE);
+  const last = page.locator('[data-card="step:two"]');
+  await last.locator('summary').click();
+  await last.locator('[data-slide-field="body"]').fill('Corrected.');
+  await last.locator('[data-slide-field="body"]').press('Tab');
+  await frameIn(page, '.deck-canvas-viewport', `${saved.revision + 1}/${crowded.id}`);
+  assert.equal(await warning.textContent(), '');
 });

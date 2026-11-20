@@ -70,7 +70,7 @@ test('builds record state reporting; Preview metadata and the server refuse olde
   assert.equal(metadata.deck.revision, job.revision);
   assert.deepEqual(metadata.deck.slides, [
     { id: 'opening', title: 'Opening title', stages: [], views: [] },
-    { id: 'stages', title: 'Observe, connect, plan', stages: ['observe', 'connect', 'plan'], views: [] },
+    { id: 'stages', title: 'Observe, connect, plan', openingDelay: true, stages: ['observe', 'connect', 'plan'], views: [] },
     { id: 'gallery', title: 'Compare views', stages: [], views: ['First', 'Second'] },
   ]);
   assert.equal(typeof metadata.deck.capture.available, 'boolean');
@@ -95,7 +95,7 @@ test('builds record state reporting; Preview metadata and the server refuse olde
   assert.equal(await status({ ...valid, slideId: 'not-in-build' }), 400, 'forged slide');
   assert.equal(await status({ ...valid, slideId: undefined }), 400);
   assert.equal(await status({ ...valid, stage: 3 }), 400, 'stage beyond the slide');
-  assert.equal(await status({ ...valid, stage: null }), 400, 'staged slide needs a stage');
+  assert.equal(validateCaptureState(job, { ...valid, stage: null }).stage, null, 'the delayed opening can be captured before the first reveal');
   assert.equal(await status({ ...valid, stage: 1.5 }), 400);
   assert.equal(await status({ ...valid, slideId: 'opening', stage: 0 }), 400, 'slide without stages');
   assert.equal(await status({ ...valid, gallery: 0 }), 400, 'slide without gallery');
@@ -165,9 +165,9 @@ test('framed runtime reports position only, on change and on request; standalone
   let count = (await states()).length;
   await frame.locator('[data-command="next"]').click();
   let state = await latest(count);
-  assert.equal(state.slideId, 'stages'); assert.equal(state.index, 1); assert.equal(typeof state.stage, 'number');
+  assert.equal(state.slideId, 'stages'); assert.equal(state.index, 1); assert.ok(state.stage === null || state.stage === 0);
   count = (await states()).length;
-  await frame.locator('.slide:not([hidden]) .stage-nav [data-stage="2"]').click();
+  await frame.locator('.slide:not([hidden]) [data-stage="2"]').click();
   for (let i = 0; i < 50 && (await states()).at(-1).stage !== 2; i++) await page.waitForTimeout(20);
   assert.equal((await states()).at(-1).stage, 2);
   count = (await states()).length;
@@ -195,7 +195,7 @@ test('framed runtime reports position only, on change and on request; standalone
   });
   await standalone.goto(pathToFileURL(path.join(exported, 'index.html')).href);
   await standalone.locator('[data-command="next"]').click();
-  await standalone.locator('.slide:not([hidden]) .stage-nav [data-stage="1"]').click();
+  await standalone.locator('.slide:not([hidden]) [data-stage="1"]').click();
   await standalone.evaluate(() => window.postMessage({ type: 'storybench-deck-state-request' }, '*'));
   await standalone.waitForTimeout(200);
   assert.deepEqual((await standalone.evaluate(() => window.__posted)).filter(message => message?.type === 'storybench-deck-state'), []);

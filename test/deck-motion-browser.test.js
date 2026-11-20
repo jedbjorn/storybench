@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { assertSameSlidePixels } from '../test-support/deck-pixels.js';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
@@ -142,7 +143,7 @@ test('B5: draw starts with no stroke, is partial at half time and ends at the au
   const plain = await open(t, browser, motionDeck(drawn.map(({ id, title, svgGroupIds }) => ({ id, title, svgGroupIds }))), motionAssets);
   const stroke = selector => page.evaluate(name => { const el = document.querySelector(name), style = getComputedStyle(el); return { length: el.getTotalLength(), offset: parseFloat(style.strokeDashoffset), fill: Number(style.fillOpacity), style: el.style.cssText }; }, selector);
   // Nothing of either group at the start.
-  await plain.page.click('#moving [data-command="replay"]'); await seek(plain.page, 0);
+  await plain.page.click('footer [data-command="replay"]'); await seek(plain.page, 0);
   await seek(page, 0);
   const start = await art(page);
   assert.equal((await group(page, 'track')).opacity, 0);
@@ -166,7 +167,7 @@ test('B5: draw starts with no stroke, is partial at half time and ends at the au
   assert.notDeepEqual(end, half);
   await plain.page.click('#moving [data-stage="0"]'); await plain.page.click('#moving [data-stage="1"]');
   await plain.page.waitForFunction(() => window.storybenchDeck.timeline().state === 'complete');
-  assert.deepEqual(end, await art(plain.page), 'the drawn slide ends as the same slide without motion');
+  await assertSameSlidePixels(page, end, await art(plain.page), 'the drawn slide ends as the same slide without motion');
   assert.deepEqual([...errors, ...plain.errors], []);
 });
 
@@ -207,7 +208,7 @@ for (const browserType of [chromium, firefox]) test(`${browserType.name()} B7: n
   assert.equal((await group(page, 'track')).pending, 'true');
   // Replay starts from the beginning, wherever the timeline was.
   await seek(page, 3000);
-  await page.click('#moving [data-command="replay"]');
+  await page.click('footer [data-command="replay"]');
   state = await timeline(page);
   assert.equal(state.state, 'playing'); assert.ok(state.timeMs < 250); assert.equal(state.stage, null);
   // Selecting a stage stops automatic progression and shows its end state at once.
@@ -232,7 +233,7 @@ for (const browserType of [chromium, firefox]) test(`${browserType.name()} B7: n
   assert.equal((await group(page, 'dot')).transform, 'translate(360px, 0px) rotate(0deg) scale(1)');
   // A hidden tab pauses motion and timing; they resume from the same point.
   const hide = hidden => page.evaluate(value => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => value }); document.dispatchEvent(new Event('visibilitychange')); }, hidden);
-  await page.click('#moving [data-command="replay"]');
+  await page.click('footer [data-command="replay"]');
   await playingPast(700);
   await hide(true);
   const held = await timeline(page);
@@ -329,7 +330,7 @@ test('B9: reduced motion and print show every group in its final state with noth
   const reduced = await open(t, browser, motionDeck(moving()), motionAssets, { context: { reducedMotion: 'reduce' } });
   assert.equal((await timeline(reduced.page)).state, 'complete');
   await final(reduced.page);
-  await reduced.page.click('#moving [data-command="replay"]');
+  await reduced.page.click('footer [data-command="replay"]');
   await final(reduced.page);
   // Print, entered mid-motion: every slide shows its final state; the clock holds and resumes.
   const { page, errors } = await open(t, browser, motionDeck(moving()), motionAssets, { slide: 'end' });

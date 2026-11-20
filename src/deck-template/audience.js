@@ -1,6 +1,37 @@
 (() => {
   'use strict';
   const slides = [...document.querySelectorAll('.slide')];
+  const presentation = document.getElementById('presentation');
+  const frameHeight = presentation.dataset.ratio === '16:10' ? 1200 : 1080;
+  function fitFrame() {
+    const scale = Math.min(presentation.clientWidth / 1920, presentation.clientHeight / frameHeight);
+    presentation.style.setProperty('--frame-scale', scale);
+  }
+  fitFrame();
+  if (window.ResizeObserver) new ResizeObserver(fitFrame).observe(presentation);
+
+  // Pending stages occupy their final layout slots, including the tallest card face.
+  // Inspect those slots even while the editor holds an earlier reveal.
+  function overflowRegions() {
+    const slide = slides[index];
+    if (printMedia.matches) return [];
+    const regions = new Set();
+    for (const el of slide.querySelectorAll('.copy > *, .columns section, [data-step] > *, figure, figcaption, .caption, .stage-nav, .gallery-nav')) {
+      if (!el.getClientRects().length || el.closest('[hidden]')) continue;
+      // Layout coordinates exclude the pending slide-in and card flip transforms.
+      let left = 0, top = 0;
+      for (let parent = el; parent && parent !== slide; parent = parent.offsetParent) {
+        left += parent.offsetLeft; top += parent.offsetTop;
+      }
+      if (el.offsetWidth && el.offsetHeight && left >= 67 && left + el.offsetWidth <= 1920 - 67 &&
+          top >= 27 && top + el.offsetHeight <= frameHeight - 27 && el.scrollWidth <= el.clientWidth + 1) continue;
+      const step = el.closest('[data-step]');
+      regions.add(step ? `Step ${Number(step.dataset.step) + 1}` :
+        el.matches('h1') ? 'Title' : el.matches('.lede') ? 'Body' : el.closest('.columns') ? 'Columns' :
+        el.closest('.visual') ? 'Visual' : 'Stage text');
+    }
+    return [...regions];
+  }
   const links = [...document.querySelectorAll('[data-go]')];
   const status = document.getElementById('status');
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -81,7 +112,7 @@
   function state() {
     return { index, stage, titles: slides.map((slide) => slide.dataset.title),
       notes: slides[index].querySelector('.speaker-notes').textContent,
-      stages: [...slides[index].querySelectorAll('[data-stage]')].map((button) => button.getAttribute('aria-label') ?? button.textContent),
+      stages: model().plan.map(entry => entry.el.dataset.navLabel),
       targetMinutes: Number(slides[index].dataset.minutes),
       video: video() ? { paused: video().paused } : null };
   }
@@ -93,7 +124,7 @@
     if (!framed) return;
     const view = slides[index].querySelector('[data-gallery-view]:not([hidden])');
     const message = { type: 'storybench-deck-state', version: 1, slideId: slides[index].id, index,
-      stage: model().plan.length ? stage : null, gallery: view ? Number(view.dataset.galleryView) : null };
+      stage: model().plan.length && !opening ? stage : null, gallery: view ? Number(view.dataset.galleryView) : null };
     const key = JSON.stringify(message);
     if (!always && key === reported) return;
     reported = key; window.parent.postMessage(message, '*');
@@ -180,9 +211,9 @@
   }
   function paintStage() {
     paintFrame();
-    slides[index].querySelectorAll('[data-stage]').forEach((button, i) => button.setAttribute('aria-pressed', String(i === stage)));
+    slides[index].querySelectorAll('[data-stage]').forEach((button, i) => button.setAttribute('aria-pressed', String(i === stage && !opening)));
     // A list marks its current item.
-    slides[index].querySelectorAll('.stage-list > li').forEach((item, i) => { if (i === stage && !opening) item.setAttribute('aria-current', 'step'); else item.removeAttribute('aria-current'); });
+    slides[index].querySelectorAll('.stages > [data-step]').forEach((item, i) => { if (i === stage && !opening) item.setAttribute('aria-current', 'step'); else item.removeAttribute('aria-current'); });
     publish();
   }
   function advance() {
@@ -264,6 +295,7 @@
     links.forEach((button, i) => { if (i === index) button.setAttribute('aria-current', 'step'); else button.removeAttribute('aria-current'); });
     document.querySelector('[data-command="previous"]').disabled = index === 0;
     document.querySelector('[data-command="next"]').disabled = index === slides.length - 1;
+    document.querySelector('footer [data-command="replay"]').hidden = !model().plan.length;
     document.getElementById('counter').textContent = `${index + 1} / ${slides.length} · ${slides[index].dataset.title}`;
     try { history.replaceState(null, '', `#${slides[index].id}`); } catch { /* File pages may restrict history. */ }
     paintStage(); sync();
@@ -370,6 +402,15 @@
   // The timeline surface for editors and QA (README: Timeline). Each call returns the timeline as it then is.
   window.storybenchDeck = Object.freeze({
     timeline,
+    overflowRegions,
+    selectStage,
+    holdStage(value) {
+      const entry = model().plan[value];
+      if (!entry) return;
+      freeze(); manual = true; halted = true; wants = false; opening = false;
+      stage = value; settled = value; held = value === model().plan.length - 1 ? model().end : entry.motionEnd;
+      paintStage();
+    },
     seek,
     pause() { halted = true; sync(); return timeline(); },
     resume() { halted = false; sync(); return timeline(); },

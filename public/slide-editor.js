@@ -77,7 +77,7 @@ export function createSlideEditor(dialog, { canvas, channel = () => null, getEpi
       return;
     }
     event.preventDefault(); event.stopPropagation();
-    if (canvas.closeMenu()) return;
+    if (canvas.cancelResize?.() || canvas.closeMenu()) return;
     if (canvas.selected) return canvas.deselect();
     close();
   }, true);

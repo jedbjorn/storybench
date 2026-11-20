@@ -1241,3 +1241,9 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
 .library-parts li { padding: 4px 8px; border: 1px solid var(--line); border-radius: 7px; font: 12px ui-monospace, monospace; }
 .asset .library-version, .asset .library-state { display: inline-block; }
 .asset .library-status { padding: 0; }
+
+.deck-canvas-block [data-width-field] { position:absolute; pointer-events:none; }
+.deck-canvas-block [data-width-field].is-current { outline:1px solid var(--deep); }
+.deck-canvas-block [data-width-handle] { position:absolute; right:0; top:50%; transform:translate(50%,-50%); width:16px; height:26px; border:2px solid var(--deep); border-radius:5px; background:var(--paper); cursor:ew-resize; touch-action:none; pointer-events:auto; }
+.deck-canvas-block .from-end [data-width-handle] { left:0; right:auto; transform:translate(-50%,-50%); }
+.deck-canvas-block [data-width-handle]:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }

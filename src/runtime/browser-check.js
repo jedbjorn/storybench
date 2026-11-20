@@ -116,7 +116,7 @@ export async function smokeBrowser() {
         await act({pageId:'presenter-1',action:'click',selector:'[data-command="replay"]'});
         await act({action:'wait',milliseconds:700});assert.equal((await inspect({})).data.screenshots[0].state.visibleGroups.length,3);
         // Regression for fixed-footer occlusion: a real audience click must work.
-        await act({action:'click',selector:'#stages [data-command="replay"]'});
+        await act({action:'click',selector:'footer [data-command="replay"]'});
         await act({action:'wait',milliseconds:700});
         assert.equal((await inspect({})).data.screenshots[0].state.visibleGroups.length,3);
         // The first MP4 stays hidden at zero while the same asset plays on another slide.

@@ -27,7 +27,9 @@ async function fixture(t) {
 
 test('A4: unknown primitives, arguments and values, CSS strings and non-enum types are refused naming the deck or slide, primitive and argument', () => {
   const deck = (design, pattern) => assert.throws(() => validateDeckDesign(design, { setBy: 'agent' }), pattern);
-  deck({ layout: {} }, /^Error: Deck design: layout is not supported; use theme, copy, stageText, type, spacing, timing$/);
+  deck({ aspectRatio: '4:3' }, /aspectRatio must be 16:9 or 16:10/);
+  for (const bad of [19, 101, '50%', Infinity]) deck({ copy: { titleWidth: bad } }, /titleWidth must be a number from 20 to 100/);
+  deck({ layout: {} }, /^Error: Deck design: layout is not supported; use theme, aspectRatio, copy, stageText, type, spacing, timing$/);
   deck({ copy: { margin: '4px' } }, /Deck design: copy\.margin is not supported; use position, align, valign/);
   deck({ copy: { align: 'justify' } }, /Deck design: copy\.align must be one of start, center, end/);
   deck({ stageText: { style: 'display:none' } }, /Deck design: stageText\.style must be one of chips, steps, list, card/);
@@ -79,10 +81,10 @@ test('A5c (save): with timing.betweenMs, afterMs, holdMs and a manual trigger af
 
 test('A4: deck and slide primitives save with the deck revision through the store; omitted design is kept; history and undo restore them; refusals store nothing', async t => {
   const { store, id } = await fixture(t);
-  const designed = slides(); designed[0].design = { stageText: { style: 'list', numbered: true }, type: { scale: 'compact' } };
-  const saved = store.saveDeck(id, 2, designed, 'agent', { stageText: { align: 'center' }, spacing: { density: 'spacious' }, timing: { betweenMs: 400 } });
+  const designed = slides(); designed[0].design = { copy: { bodyWidth: 42 }, stageText: { style: 'list', numbered: true }, type: { scale: 'compact' } };
+  const saved = store.saveDeck(id, 2, designed, 'agent', { aspectRatio: '16:10', copy: { titleWidth: 88 }, stageText: { align: 'center' }, spacing: { density: 'spacious' }, timing: { betweenMs: 400 } });
   assert.equal(saved.revision, 3);
-  assert.deepEqual(saved.design, { ...emptyDesign(), stageText: { align: 'center' }, spacing: { density: 'spacious' }, timing: { betweenMs: 400 } });
+  assert.deepEqual(saved.design, { ...emptyDesign(), aspectRatio: '16:10', copy: { titleWidth: 88 }, stageText: { align: 'center' }, spacing: { density: 'spacious' }, timing: { betweenMs: 400 } });
   assert.deepEqual(saved.slides[0].design, designed[0].design);
   assert.equal('design' in saved.slides[1], false);
   // Reload: a new store on the same workspace reads the same values.
@@ -157,7 +159,7 @@ test('build: the snapshot and manifest carry the deck defaults and each slide\'s
   assert.match(html, /id="closing"[^>]* data-type="large" hidden>.*?<div class="composition" data-copy-valign="end" data-stage-align="center">/s);
 });
 
-test('template: unset design adds no attributes; every stage text style keeps one [data-stage] control per stage, named by its label', () => {
+test('template: unset design adds no attributes; styles use their own controls and preserve Presenter labels', () => {
   const html = deck => buildDeck(deck, { assets: exampleAssets }).get('index.html');
   const plain = html(structuredClone(exampleDeck));
   assert.doesNotMatch(plain, /data-(copy|stage)-(align|valign)|data-type=|data-spacing=|data-between-ms|data-flip-ms|class="composition placed"|stage-list|stage-card/);
@@ -167,9 +169,10 @@ test('template: unset design adds no attributes; every stage text style keeps on
   for (const [style, numbered] of [['chips'], ['steps'], ['list', false], ['list', true], ['card', true]]) {
     const out = html({ title: 'Styles', slides: [{ ...structuredClone(process), design: { stageText: { style, numbered } } }] });
     const controls = [...out.matchAll(/<button data-stage="(\d)"(?: aria-label="([^"]*)")?>([^<]*)<\/button>/g)];
-    assert.deepEqual(controls.map(m => Number(m[1])), [0, 1, 2], `${style}: one control per stage`);
+    assert.deepEqual(controls.map(m => Number(m[1])), style === 'card' ? [] : [0, 1, 2], `${style}: rendered controls`);
+    assert.deepEqual([...out.matchAll(/data-nav-label="([^"]+)"/g)].map(m => m[1]), ['Discover', 'Experiment', 'Reflect']);
     const names = controls.map(m => m[2] ?? m[3]);
-    assert.deepEqual(names, style === 'list' ? ['Observe', 'Try', 'Learn'] : ['Discover', 'Experiment', 'Reflect'], `${style}: controls carry the stage labels`);
+    assert.deepEqual(names, style === 'card' ? [] : style === 'chips' ? ['Discover', 'Experiment', 'Reflect'] : ['Observe', 'Try', 'Learn'], `${style}: controls carry the stage labels`);
     assert.equal(/<div class="stages" hidden/.test(out), style === 'chips', `${style}: only chips hide the stage bodies`);
     if (style === 'list') assert.match(out, numbered ? /<ol class="stages stage-list">/ : /<ul class="stages stage-list">/);
     if (style === 'card') assert.match(out, /<div class="stages stage-card"><section data-step="0"[^>]*><span class="step-number">1<\/span><h2>Observe<\/h2><p>Name the obstacle\.<\/p><\/section>/);

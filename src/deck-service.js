@@ -72,7 +72,7 @@ async function assembleDeck(store, snapshot, slides, signal = null) {
     for (const entry of saved.subnav) slide.gallery.push({id:entry.id,label:entry.label,...(entry.itemId ? {media:await media(entry.itemId,saved.id)} : {})});
     built.push(slide);
   }
-  return { files: buildDeck({title:snapshot.title,slides:built,fonts:snapshot.fonts,colors:snapshot.colors},{assets}), provenance };
+  return { files: buildDeck({title:snapshot.title,slides:built,aspectRatio:snapshot.design.deck.aspectRatio,fonts:snapshot.fonts,colors:snapshot.colors},{assets}), provenance };
 }
 export function createDeckService({ store, queue = new HeavyJobQueue(), onChange = () => {} }) {
   const update = (job, changes) => { const value = store.saveJob({...job,...changes}); onChange(job.episodeId); return value; };

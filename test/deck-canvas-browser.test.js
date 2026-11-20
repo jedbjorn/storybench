@@ -2,6 +2,7 @@
 // (Chromium and Firefox, app served on loopback). A7b: the canvas at full reveal matches the built slide
 // (Chromium, 1280x720 slide area, every layout primitive value).
 import test from 'node:test';
+import { assertSameSlidePixels } from '../test-support/deck-pixels.js';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -174,6 +175,10 @@ for (const type of [chromium, firefox]) test(`A7 ${type.name()}: the creator edi
     assert.equal(await page.evaluate(() => document.activeElement.dataset.select), key);
     await page.keyboard.press('Enter');
     assert.deepEqual(await pressed(page), [key]);
+    if (key === 'copy') for (const field of ['title', 'body']) {
+      await page.keyboard.press('Tab');
+      assert.equal(await page.evaluate(() => document.activeElement.dataset.widthHandle), field);
+    }
   }
   await page.keyboard.press('Escape');
 
@@ -268,25 +273,12 @@ test('A7b chromium: each slide on the canvas at full reveal matches the built sl
   const editor = await browser.newPage({ viewport: { width: 2400, height: 1400 } });
   const built = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   await editor.goto(url); await openEditor(editor, 0); await editor.waitForSelector('.deck-canvas-block');
-  const compare = (a, b) => editor.evaluate(async ([left, right]) => {
-    const pixels = async source => {
-      const image = new Image(); image.src = `data:image/png;base64,${source}`; await image.decode();
-      const canvas = Object.assign(document.createElement('canvas'), { width: image.width, height: image.height }), context = canvas.getContext('2d');
-      context.drawImage(image, 0, 0);
-      return { width: image.width, height: image.height, data: context.getImageData(0, 0, image.width, image.height).data };
-    };
-    const [x, y] = [await pixels(left), await pixels(right)];
-    if (x.width !== y.width || x.height !== y.height) return { size: [x.width, x.height, y.width, y.height] };
-    let differing = 0;
-    for (let i = 0; i < x.data.length; i += 4) if (x.data[i] !== y.data[i] || x.data[i + 1] !== y.data[i + 1] || x.data[i + 2] !== y.data[i + 2]) differing++;
-    return { differing };
-  }, [a.toString('base64'), b.toString('base64')]);
   for (const [index, slide] of VALUES('x').slides.entries()) {
     await built.goto(`${base}/api/jobs/${job.id}/deck/index.html#${slide.id}`);
     await built.waitForFunction(id => window.storybenchDeck?.timeline().slideId === id, slide.id);
     await built.evaluate(() => document.fonts.ready.then(() => window.storybenchDeck.seek(window.storybenchDeck.timeline().durationMs)));
     await built.mouse.move(1279, 719);
-    const area = await built.evaluate(() => { const box = document.getElementById('presentation').getBoundingClientRect(); return { x: box.left, y: box.top, width: box.width, height: box.height }; });
+    const area = await built.evaluate(() => { const box = document.querySelector('.slide:not([hidden])').getBoundingClientRect(); return { x: box.left, y: box.top, width: box.width, height: box.height }; });
     const expected = await built.screenshot({ clip: area });
 
     if (index) await editor.click('[data-editor-nav="1"]');
@@ -296,12 +288,12 @@ test('A7b chromium: each slide on the canvas at full reveal matches the built sl
     await editor.mouse.move(2, 2);
     const box = await editor.locator('.deck-canvas-viewport').boundingBox();
     const actual = await editor.screenshot({ clip: { x: box.x, y: box.y, width: area.width, height: area.height } });
-    const result = await compare(actual, expected);
+
     if (process.env.STORYBENCH_EVIDENCE_DIR) {
       await mkdir(process.env.STORYBENCH_EVIDENCE_DIR, { recursive: true });
       await writeFile(path.join(process.env.STORYBENCH_EVIDENCE_DIR, `a7b-${slide.id}-canvas.png`), actual);
       await writeFile(path.join(process.env.STORYBENCH_EVIDENCE_DIR, `a7b-${slide.id}-built.png`), expected);
     }
-    assert.deepEqual(result, { differing: 0 }, `slide ${slide.id}: canvas and build differ`);
+    await assertSameSlidePixels(editor, actual, expected, `slide ${slide.id}: canvas and build differ`);
   }
 });

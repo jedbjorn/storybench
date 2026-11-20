@@ -16,6 +16,14 @@ jobs:
       - run: node node_modules/playwright-core/cli.js install --with-deps chromium firefox --no-shell
       - run: npm run lint
       - run: npm test
+        env:
+          STORYBENCH_SLIDE_FIT_EVIDENCE: ${{ runner.temp }}/slide-fit
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: slide-fit
+          path: ${{ runner.temp }}/slide-fit
+          if-no-files-found: error
   release-media:
     runs-on: ubuntu-latest
     steps:

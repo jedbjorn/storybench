@@ -32,7 +32,7 @@ const STYLES = [['chips', 'Chips'], ['steps', 'Steps'], ['list', 'List'], ['card
 const SCALES = [['compact', 'Compact'], ['standard', 'Standard'], ['large', 'Large']];
 const DENSITIES = [['compact', 'Compact'], ['standard', 'Standard'], ['spacious', 'Spacious']];
 // Until the frame reports it, assume the bundle's slide area at 1280 x 720 (rail 224 px, footer 72 px).
-const AREA = { left: 224, top: 0, width: 1056, height: 648 };
+const AREA = { left: 224, top: 27, width: 1056, height: 594 };
 
 // The canvas build of one saved slide; null until the production has a saved revision.
 export function slideFrameUrl(episode, slideId, standards = 0) {
@@ -108,7 +108,7 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
   const doc = section.ownerDocument;
   section.innerHTML = `<div class="deck-canvas-body"><div class="deck-canvas-surface" tabindex="-1" aria-label="Slide canvas" data-canvas-surface><div class="deck-canvas-viewport"></div><div class="deck-canvas-blocks"></div></div></div>
     <div class="deck-canvas-bar"><button type="button" class="primary" data-canvas-play>Play slide</button><div class="deck-canvas-stages" data-canvas-stages></div></div>
-    <p class="deck-canvas-status" role="status" data-canvas-status></p>`;
+    <p class="deck-canvas-status" role="status" data-canvas-overflow></p><p class="deck-canvas-status" role="status" data-canvas-status></p>`;
   const stagesBar = section.querySelector('[data-canvas-stages]'), playButton = section.querySelector('[data-canvas-play]');
   const surfaceRoot = section.querySelector('[data-canvas-surface]'), viewport = section.querySelector('.deck-canvas-viewport');
   const blocksLayer = section.querySelector('.deck-canvas-blocks'), status = section.querySelector('[data-canvas-status]');
@@ -126,7 +126,8 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
   const slide = () => episode?.cards.find((item) => item.id === slideId) || null;
   const design = () => (episode.design ||= { theme: { colors: {}, fonts: {}, setBy: { colors: {}, fonts: {} } } });
 
-  const surface = createSelectionSurface(surfaceRoot, { onChange(key) { selected = key; renderInspector(); } });
+  let widthField = 'title', resize = null;
+  const surface = createSelectionSurface(surfaceRoot, { onChange(key) { selected = key; renderInspector(); placeWidthHandles(); } });
   playButton.addEventListener('click', () => frame?.contentWindow.postMessage({ type: 'storybench-canvas-play' }, '*'));
 
   // ---- Frame: the saved slide as the build renders it. A new frame replaces the old once it reports.
@@ -143,7 +144,8 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
     status.textContent = refusal || '';
     if (refusal) return;
     pending?.remove();
-    pending = canvasFrame(doc, `${url}&${new URLSearchParams({ ...(stage === null ? {} : { stage }), scroll: Math.round(info?.scroll?.top || 0) })}`, 'Slide as built');
+    const stageQuery = stage === null ? '' : `&stage=${stage}`;
+    pending = canvasFrame(doc, url + stageQuery, 'Slide as built');
     Object.assign(pending.dataset, { slideId, revision: episode.revision });
     viewport.append(pending);
     place();
@@ -159,6 +161,8 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
     } else if (!frame || event.source !== frame.contentWindow) return;
     const before = info && Object.keys(info.blocks).join();
     info = data;
+    section.querySelector('[data-canvas-overflow]').textContent = data.overflow?.length
+      ? `${slide()?.title}: content exceeds the slide frame (${data.overflow.join(', ')}).` : '';
     if (data.standardsRevision < standards?.revision) load();
     // While Play runs, the step bar follows the frame; when it ends the frame holds the full reveal.
     if (data.playing || playing) { playing = Boolean(data.playing); stage = data.stage; }
@@ -177,7 +181,7 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
     const scale = Math.min(1, (viewport.clientWidth || area.width) / area.width);
     viewport.style.height = `${Math.round(area.height * scale)}px`;
     for (const item of [frame, pending]) if (item) item.style.transform = `translate(${-area.left * scale}px, ${-area.top * scale}px) scale(${scale})`;
-    const key = JSON.stringify([info?.blocks, area, scale]);
+    const key = JSON.stringify([info?.blocks, info?.fields, area, scale]);
     if (key === drawn) return;
     drawn = key;
     // A block keeps its element, in place, across redraws: a click or keyboard focus on it survives the frame re-reporting.
@@ -194,22 +198,10 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
       Object.assign(block.style, { left: `${(box.left - area.left) * scale}px`, top: `${(box.top - area.top) * scale}px`, width: `${box.width * scale}px`, height: `${box.height * scale}px` });
     });
     surface.refresh();
+    placeWidthHandles();
     placeToolbar();
   }
   new ResizeObserver(() => { drawn = ''; place(); }).observe(viewport);
-  // The frame is inert: wheel over the canvas scrolls a tall slide, and a block taking keyboard focus is scrolled into view.
-  surfaceRoot.addEventListener('wheel', (event) => {
-    const scroll = info?.scroll;
-    if (!frame || event.ctrlKey || !scroll || (event.deltaY > 0 ? scroll.top >= scroll.max : scroll.top <= 0)) return;
-    event.preventDefault();
-    const scale = viewport.clientWidth / (info?.area || AREA).width;
-    frame.contentWindow.postMessage({ type: 'storybench-canvas-scroll', by: (event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY) / Math.min(1, scale) }, '*');
-  }, { passive: false });
-  surfaceRoot.addEventListener('focusin', (event) => {
-    const block = event.target.dataset?.select;
-    if (block && frame) frame.contentWindow.postMessage({ type: 'storybench-canvas-reveal', block }, '*');
-  });
-
   // ---- Text on the slide. A double-click makes the frame live and asks it for the text at that point;
   // the frame reports the edit's start, each change, and its end (with the text to save, or null).
   surfaceRoot.addEventListener('dblclick', (event) => {
@@ -300,7 +292,7 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
     }
     if (target[primitive] && !Object.keys(target[primitive]).length) delete target[primitive];
     if (scope === 'slide' && !Object.keys(target).length) delete slide().design;
-    changed();
+    return changed();
   }
   // A slide override is marked when it differs from the deck default.
   const overridden = (primitives) => primitives.some((primitive) => Object.entries(slide()?.design?.[primitive] || {}).some(([arg, item]) => item !== deckValue(primitive, arg)));
@@ -311,7 +303,7 @@ export function createDeckCanvas(section, { channel = () => null, onChange = () 
     if (!Object.keys(own).length) delete slide().design;
     changed();
   }
-  function changed() { renderInspector(); onChange(); }
+  function changed() { renderInspector(); return onChange(); }
 
   // ---- Inspector: the selected block's arguments, or slide-wide primitives and the deck theme.
   const field = (key, caption, control) => {
@@ -398,11 +390,18 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
     if (visual || scope === 'deck') parts.push(position(key, 'Position'));
     else parts.push(note('Add media, a vector or a gallery to place this beside a visual.'));
     parts.push(alignment(key));
-    if (key === 'copy') parts.push(segmented('type', 'scale', 'Size', SCALES));
+    if (key === 'copy') {
+      parts.push(segmented('type', 'scale', 'Size', SCALES));
+      const reset = Object.assign(doc.createElement('button'), { type: 'button', textContent: `Reset ${widthField} width` });
+      reset.addEventListener('click', () => set('copy', { [widthField + 'Width']: null }));
+      parts.push(field('widthReset', null, reset));
+    }
     return parts;
   }
   function slideView() {
-    return [scopeSwitch(VIEW_PRIMITIVES['']),
+    return [field('aspectRatio', 'Deck aspect ratio', createSegmentedChoice({ label: 'Deck aspect ratio', doc, value: design().aspectRatio ?? '16:9',
+      options: ['16:9', '16:10'].map(ratio => ({ value: ratio, label: ratio })),
+      onChange(ratio) { design().aspectRatio = ratio; changed(); } })), scopeSwitch(VIEW_PRIMITIVES['']),
       segmented('type', 'scale', 'Type size', SCALES), segmented('spacing', 'density', 'Spacing', DENSITIES),
       field('timing.betweenMs', null, createDurationField({ label: 'Gap between stages', min: 0, max: 60000, defaultLabel: 'Per stage', doc,
         value: value('timing', 'betweenMs'), onChange: (next) => set('timing', { betweenMs: next }) })),
@@ -510,6 +509,92 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
     toolbar.style.left = `${left}px`;
   }
 
+  // Handles use the measured copy region and stay a constant size in editor pixels.
+  function placeWidthHandles() {
+    const block = blocksLayer.querySelector('[data-select="copy"]');
+    if (!block) return;
+    const copy = info?.blocks.copy, scale = Math.min(1, viewport.clientWidth / (info?.area || AREA).width);
+    for (const name of ['title', 'body']) {
+      let outline = block.querySelector(`[data-width-field="${name}"]`);
+      const box = info?.fields?.[name];
+      if (selected !== 'copy' || !box || !copy) { outline?.remove(); continue; }
+      if (!outline) {
+        outline = doc.createElement('span'); outline.dataset.widthField = name;
+        const handle = doc.createElement('span');
+        handle.dataset.widthHandle = name; handle.tabIndex = 0; handle.setAttribute('role', 'slider');
+        handle.setAttribute('aria-label', `${name === 'title' ? 'Title' : 'Body'} width`);
+        handle.setAttribute('aria-valuemin', '20'); handle.setAttribute('aria-valuemax', '100');
+        handle.title = 'Drag to resize, or use the arrow keys';
+        outline.append(handle); block.append(outline);
+      }
+      Object.assign(outline.style, { left: `${(box.left - copy.left) * scale}px`, top: `${(box.top - copy.top) * scale}px`,
+        width: `${box.width * scale}px`, height: `${box.height * scale}px` });
+      outline.classList.toggle('is-current', widthField === name);
+      outline.classList.toggle('from-end', (slide()?.design?.copy?.align ?? deckValue('copy', 'align')) === 'end');
+      const percent = Math.round(box.width / copy.width * 100);
+      outline.firstChild.setAttribute('aria-valuenow', percent);
+      outline.firstChild.setAttribute('aria-valuetext', `${percent} percent`);
+    }
+  }
+  function chooseField(name) {
+    if (widthField === name) return;
+    widthField = name; placeWidthHandles(); renderInspector();
+  }
+  blocksLayer.addEventListener('focusin', event => {
+    if (event.target.dataset.widthHandle) chooseField(event.target.dataset.widthHandle);
+  });
+  blocksLayer.addEventListener('pointerdown', event => {
+    const block = event.target.closest('[data-select="copy"]');
+    if (!block || !info?.fields || event.button !== 0) return;
+    const rect = block.getBoundingClientRect(), scale = rect.width / info.blocks.copy.width;
+    const handle = event.target.closest('[data-width-handle]');
+    const y = (event.clientY - rect.top) / scale + info.blocks.copy.top;
+    chooseField(handle?.dataset.widthHandle ?? (info.fields.body && y >= info.fields.body.top ? 'body' : 'title'));
+    if (!handle || pending || !frame || playing || editing) return;
+    event.preventDefault(); handle.focus(); handle.setPointerCapture(event.pointerId);
+    const align = slide()?.design?.copy?.align ?? deckValue('copy', 'align');
+    const start = info.fields[widthField].width / info.blocks.copy.width * 100;
+    resize = { field: widthField, pointer: event.pointerId, frame, revision: Number(frame.dataset.revision), start, next: start,
+      x: event.clientX, factor: (align === 'end' ? -1 : align === 'center' ? 2 : 1) * 100 / rect.width };
+  });
+  const boundedWidth = percent => Math.max(20, Math.min(100, Math.round(percent)));
+  function previewWidth(target, name, width) {
+    target.contentWindow?.postMessage({ type: 'storybench-canvas-width', field: name, width }, '*');
+  }
+  blocksLayer.addEventListener('pointermove', event => {
+    if (resize?.pointer !== event.pointerId) return;
+    resize.next = boundedWidth(resize.start + (event.clientX - resize.x) * resize.factor);
+    previewWidth(resize.frame, resize.field, resize.next);
+  });
+  function finishResize(commit) {
+    if (!resize) return;
+    const current = resize;
+    resize = null;
+    if (commit && frame === current.frame && episode.revision === current.revision && current.next !== current.start) {
+      // Keep the live geometry until its pinned replacement arrives. A refused revision restores the saved frame.
+      Promise.resolve(set('copy', { [current.field + 'Width']: current.next })).then(saved => {
+        if (saved === false && frame === current.frame) previewWidth(frame, current.field, null);
+      });
+    } else previewWidth(current.frame, current.field, null);
+  }
+  blocksLayer.addEventListener('pointerup', event => { if (resize?.pointer === event.pointerId) finishResize(true); });
+  blocksLayer.addEventListener('lostpointercapture', event => { if (resize?.pointer === event.pointerId) finishResize(false); });
+  blocksLayer.addEventListener('pointercancel', () => finishResize(false));
+  doc.defaultView.addEventListener('blur', () => finishResize(false));
+  surfaceRoot.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && resize) {
+      event.preventDefault(); event.stopImmediatePropagation(); finishResize(false); return;
+    }
+    const handle = event.target.closest('[data-width-handle]');
+    if (!handle || pending || resize) return;
+    const delta = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+    if (!delta && !['Home', 'End', 'Delete'].includes(event.key)) return;
+    event.preventDefault(); event.stopPropagation();
+    const width = event.key === 'Delete' ? null : event.key === 'Home' ? 20 : event.key === 'End' ? 100
+      : boundedWidth(Number(handle.getAttribute('aria-valuenow')) + delta * (event.shiftKey ? 10 : 1));
+    set('copy', { [handle.dataset.widthHandle + 'Width']: width });
+  }, true);
+
   // ---- Drag to snap: a selected copy or stage text block on a slide with a visual drags onto one of the
   // drop zones around the visual (Left, Right, Above, Below); dropping sets that block's bounded position
   // in the current scope. A press without movement stays a click.
@@ -536,6 +621,7 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
   }
   blocksLayer.addEventListener('pointerdown', (event) => {
     const block = event.target.closest('.deck-canvas-block'), key = block?.dataset.select;
+    if (event.target.closest('[data-width-handle]')) return;
     if (event.button !== 0 || !block || key !== selected || !['copy', 'stageText'].includes(key) || !info?.blocks.visual) return;
     event.preventDefault();
     drag = { key, block, x: event.clientX, y: event.clientY, moved: false };
@@ -579,7 +665,8 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
 
   function open(id) {
     if (id === slideId || !episode?.cards.some((item) => item.id === id)) return;
-    finishEdit(); kept = null; status.textContent = '';
+    finishResize(false); finishEdit(); kept = null; status.textContent = '';
+    widthField = 'title';
     slideId = id; stage = null; selected = null; info = null; drawn = ''; playing = false; replay = null;
     surface.select(null); blocksLayer.replaceChildren(); renderStages();
     load(); renderInspector();
@@ -591,6 +678,7 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
       if (episode?.id !== next.id) {
         slideId = null; standardsFor = null; standards = null; minimumStandardsRevision = 0; scope = 'slide';
       }
+      if (resize && resize.revision !== next.revision) finishResize(false);
       episode = next;
       loadStandards();
       if (!slide()) return;
@@ -601,10 +689,11 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
     // the change shows (a refused save shows none; the next slide or close drops it).
     playStep(index) { frame?.contentWindow.postMessage({ type: 'storybench-canvas-play-step', stage: index }, '*'); },
     replayStep(index) { if (episode) replay = { stage: index, after: episode.revision }; },
+    cancelResize() { if (!resize) return false; finishResize(false); return true; },
     closeMenu,
     // Closing the editor drops the frame, so a hidden canvas loads and plays nothing.
     hide() {
-      finishEdit(); kept = null; status.textContent = '';
+      finishResize(false); finishEdit(); kept = null; status.textContent = '';
       endDrag(); closeMenu(); replay = null;
       episode = null; slideId = null; shown = ''; info = null; drawn = ''; playing = false;
       frame?.remove(); pending?.remove(); frame = pending = null;

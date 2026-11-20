@@ -41,7 +41,7 @@ const SURFACES = [
   ['eyebrow', '#welcome header', 'color'], ['title rule', '#welcome .composition', 'border-bottom-color'],
   ['section slide', '#chapter', 'background-color'], ['muted text', '#chapter .lede', 'color'],
   ['step number', '#steps .step-number', 'color'], ['stage rule', '#steps .stages section', 'border-top-color'],
-  ['active stage button', '#steps .stage-nav [aria-pressed="true"]', 'background-color'], ['active stage text', '#steps .stage-nav [aria-pressed="true"]', 'color'],
+  ['active stage button', '#steps .stage-steps [aria-pressed="true"]', 'background-color'], ['active stage text', '#steps .stage-steps [aria-pressed="true"]', 'color'],
   ['figure placeholder', '#detail figure img', 'background-color'],
   ['slide glow', '#welcome', 'background-image'],
 ];

@@ -22,6 +22,8 @@ export const CAPTURE_REBUILD = 'Rebuild this deck to mark up slides.';
 export const reportsState = job => job?.snapshot?.manifest?.stateReporting === DECK_STATE_REPORTING;
 
 // The page's state message is a claim; only values that exist in this build pass.
+export const hasOpeningDelay = slide => slide.stages?.[0]?.afterMs > 0 && slide.stages[0].trigger !== 'manual';
+
 export function validateCaptureState(job, body) {
   const slides = job.snapshot.slides;
   const slide = typeof body?.slideId === 'string' ? slides.find(candidate => candidate.id === body.slideId) : null;
@@ -35,7 +37,7 @@ export function validateCaptureState(job, body) {
     if (typeof value !== 'number' || !Number.isFinite(value)) throw new StoreError(`Frame ${name} must be a number.`, 400);
     return Math.min(CAPTURE_VIEWPORT.max[name], Math.max(CAPTURE_VIEWPORT.min[name], Math.round(value)));
   };
-  return { slideId: slide.id, stage: position(body.stage, slide.stages?.length ?? 0, 'reveal stage'),
+  return { slideId: slide.id, stage: body.stage === null && hasOpeningDelay(slide) ? null : position(body.stage, slide.stages?.length ?? 0, 'reveal stage'),
     gallery: position(body.gallery, slide.subnav?.length ?? 0, 'gallery view'),
     viewport: { width: size(body.width, 'width'), height: size(body.height, 'height') } };
 }
@@ -107,7 +109,11 @@ export function createDeckCapture({ store, launch = options => chromium.launch(o
       await page.evaluate(() => document.fonts.ready);
       // Programmatic clicks: no pointer, so no hover or focus styling the creator did not see.
       // Selecting a stage takes manual control, which holds timed reveals at that stage.
-      if (state.stage !== null) await page.locator(`.slide:not([hidden]) [data-stage="${state.stage}"]`).dispatchEvent('click');
+      await page.evaluate(stage => {
+        if (stage === null) { window.storybenchDeck?.seek(0); return; }
+        if (window.storybenchDeck?.holdStage) window.storybenchDeck.holdStage(stage);
+        else document.querySelector(`.slide:not([hidden]) [data-stage="${stage}"]`)?.click();
+      }, state.stage);
       if (state.gallery !== null) await page.locator(`.slide:not([hidden]) [data-gallery="${state.gallery}"]`).dispatchEvent('click');
       await openingFrames(page);
       const seen = await page.evaluate(inspectPage);

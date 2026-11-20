@@ -79,7 +79,7 @@ for (const type of [chromium, firefox]) test(`E10 ${type.name()}: slide Markup a
   if (!browser) return t.skip(`No launchable ${type.name()} on this seat`);
   t.after(() => browser.close());
   const { app, episode, plan, revision, received, url, base } = await setup(t, type);
-  // Wide enough that the editor shows the 1056 x 648 slide area at its own size.
+  // Wide enough that the editor shows the 1056 x 594 slide area at its own size.
   const page = await browser.newPage({ viewport: { width: 1640, height: 1100 } }); page.setDefaultTimeout(15000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   const captures = [];
@@ -126,8 +126,8 @@ for (const type of [chromium, firefox]) test(`E10 ${type.name()}: slide Markup a
   assert.equal(await page.evaluate(() => document.querySelector('.slide-editor-shell').inert), false);
   const viewport = page.locator('.deck-canvas-viewport');
   const box = await viewport.boundingBox();
-  assert.deepEqual([Math.round(box.width), Math.round(box.height)], [1056, 648], 'the editor shows the slide area at its own size');
-  const editorShot = async () => `data:image/png;base64,${(await page.screenshot({ clip: { x: box.x, y: box.y, width: 1056, height: 648 } })).toString('base64')}`;
+  assert.deepEqual([Math.round(box.width), Math.round(box.height)], [1056, 594], 'the editor shows the slide area at its own size');
+  const editorShot = async () => `data:image/png;base64,${(await page.screenshot({ clip: { x: box.x, y: box.y, width: 1056, height: 594 } })).toString('base64')}`;
   const pressedStep = text => page.waitForFunction(text => document.querySelector('[data-canvas-stages] button[aria-pressed="true"]')?.textContent === text, text);
   const settle = () => page.waitForTimeout(400); // The frame seeks synchronously; one more paint.
   await settle();
@@ -138,7 +138,7 @@ for (const type of [chromium, firefox]) test(`E10 ${type.name()}: slide Markup a
   await evidence(`e10-${type.name()}-popup-base-step1.png`, Buffer.from(stepOne.split(',')[1], 'base64'));
   await evidence(`e10-${type.name()}-editor-step1.png`, Buffer.from(editorStepOne.split(',')[1], 'base64'));
   const same = await compare(page, stepOne, editorStepOne), other = await compare(page, stepOne, editorAll);
-  assert.deepEqual(same.size, [[1056, 648]]);
+  assert.deepEqual(same.size, [[1056, 594]]);
   assert.ok(same.differing < other.differing, `the capture matches the shown step (${same.differing}) better than All (${other.differing})`);
   assert.ok(same.differing < 0.03, `popup base differs from the editor's canvas on ${(same.differing * 100).toFixed(2)}% of pixels`);
   await editor.locator('[data-canvas-stages] button', { hasText: /^1$/ }).click();
