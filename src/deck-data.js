@@ -226,10 +226,14 @@ const SIDES = ['top', 'bottom', 'left', 'right'], ALIGNS = ['start', 'center', '
 export const STAGE_TEXT_STYLES = Object.freeze(['chips', 'steps', 'list', 'card']);
 export const DESIGN_PRIMITIVES = Object.freeze({
   copy: { position: SIDES, align: ALIGNS, valign: ALIGNS, titleWidth: [20, 100], bodyWidth: [20, 100] },
-  stageText: { style: STAGE_TEXT_STYLES, position: SIDES, align: ALIGNS, valign: ALIGNS, numbered: 'boolean', flipMs: [0, 2000] },
+  stageText: { width: [20, 100], style: STAGE_TEXT_STYLES, position: SIDES, align: ALIGNS, valign: ALIGNS, numbered: 'boolean', flipMs: [0, 2000] },
   type: { scale: ['compact', 'standard', 'large'] },
   spacing: { density: ['compact', 'standard', 'spacious'] },
   timing: { betweenMs: [0, 60000] },
+  columns: { width: [20, 100] },
+  caption: { width: [20, 100] },
+  eyebrow: { width: [20, 100] },
+  visual: Object.fromEntries(SIDES.map(side => [side, [-240, 240]])),
 });
 const PRIMITIVE_NAMES = Object.keys(DESIGN_PRIMITIVES);
 /** Validates layout primitives. Refusals name the deck or slide (`whole`, e.g. "Slide s1: design"),

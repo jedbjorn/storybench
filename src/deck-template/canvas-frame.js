@@ -10,7 +10,7 @@
   const deck = window.storybenchDeck, slide = document.querySelector('.slide');
   if (!deck || !slide || window.parent === window) return;
   const standardsRevision = Number(document.currentScript.dataset.standardsRevision);
-  const BLOCKS = { copy: '.copy', stageText: '.stage-text', visual: '.visual' };
+  const BLOCKS = { copy: '.copy', stageText: '.stage-text', visual: '.visual-content', columns: '.columns', caption: '.caption', eyebrow: '.header-label' };
   let stage = null, playing = null;
   // How long Play waits before clicking an On click stage, as a person would.
   const CLICK_PAUSE_MS = 700;
@@ -28,17 +28,44 @@
     const left = Math.min(...rects.map((r) => r.left)), top = Math.min(...rects.map((r) => r.top));
     return { left, top, width: Math.max(...rects.map((r) => r.right)) - left, height: Math.max(...rects.map((r) => r.bottom)) - top };
   }
-  const textFields = { title: slide.querySelector('.copy > h1'), body: slide.querySelector('.copy > .lede') };
+  const widthFields = {
+    title: slide.querySelector('.copy > h1'), body: slide.querySelector('.copy > .lede'),
+    stageText: slide.querySelector('.stage-text > :is(.stages,.stage-nav):not([hidden])'),
+    columns: slide.querySelector('.columns'), caption: slide.querySelector('.caption'), eyebrow: slide.querySelector('.header-label'),
+  };
   function post() {
     const area = slide.getBoundingClientRect(), blocks = {};
     for (const [key, selector] of Object.entries(BLOCKS)) {
       const box = union(boxes(slide.querySelector(selector)));
       if (box) blocks[key] = box;
     }
+    if (!blocks.visual) {
+      const slot = union(boxes(slide.querySelector('.visual-slot')));
+      if (slot) blocks.visual = slot;
+    }
     const fields = {};
-    for (const [key, element] of Object.entries(textFields)) {
+    for (const [key, element] of Object.entries(widthFields)) {
       const box = union(boxes(element));
-      if (box) fields[key] = box;
+      if (!box) continue;
+      let region = element.parentElement;
+      while (getComputedStyle(region).display === 'contents') region = region.parentElement;
+      let regionWidth = region.getBoundingClientRect().width;
+      const row = key === 'stageText' && region.parentElement;
+      const side = row && row.dataset.side;
+      let handleAlign;
+      if (side === 'left' || side === 'right') {
+        const scale = area.width / slide.offsetWidth;
+        regionWidth = row.getBoundingClientRect().width - parseFloat(getComputedStyle(row).columnGap) * scale;
+        handleAlign = side === 'right' ? 'end' : 'start';
+      }
+      fields[key] = { ...box, regionWidth, handleAlign };
+    }
+    // Do not intercept clicks on the Visual where it has reclaimed spare text width.
+    if (blocks.visual && blocks.copy) {
+      blocks.copy = union([widthFields.title, widthFields.body].flatMap(boxes));
+    }
+    if (fields.stageText) {
+      blocks.stageText = fields.stageText;
     }
     window.parent.postMessage({ type: 'storybench-canvas', fields, version: 1, slideId: slide.id, standardsRevision, stage,
       playing: Boolean(playing), overflow: deck.overflowRegions(), pulse: playing?.pulse ?? null, stages: deck.timeline().stages.length, area: { left: area.left, top: area.top, width: area.width, height: area.height }, blocks,
@@ -207,11 +234,19 @@
   window.addEventListener('message', (event) => {
     const data = event.data;
     if (event.source !== window.parent || !data) return;
-    if (data.type === 'storybench-canvas-width' && Object.hasOwn(textFields, data.field)) {
-      const element = textFields[data.field];
+    if (data.type === 'storybench-canvas-width' && Object.hasOwn(widthFields, data.field)) {
+      const element = widthFields[data.field];
       if (!element) return;
-      if (data.width === null) element.style.removeProperty('width');
-      else if (Number.isFinite(data.width) && data.width >= 20 && data.width <= 100) element.style.width = `${data.width}%`;
+      if (data.width !== null && !(Number.isFinite(data.width) && data.width >= 20 && data.width <= 100)) return;
+      slide.style.setProperty(`--${data.field}-width`, data.width === null ? '' : `${data.width}%`);
+      if (['title', 'body', 'stageText'].includes(data.field)) {
+        slide.style.setProperty(`--${data.field}-ratio`, data.width === null ? '' : String(data.width / 100));
+      }
+      if (data.field === 'stageText') slide.style.setProperty('--side-stage-width', data.width === null ? '' : '100%');
+      post();
+    } else if (data.type === 'storybench-canvas-spacing' && ['top', 'bottom', 'left', 'right'].includes(data.side)) {
+      if (data.spacing !== null && !(Number.isFinite(data.spacing) && Math.abs(data.spacing) <= 240)) return;
+      slide.style.setProperty(`--visual-${data.side}`, data.spacing === null ? '' : `${-data.spacing}px`);
       post();
     } else if (data.type === 'storybench-canvas-show') show(data.stage);
     else if (data.type === 'storybench-canvas-play') play();

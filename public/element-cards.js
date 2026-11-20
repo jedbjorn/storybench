@@ -51,6 +51,9 @@ export function slideCards(layout) {
 /** Which cards a canvas selection highlights and opens. */
 export function cardsFor(block, slide) {
   if (block === 'copy') return ['title', 'body'];
+  if (block === 'columns') return ['columns'];
+  if (block === 'caption') return ['body'];
+  if (block === 'eyebrow') return ['title'];
   if (block === 'visual') return ['visual'];
   if (block === 'stageText') return (slide.stages || []).map(stage => `step:${stage.id}`);
   return [];

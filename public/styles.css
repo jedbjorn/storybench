@@ -1101,7 +1101,8 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
 .deck-canvas-stages { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
 .deck-canvas-body { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
 /* Selection toolbar (deck-canvas.js): above the selected block, or below it; the alignment dropdown; drop zones. */
-.deck-canvas-toolbar { position: absolute; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; max-width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); box-shadow: 0 8px 24px #0a1e1c29; }
+.deck-canvas-toolbar { position: absolute; width: max-content; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; max-width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); box-shadow: 0 8px 24px #0a1e1c29; }
+.deck-canvas-toolbar[data-side="docked"] { position: relative; justify-self: start; }
 .deck-canvas-toolbar[hidden] { display: none; }
 /* Only the toolbar's controls take the pointer: its frame and label never block the canvas beneath. */
 .deck-canvas-toolbar { pointer-events: none; }
@@ -1116,6 +1117,7 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
 .deck-canvas-dropdown { position: relative; }
 .deck-canvas-dropdown-button { padding: 5px 10px; font-size: 13px; }
 .deck-canvas-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 4; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); box-shadow: 0 8px 24px #0a1e1c29; }
+.deck-canvas-menu.opens-above { top: auto; bottom: calc(100% + 4px); }
 .deck-canvas-menu[hidden] { display: none; }
 .deck-canvas-surface.is-dragging .deck-canvas-block[aria-pressed="true"] { opacity: .75; cursor: grabbing; }
 .deck-canvas-block[aria-pressed="true"] { cursor: grab; }
@@ -1247,3 +1249,9 @@ label > .sb-select, .episode-filter .sb-select { width: 100%; }
 .deck-canvas-block [data-width-handle] { position:absolute; right:0; top:50%; transform:translate(50%,-50%); width:16px; height:26px; border:2px solid var(--deep); border-radius:5px; background:var(--paper); cursor:ew-resize; touch-action:none; pointer-events:auto; }
 .deck-canvas-block .from-end [data-width-handle] { left:0; right:auto; transform:translate(-50%,-50%); }
 .deck-canvas-block [data-width-handle]:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+.deck-canvas-block:not([data-select="visual"]) { z-index: 1; }
+.deck-canvas-zone { z-index: 2; }
+.deck-visual-spacing { display: grid; gap: 6px; min-width: 200px; }
+.deck-visual-spacing label { display: grid; grid-template-columns: 3em 1fr 3em; align-items: center; gap: 6px; }
+.deck-visual-spacing input { accent-color: var(--deep); }
+.deck-visual-spacing output { text-align: right; font-variant-numeric: tabular-nums; }

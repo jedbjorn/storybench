@@ -49,10 +49,10 @@ h1,h2{font-family:var(--font-accent,Manrope),Arial,sans-serif}.slide header,.cap
   .composition{flex:1;min-height:0;justify-content:safe center}
   .copy,.stage-text,.columns,.composition>.caption{flex-shrink:0;min-width:0;overflow-wrap:anywhere}
   .copy h1,.copy .lede{max-width:100%}
-  .copy h1{width:min(100%,18ch)}
-  .layout-title h1{width:min(100%,14ch)}
-  .layout-statement h1{width:min(100%,20ch)}
-  .copy .lede{width:min(100%,48ch)}
+  .copy h1{width:var(--title-width,min(100%,18ch))}
+  .layout-title h1{width:var(--title-width,min(100%,14ch))}
+  .layout-statement h1{width:var(--title-width,min(100%,20ch))}
+  .copy .lede{width:var(--body-width,min(100%,48ch))}
   .stage-nav,.gallery-nav{font-size:23px}
   .visual,.visual figure,.gallery,.arrange{min-height:0;min-width:0;flex:1;display:flex;flex-direction:column}
   .visual{gap:calc(16px * var(--space-scale,1))}
@@ -73,3 +73,49 @@ h1,h2{font-family:var(--font-accent,Manrope),Arial,sans-serif}.slide header,.cap
 .stage-steps h2 button{font:inherit;letter-spacing:inherit;text-align:inherit;border:0;padding:0 .1em;background:transparent}
 .stage-steps h2 button[aria-pressed="true"]{background:var(--active);color:var(--paper)}
 @media print{.stages[hidden]{display:grid!important}}
+
+/* The signed edges adjust the painted Visual inside its normal layout slot. */
+.visual-slot,.visual-content{display:contents}
+.copy,.stage-text{position:relative;z-index:1;pointer-events:none}
+.copy>*,.stage-text>*,.columns,.caption{position:relative;z-index:1;pointer-events:auto}
+.slide header{position:relative;z-index:1}
+.header-label-region{flex:1;min-width:0}
+.header-label{width:var(--eyebrow-width,100%);overflow-wrap:anywhere}
+.columns{width:var(--columns-width,auto)}
+.caption{width:var(--caption-width,auto)}
+@media screen {
+  .visual-slot{display:block;position:relative;flex:1;min-height:0;min-width:0;gap:inherit}
+  .visual-content{position:absolute;inset:var(--visual-top,0) var(--visual-right,0) var(--visual-bottom,0) var(--visual-left,0);display:flex;flex-direction:column;gap:inherit}
+  .stage-text>:is(.stages,.stage-nav){width:var(--stageText-width,auto)}
+  .stage-text>:is(.stage-card,.stage-list){width:var(--stageText-width,min(100%,60ch));max-width:100%}
+  [data-stage-align=center] .stage-text>*{margin-inline:auto}
+  [data-stage-align=end] .stage-text>*{margin-inline:auto 0}
+
+  /* Beside media the text keeps its original alignment region. Return unused width
+     on the adjoining edge to the Visual (or to the nested stage/Visual row). */
+  .layout-text-media .composition.placed{align-items:stretch}
+  .composition,.arrange{container-type:inline-size;--layout-gap:calc(30px * var(--space-scale,1))}
+  .layout-full-media .composition{--layout-gap:calc(20px * var(--space-scale,1))}
+  .composition{--copy-fill:var(--title-ratio,1);--left-share:1;--right-share:0}
+  .composition:has(.copy>.lede){--copy-fill:max(var(--title-ratio,1),var(--body-ratio,1))}
+  .composition[data-copy-align=center]{--left-share:.5;--right-share:.5}
+  .composition[data-copy-align=end]{--left-share:0;--right-share:1}
+  .arrange:is([data-side=left],[data-side=right])>:is(.copy,.stage-text){flex:0 0 calc((100% - var(--layout-gap)) * .425)}
+  .arrange[data-side=left]>.copy + .arrange,.layout-text-media .composition:not(.placed)>.visual{
+    margin-left:calc((100cqw - var(--layout-gap)) * -.425 * (1 - var(--copy-fill)) * var(--left-share))}
+  .arrange[data-side=right]:has(>.copy)>.arrange{
+    margin-right:calc((100cqw - var(--layout-gap)) * -.425 * (1 - var(--copy-fill)) * var(--right-share))}
+  .arrange:is([data-side=left],[data-side=right])>.stage-text{
+    flex-basis:calc((100% - var(--layout-gap)) * var(--stageText-ratio,.425))}
+  .arrange:is([data-side=left],[data-side=right])>.stage-text>:is(.stages,.stage-nav){
+    width:var(--side-stage-width,auto)}
+  .arrange:is([data-side=left],[data-side=right])>.stage-text>:is(.stage-card,.stage-list){
+    width:var(--side-stage-width,min(100%,60ch))}
+
+}
+@media print{
+  .copy h1{width:var(--title-width,auto)}.copy .lede{width:var(--body-width,auto)}
+  .stage-text>:is(.stages,.stage-nav){width:var(--stageText-width,auto)}
+  .stage-text>:is(.stage-card,.stage-list){max-width:var(--stageText-width,60ch)}
+  .visual-content{display:block;margin:var(--visual-top,0) var(--visual-right,0) var(--visual-bottom,0) var(--visual-left,0)}
+}

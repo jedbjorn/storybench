@@ -66,7 +66,8 @@ Where a request starts decides where its result lands (after the redline skill's
 
 - Deck `design.aspectRatio` accepts 16:9 (default) or 16:10.
 - `copy` {position, align, valign, titleWidth, bodyWidth}. Widths span 20–100% of the available copy region.
-- `stageText` {style, position, align, valign, numbered, flipMs}. `chips` shows buttons (vector default). `steps` reveals numbered, selectable titles cumulatively (text default). `list` reveals selectable items and marks the current one. `card` flips to the current face. `numbered` applies to list and card. Card flipMs accepts 0–2000. Stage align also aligns wrapped rows of stage and gallery buttons.
+- `stageText` {width, style, position, align, valign, numbered, flipMs}. `chips` shows buttons (vector default). `steps` reveals numbered, selectable titles cumulatively (text default). `list` reveals selectable items and marks the current one. `card` flips to the current face. `numbered` applies to list and card. Card flipMs accepts 0–2000. Stage align also aligns wrapped rows of stage and gallery buttons.
+- `stageText`, `columns`, `caption` and `eyebrow` accept `width` (20–100%). `visual` accepts top, bottom, left and right (−240 to +240 slide units). Zero uses the standard gap, positive extends behind foreground content, negative adds padding.
 - `type` {scale}: compact, standard or large. `spacing` {density}: compact, standard or spacious internal gaps.
 - `timing` {betweenMs} (0 to 60,000): one gap per slide. Every stage after the first starts that long after the previous stage's motion ends, card, diagram and text alike, and those stages then take no `afterMs`, `holdMs` or manual trigger. The first stage keeps its `afterMs`.
 

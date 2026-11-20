@@ -19,9 +19,12 @@ import { createDurationField } from './ui/duration-field.js';
 import { createScopeSwitch } from './ui/scope-switch.js';
 import { openColorPicker } from './color-picker.js';
 
-const BLOCKS = { copy: 'Title and text', stageText: 'Stage text', visual: 'Visual' };
+const BLOCKS = { copy: 'Title and text', stageText: 'Stage text', visual: 'Visual', columns: 'Columns', caption: 'Caption', eyebrow: 'Header label' };
+const WIDTH_FIELDS = { title: ['copy', 'titleWidth', 'Title'], body: ['copy', 'bodyWidth', 'Body'],
+  stageText: ['stageText', 'width', 'Stage text'], columns: ['columns', 'width', 'Columns'], caption: ['caption', 'width', 'Caption'],
+  eyebrow: ['eyebrow', 'width', 'Header label'] };
 // The primitives each view edits: the toolbar's per block; '' is the inspector's slide and deck view.
-const VIEW_PRIMITIVES = { copy: ['copy', 'type'], stageText: ['stageText'], '': ['type', 'spacing', 'timing'] };
+const VIEW_PRIMITIVES = { copy: ['copy', 'type'], stageText: ['stageText'], columns: ['columns'], caption: ['caption'], eyebrow: ['eyebrow'], visual: ['visual'], '': ['type', 'spacing', 'timing'] };
 // The drop zones around the visual, as fractions of its box: [left, top, width, height].
 const ZONES = [['left', 'Left', [0, 0.25, 0.3, 0.5]], ['right', 'Right', [0.7, 0.25, 0.3, 0.5]], ['top', 'Above', [0.3, 0, 0.4, 0.3]], ['bottom', 'Below', [0.3, 0.7, 0.4, 0.3]]];
 const ALIGN_NAMES = { rows: { start: 'Top', center: 'Middle', end: 'Bottom' }, cols: { start: 'left', center: 'centre', end: 'right' } };
@@ -329,7 +332,14 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
     menu.append(control.element);
     button.addEventListener('click', () => {
       if (!menu.hidden) return closeMenu();
-      closeMenu(); menu.hidden = false; button.setAttribute('aria-expanded', 'true'); control.focus();
+      closeMenu(); menu.hidden = false; button.setAttribute('aria-expanded', 'true');
+      const stage = section.closest('.slide-editor-stage')?.getBoundingClientRect();
+      if (stage) {
+        const anchor = button.getBoundingClientRect(), below = stage.bottom - anchor.bottom;
+        menu.classList.toggle('opens-above', below < menu.offsetHeight + 4 && anchor.top - stage.top > below);
+        menu.style.left = `${Math.max(stage.left - anchor.left, Math.min(0, stage.right - anchor.left - menu.offsetWidth))}px`;
+      }
+      control.focus();
     });
     wrap.append(button, menu);
     return field(key, caption, wrap);
@@ -361,7 +371,7 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
     return field('scope', 'Apply to', createScopeSwitch({ doc, value: scope, overridden: overridden(primitives),
       onChange(next) { scope = next; renderInspector(); }, onReset: () => resetSlide(primitives) }));
   }
-  // The visual's toolbar: the candidate in use and Open asset.
+  // Visual spacing is previewed in the frame while a slider moves and saved on release.
   function visualView() {
     const own = slide(), id = own?.vector?.itemId || own?.media?.itemId || own?.subnav?.find((view) => view.itemId)?.itemId;
     const item = id && (getItems() || []).find((entry) => entry.id === id);
@@ -372,12 +382,37 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
       open.addEventListener('click', () => onOpenAsset(item.id));
       parts.push(field('openAsset', null, open));
     }
+    const sliders = doc.createElement('div');
+    sliders.className = 'deck-visual-spacing';
+    for (const side of ['top', 'bottom', 'left', 'right']) {
+      const label = doc.createElement('label'), output = doc.createElement('output');
+      const input = Object.assign(doc.createElement('input'), { type: 'range', min: -240, max: 240, step: 1, value: value('visual', side) ?? 0 });
+      label.append(side[0].toUpperCase() + side.slice(1), input, output);
+      input.dataset.spacingSide = side;
+      input.setAttribute('aria-label', `Visual ${side} spacing`);
+      output.value = input.value;
+      input.addEventListener('input', () => {
+        output.value = input.value;
+        frame?.contentWindow.postMessage({ type: 'storybench-canvas-spacing', side, spacing: Number(input.value) }, '*');
+      });
+      input.addEventListener('change', () => {
+        const target = frame;
+        Promise.resolve(set('visual', { [side]: Number(input.value) })).then(saved => {
+          if (saved === false) target?.contentWindow?.postMessage({ type: 'storybench-canvas-spacing', side, spacing: null }, '*');
+        });
+      });
+      sliders.append(label);
+    }
+    const reset = Object.assign(doc.createElement('button'), { type: 'button', textContent: 'Reset spacing' });
+    reset.onclick = () => set('visual', { top: null, bottom: null, left: null, right: null });
+    sliders.append(note('Positive overlaps · Negative adds padding'), reset);
+    parts.push(scopeSwitch(VIEW_PRIMITIVES.visual), dropdown('visual.spacing', 'Visual spacing', 'Spacing',
+      { element: sliders, focus: () => sliders.querySelector('input').focus() }));
     return parts;
   }
   // The toolbar's controls for the selected block: copy has Position, Alignment and Size; stage text has
-  // Style, Position and Align; the visual has the candidate in use and Open asset. Each has the scope.
+  // Style, Position and Align; the Visual has spacing and asset controls.
   function blockView(key) {
-    // The visual's toolbar edits no deck value, so it has no scope.
     if (key === 'visual') return visualView();
     const visual = Boolean(info?.blocks.visual), parts = [scopeSwitch(VIEW_PRIMITIVES[key])];
     if (key === 'stageText') {
@@ -387,15 +422,18 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
       if (style === 'card') parts.push(field('stageText.flipMs', null, createDurationField({ label: 'Flip time', min: 0, max: 2000, defaultLabel: 'Standard', doc,
         value: value('stageText', 'flipMs'), onChange: (next) => set('stageText', { flipMs: next }) })));
     }
-    if (visual || scope === 'deck') parts.push(position(key, 'Position'));
-    else parts.push(note('Add media, a vector or a gallery to place this beside a visual.'));
-    parts.push(alignment(key));
+    if (['copy', 'stageText'].includes(key)) {
+      if (visual || scope === 'deck') parts.push(position(key, 'Position'));
+      else parts.push(note('Add media, a vector or a gallery to place this beside a visual.'));
+      parts.push(alignment(key));
+    }
     if (key === 'copy') {
       parts.push(segmented('type', 'scale', 'Size', SCALES));
-      const reset = Object.assign(doc.createElement('button'), { type: 'button', textContent: `Reset ${widthField} width` });
-      reset.addEventListener('click', () => set('copy', { [widthField + 'Width']: null }));
-      parts.push(field('widthReset', null, reset));
     }
+    const name = key === 'copy' ? widthField : key;
+    const reset = Object.assign(doc.createElement('button'), { type: 'button', textContent: `Reset ${WIDTH_FIELDS[name][2].toLowerCase()} width` });
+    reset.addEventListener('click', () => saveWidth(name, null));
+    parts.push(field('widthReset', null, reset));
     return parts;
   }
   function slideView() {
@@ -472,6 +510,7 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
     // Keep keyboard focus on the same control across a re-render.
     const active = [inspector.element, toolbar].find((host) => host.contains(doc.activeElement));
     const control = active && doc.activeElement.closest('[data-control]')?.dataset.control;
+    const spacingSide = doc.activeElement?.dataset.spacingSide;
     inspector.show({ title: 'Slide and deck', content: slideView() });
     toolbar.hidden = !selected;
     if (selected) {
@@ -483,79 +522,87 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
     } else toolbar.replaceChildren();
     if (!control) return;
     const host = active.querySelector(`[data-control="${CSS.escape(control)}"]`);
+    if (spacingSide && host) {
+      const button = host.querySelector('[aria-expanded]');
+      button.click();
+      host.querySelector(`[data-spacing-side="${spacingSide}"]`).focus();
+      return;
+    }
     (host?.querySelector('[aria-pressed="true"], [aria-checked="true"], input, button, [tabindex="0"]') || host)?.focus?.();
   }
-  // Above the selected block, or below it (over the step bar if need be) when there is no room above;
-  // kept inside the canvas width.
-  // "Room" also means not covering another selectable block, so the creator can still click it; when
-  // both sides would, the side covering less wins.
+  // Prefer the space above or below the selection. On a crowded slide the toolbar
+  // takes its own row so every block and the playback controls remain reachable.
   function placeToolbar() {
     const block = selected && blocksLayer.querySelector(`[data-select="${selected}"]`);
-    if (toolbar.hidden || !block) return;
-    const host = toolbar.offsetParent?.getBoundingClientRect(), box = block.getBoundingClientRect();
-    if (!host) return;
+    if (toolbar.hidden || !block || toolbar.querySelector('.deck-visual-spacing')?.parentElement.hidden === false) return;
+    const host = toolbar.parentElement.getBoundingClientRect(), box = block.getBoundingClientRect();
+    const surface = surfaceRoot.getBoundingClientRect();
     const width = toolbar.offsetWidth, height = toolbar.offsetHeight;
-    const left = Math.max(0, Math.min(box.left - host.left, host.width - width));
-    const others = [...blocksLayer.querySelectorAll('[data-select]')].filter((node) => node !== block).map((node) => node.getBoundingClientRect());
-    const covered = (top) => others.reduce((sum, rect) => sum
-      + Math.max(0, Math.min(rect.right, host.left + left + width) - Math.max(rect.left, host.left + left))
-      * Math.max(0, Math.min(rect.bottom, host.top + top + height) - Math.max(rect.top, host.top + top)), 0);
-    const sides = [['above', box.top - host.top - height - 8], ['below', box.bottom - host.top + 8]]
-      .map(([side, top]) => ({ side, top, fits: top >= 0, cover: covered(top) }));
-    const [best] = [...sides].sort((a, b) => (b.fits - a.fits) || (a.cover - b.cover));
-    const chosen = sides[0].fits && !sides[0].cover ? sides[0] : best;
-    toolbar.dataset.side = chosen.side;
-    toolbar.style.top = `${chosen.top}px`;
-    toolbar.style.left = `${left}px`;
+    const left = Math.max(host.left, Math.min(box.left, host.right - width));
+    const others = [...blocksLayer.querySelectorAll('[data-select]')].filter(node => node !== block).map(node => node.getBoundingClientRect());
+    const fits = top => top >= surface.top && top + height <= surface.bottom &&
+      !others.some(rect => rect.left < left + width && rect.right > left && rect.top < top + height && rect.bottom > top);
+    const above = box.top - height - 8, below = box.bottom + 8;
+    const top = [above, below].find(fits);
+    toolbar.dataset.side = top === undefined ? 'docked' : top === above ? 'above' : 'below';
+    toolbar.style.top = top === undefined ? '' : `${top - host.top}px`;
+    toolbar.style.left = top === undefined ? '' : `${left - host.left}px`;
   }
 
-  // Handles use the measured copy region and stay a constant size in editor pixels.
+  function saveWidth(name, percent) {
+    const [primitive, arg] = WIDTH_FIELDS[name];
+    return set(primitive, { [arg]: percent });
+  }
+  function fieldAlign(key) {
+    return slide()?.design?.[key]?.align ?? deckValue(key, 'align');
+  }
   function placeWidthHandles() {
-    const block = blocksLayer.querySelector('[data-select="copy"]');
-    if (!block) return;
-    const copy = info?.blocks.copy, scale = Math.min(1, viewport.clientWidth / (info?.area || AREA).width);
-    for (const name of ['title', 'body']) {
+    const scale = Math.min(1, viewport.clientWidth / (info?.area || AREA).width);
+    for (const [name, [key, , label]] of Object.entries(WIDTH_FIELDS)) {
+      const block = blocksLayer.querySelector(`[data-select="${key}"]`);
+      if (!block) continue;
       let outline = block.querySelector(`[data-width-field="${name}"]`);
-      const box = info?.fields?.[name];
-      if (selected !== 'copy' || !box || !copy) { outline?.remove(); continue; }
+      const box = info?.fields?.[name], bounds = info?.blocks[key];
+      if (selected !== key || !box || !bounds) { outline?.remove(); continue; }
       if (!outline) {
         outline = doc.createElement('span'); outline.dataset.widthField = name;
         const handle = doc.createElement('span');
         handle.dataset.widthHandle = name; handle.tabIndex = 0; handle.setAttribute('role', 'slider');
-        handle.setAttribute('aria-label', `${name === 'title' ? 'Title' : 'Body'} width`);
+        handle.setAttribute('aria-label', `${label} width`);
         handle.setAttribute('aria-valuemin', '20'); handle.setAttribute('aria-valuemax', '100');
         handle.title = 'Drag to resize, or use the arrow keys';
         outline.append(handle); block.append(outline);
       }
-      Object.assign(outline.style, { left: `${(box.left - copy.left) * scale}px`, top: `${(box.top - copy.top) * scale}px`,
+      Object.assign(outline.style, { left: `${(box.left - bounds.left) * scale}px`, top: `${(box.top - bounds.top) * scale}px`,
         width: `${box.width * scale}px`, height: `${box.height * scale}px` });
-      outline.classList.toggle('is-current', widthField === name);
-      outline.classList.toggle('from-end', (slide()?.design?.copy?.align ?? deckValue('copy', 'align')) === 'end');
-      const percent = Math.round(box.width / copy.width * 100);
+      outline.classList.toggle('is-current', key !== 'copy' || widthField === name);
+      outline.classList.toggle('from-end', (box.handleAlign ?? fieldAlign(key)) === 'end');
+      const percent = Math.round(box.width / box.regionWidth * 100);
       outline.firstChild.setAttribute('aria-valuenow', percent);
       outline.firstChild.setAttribute('aria-valuetext', `${percent} percent`);
     }
   }
   function chooseField(name) {
-    if (widthField === name) return;
+    if (!['title', 'body'].includes(name) || widthField === name) return;
     widthField = name; placeWidthHandles(); renderInspector();
   }
-  blocksLayer.addEventListener('focusin', event => {
-    if (event.target.dataset.widthHandle) chooseField(event.target.dataset.widthHandle);
-  });
+  blocksLayer.addEventListener('focusin', event => chooseField(event.target.dataset.widthHandle));
   blocksLayer.addEventListener('pointerdown', event => {
-    const block = event.target.closest('[data-select="copy"]');
+    const block = event.target.closest('[data-select]'), key = block?.dataset.select;
     if (!block || !info?.fields || event.button !== 0) return;
-    const rect = block.getBoundingClientRect(), scale = rect.width / info.blocks.copy.width;
+    const scale = Math.min(1, viewport.clientWidth / info.area.width);
     const handle = event.target.closest('[data-width-handle]');
-    const y = (event.clientY - rect.top) / scale + info.blocks.copy.top;
-    chooseField(handle?.dataset.widthHandle ?? (info.fields.body && y >= info.fields.body.top ? 'body' : 'title'));
+    const name = handle?.dataset.widthHandle;
+    if (key === 'copy') {
+      const y = (event.clientY - block.getBoundingClientRect().top) / scale + info.blocks.copy.top;
+      chooseField(name ?? (info.fields.body && y >= info.fields.body.top ? 'body' : 'title'));
+    }
     if (!handle || pending || !frame || playing || editing) return;
     event.preventDefault(); handle.focus(); handle.setPointerCapture(event.pointerId);
-    const align = slide()?.design?.copy?.align ?? deckValue('copy', 'align');
-    const start = info.fields[widthField].width / info.blocks.copy.width * 100;
-    resize = { field: widthField, pointer: event.pointerId, frame, revision: Number(frame.dataset.revision), start, next: start,
-      x: event.clientX, factor: (align === 'end' ? -1 : align === 'center' ? 2 : 1) * 100 / rect.width };
+    const box = info.fields[name], align = box.handleAlign ?? fieldAlign(key);
+    const start = box.width / box.regionWidth * 100;
+    resize = { field: name, pointer: event.pointerId, frame, revision: Number(frame.dataset.revision), start, next: start,
+      x: event.clientX, factor: (align === 'end' ? -1 : align === 'center' ? 2 : 1) * 100 / (box.regionWidth * scale) };
   });
   const boundedWidth = percent => Math.max(20, Math.min(100, Math.round(percent)));
   function previewWidth(target, name, width) {
@@ -572,7 +619,7 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
     resize = null;
     if (commit && frame === current.frame && episode.revision === current.revision && current.next !== current.start) {
       // Keep the live geometry until its pinned replacement arrives. A refused revision restores the saved frame.
-      Promise.resolve(set('copy', { [current.field + 'Width']: current.next })).then(saved => {
+      Promise.resolve(saveWidth(current.field, current.next)).then(saved => {
         if (saved === false && frame === current.frame) previewWidth(frame, current.field, null);
       });
     } else previewWidth(current.frame, current.field, null);
@@ -592,7 +639,7 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
     event.preventDefault(); event.stopPropagation();
     const width = event.key === 'Delete' ? null : event.key === 'Home' ? 20 : event.key === 'End' ? 100
       : boundedWidth(Number(handle.getAttribute('aria-valuenow')) + delta * (event.shiftKey ? 10 : 1));
-    set('copy', { [handle.dataset.widthHandle + 'Width']: width });
+    saveWidth(handle.dataset.widthHandle, width);
   }, true);
 
   // ---- Drag to snap: a selected copy or stage text block on a slide with a visual drags onto one of the

@@ -29,7 +29,11 @@ test('A4: unknown primitives, arguments and values, CSS strings and non-enum typ
   const deck = (design, pattern) => assert.throws(() => validateDeckDesign(design, { setBy: 'agent' }), pattern);
   deck({ aspectRatio: '4:3' }, /aspectRatio must be 16:9 or 16:10/);
   for (const bad of [19, 101, '50%', Infinity]) deck({ copy: { titleWidth: bad } }, /titleWidth must be a number from 20 to 100/);
-  deck({ layout: {} }, /^Error: Deck design: layout is not supported; use theme, aspectRatio, copy, stageText, type, spacing, timing$/);
+  for (const name of ['columns', 'caption', 'eyebrow', 'stageText']) deck({ [name]: { width: 101 } }, /width must be a number from 20 to 100/);
+  for (const side of ['top', 'bottom', 'left', 'right']) {
+    for (const bad of [-241, 241, '12px']) deck({ visual: { [side]: bad } }, /must be a number from -240 to 240/);
+  }
+  deck({ layout: {} }, /^Error: Deck design: layout is not supported; use theme, aspectRatio, copy, stageText, type, spacing, timing, columns, caption, eyebrow, visual$/);
   deck({ copy: { margin: '4px' } }, /Deck design: copy\.margin is not supported; use position, align, valign/);
   deck({ copy: { align: 'justify' } }, /Deck design: copy\.align must be one of start, center, end/);
   deck({ stageText: { style: 'display:none' } }, /Deck design: stageText\.style must be one of chips, steps, list, card/);
@@ -81,7 +85,7 @@ test('A5c (save): with timing.betweenMs, afterMs, holdMs and a manual trigger af
 
 test('A4: deck and slide primitives save with the deck revision through the store; omitted design is kept; history and undo restore them; refusals store nothing', async t => {
   const { store, id } = await fixture(t);
-  const designed = slides(); designed[0].design = { copy: { bodyWidth: 42 }, stageText: { style: 'list', numbered: true }, type: { scale: 'compact' } };
+  const designed = slides(); designed[0].design = { copy: { bodyWidth: 42 }, stageText: { style: 'list', numbered: true, width: 53 }, columns: { width: 70 }, caption: { width: 22 }, visual: { top: 240, left: -240, bottom: 0, right: -12 }, type: { scale: 'compact' } };
   const saved = store.saveDeck(id, 2, designed, 'agent', { aspectRatio: '16:10', copy: { titleWidth: 88 }, stageText: { align: 'center' }, spacing: { density: 'spacious' }, timing: { betweenMs: 400 } });
   assert.equal(saved.revision, 3);
   assert.deepEqual(saved.design, { ...emptyDesign(), aspectRatio: '16:10', copy: { titleWidth: 88 }, stageText: { align: 'center' }, spacing: { density: 'spacious' }, timing: { betweenMs: 400 } });

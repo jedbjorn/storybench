@@ -332,3 +332,78 @@ test('the editor names overflow on a later reveal and clears the warning after a
   await frameIn(page, '.deck-canvas-viewport', `${saved.revision + 1}/${crowded.id}`);
   assert.equal(await warning.textContent(), '');
 });
+
+test('non-Visual width handles and the four Visual spacing controls save from the editor', async t => {
+  const browser = await launch(chromium); if (!browser) return t.skip('No launchable Chromium');
+  t.after(() => browser.close());
+  const { app, episode, url } = await setup(t);
+  const saved = () => app.store.getDeck(episode.id);
+  const initial = saved();
+  initial.slides[2].caption = 'A comparison';
+  initial.slides[2].eyebrow = 'Context';
+  initial.slides[3].design = { stageText: { style: 'card', position: 'right', align: 'end' } };
+  let revision = app.store.saveDeck(episode.id, initial.revision, initial.slides).revision;
+  const page = await browser.newPage({ viewport: { width: 1600, height: 1100 } });
+  page.setDefaultTimeout(7000);
+  await page.goto(url);
+  async function open(index) {
+    await card(page, index).locator('.slide-card-summary').click();
+    await card(page, index).locator('[data-slide-edit]').click();
+    return frameIn(page, '.deck-canvas-viewport', initial.slides[index].id);
+  }
+  await open(2);
+  for (const [key, label, selector] of [['columns', 'Columns', '.columns'], ['caption', 'Caption', '.caption'], ['eyebrow', 'Header label', '.header-label']]) {
+    await page.locator(`[data-select="${key}"]`).click();
+    const handle = page.getByRole('slider', { name: label + ' width' });
+    await handle.press('Home');
+    const frame = await frameIn(page, '.deck-canvas-viewport', ++revision + '/options');
+    assert.equal(saved().slides[2].design[key].width, 20);
+    assert.equal(await handle.getAttribute('aria-valuenow'), '20');
+    assert.ok(await frame.locator(selector).evaluate(el => Math.abs(el.offsetWidth / el.parentElement.clientWidth - .2) < .002));
+    if (key === 'columns') {
+      const caption = await page.locator('[data-select="caption"]').boundingBox();
+      const bar = await page.getByRole('toolbar', { name: 'Columns controls' }).boundingBox();
+      assert.ok(bar.y + bar.height <= caption.y || bar.y >= caption.y + caption.height ||
+        bar.x + bar.width <= caption.x || bar.x >= caption.x + caption.width,
+      'narrowing columns leaves the whole caption available for selection');
+    }
+  }
+  await page.getByRole('button', { name: 'Close slide editor' }).click();
+  let frame = await open(3);
+  await page.locator('[data-select="stageText"]').click();
+  const handle = page.getByRole('slider', { name: 'Stage text width' });
+  const oldVisual = await frame.locator('.visual-content').boundingBox();
+  const start = await handle.boundingBox();
+  await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(start.x - 180, start.y + start.height / 2, { steps: 4 });
+  await frame.waitForFunction(() => document.querySelector('.visual-content').offsetWidth < document.querySelector('.stage-text').offsetWidth);
+  assert.equal(saved().revision, revision, 'drag previews before committing');
+  await page.mouse.up();
+  frame = await frameIn(page, '.deck-canvas-viewport', ++revision + '/diagram');
+  assert.ok(saved().slides[3].design.stageText.width > 42.5);
+  assert.ok((await frame.locator('.visual-content').boundingBox()).width < oldVisual.width - 10);
+
+  await page.setViewportSize({ width: 1268, height: 713 });
+  await page.locator('[data-select="visual"]').click();
+  await page.getByRole('button', { name: /Visual spacing/ }).click();
+  assert.ok(await page.locator('.deck-visual-spacing').evaluate(el => {
+    const menu = el.parentElement.getBoundingClientRect(), stage = el.closest('.slide-editor-stage').getBoundingClientRect();
+    return menu.top >= stage.top && menu.bottom <= stage.bottom && menu.left >= stage.left && menu.right <= stage.right;
+  }), 'all four controls fit inside the editor at the supported desktop minimum');
+  await evidence(page, 'visual-spacing-editor.png', process.env.STORYBENCH_SLIDE_FIT_EVIDENCE);
+  const edges = { top: 1, bottom: -1, left: 1, right: -1 };
+  for (const [side, value] of Object.entries(edges)) {
+    const slider = page.getByRole('slider', { name: 'Visual ' + side + ' spacing' });
+    await slider.press(value > 0 ? 'ArrowRight' : 'ArrowLeft');
+    await frameIn(page, '.deck-canvas-viewport', ++revision + '/diagram');
+    assert.equal(saved().slides[3].design.visual[side], value);
+  }
+  await page.reload();
+  frame = await open(3);
+  const computed = await frame.locator('.visual-content').evaluate(el => {
+    const css = getComputedStyle(el);
+    return [css.top, css.bottom, css.left, css.right];
+  });
+  assert.deepEqual(computed, ['-1px', '1px', '-1px', '1px']);
+});
