@@ -178,21 +178,29 @@ export function buildDeck(input, { assets = {} } = {}) {
     if (stages.length) {
       const style = stageText.style ?? (slide.vector ? 'chips' : 'steps'), numbered = stageText.numbered === true;
       const timing = `${design.timing?.betweenMs == null ? '' : ` data-between-ms="${design.timing.betweenMs}"`}${style === 'card' && stageText.flipMs != null ? ` data-flip-ms="${stageText.flipMs}"` : ''}`;
-      const chips = `<nav class="stage-nav" aria-label="Reveal stages">${subnav.map((label, i) => `<button data-stage="${i}">${text(label, 'subnav label')}</button>`).join('')}</nav>`;
-      const sections = (number) => stages.map((stage, i) => {
+      const hidden = stages.map(hiddenFromList);
+      const showNumbers = style === 'steps' || (style === 'card' && numbered);
+      let visibleNumber = 0;
+      const sections = stages.map((stage, i) => {
         // The runtime reads its timeline from these attributes; an unset field keeps the older behaviour.
         const { afterMs: delay = 0, ...motion } = motions[i];
-        const timeline = `data-step="${i}"${stage.id ? ` data-stage-id="${escape(stage.id)}"` : ''} data-delay="${delay}" data-nav-label="${text(subnav[i], 'subnav label')}"${Object.keys(motion).length ? ` data-motion="${escape(JSON.stringify(motion))}"` : ''}`;
+        const timeline = `data-step="${i}"${hidden[i] ? ' hidden' : ''}${stage.id ? ` data-stage-id="${escape(stage.id)}"` : ''} data-delay="${delay}" data-nav-label="${text(subnav[i], 'subnav label')}"${Object.keys(motion).length ? ` data-motion="${escape(JSON.stringify(motion))}"` : ''}`;
         const title = text(stage.title, 'stage.title'), detail = text(stage.body, 'stage.body', true);
-        if (style === 'list') return `<li ${timeline}${hiddenFromList(stage) ? ' hidden' : ''}><button data-stage="${i}">${title}</button>${detail.trim() ? `<p>${detail}</p>` : ''}</li>`;
-        return `<section ${timeline}>${number ? `<span class="step-number">${i + 1}</span>` : ''}<h2>${style === 'steps' ? `<button data-stage="${i}">${title}</button>` : title}</h2>${detail.trim() ? `<p>${detail}</p>` : ''}</section>`;
+        if (!hidden[i]) visibleNumber++;
+        const label = !hidden[i] && (style === 'steps' || style === 'list') ? `<button data-stage="${i}">${title}</button>` : title;
+        if (style === 'list') return `<li ${timeline}>${label}${detail.trim() ? `<p>${detail}</p>` : ''}</li>`;
+        const number = showNumbers && !hidden[i] ? `<span class="step-number">${visibleNumber}</span>` : '';
+        return `<section ${timeline}>${number}<h2>${label}</h2>${detail.trim() ? `<p>${detail}</p>` : ''}</section>`;
       }).join('');
       if (style === 'list') {
         const tag = numbered ? 'ol' : 'ul';
-        stageHTML = `<${tag} class="stages stage-list"${timing}>${sections(false)}</${tag}>`;
-      } else if (style === 'card') stageHTML = `<div class="stages stage-card"${timing}>${sections(numbered)}</div>`;
-      else if (style === 'steps') stageHTML = `<div class="stages stage-steps"${timing}>${sections(true)}</div>`;
-      else stageHTML = `<div class="stages" hidden${timing}>${sections(false)}</div>${chips}`;
+        stageHTML = `<${tag} class="stages stage-list"${timing}>${sections}</${tag}>`;
+      } else if (style === 'card') stageHTML = `<div class="stages stage-card"${timing}>${sections}</div>`;
+      else if (style === 'steps') stageHTML = `<div class="stages stage-steps"${timing}>${sections}</div>`;
+      else {
+        const chips = subnav.map((label, i) => hidden[i] ? '' : `<button data-stage="${i}">${text(label, 'subnav label')}</button>`).join('');
+        stageHTML = `<div class="stages" hidden${timing}>${sections}</div>${chips ? `<nav class="stage-nav" aria-label="Reveal stages">${chips}</nav>` : ''}`;
+      }
     }
     if (gallery) visual += `<nav class="gallery-nav" aria-label="Gallery">${gallery.map((entry, i) => `<button data-gallery="${i}">${text(entry.label, 'gallery label')}</button>`).join('')}</nav><div class="gallery">${gallery.map((entry, i) => `<figure data-gallery-view="${i}"${i ? ' hidden' : ''}>${entry.media ? media(entry.media) : ''}<figcaption>${text(entry.label, 'gallery label')}</figcaption></figure>`).join('')}</div>`;
     const caption = slide.caption ? `<p class="caption">${text(slide.caption,'caption')}</p>` : '';

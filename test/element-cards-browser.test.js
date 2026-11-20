@@ -118,39 +118,117 @@ async function openCard(page, key) {
 }
 const stepRow = (page, id, key) => cardOf(page, `step:${id}`).locator(`[data-step-row="${key}"]`);
 
-test('A collapsed step can be hidden from the slide list, renamed, and shown again after reload', async t => {
+test('The audience eye follows a step across inherited and overridden styles, reorder, edit and reopen', async t => {
   const browser = await chromium.launch({ channel: 'chromium' }).catch(() => launch(chromium));
   if (!browser) return t.skip('No launchable chromium on this seat');
   t.after(() => browser.close());
-  const { app, episode, url } = await setup(t, items => {
-    const [slide] = SLIDES(items);
-    return [{ ...slide, design: { stageText: { style: 'list', numbered: true } } }];
-  });
-  const revision = () => app.store.getDeck(episode.id).revision;
-  const page = await browser.newPage();
+  const { app, episode, url } = await setup(t);
+  const deck = () => app.store.getDeck(episode.id);
+  const page = await browser.newPage({ viewport: { width: 1600, height: 1100 } });
   await page.goto(url);
   await openEditor(page, 0);
-  const original = await frameIn(page, 'diagram', revision());
-  const timeline = await original.evaluate(() => window.storybenchDeck.timeline().stages);
   const editor = page.locator('#slideEditor');
-  await editor.getByRole('button', { name: 'Hide step 2 from list' }).click();
-  await settled(page);
+  const eye = n => editor.getByRole('button', { name: `Show step ${n} text to audience` });
+  const toolbar = editor.locator('.deck-canvas-toolbar[data-toolbar-block="stageText"]:not([hidden])');
+  const frame = () => frameIn(page, 'diagram', deck().revision);
+  async function style(name, scope) {
+    await editor.locator('.deck-canvas-block[data-select="stageText"]').click();
+    if (scope) await toolbar.getByRole('button', { name: scope }).click();
+    await toolbar.getByRole('button', { name, exact: true }).click();
+    await settled(page);
+    await frame();
+  }
+  async function check(n, styleName, visible) {
+    const canvas = await frame();
+    await canvas.evaluate(index => window.storybenchDeck.holdStage(index), n - 1);
+    const entry = canvas.locator('[data-stage-id="connect"]');
+    assert.equal(await entry.getAttribute('data-step'), String(n - 1));
+    assert.equal(await entry.getAttribute('hidden') === null, visible);
+    const audience = styleName === 'Chips' ? canvas.locator(`.stage-nav [data-stage="${n - 1}"]`) :
+      canvas.locator(`.stage-${styleName.toLowerCase()} [data-stage-id="connect"] h2, .stage-list [data-stage-id="connect"] button`);
+    assert.equal(await audience.isVisible(), visible);
+    assert.equal(await eye(n).getAttribute('aria-pressed'), String(visible));
+  }
+  async function toggle(n) {
+    await eye(n).press('Space');
+    await settled(page);
+    await frame();
+    assert.ok(await eye(n).evaluate(el => el === document.activeElement));
+  }
+  await check(2, 'Chips', true); // Vector default.
+  await style('List', 'All slides');
+  assert.equal(deck().design.stageText.style, 'list');
+  assert.equal(deck().slides[0].design?.stageText?.style, undefined);
+  await toggle(2);
   assert.equal(await cardOf(page, 'step:connect').evaluate(node => node.open), false);
-  const hidden = await frameIn(page, 'diagram', revision());
-  assert.equal(await hidden.locator('.stage-list [data-stage="1"]').isVisible(), false);
-  assert.deepEqual(await hidden.evaluate(() => window.storybenchDeck.timeline().stages), timeline);
+  await check(2, 'List', false);
+  for (const name of ['Chips', 'Card', 'Steps', 'List']) {
+    await style(name, 'This slide');
+    assert.equal(deck().slides[0].design.stageText.style, name.toLowerCase());
+    await check(2, name, false);
+    await toggle(2);
+    await check(2, name, true);
+    await toggle(2);
+    await check(2, name, false);
+  }
+  await evidence(page, 'step-eye-hidden-list.png');
   await openCard(page, 'step:connect');
   const field = cardOf(page, 'step:connect').getByLabel('Step label');
   await field.fill('Make the first attempt');
   await field.press('Tab');
   await settled(page);
+  await cardOf(page, 'step:connect').getByRole('button', { name: 'Move step 2 earlier' }).click();
+  await settled(page);
   await page.reload();
   await openEditor(page, 0);
-  await editor.getByRole('button', { name: 'Show step 2 in list' }).click();
-  await settled(page);
-  const restored = await frameIn(page, 'diagram', revision());
-  await restored.evaluate(() => window.storybenchDeck.holdStage(2));
-  assert.deepEqual(await restored.locator('.stage-list').getByRole('button').allTextContents(), ['Observe', 'Make the first attempt', 'Plan']);
+  assert.deepEqual(deck().slides[0].stages.map(s => [s.id, s.hideFromList === true]),
+    [['connect', true], ['observe', false], ['plan', false]]);
+  await check(1, 'List', false);
+  await toggle(1);
+  await check(1, 'List', true);
+  assert.equal(await (await frame()).locator('.stage-list [data-stage="0"]').textContent(), 'Make the first attempt');
+});
+
+test('Legacy true, absent and false step visibility survives agent save, Preview and offline build', async t => {
+  const browser = await chromium.launch({ channel: 'chromium' }).catch(() => launch(chromium));
+  if (!browser) return t.skip('No launchable chromium on this seat');
+  t.after(() => browser.close());
+  const { app, episode, url } = await setup(t, items => [SLIDES(items)[1]]);
+  const { revision, slides } = app.store.getDeck(episode.id);
+  const [first, middle] = slides[0].stages;
+  first.hideFromList = false;
+  middle.hideFromList = 'true';
+  assert.throws(() => app.store.saveDeck(episode.id, revision, slides, 'agent'), /Stage b: hideFromList must be a boolean/);
+  middle.hideFromList = true;
+  const saved = app.store.saveDeck(episode.id, revision, slides, 'agent');
+  const page = await browser.newPage();
+  await page.goto(url);
+  await openEditor(page, 0);
+  async function check(frame) {
+    await frame.evaluate(() => window.storybenchDeck.holdStage(2));
+    const steps = frame.locator('#steps .stage-steps');
+    assert.deepEqual(await steps.getByRole('button').allTextContents(), ['First', 'Third']);
+    assert.deepEqual(await steps.locator('.step-number:visible').allTextContents(), ['1', '2']);
+    assert.deepEqual(await frame.evaluate(() => window.storybenchDeck.timeline().stages.map(s => s.id)), ['a', 'b', 'c']);
+  }
+  await check(await frameIn(page, 'steps', saved.revision));
+  await page.click('[data-editor-close]');
+  await page.click('#buildDeck');
+  const link = page.getByRole('link', { name: `Preview revision ${saved.revision}` });
+  await link.waitFor();
+  const job = app.store.listJobs(episode.id).find(job => job.kind === 'deck' && job.revision === saved.revision && job.state === 'completed');
+  const exported = await mkdtemp(path.join(tmpdir(), 'sb-legacy-step-visibility-'));
+  t.after(() => rm(exported, { recursive: true, force: true }));
+  const bundle = await extractBuild(app.store, episode.id, job.id, exported);
+  assert.equal(bundle.sourceRevision, saved.revision);
+  const offline = await browser.newPage();
+  await offline.goto(pathToFileURL(path.join(exported, 'index.html')).href);
+  await check(offline);
+  await link.click();
+  const iframe = page.frameLocator('#previewModal [data-preview-frame]').locator('#viewer iframe');
+  const preview = await (await iframe.elementHandle()).contentFrame();
+  await preview.waitForFunction(() => window.storybenchDeck);
+  await check(preview);
 });
 
 for (const type of [chromium, firefox]) test(`E4, E5, E6, E8 ${type.name()}: element cards, Play step, the selection toolbar, drag to snap and picks`, { timeout: 180000 }, async t => {
