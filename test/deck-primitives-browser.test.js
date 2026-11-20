@@ -155,6 +155,33 @@ test('A5: type scales headings and body together; spacing changes only internal 
   assert.deepEqual((await marked()).map(item => item.current), ['step', null, null], 'each item selects its stage');
 });
 
+test('A shortened narration list highlights the last visible label as every SVG step plays', async t => {
+  const browser = await launch(t); if (!browser) return;
+  const stages = vectorStages(6, i => ({ hideFromList: ![1, 4].includes(i), trigger: 'auto', durationMs: 100 }));
+  const design = { stageText: { style: 'list', numbered: true, position: 'right' } };
+  const page = await open(t, browser, [vector('list', design, { stages }),
+    vector('silent', design, { stages: stages.map(stage => ({ ...stage, hideFromList: true })) })]);
+  const list = page.locator('#list .stage-list');
+  for (const [i, expected] of [null, '1', '1', '1', '4', '4'].entries()) {
+    const timeline = await seek(page, i * 100 + 50);
+    assert.equal(timeline.stage, i);
+    assert.equal(await page.locator(`#list [data-vector-step="${i}"]`).getAttribute('aria-hidden'), 'false');
+    assert.equal(await list.locator('[aria-current="step"]').evaluateAll(rows => rows[0]?.dataset.step ?? null), expected);
+  }
+  assert.deepEqual(await list.getByRole('button').allTextContents(), [TITLES[1], TITLES[4]]);
+  await list.getByRole('button', { name: TITLES[4] }).click();
+  assert.equal(await page.evaluate(() => window.storybenchDeck.timeline().stage), 4);
+  await page.emulateMedia({ media: 'print' });
+  assert.equal(await list.getByRole('listitem').count(), 2);
+  const session = await page.context().newCDPSession(page);
+  const { nodes } = await session.send('Accessibility.getFullAXTree');
+  assert.deepEqual(nodes.filter(node => node.role.value === 'ListMarker').map(node => node.name.value.trim()), ['1.', '2.']);
+  await page.emulateMedia({ media: 'screen' });
+  await go(page, 'silent');
+  assert.equal(await page.locator('#silent .stage-text').isVisible(), false);
+  assert.equal((await seek(page, 550)).stage, 5);
+});
+
 test('A5: slide value beats deck value beats default', { timeout: 60000 }, async t => {
   const browser = await launch(t); if (!browser) return;
   // As the build resolves them (deck-service): per argument, the slide's value, else the deck's.

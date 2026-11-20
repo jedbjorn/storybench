@@ -24,6 +24,10 @@ function groupState(value, name) {
   }
   return result;
 }
+export function hiddenFromList(stage) {
+  if (stage.hideFromList !== undefined && typeof stage.hideFromList !== 'boolean') throw new Error('hideFromList must be a boolean');
+  return stage.hideFromList === true;
+}
 // The optional timing and motion fields of one stage, validated; unset (or null) fields are omitted.
 // Shared by save and build. Errors name the field; callers add the slide and stage.
 export function stageMotion(stage) {
@@ -145,7 +149,8 @@ export function validateSlides(slides, { libraryItems = [], sections = [], desig
         ? { id: value.id, label: text(value.label, 'Sub-navigation label', true), ...(value.itemId ? { itemId: item(value.itemId).id } : {}) }
         : key === 'columns'
           ? { title: text(value.title, `${key} title`, true), body: text(value.body ?? '', `${key} body`), ...(value.afterMs == null ? {} : { afterMs: timing(value.afterMs, 'afterMs') }) }
-          : { id: value.id, ...(value.svgGroupIds === undefined ? {} : { svgGroupIds: value.svgGroupIds }), title: text(value.title, `${key} title`, true), body: text(value.body ?? '', `${key} body`), ...staged(value, () => stageMotion(value)) });
+          : { id: value.id, ...(value.svgGroupIds === undefined ? {} : { svgGroupIds: value.svgGroupIds }), title: text(value.title, `${key} title`, true), body: text(value.body ?? '', `${key} body`),
+            ...(staged(value, () => hiddenFromList(value)) ? { hideFromList: true } : {}), ...staged(value, () => stageMotion(value)) });
     }
     if (slide.vector) {
       const selected = item(slide.vector.itemId);

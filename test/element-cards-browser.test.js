@@ -118,6 +118,41 @@ async function openCard(page, key) {
 }
 const stepRow = (page, id, key) => cardOf(page, `step:${id}`).locator(`[data-step-row="${key}"]`);
 
+test('A collapsed step can be hidden from the slide list, renamed, and shown again after reload', async t => {
+  const browser = await chromium.launch({ channel: 'chromium' }).catch(() => launch(chromium));
+  if (!browser) return t.skip('No launchable chromium on this seat');
+  t.after(() => browser.close());
+  const { app, episode, url } = await setup(t, items => {
+    const [slide] = SLIDES(items);
+    return [{ ...slide, design: { stageText: { style: 'list', numbered: true } } }];
+  });
+  const revision = () => app.store.getDeck(episode.id).revision;
+  const page = await browser.newPage();
+  await page.goto(url);
+  await openEditor(page, 0);
+  const original = await frameIn(page, 'diagram', revision());
+  const timeline = await original.evaluate(() => window.storybenchDeck.timeline().stages);
+  const editor = page.locator('#slideEditor');
+  await editor.getByRole('button', { name: 'Hide step 2 from list' }).click();
+  await settled(page);
+  assert.equal(await cardOf(page, 'step:connect').evaluate(node => node.open), false);
+  const hidden = await frameIn(page, 'diagram', revision());
+  assert.equal(await hidden.locator('.stage-list [data-stage="1"]').isVisible(), false);
+  assert.deepEqual(await hidden.evaluate(() => window.storybenchDeck.timeline().stages), timeline);
+  await openCard(page, 'step:connect');
+  const field = cardOf(page, 'step:connect').getByLabel('Step label');
+  await field.fill('Make the first attempt');
+  await field.press('Tab');
+  await settled(page);
+  await page.reload();
+  await openEditor(page, 0);
+  await editor.getByRole('button', { name: 'Show step 2 in list' }).click();
+  await settled(page);
+  const restored = await frameIn(page, 'diagram', revision());
+  await restored.evaluate(() => window.storybenchDeck.holdStage(2));
+  assert.deepEqual(await restored.locator('.stage-list').getByRole('button').allTextContents(), ['Observe', 'Make the first attempt', 'Plan']);
+});
+
 for (const type of [chromium, firefox]) test(`E4, E5, E6, E8 ${type.name()}: element cards, Play step, the selection toolbar, drag to snap and picks`, { timeout: 180000 }, async t => {
   const browser = await launch(type);
   if (!browser) return t.skip(`No launchable ${type.name()} on this seat`);

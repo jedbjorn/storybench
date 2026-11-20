@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fontForFamily, fontPath } from '../fonts.js';
 import { looksLikeSvg, parseSvg } from '../svg.js';
-import { deliveryRatio, stageMotion, validateTextStage, validatePrimitives, validateSlideTiming, THEME_COLOR_ROLES, TEMPLATE_COLORS } from '../deck-data.js';
+import { deliveryRatio, hiddenFromList, stageMotion, validateTextStage, validatePrimitives, validateSlideTiming, THEME_COLOR_ROLES, TEMPLATE_COLORS } from '../deck-data.js';
 
 const layouts = ['title', 'section', 'statement', 'text-media', 'columns', 'full-media', 'process'];
 const escape = (value) => String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -184,7 +184,7 @@ export function buildDeck(input, { assets = {} } = {}) {
         const { afterMs: delay = 0, ...motion } = motions[i];
         const timeline = `data-step="${i}"${stage.id ? ` data-stage-id="${escape(stage.id)}"` : ''} data-delay="${delay}" data-nav-label="${text(subnav[i], 'subnav label')}"${Object.keys(motion).length ? ` data-motion="${escape(JSON.stringify(motion))}"` : ''}`;
         const title = text(stage.title, 'stage.title'), detail = text(stage.body, 'stage.body', true);
-        if (style === 'list') return `<li ${timeline}><button data-stage="${i}">${title}</button>${detail.trim() ? `<p>${detail}</p>` : ''}</li>`;
+        if (style === 'list') return `<li ${timeline}${hiddenFromList(stage) ? ' hidden' : ''}><button data-stage="${i}">${title}</button>${detail.trim() ? `<p>${detail}</p>` : ''}</li>`;
         return `<section ${timeline}>${number ? `<span class="step-number">${i + 1}</span>` : ''}<h2>${style === 'steps' ? `<button data-stage="${i}">${title}</button>` : title}</h2>${detail.trim() ? `<p>${detail}</p>` : ''}</section>`;
       }).join('');
       if (style === 'list') {

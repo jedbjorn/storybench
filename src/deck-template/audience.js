@@ -216,9 +216,12 @@
   }
   function paintStage() {
     paintFrame();
-    slides[index].querySelectorAll('[data-stage]').forEach((button, i) => button.setAttribute('aria-pressed', String(i === stage && !opening)));
-    // A list marks its current item.
-    slides[index].querySelectorAll('.stages > [data-step]').forEach((item, i) => { if (i === stage && !opening) item.setAttribute('aria-current', 'step'); else item.removeAttribute('aria-current'); });
+    // A hidden list entry still runs. Keep the preceding visible label current until the next one starts.
+    const plan = model().plan;
+    let label = opening ? -1 : stage;
+    while (label >= 0 && plan[label]?.el.hidden) label--;
+    slides[index].querySelectorAll('[data-stage]').forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.stage) === label)));
+    plan.forEach(({ el }, i) => { if (i === label) el.setAttribute('aria-current', 'step'); else el.removeAttribute('aria-current'); });
     publish();
   }
   function advance() {
