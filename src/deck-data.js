@@ -225,7 +225,7 @@ const plain = value => value !== null && typeof value === 'object' && !Array.isA
 const SIDES = ['top', 'bottom', 'left', 'right'], ALIGNS = ['start', 'center', 'end'];
 export const STAGE_TEXT_STYLES = Object.freeze(['chips', 'steps', 'list', 'card']);
 export const DESIGN_PRIMITIVES = Object.freeze({
-  copy: { position: SIDES, align: ALIGNS, valign: ALIGNS },
+  copy: { position: SIDES, align: ALIGNS, valign: ALIGNS, titleWidth: [20, 100], bodyWidth: [20, 100] },
   stageText: { style: STAGE_TEXT_STYLES, position: SIDES, align: ALIGNS, valign: ALIGNS, numbered: 'boolean', flipMs: [0, 2000] },
   type: { scale: ['compact', 'standard', 'large'] },
   spacing: { density: ['compact', 'standard', 'spacious'] },
@@ -280,7 +280,12 @@ export function validateSlideTiming(slide, design) {
     throw new Error(`Slide ${slide.id}: Stage ${stage.id ?? stage.title}: ${key === 'trigger' ? 'trigger manual' : key} conflicts with timing.betweenMs, which starts every stage after the first; remove it`);
   }
 }
-const DESIGN_KEYS = ['theme', ...PRIMITIVE_NAMES];
+export function deliveryRatio(value) {
+  if (value === undefined) return '16:9';
+  if (!['16:9', '16:10'].includes(value)) throw new Error('Deck design: aspectRatio must be 16:9 or 16:10');
+  return value;
+}
+const DESIGN_KEYS = ['theme', 'aspectRatio', ...PRIMITIVE_NAMES];
 function themeRoles(value, roles, name, check) {
   if (value == null) return {};
   if (!plain(value)) throw new Error(`Deck design: theme.${name} must be an object of ${roles.join(', ')}`);
@@ -321,8 +326,8 @@ export function validateDeckDesign(design, { previous = {}, setBy = null } = {})
     const kept = prior[kind]?.[role] === value ? prior.setBy?.[kind]?.[role] : null;
     return [role, kept ?? setBy];
   }));
-  const { theme: _theme, ...primitives } = design;
-  return { theme: { colors, fonts, setBy: { colors: sources(colors, 'colors'), fonts: sources(fonts, 'fonts') } }, ...validatePrimitives(primitives, 'Deck design', 'Deck design: ') };
+  const { theme: _theme, aspectRatio, ...primitives } = design;
+  return { ...(aspectRatio === undefined ? {} : { aspectRatio: deliveryRatio(aspectRatio) }), theme: { colors, fonts, setBy: { colors: sources(colors, 'colors'), fonts: sources(fonts, 'fonts') } }, ...validatePrimitives(primitives, 'Deck design', 'Deck design: ') };
 }
 export const emptyDesign = () => ({ theme: { colors: {}, fonts: {}, setBy: { colors: {}, fonts: {} } } });
 /** Effective theme for a build: deck value, else the channel's current Brand Standards role,

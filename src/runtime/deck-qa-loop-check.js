@@ -22,7 +22,7 @@ export async function checkCorrectionLoop() {
       const scoped=createScopedTools(scope,{store});
       const merged=mergeTools(scoped,{
         read_deck:()=>store.getDeck(episode.id),
-        save_deck:({expectedRevision,slides})=>store.saveDeck(episode.id,expectedRevision,slides,'agent'),
+        save_deck:({expectedRevision,slides,design})=>store.saveDeck(episode.id,expectedRevision,slides,'agent',design),
         build_deck:({expectedRevision})=>decks.enqueue({episodeId:episode.id,expectedRevision}),
         await_job:async({jobId})=>{await queue.draining;return decks.getJob(episode.id,jobId);},
       });
@@ -34,7 +34,7 @@ export async function checkCorrectionLoop() {
       };
       const save=async(title)=>{
         const current=await call('read_deck');
-        return call('save_deck',{expectedRevision:current.revision,slides:[{id:'opening',title,layout:'statement',notes:'Pause and explain.'}]});
+        return call('save_deck',{expectedRevision:current.revision,design:{...current.design,aspectRatio:'16:10'},slides:[{id:'opening',title,layout:'statement',design:{copy:{titleWidth:65,bodyWidth:80}},notes:'Pause and explain.'}]});
       };
       try {
         let prior;
@@ -57,6 +57,7 @@ export async function checkCorrectionLoop() {
           await call('close_deck_qa',{sessionId});
           await save(workflow==='create'?'A clear plan':'A refined plan');
           const current=await call('read_deck');assert.equal(current.slides[0].id,'opening');assert.equal(current.slides[0].notes,'Pause and explain.');
+          assert.equal(current.design.aspectRatio,'16:10');assert.deepEqual(current.slides[0].design.copy,{titleWidth:65,bodyWidth:80});
           await assert.rejects(call('save_deck',{expectedRevision:current.revision-1,slides:current.slides}),/Stale/);
           const corrected=await build();assert.notEqual(corrected.snapshot.bundleSha256,defective.snapshot.bundleSha256);
           assert.equal((await call('get_deck_qa_report',{jobId:corrected.id})).qaStatus,'incomplete');

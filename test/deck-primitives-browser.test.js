@@ -2,21 +2,20 @@
 // timeline), A5c (one gap per slide) and A6 (unset means unchanged, against the template before this change).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { pathToFileURL, fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { chromium } from 'playwright-core';
 import { buildDeck } from '../src/deck-template/build.js';
 import { effectiveSlideDesign } from '../src/deck-data.js';
 import { exampleDeck, exampleAssets } from '../src/deck-template/example.js';
 
-const ROOT = fileURLToPath(new URL('..', import.meta.url));
 // Eight independent groups: a centred diagram with enough stages to wrap the chip row (issue #124).
 const GROUPS = ['g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'g7', 'g8'];
 const art = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200" viewBox="0 0 400 200"><rect width="400" height="200" fill="#ffffff"/>${GROUPS.map((id, i) => `<g id="${id}"><rect x="${10 + i * 48}" y="80" width="40" height="40" fill="#294b60"/></g>`).join('')}</svg>`);
-const assets = { ...exampleAssets, 'assets/art.svg': art };
+const wideDrawing = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="572" height="200" viewBox="0 0 572 200"><path d="M60 100 H510" stroke="#627879" stroke-width="3"/>${GROUPS.slice(0, 5).map((id,i) => `<g id="${id}"><circle cx="${60+i*112}" cy="100" r="35" fill="#294b60"/><path d="M${46+i*112} 100 l10 10 20 -22" fill="none" stroke="white" stroke-width="4"/></g>`).join('')}</svg>`);
+const assets = { ...exampleAssets, 'assets/art.svg': art, 'assets/wide.svg': wideDrawing };
 const TITLES = ['Collect the raw signals', 'Sort', 'Find the outliers quickly', 'Group', 'Name each theme', 'Draft the story arc', 'Test', 'Share the decision with everyone'];
 const vectorStages = (count = 8, extra = () => ({})) => GROUPS.slice(0, count).map((id, i) => ({ id, title: TITLES[i], body: `Body of ${TITLES[i]}.`, svgGroupIds: [id], ...extra(i) }));
 const vector = (id, design, extra = {}) => ({ id, title: 'A centred diagram', layout: 'full-media', vector: { type: 'image', src: 'assets/art.svg', alt: 'Eight squares' }, stages: vectorStages(), design, ...extra });
@@ -25,7 +24,7 @@ const statement = (id, design, extra = {}) => ({ id, title: 'Clarity creates mom
 const ACCENT = 'rgb(38, 104, 107)';
 
 async function launch(t) {
-  let browser = await chromium.launch().catch(() => null);
+  let browser = await chromium.launch({channel:'chromium'}).catch(() => null);
   if (!browser && existsSync('/usr/bin/chromium')) browser = await chromium.launch({ executablePath: '/usr/bin/chromium' }).catch(() => null);
   if (!browser) { t.skip('No launchable chromium on this seat'); return null; }
   t.after(() => browser.close());
@@ -37,8 +36,8 @@ function write(t, files) {
   for (const [name, bytes] of files) { mkdirSync(path.dirname(path.join(dir, name)), { recursive: true }); writeFileSync(path.join(dir, name), bytes); }
   return dir;
 }
-async function open(t, browser, slides, { viewport = { width: 1280, height: 720 }, context = {}, build = buildDeck } = {}) {
-  const dir = write(t, build({ title: 'Primitives', slides }, { assets }));
+async function open(t, browser, slides, { viewport = { width: 1280, height: 720 }, context = {}, aspectRatio } = {}) {
+  const dir = write(t, buildDeck({ title: 'Primitives', slides, aspectRatio }, { assets }));
   const pages = await browser.newContext({ viewport, ...context });
   t.after(() => pages.close());
   const page = await pages.newPage(), errors = [];
@@ -116,7 +115,7 @@ test('A5: align and valign move copy and stage text as stated', { timeout: 60000
   for (const valign of values) {
     await go(page, `column-${valign}`);
     const area = await rect(page, `#column-${valign} .composition`), copy = await rect(page, `#column-${valign} .copy`);
-    const top = copy.top - area.top - Number.parseFloat(await style(page, `#column-${valign} .composition`, 'padding-top')), bottom = area.bottom - copy.bottom;
+    const top = copy.top - area.top - Number.parseFloat(await style(page, `#column-${valign} .composition`, 'padding-top')) * area.width / 1784, bottom = area.bottom - copy.bottom;
     if (valign === 'start') near(top, 0, 'column valign start: copy at the top');
     if (valign === 'center') near(top, bottom, 'column valign center: copy centred', 2);
     if (valign === 'end') near(bottom, 0, 'column valign end: copy at the bottom');
@@ -134,7 +133,7 @@ test('A5: align and valign move copy and stage text as stated', { timeout: 60000
   }
 });
 
-test('A5: type scales headings and body together; spacing scales padding and gaps; a list marks its current item', { timeout: 60000 }, async t => {
+test('A5: type scales headings and body together; spacing changes only internal gaps; a list marks its current item', { timeout: 60000 }, async t => {
   const browser = await launch(t); if (!browser) return;
   const stages = [{ id: 'a', title: 'Observe', body: 'Name it.' }, { id: 'b', title: 'Try', body: 'Test one change.', afterMs: 1000 }, { id: 'c', title: 'Learn', body: 'Share it.', afterMs: 1000 }];
   const page = await open(t, browser, [statement('plain'), statement('compact', { type: { scale: 'compact' }, spacing: { density: 'compact' } }),
@@ -142,7 +141,8 @@ test('A5: type scales headings and body together; spacing scales padding and gap
   const measure = async id => { await go(page, id); return { h1: Number.parseFloat(await style(page, `#${id} h1`, 'font-size')), lede: Number.parseFloat(await style(page, `#${id} .lede`, 'font-size')),
     padding: Number.parseFloat(await style(page, `#${id}`, 'padding-top')), gap: Number.parseFloat(await style(page, `#${id} .composition`, 'row-gap')) }; };
   const plain = await measure('plain'), compact = await measure('compact'), large = await measure('large');
-  for (const key of ['h1', 'lede', 'padding', 'gap']) assert.ok(compact[key] < plain[key] && plain[key] < large[key], `${key}: compact < standard < large (${compact[key]}, ${plain[key]}, ${large[key]})`);
+  for (const key of ['h1', 'lede', 'gap']) assert.ok(compact[key] < plain[key] && plain[key] < large[key], `${key}: compact < standard < large (${compact[key]}, ${plain[key]}, ${large[key]})`);
+  assert.deepEqual([compact.padding, plain.padding, large.padding], [28, 28, 28]);
   near(large.h1 / plain.h1, large.lede / plain.lede, 'heading and body scale together', 0.01);
   await go(page, 'list');
   await seek(page, 1500);
@@ -202,9 +202,15 @@ test('A5b: the card follows the timeline: faces, constant height, flipMs, reduce
     await seek(page, startMs + 600);
     assert.deepEqual((await faces()).filter(f => f.shown).map(f => [f.title, f.transform]), [[stages[n].title, '']], 'flat once flipMs has passed');
   }
-  // [data-stage] controls name every stage for Preview, Presenter and the keyboard.
-  assert.deepEqual(await page.locator('#card [data-stage]').evaluateAll(els => els.map(el => [el.dataset.stage, el.getAttribute('aria-label'), el.textContent])),
-    [['0', 'Alpha', '1'], ['1', 'Beta', '2'], ['2', 'Gamma', '3']]);
+  assert.equal(await page.locator('#card [data-stage], #card nav').count(), 0);
+  const popup = page.waitForEvent('popup');
+  await page.locator('#presenter-open').click();
+  const presenter = await popup;
+  await presenter.waitForSelector('#stage-select:enabled');
+  assert.deepEqual(await presenter.locator('#stage-select option').allTextContents(), ['Alpha', 'Beta', 'Gamma']);
+  await presenter.selectOption('#stage-select', '0');
+  await page.waitForFunction(() => window.storybenchDeck.timeline().stage === 0);
+  await presenter.close();
   // Print shows every stage, as a list.
   await page.emulateMedia({ media: 'print' }); await page.evaluate(() => window.storybenchDeck.timeline());
   const printed = await page.locator('#card .stage-card > [data-step]').evaluateAll(els => els.map(el => ({ visible: getComputedStyle(el).visibility === 'visible' && getComputedStyle(el).opacity === '1', top: el.getBoundingClientRect().top, bottom: el.getBoundingClientRect().bottom })));
@@ -217,7 +223,7 @@ test('A5b: the card follows the timeline: faces, constant height, flipMs, reduce
   const end = await still();
   assert.deepEqual(end.map(face => face.shown), [false, false, true], 'reduced motion: the last stage shows');
   assert.ok(end.every(face => face.inline === '' && face.computed === 'none'), 'reduced motion: no flip transform');
-  await reduced.locator('#card [data-stage="0"]').click();
+  await reduced.keyboard.press('ArrowLeft'); await reduced.keyboard.press('ArrowLeft');
   const first = await still();
   assert.deepEqual(first.map(face => face.shown), [true, false, false], 'reduced motion: selecting a stage swaps faces');
   assert.ok(first.every(face => face.inline === '' && face.computed === 'none'));
@@ -248,37 +254,83 @@ test('A5c: with timing.betweenMs every stage after the first starts that long af
   assert.deepEqual(text.stages.map(s => s.startMs), [0, 550, 1250]);
 });
 
-// A6: a deck with no design values and no channel colours renders every slide and stage pixel-identical
-// to the template on main before this change, with the same computed palette.
-const BEFORE = '3251ec1e65d506d10f078cb41c2239f1b8826fa0';
-test('A6: with no design values every slide and stage renders pixel-identical to the template before layout primitives', { timeout: 120000 }, async t => {
-  try { execFileSync('git', ['-C', ROOT, 'cat-file', '-e', `${BEFORE}^{commit}`], { stdio: 'ignore' }); }
-  catch { return t.skip(`main before this change (${BEFORE.slice(0, 8)}) is not in this clone; fetch it to compare`); }
+// A source without ratio or width overrides rebuilds into the default delivery frame.
+test('all seven layouts keep their composition and gutters at both ratios and four display sizes', async t => {
   const browser = await launch(t); if (!browser) return;
-  const old = mkdtempSync(path.join(tmpdir(), 'sb-primitives-before-'));
-  t.after(() => rmSync(old, { recursive: true, force: true }));
-  const archive = execFileSync('git', ['-C', ROOT, 'archive', '--format=tar', BEFORE, 'src/deck-template', 'src/deck-data.js', 'src/fonts.js', 'src/svg.js'], { maxBuffer: 64 << 20 });
-  execFileSync('tar', ['-x', '-C', old], { input: archive });
-  symlinkSync(path.join(ROOT, 'node_modules'), path.join(old, 'node_modules'));
-  const before = (await import(pathToFileURL(path.join(old, 'src/deck-template/build.js')).href)).buildDeck;
-  const text = [{ id: 't1', title: 'Gather', body: 'Collect.' }, { id: 't2', title: 'Shape', body: 'Sort.', afterMs: 900 }, { id: 't3', title: 'Share', body: 'Tell.', afterMs: 900 }];
-  const slides = [...structuredClone(exampleDeck.slides), vector('diagram', undefined, { stages: vectorStages(8, i => (i ? { afterMs: 500 } : {})) }), statement('staged', undefined, { stages: text }),
-    { ...vector('gallery'), vector: undefined, stages: [], gallery: [{ label: 'One', media: { type: 'image', src: 'assets/example.png', alt: 'One' } }, { label: 'Two' }], caption: 'A caption' }];
-  const pair = [await open(t, browser, slides, { build: before }), await open(t, browser, slides)];
-  const palette = page => page.evaluate(() => Object.fromEntries(['--paper', '--ink', '--muted', '--accent', '--line', '--active'].map(name => [name, getComputedStyle(document.documentElement).getPropertyValue(name)])));
-  assert.deepEqual(await palette(pair[1]), await palette(pair[0]));
-  let compared = 0;
-  for (const slide of slides) {
-    const shots = [];
-    for (const page of pair) {
-      await go(page, slide.id); await page.mouse.move(1270, 700);
-      const timeline = await seek(page, 0), states = timeline.stages.length ? timeline.stages.map(s => s.motionEndMs) : [0];
-      const images = [];
-      for (const time of states) { await seek(page, time); images.push(await page.screenshot()); }
-      shots.push(images);
+  const evidence = process.env.STORYBENCH_SLIDE_FIT_EVIDENCE;
+  if (evidence) mkdirSync(evidence, { recursive: true });
+  const titles = ['A problem and a solution', 'Someone found the way', 'The route gets packaged', 'And repeats', 'The question'];
+  const reconstruction = vector('reconstruction', { stageText: { style: 'steps' }, copy: { titleWidth: 100 } }, {
+    layout: 'process', title: 'Better teaching. Worse practice?', body: '',
+    stages: vectorStages(5).map((s, i) => ({ ...s, title: titles[i], body: '' })),
+    vector: { type: 'image', src: 'assets/wide.svg', alt: 'Wide five-step diagram' },
+  });
+  const gallery = { ...exampleDeck.slides[6], id: 'gallery', gallery: ['Portrait', 'Landscape'].map(label => ({ label, media: exampleDeck.slides[6].media })), stages: [{ title: 'Opening' }] };
+  const slides = [...exampleDeck.slides.filter(s => s.layout !== 'process'), gallery, reconstruction];
+  for (const aspectRatio of [undefined, '16:10']) {
+    const page = await open(t, browser, slides, { aspectRatio });
+    for (const [width, height] of [[1920,1080], [2560,1440], [1920,1200], [1440,900], [1268,713]]) {
+      await page.setViewportSize({ width, height });
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      for (const slide of slides) {
+        await go(page, slide.id);
+        for (const stage of new Set([0, (slide.stages?.length || 1) - 1])) {
+          if (slide.stages?.length) {
+            await page.locator('footer [data-command="replay"]').click();
+            for (let i = 0; i < stage; i++) await page.keyboard.press('ArrowRight');
+            assert.equal(await page.evaluate(() => window.storybenchDeck.timeline().stage), stage);
+          }
+          if (slide.id === 'gallery') {
+            await page.getByRole('button', {name:'Landscape', exact:true}).click();
+            assert.ok(await page.locator('[data-gallery-view="1"]').isVisible());
+          }
+          if (slide.id === 'reconstruction') {
+            const step = page.locator(`#reconstruction [data-stage="${stage}"]`);
+            await step.click();
+            assert.equal(await step.getAttribute('aria-pressed'), 'true');
+            assert.equal(await page.locator('#reconstruction button[data-stage]:visible').count(), stage + 1);
+            assert.equal(await page.locator('#reconstruction [data-vector-step][data-pending="false"]').count(), stage + 1);
+            const drawing = await page.locator('#reconstruction svg').evaluate(svg => {
+              const {a, d} = svg.getScreenCTM();
+              return {xScale:a,yScale:d, width:svg.viewBox.baseVal.width*a};
+            });
+            near(drawing.xScale, drawing.yScale, 'drawing scales uniformly', .0001);
+            assert.ok(drawing.width > width / 3);
+          }
+          const frame = await rect(page, '#' + slide.id), available = await rect(page, '#presentation');
+          near(frame.width / frame.height, aspectRatio ? 1.6 : 16/9, 'ratio', .001);
+          near(frame.x - available.x, available.right - frame.right, 'horizontal centering');
+          near(frame.y - available.y, available.bottom - frame.bottom, 'vertical centering');
+          assert.ok(frame.width <= available.width + 1 && frame.height <= available.height + 1, JSON.stringify({slide: slide.id, width, height, frame, available}));
+          assert.deepEqual(await page.evaluate(() => window.storybenchDeck.overflowRegions()), [], slide.id);
+          const header = await rect(page, '#' + slide.id + ' header');
+          near((header.left - frame.left) * 1920 / frame.width, 68, 'side inset');
+          near((header.top - frame.top) * 1920 / frame.width, 28, 'top inset');
+        }
+      }
+      const h1 = page.locator('#reconstruction h1');
+      assert.ok(await h1.evaluate(el => el.offsetHeight < 1.1 * parseFloat(getComputedStyle(el).lineHeight)));
+      assert.equal(await page.locator('#reconstruction .lede,#reconstruction [data-step] p').count(), 0);
+      if (evidence) await page.screenshot({ path: path.join(evidence, `steps-${aspectRatio ? '16-10' : '16-9'}-${width}x${height}.png`) });
     }
-    assert.equal(shots[1].length, shots[0].length);
-    for (const [i, image] of shots[1].entries()) { assert.ok(image.equals(shots[0][i]), `${slide.id}, stage ${i + 1}: pixel-identical`); compared++; }
+    const footer = await rect(page, 'footer');
+    await page.locator('#fullscreen').click();
+    await page.waitForFunction(() => document.fullscreenElement);
+    assert.ok(footer.height > 0);
+    const full = await rect(page, '#reconstruction');
+    assert.ok(full.right <= await page.evaluate(() => innerWidth + 1));
+    assert.ok(full.bottom <= (await rect(page, 'footer')).top + 1);
+    await page.close();
   }
-  assert.ok(compared >= slides.length + 10, `${compared} slide states compared`);
+});
+
+test('overflow feedback includes later stage text while the opening stage is held and clears after correction', async t => {
+  const browser = await launch(t); if (!browser) return;
+  const slide = statement('overfull', { stageText: { style: 'card' } }, { stages: [
+    { title: 'Opening' }, { title: 'Last reveal', body: 'A long line.\n'.repeat(70) },
+  ] });
+  const page = await open(t, browser, [slide]);
+  assert.deepEqual(await page.evaluate(() => window.storybenchDeck.overflowRegions()), ['Step 2']);
+  await page.locator('[data-step="1"] p').evaluate(el => { el.textContent = 'Corrected'; });
+  assert.deepEqual(await page.evaluate(() => window.storybenchDeck.overflowRegions()), []);
 });

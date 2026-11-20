@@ -8,7 +8,6 @@
 (() => {
   'use strict';
   const deck = window.storybenchDeck, slide = document.querySelector('.slide');
-  const presentation = document.getElementById('presentation');
   if (!deck || !slide || window.parent === window) return;
   const standardsRevision = Number(document.currentScript.dataset.standardsRevision);
   const BLOCKS = { copy: '.copy', stageText: '.stage-text', visual: '.visual' };
@@ -29,15 +28,21 @@
     const left = Math.min(...rects.map((r) => r.left)), top = Math.min(...rects.map((r) => r.top));
     return { left, top, width: Math.max(...rects.map((r) => r.right)) - left, height: Math.max(...rects.map((r) => r.bottom)) - top };
   }
+  const textFields = { title: slide.querySelector('.copy > h1'), body: slide.querySelector('.copy > .lede') };
   function post() {
-    const area = presentation.getBoundingClientRect(), blocks = {};
+    const area = slide.getBoundingClientRect(), blocks = {};
     for (const [key, selector] of Object.entries(BLOCKS)) {
       const box = union(boxes(slide.querySelector(selector)));
       if (box) blocks[key] = box;
     }
-    window.parent.postMessage({ type: 'storybench-canvas', version: 1, slideId: slide.id, standardsRevision, stage,
-      playing: Boolean(playing), pulse: playing?.pulse ?? null, stages: deck.timeline().stages.length, area: { left: area.left, top: area.top, width: area.width, height: area.height }, blocks,
-      scroll: { top: presentation.scrollTop, max: presentation.scrollHeight - presentation.clientHeight } }, '*');
+    const fields = {};
+    for (const [key, element] of Object.entries(textFields)) {
+      const box = union(boxes(element));
+      if (box) fields[key] = box;
+    }
+    window.parent.postMessage({ type: 'storybench-canvas', fields, version: 1, slideId: slide.id, standardsRevision, stage,
+      playing: Boolean(playing), overflow: deck.overflowRegions(), pulse: playing?.pulse ?? null, stages: deck.timeline().stages.length, area: { left: area.left, top: area.top, width: area.width, height: area.height }, blocks,
+      scroll: { top: 0, max: 0 } }, '*');
   }
   // A stage is shown at the end of its own motion, before the next stage begins; null is the full reveal.
   // Any stage index the slide has is kept as asked (the editor normalizes by the same rule), the last included.
@@ -46,7 +51,8 @@
     stop();
     const { stages, durationMs } = deck.timeline();
     stage = Number.isInteger(value) && value >= 0 && value < stages.length ? value : null;
-    deck.seek(stage === null ? durationMs : heldAt(stages, stage));
+    if (stages.length) deck.holdStage(stage ?? stages.length - 1);
+    else deck.seek(durationMs);
     post();
   }
   // Play: the runtime's own clock runs the slide. Each tick reports the stage it reached; where the
@@ -69,7 +75,7 @@
     stop();
     if (value === 0) deck.replay();
     else if ((deck.seek(heldAt(stages, value - 1)).stage ?? -1) >= value) { deck.seek(stages[value].startMs); deck.resume(); }
-    else slide.querySelector(`[data-stage="${value}"]`)?.click();
+    else deck.selectStage(value);
     playing = { pulse: null, timer: null, reported: '', until: value };
     tick();
   }
@@ -92,7 +98,7 @@
     if (manual) { playing.pulse = next; post(); }
     playing.timer = setTimeout(() => {
       playing.pulse = null;
-      slide.querySelector(`[data-stage="${next}"]`)?.click();
+      deck.selectStage(next);
       tick();
     }, manual ? CLICK_PAUSE_MS : Math.max(0, following.startMs - now.timeMs));
   }
@@ -103,7 +109,8 @@
   let editing = null, swallowClick = false;
   // The saved field a slide element shows: title, body, a column's title or body, or a step label.
   function fieldOf(node) {
-    const element = node?.closest?.('h1, h2, p, button[data-stage]');
+    const hit = node?.closest?.('h1, h2, p, button[data-stage]');
+    const element = hit?.querySelector('button[data-stage]') || hit;
     if (!element || !slide.contains(element)) return null;
     if (element.matches('.copy > h1')) return { element, name: 'title' };
     if (element.matches('.copy > .lede')) return { element, name: 'body', multiline: true };
@@ -115,7 +122,7 @@
       return null;
     }
     if (element.matches('[data-step] > h2')) return { element, name: 'stages.title', index: Number(element.parentElement.dataset.step) };
-    if (element.matches('button[data-stage]') && !element.closest('.stage-nav-compact')) return { element, name: 'stages.title', index: Number(element.dataset.stage) };
+    if (element.matches('button[data-stage]')) return { element, name: 'stages.title', index: Number(element.dataset.stage) };
     return null;
   }
   // The element's text as saved: a line break is a newline, and a typed no-break space a space.
@@ -196,29 +203,24 @@
 
   // No media plays on the canvas.
   document.addEventListener('play', (event) => event.target.pause(), true);
-  // A slide taller than the frame scrolls in the bundle; the editor scrolls it here (wheel, or a block taking focus).
+  // Only the parent editor can change the held frame or preview a width.
   window.addEventListener('message', (event) => {
     const data = event.data;
     if (event.source !== window.parent || !data) return;
-    if (data.type === 'storybench-canvas-show') show(data.stage);
+    if (data.type === 'storybench-canvas-width' && Object.hasOwn(textFields, data.field)) {
+      const element = textFields[data.field];
+      if (!element) return;
+      if (data.width === null) element.style.removeProperty('width');
+      else if (Number.isFinite(data.width) && data.width >= 20 && data.width <= 100) element.style.width = `${data.width}%`;
+      post();
+    } else if (data.type === 'storybench-canvas-show') show(data.stage);
     else if (data.type === 'storybench-canvas-play') play();
     else if (data.type === 'storybench-canvas-edit' && Number.isFinite(data.x) && Number.isFinite(data.y) && !editing) edit(data.x, data.y);
     else if (data.type === 'storybench-canvas-play-step') playStep(data.stage);
-    else if (data.type === 'storybench-canvas-scroll' && Number.isFinite(data.by)) presentation.scrollTop += data.by;
-    else if (data.type === 'storybench-canvas-reveal' && Object.hasOwn(BLOCKS, data.block)) {
-      const box = union(boxes(slide.querySelector(BLOCKS[data.block]))), area = presentation.getBoundingClientRect();
-      if (box && (box.top < area.top || box.top + box.height > area.bottom)) presentation.scrollTop += box.top - area.top - Math.max(0, (area.height - box.height) / 2);
-    }
   });
-  presentation.addEventListener('scroll', post, { passive: true });
   new ResizeObserver(post).observe(slide);
   document.fonts.ready.then(post);
-  // The editor reopens a rebuilt slide where the last frame was: ?stage=<n>&scroll=<px> (the runtime owns the hash).
+  // The editor reopens the held stage. The audience runtime owns the hash.
   const opening = new URLSearchParams(location.search);
-  let wanted = Number(opening.get('scroll')) || 0;
-  const restore = () => { if (wanted) presentation.scrollTop = wanted; };
   show(opening.has('stage') ? Number(opening.get('stage')) : null);
-  // Media and fonts settle the slide's height after this; scroll again then, unless the editor scrolled since.
-  restore(); window.addEventListener('load', restore); document.fonts.ready.then(restore);
-  window.addEventListener('message', (event) => { if (event.source === window.parent && event.data?.type === 'storybench-canvas-scroll') wanted = 0; });
 })();

@@ -2,7 +2,7 @@ import path from 'node:path';
 import { realpath, stat } from 'node:fs/promises';
 import { StoreError } from './store.js';
 import { projectContentType } from './project-files.js';
-import { reportsState, CAPTURE_REBUILD } from './deck-capture.js';
+import { hasOpeningDelay, reportsState, CAPTURE_REBUILD } from './deck-capture.js';
 import { getDeckReadiness } from './runtime/deck-readiness.js';
 import { releaseFromEnv } from './runtime/health.js';
 import { usage, slideNumber } from '../public/deck-library.js';
@@ -68,7 +68,7 @@ export async function previewTarget(store, workspace, parts, channelId) {
   // server capture can serve it: an older runtime or an unready browser cannot.
   const browser = source === 'deck' && getDeckReadiness(releaseFromEnv()).browser;
   const deck = source === 'deck' ? { revision: job.revision,
-    slides: job.snapshot.slides.map(slide => ({ id: slide.id, title: slide.title,
+    slides: job.snapshot.slides.map(slide => ({ id: slide.id, title: slide.title, ...(hasOpeningDelay(slide) ? { openingDelay: true } : {}),
       stages: (slide.stages ?? []).map(stage => stage.title), views: (slide.subnav ?? []).map(view => view.label) })),
     capture: !reportsState(job) ? { available: false, reason: CAPTURE_REBUILD }
       : browser.state !== 'ready' ? { available: false, reason: browser.reason } : { available: true, reason: null } } : undefined;

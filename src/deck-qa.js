@@ -38,7 +38,8 @@ export function inspectPage() {
   const overlays = [...document.querySelectorAll('footer,#status')].filter(e => visible(e) && ['fixed','sticky'].includes(getComputedStyle(e).position));
   const layout = e => {
     const bounds = rect(e), region = {...bounds};
-    let clipped = false, oversized = false;
+    const frame = e.closest('.slide')?.getBoundingClientRect();
+    let clipped = false, oversized = Boolean(frame && (bounds.width > frame.width + 2 || bounds.height > frame.height + 2));
     // Contents outside a scrollport are reachable by scrolling. A hidden/clip
     // ancestor, in contrast, can make content inaccessible.
     for (let parent=e.parentElement; parent && parent!==document.body; parent=parent.parentElement) {
@@ -68,7 +69,10 @@ export function inspectPage() {
     tag:e.tagName.toLowerCase(),id:e.id || null,role:e.getAttribute('role'),label:e.getAttribute('aria-label'),text:(e.innerText || e.getAttribute('alt') || '').slice(0,500),
     ...layout(e),overflow:e.scrollWidth > e.clientWidth + 2 && e.clientWidth > 0 && !['auto','scroll'].includes(getComputedStyle(e).overflowX),
   }));
-  return {title:document.title,slideId:slide?.id ?? null,stage:[...(slide?.querySelectorAll('[data-stage][aria-pressed="true"]') || [])].map(e=>e.dataset.stage),
+  const timeline = window.storybenchDeck?.timeline?.();
+  const currentStage = timeline ? (timeline.stage === null ? [] : [String(timeline.stage)]) :
+    [...(slide?.querySelectorAll('[data-stage][aria-pressed="true"]') || [])].map(e=>e.dataset.stage);
+  return {title:document.title,slideBounds:slide ? rect(slide) : null,overflowRegions:window.storybenchDeck?.overflowRegions?.() ?? [],slideId:slide?.id ?? null,stage:currentStage,
     visibleGroups:[...(slide?.querySelectorAll('[data-vector-step]') || [])].filter(visible).map(e=>e.dataset.vectorStep),
     gallery:[...(slide?.querySelectorAll('[data-gallery-view]:not([hidden])') || [])].map(e=>e.dataset.galleryView),
     text:document.body.innerText.slice(0,12000),elements,viewport:{width:innerWidth,height:innerHeight},
@@ -77,7 +81,7 @@ export function inspectPage() {
     fonts:[...document.fonts].map(f=>({family:f.family,weight:f.weight,style:f.style,status:f.status})),
     images:[...document.images].map(e=>({src:e.getAttribute('src'),loaded:e.complete && e.naturalWidth>0})),
     media:[...document.querySelectorAll('video')].map((e,index)=>({index,src:e.getAttribute('src'),visible:visible(e),readyState:e.readyState,error:e.error?.code ?? null,paused:e.paused,time:e.currentTime,duration:Number.isFinite(e.duration)?e.duration:null})),
-    inventory:[...document.querySelectorAll('.slide')].map(e=>({slideId:e.id,title:e.dataset.title,stages:[...e.querySelectorAll('[data-stage]')].map(s=>s.dataset.stage),gallery:[...e.querySelectorAll('[data-gallery]')].map(g=>g.dataset.gallery)})),
+    inventory:[...document.querySelectorAll('.slide')].map(e=>({slideId:e.id,title:e.dataset.title,stages:[...e.querySelectorAll('.stages > [data-step]')].map(s=>s.dataset.step),stageControls:[...e.querySelectorAll('button[data-stage]')].map(s=>s.dataset.stage),gallery:[...e.querySelectorAll('[data-gallery]')].map(g=>g.dataset.gallery)})),
     pageOverflow:document.documentElement.scrollWidth>innerWidth+2,
   };
 }
@@ -400,7 +404,7 @@ export function createDeckQa({store,scope}) {
       if(name==='console') {const errors=s.record.errors.filter(e=>['console','page'].includes(e.type));result[name]=check(errors.length?'fail':'pass','Observed browser errors',errors);}
       if(name==='resources') {const errors=s.record.errors.filter(e=>!['console','page'].includes(e.type));result[name]=check(errors.length||state.images.some(i=>!i.loaded)?'fail':'pass','Observed local resources', {errors,images:state.images});}
       if(name==='fonts') result[name]=check(state.fonts.length && state.fonts.every(f=>f.status==='loaded')?'pass':'fail','Bundle integrity: explicitly load every font face, including unused weights/styles',state.fonts);
-      if(name==='layout') {const candidates=state.elements.filter(e=>e.overflow || e.outsideViewport || e.clipped || e.occluded || e.oversized);result[name]=check(candidates.length||state.pageOverflow?'fail':'pass','Overflow, oversized content, inaccessible clipping or fixed-control overlap candidates; inspect the screenshot',candidates);}
+      if(name==='layout') {const candidates=state.elements.filter(e=>e.overflow || e.outsideViewport || e.clipped || e.occluded || e.oversized);result[name]=check(candidates.length||state.pageOverflow||state.overflowRegions.length?'fail':'pass','Overflow, oversized content, inaccessible clipping or fixed-control overlap candidates; inspect the screenshot',[...candidates,...state.overflowRegions.map(region=>({slideId:state.slideId,region}))]);}
       if(name==='media') {
         // Generated bundles keep a static media DOM; an asset URL can occur on many slides.
         const sameView=state.slideId===before.slideId && JSON.stringify([state.stage,state.gallery])===JSON.stringify([before.stage,before.gallery]);

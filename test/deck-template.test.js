@@ -286,7 +286,7 @@ test('actual SVG groups reveal cumulatively, hold, replay, pause and obey manual
   p.tick(); assert.deepEqual(pending(), ['false', 'false', 'true']);
   p.tick(); assert.deepEqual(pending(), ['false', 'false', 'false']);
   assert.equal(p.timeouts.size, 0, 'completed diagram holds without looping');
-  click(p, '#vector [data-command="replay"]'); assert.deepEqual(pending(), ['true', 'true', 'true']);
+  click(p, 'footer [data-command="replay"]'); assert.deepEqual(pending(), ['true', 'true', 'true']);
   p.key('ArrowRight'); assert.deepEqual(pending(), ['false', 'false', 'true']);
   assert.equal(p.timeouts.size, 0);
   p.tick(); assert.deepEqual(pending(), ['false', 'false', 'true']);

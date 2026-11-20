@@ -39,7 +39,7 @@ export async function checkDemoDelivery(destination) {
     };
     const replay = async slide => {
       assert.ok(slide.stages.slice(1).every(stage => stage.afterMs > 0), 'Every later demo stage must advance automatically');
-      await act({ action: 'click', selector: `#${slide.id} [data-command="replay"]` });
+      await act({ action: 'click', selector: 'footer [data-command="replay"]' });
       let remaining = slide.stages.reduce((sum, stage) => sum + (stage.afterMs ?? 0), 0) + settleMs;
       let result;
       while (remaining > 0) {

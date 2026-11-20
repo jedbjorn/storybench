@@ -73,7 +73,7 @@ function watchDeck(frame) {
   window.addEventListener('message', ({ source, data }) => {
     if (source !== frame.contentWindow || data?.type !== 'storybench-deck-state' || data.version !== 1) return;
     const slide = slides[data.index];
-    if (slide?.id !== data.slideId || !within(data.stage, slide.stages.length) || !within(data.gallery, slide.views.length)) return;
+    if (slide?.id !== data.slideId || !(within(data.stage, slide.stages.length) || (data.stage === null && slide.openingDelay)) || !within(data.gallery, slide.views.length)) return;
     const first = !shown;
     shown = { slideId: slide.id, index: data.index, stage: data.stage, gallery: data.gallery };
     if (first) markup.disabled = false;

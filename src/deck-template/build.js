@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fontForFamily, fontPath } from '../fonts.js';
 import { looksLikeSvg, parseSvg } from '../svg.js';
-import { stageMotion, validateTextStage, validatePrimitives, validateSlideTiming, THEME_COLOR_ROLES, TEMPLATE_COLORS } from '../deck-data.js';
+import { deliveryRatio, stageMotion, validateTextStage, validatePrimitives, validateSlideTiming, THEME_COLOR_ROLES, TEMPLATE_COLORS } from '../deck-data.js';
 
 const layouts = ['title', 'section', 'statement', 'text-media', 'columns', 'full-media', 'process'];
 const escape = (value) => String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -82,6 +82,7 @@ export function buildDeck(input, { assets = {} } = {}) {
   const files = new Map();
   const ids = new Set();
   const vectors = new Map(), svgFonts = new Set(), svgStyles = [];
+  const copyWidths = [];
   let instance = 0;
   function asset(path, type) {
     const extensions = type === 'video' ? /\.(mp4|webm)$/i : /\.(svg|png|jpe?g|webp|gif)$/i;
@@ -129,7 +130,10 @@ export function buildDeck(input, { assets = {} } = {}) {
     for (const name of ['copy', 'stageText']) if (design[name]?.position && !hasVisual) throw new Error(`Slide ${slide.id}: design.${name}.position needs a visual (media on a text-media or full-media slide, a vector or a gallery)`);
     validateSlideTiming(slide, design);
     const copy = design.copy ?? {}, stageText = design.stageText ?? {};
-    const copyHTML = `<div class="copy"><h1>${heading}</h1><p class="lede">${body}</p></div>`;
+    for (const [field, selector] of [['titleWidth', 'h1'], ['bodyWidth', '.lede']]) {
+      if (copy[field] != null) copyWidths.push(`#${slide.id} .copy > ${selector}{width:${copy[field]}%}`);
+    }
+    const copyHTML = `<div class="copy"><h1>${heading}</h1>${body.trim() ? `<p class="lede">${body}</p>` : ''}</div>`;
     // Timing and motion are validated again here, whatever saved them; refusals name slide and stage.
     const motions = stages.map((stage, i) => {
       try {
@@ -161,24 +165,26 @@ export function buildDeck(input, { assets = {} } = {}) {
     if (slide.layout === 'process' && !stages.length) throw new Error('process requires stages');
     const subnav = slide.subnav === undefined ? stages.map((stage) => stage.title) : list(slide.subnav, 'subnav');
     if (subnav.length !== stages.length) throw new Error('subnav must label every stage');
-    // Stage text (README: Layout primitives). Every style keeps one [data-stage] control per stage, named by its label.
+    // Each timeline entry retains the navigation label independently of its visible title.
     let stageHTML = '';
     if (stages.length) {
       const style = stageText.style ?? (slide.vector ? 'chips' : 'steps'), numbered = stageText.numbered === true;
       const timing = `${design.timing?.betweenMs == null ? '' : ` data-between-ms="${design.timing.betweenMs}"`}${style === 'card' && stageText.flipMs != null ? ` data-flip-ms="${stageText.flipMs}"` : ''}`;
-      const replay = '<button data-command="replay">Replay</button>';
-      const chips = `<nav class="stage-nav" aria-label="Reveal stages">${subnav.map((label, i) => `<button data-stage="${i}">${text(label, 'subnav label')}</button>`).join('')}${replay}</nav>`;
+      const chips = `<nav class="stage-nav" aria-label="Reveal stages">${subnav.map((label, i) => `<button data-stage="${i}">${text(label, 'subnav label')}</button>`).join('')}</nav>`;
       const sections = (number) => stages.map((stage, i) => {
         // The runtime reads its timeline from these attributes; an unset field keeps the older behaviour.
         const { afterMs: delay = 0, ...motion } = motions[i];
-        const timeline = `data-step="${i}"${stage.id ? ` data-stage-id="${escape(stage.id)}"` : ''} data-delay="${delay}"${Object.keys(motion).length ? ` data-motion="${escape(JSON.stringify(motion))}"` : ''}`;
+        const timeline = `data-step="${i}"${stage.id ? ` data-stage-id="${escape(stage.id)}"` : ''} data-delay="${delay}" data-nav-label="${text(subnav[i], 'subnav label')}"${Object.keys(motion).length ? ` data-motion="${escape(JSON.stringify(motion))}"` : ''}`;
         const title = text(stage.title, 'stage.title'), detail = text(stage.body, 'stage.body', true);
-        if (style === 'list') return `<li ${timeline}><button data-stage="${i}">${title}</button><p>${detail}</p></li>`;
-        return `<section ${timeline}>${number ? `<span class="step-number">${i + 1}</span>` : ''}<h2>${title}</h2><p>${detail}</p></section>`;
+        if (style === 'list') return `<li ${timeline}><button data-stage="${i}">${title}</button>${detail.trim() ? `<p>${detail}</p>` : ''}</li>`;
+        return `<section ${timeline}>${number ? `<span class="step-number">${i + 1}</span>` : ''}<h2>${style === 'steps' ? `<button data-stage="${i}">${title}</button>` : title}</h2>${detail.trim() ? `<p>${detail}</p>` : ''}</section>`;
       }).join('');
-      if (style === 'list') { const tag = numbered ? 'ol' : 'ul'; stageHTML = `<${tag} class="stages stage-list"${timing}>${sections(false)}</${tag}><nav class="stage-nav" aria-label="Reveal stages">${replay}</nav>`; }
-      else if (style === 'card') stageHTML = `<div class="stages stage-card"${timing}>${sections(numbered)}</div><nav class="stage-nav stage-nav-compact" aria-label="Reveal stages">${subnav.map((label, i) => `<button data-stage="${i}" aria-label="${text(label, 'subnav label')}">${i + 1}</button>`).join('')}${replay}</nav>`;
-      else stageHTML = `<div class="stages"${style === 'chips' ? ' hidden' : ''}${timing}>${sections(true)}</div>${chips}`;
+      if (style === 'list') {
+        const tag = numbered ? 'ol' : 'ul';
+        stageHTML = `<${tag} class="stages stage-list"${timing}>${sections(false)}</${tag}>`;
+      } else if (style === 'card') stageHTML = `<div class="stages stage-card"${timing}>${sections(numbered)}</div>`;
+      else if (style === 'steps') stageHTML = `<div class="stages stage-steps"${timing}>${sections(true)}</div>`;
+      else stageHTML = `<div class="stages" hidden${timing}>${sections(false)}</div>${chips}`;
     }
     if (gallery) visual += `<nav class="gallery-nav" aria-label="Gallery">${gallery.map((entry, i) => `<button data-gallery="${i}">${text(entry.label, 'gallery label')}</button>`).join('')}</nav><div class="gallery">${gallery.map((entry, i) => `<figure data-gallery-view="${i}"${i ? ' hidden' : ''}>${entry.media ? media(entry.media) : ''}<figcaption>${text(entry.label, 'gallery label')}</figcaption></figure>`).join('')}</div>`;
     const caption = slide.caption ? `<p class="caption">${text(slide.caption,'caption')}</p>` : '';
@@ -203,12 +209,12 @@ export function buildDeck(input, { assets = {} } = {}) {
   const svgStylesheet = svgStyles.length ? '<link rel="stylesheet" href="svg.css">' : '';
   const shell = (body, script, extraStylesheet = '') => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="stylesheet" href="styles.css">${extraStylesheet}<script src="${script}" defer></script></head><body>${body}</body></html>`;
   const buttons = '<button data-command="previous">Previous</button><button data-command="next">Next</button>';
-  files.set('index.html', shell(`<a class="skip" href="#presentation">Skip to slides</a><aside class="rail"><strong>${title}</strong><nav aria-label="Slides">${slides.map((slide, i) => `<button data-go="${i}">${String(i + 1).padStart(2, '0')} · ${escape(slide.title)}</button>`).join('')}</nav></aside><main id="presentation" tabindex="-1">${rendered.join('')}</main><footer>${buttons}<output id="counter" aria-live="polite"></output><button id="presenter-open">Presenter (N)</button><button id="fullscreen">Fullscreen</button></footer><p id="status" role="status"></p>`, 'audience.js', svgStylesheet));
+  files.set('index.html', shell(`<a class="skip" href="#presentation">Skip to slides</a><aside class="rail"><strong>${title}</strong><nav aria-label="Slides">${slides.map((slide, i) => `<button data-go="${i}">${String(i + 1).padStart(2, '0')} · ${escape(slide.title)}</button>`).join('')}</nav></aside><main id="presentation" data-ratio="${deliveryRatio(input.aspectRatio)}" tabindex="-1">${rendered.join('')}</main><footer>${buttons}<button data-command="replay">Replay</button><output id="counter" aria-live="polite"></output><button id="presenter-open">Presenter (N)</button><button id="fullscreen">Fullscreen</button></footer><p id="status" role="status"></p>`, 'audience.js', svgStylesheet));
   files.set('presenter.html', shell(`<main class="presenter"><p id="connection" role="status">Connecting to audience…</p><output id="counter"></output><h1 id="current-title"></h1><p>Next: <span id="next-title"></span></p><label>Slide <select id="slide-select" disabled></select></label><div>${buttons}</div><h2>Speaker notes</h2><p id="notes"></p><label>Stage <select id="stage-select" disabled></select></label><div><button data-command="sub-previous">Previous stage</button><button data-command="sub-next">Next stage</button><button data-command="replay">Replay</button><button data-command="video-toggle">Play / pause</button><button data-command="video-restart">Restart video</button></div><p id="video-status"></p></main>`, 'presenter.js'));
   for (const name of ['audience.js', 'presenter.js', 'styles.css', 'assets/manrope-variable.ttf', 'assets/Manrope-OFL.txt']) files.set(name, readFileSync(new URL(name, import.meta.url)));
   const fontCSS = typography(files, input.fonts, [...svgFonts]);
   const palette = Object.entries(deckPalette(input.colors ?? {}));
-  files.set('styles.css', Buffer.from(files.get('styles.css') + '\n.vector-media{width:100%;height:100%;display:flex;align-items:center;justify-content:center}.vector-media>svg{max-width:100%;max-height:60svh;height:auto;font-family:Manrope}\n'));
+  if (copyWidths.length) files.set('styles.css', Buffer.from(files.get('styles.css') + '\n' + copyWidths.join('\n')));
   if (fontCSS) files.set('styles.css', Buffer.from(files.get('styles.css') + '\n' + fontCSS));
   if (palette.length) files.set('styles.css', Buffer.from(files.get('styles.css') + `\n:root{${palette.map(([name, value]) => `${name}:${value}`).join(';')}}\n`));
   if (svgStylesheet) files.set('svg.css', Buffer.from(`${svgStyles.join('\n')}\n`));

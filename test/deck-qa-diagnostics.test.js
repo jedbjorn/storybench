@@ -97,7 +97,7 @@ test('layout accepts reachable rail content and detects inaccessible clipping an
   await qa.call('act_deck_qa', { action: 'click', selector: '[data-go="15"]' });
   assert.equal((await qa.call('inspect_deck_qa')).screenshots[0].state.slideId, 'slide15');
   await qa.close();
-  await f.changeBundle(files => files.set('styles.css', `${files.get('styles.css')}\n.rail{overflow:hidden}.lede{width:2000px;max-width:none}`));
+  await f.changeBundle(files => files.set('styles.css', `${files.get('styles.css')}\n.rail{overflow:hidden}.copy .lede{width:2500px;max-width:none}`));
   const broken = await f.open();
   const failed = await broken.call('check_deck_qa', { checks: ['layout'] });
   assert.equal(failed.results.layout.status, 'fail');
@@ -112,7 +112,7 @@ test('layout still rejects a single heading taller than its scrollport', { timeo
     await qa.call('act_deck_qa', { action: 'resize', viewport: { width, height: 720 } });
     const checked = await qa.call('check_deck_qa', { checks: ['layout'] });
     assert.equal(checked.results.layout.status, 'fail');
-    assert.ok(checked.results.layout.details.some(e => e.tag === 'h1' && e.oversized));
+    assert.ok(checked.results.layout.details.some(e => e.region === 'Title'));
   }
 });
 
@@ -142,7 +142,7 @@ test('desktop footer reserves space, long captions remain reachable and legacy o
     assert.equal(await page.locator('#presentation').evaluate(e => e.scrollTop), 0, 'new slides start at the top');
   }
   // Legacy builds can still contain a fixed footer. Diagnose its actual overlap.
-  await f.changeBundle(files => files.set('styles.css', `${files.get('styles.css')}\nbody:has(#presentation){display:block;height:auto}#presentation{overflow:visible;min-height:calc(100svh - var(--footer))}footer{position:fixed}`));
+  await f.changeBundle(files => files.set('styles.css', `${files.get('styles.css')}\nbody:has(#presentation){display:block;height:auto}#presentation{overflow:visible;min-height:calc(100svh - var(--footer))}footer{position:fixed;height:55vh}`));
   const old = await f.open();
   const checked = await old.call('check_deck_qa', { checks: ['layout'] });
   assert.equal(checked.results.layout.status, 'fail');
