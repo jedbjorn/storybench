@@ -360,6 +360,13 @@ test('non-Visual width handles and the four Visual spacing controls save from th
     assert.equal(saved().slides[2].design[key].width, 20);
     assert.equal(await handle.getAttribute('aria-valuenow'), '20');
     assert.ok(await frame.locator(selector).evaluate(el => Math.abs(el.offsetWidth / el.parentElement.clientWidth - .2) < .002));
+    if (key === 'columns') {
+      const caption = await page.locator('[data-select="caption"]').boundingBox();
+      const bar = await page.getByRole('toolbar', { name: 'Columns controls' }).boundingBox();
+      assert.ok(bar.y + bar.height <= caption.y || bar.y >= caption.y + caption.height ||
+        bar.x + bar.width <= caption.x || bar.x >= caption.x + caption.width,
+      'narrowing columns leaves the whole caption available for selection');
+    }
   }
   await page.getByRole('button', { name: 'Close slide editor' }).click();
   let frame = await open(3);

@@ -530,28 +530,23 @@ const SIDE_NAMES = { top: 'Above visual', bottom: 'Below visual', left: 'Left of
     }
     (host?.querySelector('[aria-pressed="true"], [aria-checked="true"], input, button, [tabindex="0"]') || host)?.focus?.();
   }
-  // Above the selected block, or below it (over the step bar if need be) when there is no room above;
-  // kept inside the canvas width.
-  // "Room" also means not covering another selectable block, so the creator can still click it; when
-  // both sides would, the side covering less wins.
+  // Prefer the space above or below the selection. On a crowded slide the toolbar
+  // takes its own row so every block and the playback controls remain reachable.
   function placeToolbar() {
     const block = selected && blocksLayer.querySelector(`[data-select="${selected}"]`);
     if (toolbar.hidden || !block || toolbar.querySelector('.deck-visual-spacing')?.parentElement.hidden === false) return;
-    const host = toolbar.offsetParent?.getBoundingClientRect(), box = block.getBoundingClientRect();
-    if (!host) return;
+    const host = toolbar.parentElement.getBoundingClientRect(), box = block.getBoundingClientRect();
+    const surface = surfaceRoot.getBoundingClientRect();
     const width = toolbar.offsetWidth, height = toolbar.offsetHeight;
-    const left = Math.max(0, Math.min(box.left - host.left, host.width - width));
-    const others = [...blocksLayer.querySelectorAll('[data-select]')].filter((node) => node !== block).map((node) => node.getBoundingClientRect());
-    const covered = (top) => others.reduce((sum, rect) => sum
-      + Math.max(0, Math.min(rect.right, host.left + left + width) - Math.max(rect.left, host.left + left))
-      * Math.max(0, Math.min(rect.bottom, host.top + top + height) - Math.max(rect.top, host.top + top)), 0);
-    const sides = [['above', box.top - host.top - height - 8], ['below', box.bottom - host.top + 8]]
-      .map(([side, top]) => ({ side, top, fits: top >= 0, cover: covered(top) }));
-    const [best] = [...sides].sort((a, b) => (b.fits - a.fits) || (a.cover - b.cover));
-    const chosen = sides[0].fits && !sides[0].cover ? sides[0] : best;
-    toolbar.dataset.side = chosen.side;
-    toolbar.style.top = `${chosen.top}px`;
-    toolbar.style.left = `${left}px`;
+    const left = Math.max(host.left, Math.min(box.left, host.right - width));
+    const others = [...blocksLayer.querySelectorAll('[data-select]')].filter(node => node !== block).map(node => node.getBoundingClientRect());
+    const fits = top => top >= surface.top && top + height <= surface.bottom &&
+      !others.some(rect => rect.left < left + width && rect.right > left && rect.top < top + height && rect.bottom > top);
+    const above = box.top - height - 8, below = box.bottom + 8;
+    const top = [above, below].find(fits);
+    toolbar.dataset.side = top === undefined ? 'docked' : top === above ? 'above' : 'below';
+    toolbar.style.top = top === undefined ? '' : `${top - host.top}px`;
+    toolbar.style.left = top === undefined ? '' : `${left - host.left}px`;
   }
 
   function saveWidth(name, percent) {
