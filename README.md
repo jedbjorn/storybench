@@ -1,6 +1,7 @@
 # Storybench
 
 [![test](https://github.com/jedbjorn/storybench/actions/workflows/test.yml/badge.svg)](https://github.com/jedbjorn/storybench/actions/workflows/test.yml)
+[![Unique cloners in the last 14 days](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fjedbjorn%2Fsubfloor%2Fclone-traffic%2Funique-cloners.json&query=%24%5B%27storybench%27%5D.unique_cloners_14d&label=unique%20cloners%20%2814d%29&color=blue&style=flat-square)](https://github.com/jedbjorn/subfloor/blob/clone-traffic/unique-cloners.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 <img width="1877" height="955" alt="storybench" src="https://github.com/user-attachments/assets/cb35f2a2-7287-43db-8d3c-41d942f44a42" />
